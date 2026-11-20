@@ -1740,7 +1740,9 @@ fn screenshot_tour() {
     {
         let mut state = app.borrow_mut();
         state.evm.network_picker = false;
-        state.account_menu = Some(crate::ui::screens_links::ids::PICKER_EVM);
+        state.account_menu = Some(yw_engine::cmd::Press::Links(
+            yw_engine::cmd::LinksPress::PickerEvm,
+        ));
         state.refresh();
     }
     save(main_hwnd(&app), "57-account-menu");

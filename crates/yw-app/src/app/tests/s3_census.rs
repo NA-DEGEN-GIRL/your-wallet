@@ -298,9 +298,16 @@ impl Census {
         let items = clean(&items);
         let banners = clean(&banners);
         let info = app.info.as_deref().map(clean);
+        // 2026-11-20 (S4 P6): the mark holds the press; its control id is the table's.
         let copied = app.copied.map_or_else(
             || "-".to_owned(),
-            |copied| format!("{}/{}", copied.id, copied.address),
+            |copied| {
+                format!(
+                    "{}/{}",
+                    crate::ui::cmd_table::id_of(copied.anchor),
+                    copied.address
+                )
+            },
         );
         let jobs = if keys { key_jobs(app) } else { Vec::new() };
         let names: Vec<&str> = jobs.iter().map(crate::events::KeyJob::name).collect();
@@ -1650,6 +1657,8 @@ fn timer_copy_scenarios() -> Vec<Scenario> {
 }
 
 /// The same app's last pressed control (the anchor a copy marks), appended to a step.
+/// 2026-11-20 (S4 P6, critique B-18): its id from the last press (`cmd_table::id_of`); before,
+/// the field `App::command`, which P6 removed (the same id after every press).
 fn anchored(out: &mut String, census: &Census, scenario: &Scenario) {
     let (mut app, rx) = census.state(scenario.base);
     (scenario.setup)(&mut app);
@@ -1664,7 +1673,7 @@ fn anchored(out: &mut String, census: &Census, scenario: &Scenario) {
             scenario.name,
             index + 1,
             seen.line(),
-            app.command
+            crate::ui::cmd_table::id_of(app.last_press)
         );
     }
     drop(app);

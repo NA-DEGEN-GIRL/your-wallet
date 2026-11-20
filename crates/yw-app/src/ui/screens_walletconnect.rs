@@ -414,11 +414,14 @@ impl App {
             }
             WcPress::ReownCopy => {
                 // Only the address string: no browser is started (2026-11-10).
-                self.copy_text("https://dashboard.reown.com");
                 // A setup step: its instruction stays a band (not the mark at the button).
-                if self.copied.take().is_some() {
-                    self.info = Some(text::REOWN_COPIED.get(self.settings.language).to_owned());
-                }
+                // 2026-11-20 (S4 P6): the band rides in the copy's mark and is set when the
+                // result arrives (`App::copy_done`; the layout follows at the end of this press);
+                // before, this read the result right after the copy (`copied.take()`).
+                self.copy_with_band(
+                    "https://dashboard.reown.com",
+                    yw_engine::cmd::CopyBand::ReownAddress,
+                );
             }
             WcPress::Disconnect(Row(offset)) => {
                 let topic = self.wc.rows.borrow().get(usize::from(offset)).copied();

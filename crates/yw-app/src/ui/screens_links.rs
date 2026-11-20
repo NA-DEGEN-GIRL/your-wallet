@@ -14,7 +14,7 @@ use crate::explorer::ExplorerNet;
 use crate::ui::main_window::{Ctl, GLYPH_LINK, GLYPH_OPEN, GLYPH_SAVE, Item};
 use crate::ui::theme::{AddressKind, own_address_spans};
 use yw_core::lang::Lang;
-use yw_engine::cmd::{LinksPress, Row};
+use yw_engine::cmd::{LinksPress, Press, Row};
 
 /// Command ids (18,400–18,659; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -263,7 +263,8 @@ impl App {
         usable: bool,
     ) {
         let lang = self.settings.language;
-        let open = usable && self.account_menu == Some(picker);
+        // 2026-11-20 (S4 P6): the open drop-down is held as its button's press.
+        let open = usable && self.account_menu.map(crate::ui::cmd_table::id_of) == Some(picker);
         let selected = entries
             .iter()
             .find(|entry| entry.selected)
@@ -309,19 +310,19 @@ impl App {
     }
 
     /// The drop-down buttons and the activity recipients (2026-11-18, S3 C1: a `LinksPress`;
-    /// before, the control id). The open drop-down is still kept as its button's control id
-    /// (`account_menu`, Windows; S4 makes it a press).
+    /// before, the control id). The open drop-down is kept as its button's press (2026-11-20,
+    /// S4 P6; before, as its control id).
     pub(crate) fn on_links(&mut self, press: LinksPress) {
         let address = match press {
             LinksPress::PickerEvm
             | LinksPress::PickerSol
             | LinksPress::PickerBtc
             | LinksPress::PickerZec => {
-                let id = ids::id_of(press);
-                self.account_menu = if self.account_menu == Some(id) {
+                let picker = Press::Links(press);
+                self.account_menu = if self.account_menu == Some(picker) {
                     None
                 } else {
-                    Some(id)
+                    Some(picker)
                 };
                 // One drop-down at a time.
                 self.evm.network_picker = false;

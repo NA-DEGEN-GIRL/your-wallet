@@ -48,6 +48,16 @@ use crate::app::App;
 use crate::logging::{self, Field};
 use crate::ui::cmd_table::{self, cred_id_of, edit_id_of};
 
+#[cfg(test)]
+thread_local! {
+    /// Tests (2026-11-20, S4 P6): the answer `Effect::CopyText` gets without a main window
+    /// (`None`, the default: none, as headless always had). Set, the copy is answered with
+    /// `Cmd::CopyDone { ok, mark }` at the point the clipboard result is answered; no clipboard is
+    /// touched.
+    pub(crate) static TEST_COPY_ANSWER: core::cell::Cell<Option<bool>> =
+        const { core::cell::Cell::new(None) };
+}
+
 /// The main window's timer id for `timer`, and its name in the tests' shell-call log.
 const fn timer_of(timer: TimerId) -> (usize, &'static str) {
     match timer {
@@ -124,6 +134,11 @@ impl App {
                         format!("copy len={} address={}", text.chars().count(), mark.address)
                     });
                 // Headless (no main window): no clipboard and no result, as before.
+                #[cfg(test)]
+                if let Some(ok) = TEST_COPY_ANSWER.with(core::cell::Cell::get) {
+                    self.on_cmd(Cmd::CopyDone { ok, mark });
+                    return;
+                }
                 if let Some(main) = self.main.as_ref() {
                     let ok = clipboard::set_text(main, &text).is_ok();
                     self.on_cmd(Cmd::CopyDone { ok, mark });

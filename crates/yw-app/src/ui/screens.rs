@@ -1186,8 +1186,14 @@ impl App {
             disable_receive(&mut items);
         }
         // The copy just made says so at its own control (2026-11-12, `App::copy_text`).
+        // 2026-11-20 (S4 P6): the mark holds the press; its control id is the table's.
         if let Some(copied) = self.copied {
-            crate::ui::main_window::mark_copied(lang, &mut items, copied.id, copied.address);
+            crate::ui::main_window::mark_copied(
+                lang,
+                &mut items,
+                crate::ui::cmd_table::id_of(copied.anchor),
+                copied.address,
+            );
         }
         items
     }

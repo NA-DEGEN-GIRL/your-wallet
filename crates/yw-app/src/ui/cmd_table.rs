@@ -442,6 +442,46 @@ mod tests {
         assert_eq!(id_of(Press::Back), IDCANCEL);
     }
 
+    /// Table test (S4 P6, 2026-11-20): the three fields that held a control id now hold its
+    /// press — the last command (`App::last_press`; the id field `command` is gone), the open
+    /// account drop-down (`App::account_menu`) and the copy mark (`Copied::anchor`) — and the
+    /// screen draws them at `id_of(press)`. Every id they held is a press that maps back to it:
+    /// `id_of(press_of(id)) == id` for Enter and Esc, the four drop-down buttons (each a
+    /// `LinksPress::Picker*`, the selectors `is_picker_button` names) and the copy controls
+    /// (the census's plain copies and the three setup-step copies whose band rides in the
+    /// `CopyMark`). [`every_id_round_trips`] checks the same for every id of the window.
+    #[test]
+    fn held_presses_map_back_to_the_ids_they_replaced() {
+        use yw_engine::cmd::LinksPress;
+        let controls = ControlSet::default();
+        let pickers = screens_links::ids::FIXED;
+        let copies = [
+            screens_evm::ids::COPY_ADDRESS,
+            screens_sol::ids::COPY_ADDRESS,
+            screens_btc::ids::CARD_COPY,
+            screens_btc::ids::COPY_ADDRESS,
+            screens_zec::ids::CARD_COPY,
+            screens_zec::ids::COPY_ADDRESS,
+            screens_reset::ids::EXT_COPY_PATH,
+            screens_reset::ids::EXT_COPY_URL,
+            screens_walletconnect::ids::REOWN_COPY,
+        ];
+        for id in [IDOK, IDCANCEL].into_iter().chain(pickers).chain(copies) {
+            let press = press_of(id, &controls);
+            assert!(press.is_some(), "{id}");
+            assert_eq!(press.map(id_of), Some(id), "{id}");
+        }
+        for (id, picker) in pickers.into_iter().zip([
+            LinksPress::PickerEvm,
+            LinksPress::PickerSol,
+            LinksPress::PickerBtc,
+            LinksPress::PickerZec,
+        ]) {
+            assert_eq!(press_of(id, &controls), Some(Press::Links(picker)), "{id}");
+            assert!(crate::app::App::is_picker_button(id), "{id}");
+        }
+    }
+
     /// Table test (6): S22's 2 s hold area is painted, not a control; it never becomes a family
     /// press that a click could post.
     #[test]

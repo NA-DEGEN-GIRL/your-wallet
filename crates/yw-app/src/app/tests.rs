@@ -3076,7 +3076,12 @@ fn drop_downs_close_on_escape_and_other_commands() {
     use crate::ui::screens_evm::ids::NETWORK_PICKER;
     let (mut app, dir) = unlocked_app("picker-close", false);
     let picker = crate::ui::screens_links::ids::PICKER_EVM;
-    let open = |app: &App| (app.evm.network_picker, app.account_menu);
+    let open = |app: &App| {
+        (
+            app.evm.network_picker,
+            app.account_menu.map(crate::ui::cmd_table::id_of),
+        )
+    };
     app.on_command(NETWORK_PICKER);
     assert_eq!(open(&app), (true, None));
     app.on_command(picker);
@@ -3399,11 +3404,12 @@ fn copy_is_answered_at_its_control_and_expires() {
     let ids = |app: &App| -> Vec<u16> { controls(&app.items()).iter().map(|ctl| ctl.id).collect() };
     let plain = ids(&app);
     assert!(matches!(face(&app), Some(Face::Value(_))));
-    // The command is kept for the copy it makes (headless: no clipboard, so no mark).
+    // The press is kept for the copy it makes (headless: no clipboard, so no mark).
     app.on_command(COPY_ADDRESS);
-    assert_eq!((app.command, app.copied), (COPY_ADDRESS, None));
+    let anchor = crate::ui::cmd_table::press_of(COPY_ADDRESS, &app.controls).unwrap();
+    assert_eq!((app.last_press, app.copied), (anchor, None));
     let copied = Copied {
-        id: COPY_ADDRESS,
+        anchor,
         until_ms: 1_000,
         address: true,
     };
@@ -3438,9 +3444,10 @@ fn copy_is_answered_at_its_control_and_expires() {
 
 /// S3 D3 (table test (7)): an id that is no press (an edit's, S22's painted hold area, one in
 /// no block) only becomes the last command id and clears the copy mark, as every id did first
-/// before S3; the screen, the bands and the last press stay.
+/// before S3; the screen, the bands and the last press stay. 2026-11-20 (S4 P6): the last command
+/// id is gone (the last press is the last command), so such an id only clears the copy mark.
 #[test]
-fn an_id_that_is_no_press_only_moves_the_command_id() {
+fn an_id_that_is_no_press_only_clears_the_copy_mark() {
     use crate::app_evm::Copied;
     use crate::ui::screens_evm::ids::COPY_ADDRESS;
     let (mut app, dir) = unlocked_app("no-press", false);
@@ -3460,12 +3467,11 @@ fn an_id_that_is_no_press_only_moves_the_command_id() {
     ] {
         assert_eq!(crate::ui::cmd_table::press_of(id, &app.controls), None);
         app.copied = Some(Copied {
-            id: COPY_ADDRESS,
+            anchor: last,
             until_ms: u64::MAX,
             address: true,
         });
         app.on_command(id);
-        assert_eq!(app.command, id);
         assert_eq!(app.copied, None);
         assert_eq!(app.last_press, last);
         let after = (
@@ -3554,9 +3560,10 @@ fn a_late_copy_result_marks_the_control_of_its_mark() {
     let mark = CopyMark {
         anchor: app.last_press,
         address: true,
+        band: None,
     };
     app.on_command(REFRESH);
-    assert_eq!(app.command, REFRESH);
+    assert_eq!(Some(app.last_press), press_of(REFRESH, &app.controls));
     let failed = ErrorCode::Sec002.text_in(app.settings.language);
     app.on_cmd(Cmd::CopyDone { ok: false, mark });
     assert_eq!(
@@ -3567,13 +3574,108 @@ fn a_late_copy_result_marks_the_control_of_its_mark() {
     assert!(matches!(
         app.copied,
         Some(Copied {
-            id: COPY_ADDRESS,
+            anchor,
             address: true,
             ..
-        })
+        }) if Some(anchor) == press_of(COPY_ADDRESS, &app.controls)
     ));
     assert_eq!(app.info, None);
-    assert_eq!(app.command, REFRESH);
+    assert_eq!(Some(app.last_press), press_of(REFRESH, &app.controls));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 2026-11-20 (S4 P6): the three setup-step copies (S23 `경로 복사`·`주소 복사`, the
+/// `WalletConnect` panel's `주소 복사`) carry their instruction band in the copy's `CopyMark`, and
+/// the result sets it (`App::copy_done`) — the handlers no longer read the result right after the
+/// copy (`copied.take()`). With the copy answered inside the press (the Windows executor; here the
+/// test answer `TEST_COPY_ANSWER`, no clipboard), the shell-call log, the band and the mark are
+/// those recorded from the code before P6 (the same test run on `ce857e6`): success → the band
+/// and no mark, two layouts each; failure → E-SEC-002, one layout for S23's (the
+/// `WalletConnect` press lays out at its end); unanswered (headless) → nothing changes. A result
+/// that arrives after another press still sets its band and marks nothing (Android).
+#[test]
+fn setup_copies_answer_with_the_band_in_their_mark() {
+    use crate::app_effects::TEST_COPY_ANSWER;
+    use crate::errors::ErrorCode;
+    use crate::ui::screens_reset::ids::{EXT_COPY_PATH, EXT_COPY_URL};
+    use crate::ui::screens_walletconnect::ids::REOWN_COPY;
+    use yw_engine::cmd::{Cmd, CopyBand, CopyMark, ExtPress, Press};
+    let (mut app, dir) = unlocked_app("copy-band", false);
+    // A stand-in folder for `경로 복사` (never read: only its text is copied).
+    crate::app_extension::TOUR_EXTENSION_DIR
+        .with(|kept| *kept.borrow_mut() = Some(dir.join("extension")));
+    let path = crate::app_extension::text::PATH_COPIED.ko;
+    let url = crate::app_extension::text::URL_COPIED.ko;
+    let reown = crate::ui::screens_walletconnect::text::REOWN_COPIED.ko;
+    let failed = ErrorCode::Sec002.text_in(app.settings.language);
+    let copy_path = "copy len=<path> address=false";
+    let copy_url = "copy len=19 address=false";
+    let copy_reown = "copy len=27 address=false";
+    let cases: [(Option<bool>, u16, &[&str], &str); 9] = [
+        (None, EXT_COPY_PATH, &[copy_path, "refresh"], "before"),
+        (None, EXT_COPY_URL, &[copy_url, "refresh"], "before"),
+        (
+            None,
+            REOWN_COPY,
+            &[copy_reown, "refresh", "refresh"],
+            "before",
+        ),
+        (
+            Some(true),
+            EXT_COPY_PATH,
+            &[copy_path, "refresh", "refresh"],
+            path,
+        ),
+        (
+            Some(true),
+            EXT_COPY_URL,
+            &[copy_url, "refresh", "refresh"],
+            url,
+        ),
+        (
+            Some(true),
+            REOWN_COPY,
+            &[copy_reown, "refresh", "refresh"],
+            reown,
+        ),
+        (Some(false), EXT_COPY_PATH, &[copy_path, "refresh"], &failed),
+        (Some(false), EXT_COPY_URL, &[copy_url, "refresh"], &failed),
+        (
+            Some(false),
+            REOWN_COPY,
+            &[copy_reown, "refresh", "refresh"],
+            &failed,
+        ),
+    ];
+    for (answer, id, log, info) in cases {
+        app.info = Some("before".to_owned());
+        let _ = app.controls.take_shell_log();
+        TEST_COPY_ANSWER.with(|kept| kept.set(answer));
+        app.on_command(id);
+        TEST_COPY_ANSWER.with(|kept| kept.set(None));
+        assert_eq!(app.controls.take_shell_log(), log, "{answer:?} {id}");
+        assert_eq!(app.info.as_deref(), Some(info), "{answer:?} {id}");
+        assert_eq!(app.copied, None, "{answer:?} {id}");
+    }
+    // A late result: its own band, no mark at whatever was pressed since.
+    let mark = CopyMark {
+        anchor: Press::Ext(ExtPress::CopyUrl),
+        address: false,
+        band: Some(CopyBand::ExtensionsUrl),
+    };
+    app.on_command(crate::ui::screens_evm::ids::REFRESH);
+    app.info = None;
+    let _ = app.controls.take_shell_log();
+    app.on_cmd(Cmd::CopyDone { ok: true, mark });
+    assert_eq!(app.controls.take_shell_log(), ["refresh"]);
+    assert_eq!((app.info.as_deref(), app.copied), (Some(url), None));
+    app.on_cmd(Cmd::CopyDone { ok: false, mark });
+    assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
+    assert_eq!(
+        (app.info.as_deref(), app.copied),
+        (Some(failed.as_str()), None)
+    );
+    crate::app_extension::TOUR_EXTENSION_DIR.with(|kept| *kept.borrow_mut() = None);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -6713,7 +6815,7 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
         input: PressInput::default(),
     });
     assert_eq!(app.last_press, Press::Back);
-    assert_eq!(app.command, super::IDCANCEL);
+    assert_eq!(crate::ui::cmd_table::id_of(app.last_press), super::IDCANCEL);
     assert_eq!(app.screen, Screen::Confirm(Confirm::CopyOn));
     // Through the shell: the overlay's `취소`, its own press; the screen under it where it was.
     app.on_command(super::IDCANCEL);

@@ -700,12 +700,11 @@ pub struct App {
     /// The copy just made, answered at its control for about 1.5 s (2026-11-12,
     /// `App::copy_text`).
     pub(crate) copied: Option<crate::app_evm::Copied>,
-    /// The command being handled: the control a copy is answered at.
-    pub(crate) command: u16,
-    /// The press being handled (`cmd_table::id_of(last_press) == command` after every press,
-    /// 2026-11-18 S3 B4; S3 D3: an id that is no press changes `command` only):
-    /// a plain copy carries it in its `CopyMark`, so its result marks the pressed control even
-    /// when the result arrives after another press.
+    /// The press being handled (2026-11-18 S3 B4): a plain copy carries it in its `CopyMark`, so
+    /// its result marks the pressed control even when the result arrives after another press.
+    /// 2026-11-20 (S4 P6): also the last command; the control id field `command` (always
+    /// `cmd_table::id_of(last_press)` after a press; S3 D3: an id that is no press changed only
+    /// it, which nothing but tests read) is gone, and such an id now only clears the copy mark.
     pub(crate) last_press: Press,
     pub(crate) mismatch_checked: bool,
     pub(crate) overwrite_checked: bool,
@@ -735,9 +734,11 @@ pub struct App {
     pub(crate) done_imported: bool,
     /// `숨긴 계정 n개 보기 ▸` is open (EVM and Solana `내 계정`, this run only).
     pub(crate) hidden_open: bool,
-    /// The open account drop-down of `내 계정` (EVM, Solana, Bitcoin; 2026-11-11): its button's
-    /// id (`ui::screens_links::ids::PICKER_*`), closed by a choice.
-    pub(crate) account_menu: Option<u16>,
+    /// The open account drop-down of `내 계정` (EVM, Solana, Bitcoin; 2026-11-11), closed by a
+    /// choice: its button's press (2026-11-20, S4 P6: `Press::Links(LinksPress::Picker*)`, which
+    /// the screen maps to the button's id with `ui::cmd_table::id_of`; before, that id,
+    /// `ui::screens_links::ids::PICKER_*`).
+    pub(crate) account_menu: Option<Press>,
     /// The EVM activity card shows every row, not only the latest ten (this run only).
     pub(crate) activity_all: bool,
     /// S08 follows a new `YubiKey` wallet (spec/04 §2.19): what its completion banner says.
@@ -782,7 +783,8 @@ pub struct App {
     /// Debug builds: credential reads of a field the press did not capture (`creds_for`).
     #[cfg(debug_assertions)]
     cred_misses: u32,
-    /// Tests (debug builds): every credential read as (`self.command`, field).
+    /// Tests (debug builds): every credential read as (the id of the press being handled,
+    /// field) (2026-11-20, S4 P6: `cmd_table::id_of(last_press)`; before, `self.command`).
     #[cfg(all(test, debug_assertions))]
     pub(crate) cred_reads: Vec<(u16, CredField)>,
     pub(crate) placed: Placed,
@@ -1212,7 +1214,6 @@ impl App {
             leftover: false,
             info: None,
             copied: None,
-            command: 0,
             // No press yet (S3 D3: `Back`, whose id `IDCANCEL` is no control's; before,
             // `Press::Legacy(0)`). Every copy is made by a press, which sets it first.
             last_press: Press::Back,
@@ -4041,6 +4042,8 @@ impl App {
     /// mark — what every id did first before S3 — and nothing else runs (before D3 it went
     /// through `Press::Legacy` to `dispatch_legacy`, whose received-history check found no
     /// `새로고침` in it). The last press (`App::last_press`) stays the one before.
+    /// 2026-11-20 (S4 P6): such an id only clears the copy mark; the last command id `command`
+    /// it also set is gone (the last command is `last_press`).
     /// 2026-11-20 (S4 P4): Enter and Esc are resolved here, by the shell, after their own press
     /// (which still sets the last command and clears the copy mark, as every press does first):
     /// `enter_key`/`escape_key` find the control they stand for and press it through this fn,
@@ -4061,7 +4064,6 @@ impl App {
                 _ => {}
             }
         } else {
-            self.command = id;
             self.copied = None;
         }
         if closed {
@@ -4113,13 +4115,13 @@ impl App {
         }
     }
 
-    /// A press: the copy mark and the last command id follow it, then its handler runs.
+    /// A press: the copy mark and the last press follow it, then its handler runs (2026-11-20,
+    /// S4 P6: the last press is also the last command; before, the id `command` was set too).
     /// 2026-11-18 (S3 C1): a converted family's press goes to its handler here, after the two
     /// checks the legacy chain made before any family handler (they keep their order): the
     /// receive gate (`Press::is_receive_gated` while the passphrase is unverified) and the
     /// received-history read of a card's `새로고침` (`Press::refresh_chain`).
     fn on_press(&mut self, press: Press) {
-        self.command = cmd_table::id_of(press);
         self.last_press = press;
         // The mark is for the last press: a command that changes the value behind the marked
         // control (another account, a new receive address) must not leave it there.
@@ -5026,7 +5028,8 @@ impl App {
         #[cfg(not(test))]
         let _ = field;
         #[cfg(test)]
-        self.cred_reads.push((self.command, field));
+        self.cred_reads
+            .push((cmd_table::id_of(self.last_press), field));
         if captured != read.unwrap_or_default() {
             self.form_mismatch
                 .set(self.form_mismatch.get().saturating_add(1));

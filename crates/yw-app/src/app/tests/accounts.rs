@@ -139,7 +139,8 @@ fn entries(app: &mut App, tab: Tab) -> Vec<String> {
         ),
         _ => (PICKER_EVM, crate::ui::screens::ids::ACCOUNT_BASE),
     };
-    app.account_menu = Some(picker);
+    app.account_menu = crate::ui::cmd_table::press_of(picker, &app.controls);
+    assert!(app.account_menu.is_some());
     let entries = super::controls(&app.items())
         .into_iter()
         .filter(|ctl| (base..base + 100).contains(&ctl.id))
@@ -573,7 +574,9 @@ fn owner_zec_app(tag: &str) -> (App, std::path::PathBuf, String) {
 
 /// The open Zcash drop-down's entries: `(id, text, enabled)`; empty while it cannot open.
 fn zec_entries(app: &mut App) -> Vec<(u16, String, bool)> {
-    app.account_menu = Some(crate::ui::screens_links::ids::PICKER_ZEC);
+    app.account_menu = Some(yw_engine::cmd::Press::Links(
+        yw_engine::cmd::LinksPress::PickerZec,
+    ));
     let entries = app
         .items()
         .into_iter()

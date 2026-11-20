@@ -12,6 +12,8 @@
 
 use std::path::{Path, PathBuf};
 
+use yw_engine::cmd::CopyBand;
+
 use crate::app::{App, AppMode, Screen};
 use crate::logging;
 
@@ -212,22 +214,17 @@ impl App {
                     yw_engine::effect::Folder::Extension,
                 ));
             }
+            // A setup step: its instruction stays a band (not the mark at the button).
+            // 2026-11-20 (S4 P6): the band rides in the copy's mark and is set when the result
+            // arrives (`App::copy_done`: the band, then the layout); before, this read the result
+            // right after the copy (`if self.copied.take().is_some()`) and set both itself.
             ExtPress::CopyPath => {
                 if let Some(dir) = extension_dir() {
-                    self.copy_text(&dir.display().to_string());
-                    // A setup step: its instruction stays a band (not the mark at the button).
-                    if self.copied.take().is_some() {
-                        self.info = Some(text::PATH_COPIED.get(self.settings.language).to_owned());
-                        self.refresh();
-                    }
+                    self.copy_with_band(&dir.display().to_string(), CopyBand::ExtensionPath);
                 }
             }
             ExtPress::CopyUrl => {
-                self.copy_text(CHROME_EXTENSIONS_URL);
-                if self.copied.take().is_some() {
-                    self.info = Some(text::URL_COPIED.get(self.settings.language).to_owned());
-                    self.refresh();
-                }
+                self.copy_with_band(CHROME_EXTENSIONS_URL, CopyBand::ExtensionsUrl);
             }
         }
     }

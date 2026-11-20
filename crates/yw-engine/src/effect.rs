@@ -238,13 +238,15 @@ mod tests {
             mark: CopyMark {
                 anchor: Press::Evm(EvmPress::CopyAddress),
                 address: true,
+                band: None,
             },
         };
         let shown = format!("{copy:?}");
         assert!(!shown.contains("example"), "{shown}");
         assert_eq!(
             shown,
-            "CopyText { len: 26, mark: CopyMark { anchor: Evm(CopyAddress), address: true } }"
+            "CopyText { len: 26, mark: CopyMark { anchor: Evm(CopyAddress), address: true, \
+             band: None } }"
         );
         assert_eq!(
             format!(

@@ -17,7 +17,7 @@ use yw_core::journal::evm::{
     latest_candidate,
 };
 use yw_core::vault::{EvmKeySource, FileKind, RecordId};
-use yw_engine::cmd::CopyMark;
+use yw_engine::cmd::{CopyBand, CopyMark, Press};
 use yw_engine::effect::{Effect, TimerId};
 
 use crate::apikeys::{KeyName, mask_url};
@@ -479,8 +479,9 @@ pub const COPIED_MS: u64 = 1_500;
 /// a scrolled page and stayed until it was closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Copied {
-    /// The pressed control.
-    pub id: u16,
+    /// The press of the control (2026-11-20, S4 P6: the press, which the screen maps to its
+    /// control id with `ui::cmd_table::id_of` when it draws the mark; before, that id).
+    pub anchor: Press,
     /// When the mark goes (monotonic ms).
     pub until_ms: u64,
     /// An address: the caption keeps the paste check.
@@ -2024,24 +2025,35 @@ impl App {
     /// the check mark and `복사됨`, `crate::ui::main_window::mark_copied`; no band, so nothing
     /// moves and no control is created again). A failure stays the E-SEC-002 band.
     pub fn copy_text(&mut self, text: &str) {
-        self.copy(text, false);
+        self.copy(text, false, None);
     }
 
     /// `주소 복사` of every chain (S12, the S10 account cards; 2026-11-11 one path): the plain
     /// copy of [`App::copy_text`], and its caption keeps the paste check in short ("복사됨 ·
     /// 붙여넣은 뒤 전체 확인"; a failure keeps E-SEC-002).
     pub fn copy_address_text(&mut self, address: &str) {
-        self.copy(address, true);
+        self.copy(address, true, None);
+    }
+
+    /// A setup step's plain copy (2026-11-20, S4 P6: S23's path and `chrome://extensions`, the
+    /// `WalletConnect` panel's `dashboard.reown.com`): [`App::copy_text`] whose success is
+    /// answered with `band`'s instruction instead of the mark at the control
+    /// ([`App::copy_done`]). Before P6 each handler read the result right after `copy_text`
+    /// (`copied.take()`) and replaced the mark with the band itself.
+    pub(crate) fn copy_with_band(&mut self, text: &str, band: CopyBand) {
+        self.copy(text, false, Some(band));
     }
 
     /// 2026-11-18 (S3 B4): the copy is `Effect::CopyText`, applied at once (Windows:
     /// `clipboard::set_text` when the main window exists, nothing headless); its result comes
     /// back as `Cmd::CopyDone` ([`App::copy_done`]) with the mark made here from the press being
     /// handled. Before, this function called `clipboard::set_text` and marked `self.command`.
-    fn copy(&mut self, text: &str, address: bool) {
+    /// 2026-11-20 (S4 P6): the mark also carries the setup step's band.
+    fn copy(&mut self, text: &str, address: bool, band: Option<CopyBand>) {
         let mark = CopyMark {
             anchor: self.last_press,
             address,
+            band,
         };
         self.emit(Effect::CopyText {
             text: text.to_owned(),
@@ -2052,11 +2064,29 @@ impl App {
 
     /// `Cmd::CopyDone`: the copy reached the clipboard (`ok`) — answered at `mark`'s control for
     /// [`COPIED_MS`], and an earlier failure's band goes — or it did not (E-SEC-002 band).
+    /// 2026-11-20 (S4 P6): a setup step's copy (`mark.band`) answers its success with its
+    /// instruction band instead, and no mark; S23's two then lay the screen out again, the
+    /// `WalletConnect` panel's press does at its end (as each handler did after reading the
+    /// result: the same steps in the same number). Before P6 the mark was made and the handler
+    /// took it back right after the copy (`copied.take()`) to set the band.
     pub(crate) fn copy_done(&mut self, ok: bool, mark: CopyMark) {
         let failed = ErrorCode::Sec002.text_in(self.settings.language);
-        if ok {
+        if let (true, Some(band)) = (ok, mark.band) {
+            let (text, refresh) = match band {
+                CopyBand::ExtensionPath => (crate::app_extension::text::PATH_COPIED, true),
+                CopyBand::ExtensionsUrl => (crate::app_extension::text::URL_COPIED, true),
+                CopyBand::ReownAddress => {
+                    (crate::ui::screens_walletconnect::text::REOWN_COPIED, false)
+                }
+            };
+            self.copied = None;
+            self.info = Some(text.get(self.settings.language).to_owned());
+            if refresh {
+                self.refresh();
+            }
+        } else if ok {
             self.copied = Some(Copied {
-                id: crate::ui::cmd_table::id_of(mark.anchor),
+                anchor: mark.anchor,
                 until_ms: self.clock.now_ms().saturating_add(COPIED_MS),
                 address: mark.address,
             });

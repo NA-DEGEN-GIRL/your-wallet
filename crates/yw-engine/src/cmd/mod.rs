@@ -62,6 +62,11 @@
 //! 2026-11-20 (S4 P4): `Press::Enter` and `Press::Back` no longer make the logic read the focus
 //! or the screen's controls: the shell resolves them into the concrete press they stand for
 //! (see [`Press::Back`]).
+//!
+//! 2026-11-20 (S4 P6): [`CopyMark::band`] ([`CopyBand`]): a setup step's copy (S23's two, the
+//! `WalletConnect` panel's `dashboard.reown.com`) answers with its instruction band rather than
+//! the mark at the control, decided when the result arrives (`Cmd::CopyDone`), not by a read of
+//! the result right after the copy.
 
 use core::fmt;
 
@@ -243,15 +248,32 @@ impl fmt::Debug for LinkTarget {
     }
 }
 
-/// What a copy result applies to: the pressed copy control and whether the caption is the
-/// address one. It travels with `Effect::CopyText` and back with `Cmd::CopyDone`, so the result
-/// never depends on what was pressed in between.
+/// What a copy result applies to: the pressed copy control, whether the caption is the
+/// address one, and the band a setup step answers with instead of the mark. It travels with
+/// `Effect::CopyText` and back with `Cmd::CopyDone`, so the result never depends on what was
+/// pressed in between.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CopyMark {
     /// The press that copied.
     pub anchor: Press,
     /// The address caption (`주소 복사됨`) rather than the plain one.
     pub address: bool,
+    /// 2026-11-20 (S4 P6): a copied setup step's instruction band, shown instead of the mark at
+    /// the control (`None`: the mark). Before P6 the three handlers read the copy's result right
+    /// after the copy (`copied.take()`), which only works while the result arrives inside it.
+    pub band: Option<CopyBand>,
+}
+
+/// The instruction band a copied setup step answers with (2026-11-20, S4 P6): which step only;
+/// the shell's text catalogue holds the words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyBand {
+    /// S23 `경로 복사`: the extension folder's path.
+    ExtensionPath,
+    /// S23 `주소 복사`: `chrome://extensions`.
+    ExtensionsUrl,
+    /// The `WalletConnect` panel's `주소 복사`: `https://dashboard.reown.com`.
+    ReownAddress,
 }
 
 /// What was pressed.
@@ -403,6 +425,27 @@ mod tests {
     use super::*;
     use crate::form::{CredField, CredUnits};
 
+    /// 2026-11-20 (S4 P6): a copy mark's band prints as the step's name (the words are the
+    /// shell's catalogue's).
+    #[test]
+    fn copy_mark_debug_names_its_band() {
+        assert_eq!(
+            format!(
+                "{:?}",
+                Cmd::CopyDone {
+                    ok: true,
+                    mark: CopyMark {
+                        anchor: Press::Ext(ExtPress::CopyUrl),
+                        address: false,
+                        band: Some(CopyBand::ExtensionsUrl),
+                    }
+                }
+            ),
+            "CopyDone { ok: true, mark: CopyMark { anchor: Ext(CopyUrl), address: false, \
+             band: Some(ExtensionsUrl) } }"
+        );
+    }
+
     #[test]
     fn debug_prints_no_text_or_units() {
         let units: Vec<u16> = "token-abc".encode_utf16().collect();
@@ -449,11 +492,12 @@ mod tests {
                     ok: false,
                     mark: CopyMark {
                         anchor: Press::Back,
-                        address: false
+                        address: false,
+                        band: None,
                     }
                 }
             ),
-            "CopyDone { ok: false, mark: CopyMark { anchor: Back, address: false } }"
+            "CopyDone { ok: false, mark: CopyMark { anchor: Back, address: false, band: None } }"
         );
         assert_eq!(
             format!("{:?}", Cmd::Timer(TimerId::SendCheck)),

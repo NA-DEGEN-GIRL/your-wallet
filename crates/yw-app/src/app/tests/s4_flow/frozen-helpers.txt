@@ -179,7 +179,7 @@ yw-app/src/app/tests/s3_census.rs const EDIT_IDS cef47137e1217c41 mutable
 yw-app/src/app/tests/s3_census.rs const MASKED 980e9977cd0e5bff mutable
 yw-app/src/app/tests/s3_census.rs const SKIPPED 1fce95d34b5e9687 mutable
 yw-app/src/app/tests/s3_census.rs struct Census bdec54fb58ac452f mutable
-yw-app/src/app/tests/s3_census.rs impl Census 52a879615c8e0291 mutable
+yw-app/src/app/tests/s3_census.rs impl Census 21bf43f40f18fa51 mutable
 yw-app/src/app/tests/s3_census.rs struct Seen 1946e68569be6866 mutable
 yw-app/src/app/tests/s3_census.rs impl Seen dc1d586829b57109 mutable
 yw-app/src/app/tests/s3_census.rs impl DropforCensus 692f66a11f09c9dc mutable
@@ -237,7 +237,7 @@ yw-app/src/app/tests/s3_census.rs fn fire bf44fd8169776fac mutable
 yw-app/src/app/tests/s3_census.rs fn reset_phrase adb1282758c60edd mutable
 yw-app/src/app/tests/s3_census.rs fn two_cards b6110e48e255e819 mutable
 yw-app/src/app/tests/s3_census.rs fn timer_copy_scenarios 3e59146143f32c47 mutable
-yw-app/src/app/tests/s3_census.rs fn anchored c3cdf9041b88163f mutable
+yw-app/src/app/tests/s3_census.rs fn anchored 8f6b9075d1616e7e mutable
 yw-app/src/app/tests/s3_census.rs fn harness 46fd4c6e80bdd557 mutable
 yw-app/src/app/tests/s3_census.rs fn observe_harness c2847f7cd23faeb4 mutable
 yw-app/src/app/tests/s3_census.rs fn harness_step 9a8e9947968e96a0 mutable
