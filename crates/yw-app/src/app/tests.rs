@@ -6293,7 +6293,10 @@ fn wallet_reset_from_the_lock_screen_returns_to_first_run() {
 /// leaving the area or releasing the button ends the hold (`Effect::ReleaseHold` clears the
 /// shell's id); a hold the logic ended by replacing S22's state (a phrase change) is no longer
 /// the shell's to end (no second cancel, no `ReleaseHold`), as before W1. Headless: no main
-/// window, so no capture is taken or released.
+/// window, so no capture is taken or released. 2026-11-21 (W1 review): that last part pins
+/// today's behaviour, not intent: such a hold leaves the main window's pointer capture taken
+/// (the later `Cmd::HoldEnd` finds no active gate), an older bug kept by W1 and open for the
+/// owner (spec/15 §18 item 19); a fix changes this assertion.
 #[test]
 fn the_reset_hold_area_is_the_shells_and_its_gate_the_wallets() {
     use crate::ui::screens_reset::ids as reset_ids;
