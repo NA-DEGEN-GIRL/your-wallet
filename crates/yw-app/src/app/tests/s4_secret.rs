@@ -37,7 +37,17 @@
 //!
 //! The copies of the shell's code here (`open_input_window`'s `Ok(window)` arm, `open_display_window`,
 //! `show_secret`'s log, `close_secret_window`'s wipe, `apply_form_op`'s match and `on_secret`'s
-//! arms) are pinned by [`the_headless_secret_host_mirrors_the_shell`], which reads `app.rs`.
+//! arms) are pinned by [`the_headless_secret_host_mirrors_the_shell`], which reads `app.rs` and
+//! this file: each shell statement the host copies is still in the shell fn and, with the
+//! documented renames, in the host fn (2026-11-20, S4 P8 review: before, only the shell side was
+//! read, and a change made only in the host passed).
+//!
+//! Not delivered headless (2026-11-20, S4 P8 review): the window record `App::secret` stays empty
+//! (the host holds the form), so the form actions that act on it do nothing here. `Redraw` (the
+//! window's invalidate) has no window to repaint; `Copy` and `Paste` need the clipboard and that
+//! record (`copy_secret`'s copy-off notice included), so [`host::deliver`] fails the test on
+//! them, as on any message it does not deliver. No scenario sends them (`allowSecretCopy` stays
+//! off and no scenario copies or pastes, spec/09 §2.2).
 
 /// The recording secret host (see the module doc).
 pub(crate) mod host {
@@ -45,6 +55,7 @@ pub(crate) mod host {
 
     use yw_core::lang::Lang;
     use yw_engine::approval::flow::OpenOutcome;
+    use yw_engine::cmd::Cmd;
     use yw_engine::secret::{SecretEffect, SecretFormOp, SecretKind, SecretStep};
     #[cfg(debug_assertions)]
     use yw_win::ui::{Msg, Reply};
@@ -175,6 +186,12 @@ pub(crate) mod host {
         note(format!("{effect:?}"));
     }
 
+    /// The executor's note of the answer to a secret effect (`Cmd::SecretOpened`, 2026-11-20,
+    /// S4 P8 review), before it goes to `App::on_cmd`.
+    pub(crate) fn saw_cmd(cmd: &Cmd) {
+        note(format!("{cmd:?}"));
+    }
+
     /// The session's and the held form's `Debug` (each recorded line of the headless run).
     #[cfg(debug_assertions)]
     pub(crate) fn note_state(app: &App) {
@@ -276,17 +293,16 @@ pub(crate) mod host {
         App::log_capture(kind, made);
         let outcome = match capture_decision(kind, excluded) {
             CaptureDecision::Show { warning: false } => {
-                if let Some(display) = app.take_display_secret(serial) {
-                    note(format!("{display:?}"));
-                    let mut form = SecretForm::display(kind, lang, app.clock.now_ms(), display);
-                    form.set_step(step);
-                    form.set_timeout_note(timeout_note);
-                    show(app, serial, form);
-                    OpenOutcome::Shown {
-                        capture_excluded: true,
-                    }
-                } else {
-                    OpenOutcome::Refused(ErrorCode::Sec001)
+                let Some(display) = app.take_display_secret(serial) else {
+                    return Some(answered(OpenOutcome::Refused(ErrorCode::Sec001)));
+                };
+                note(format!("{display:?}"));
+                let mut form = SecretForm::display(kind, lang, app.clock.now_ms(), display);
+                form.set_step(step);
+                form.set_timeout_note(timeout_note);
+                show(app, serial, form);
+                OpenOutcome::Shown {
+                    capture_excluded: true,
                 }
             }
             CaptureDecision::Show { warning: true } => {
@@ -372,7 +388,8 @@ pub(crate) mod host {
     /// One message for the held window `serial`: `on_secret`'s window-free arms (a character, a
     /// key, the window's timer, the close box) with the same form calls, then the same
     /// `apply_form_action`. Another serial (a window that is not open): `Reply::Default`, nothing
-    /// changes, as `on_secret`. Any other message is not delivered headless (the test fails).
+    /// changes, as `on_secret`. Any other message is not delivered headless (the test fails), and
+    /// neither is a `Copy` or `Paste` the form asks for (the module doc).
     #[cfg(debug_assertions)]
     pub(crate) fn deliver(app: &mut App, serial: u64, msg: &Msg) -> Reply {
         let now = app.clock.now_ms();
@@ -425,6 +442,10 @@ pub(crate) mod host {
             None | Some(Step::Unsupported) => Reply::Default,
             Some(Step::Reply(reply)) => reply,
             Some(Step::Act(action)) => {
+                assert!(
+                    !matches!(action, FormAction::Copy | FormAction::Paste),
+                    "the headless secret host delivers no clipboard action"
+                );
                 note(format!("{action:?}"));
                 app.apply_form_action(serial, action);
                 Reply::Handled(0)
@@ -526,7 +547,7 @@ fn scan_debug(text: &str) {
 /// The secret sessions headless (gate test step; no window, no `#[ignore]`): every scenario of
 /// `ui::tour_secrets` gives the frozen `s4_secret/secret.txt` and `lock.txt` byte for byte, and
 /// no secret reaches a recorded line (`tour_secrets::scan`, at every line) or a noted `Debug`
-/// text (effects, form actions, the session, the form).
+/// text (effects, their `Cmd::SecretOpened` answers, form actions, the session, the form).
 #[cfg(debug_assertions)]
 #[test]
 fn secret_sessions_run_headless() {
@@ -559,6 +580,7 @@ fn secret_sessions_run_headless() {
         "SecretSession",
         "SecretForm",
         "DisplaySecret",
+        "SecretOpened",
     ] {
         assert!(
             seen.iter().any(|text| text.contains(needle)),
@@ -676,11 +698,16 @@ fn a_made_but_unexcluded_display_window_drops_its_secret() {
 /// The host's copies of the shell's code are the shell's code (gate test step): each named fn of
 /// `app.rs` still holds, in order and whitespace aside (comments dropped), the statements the host
 /// copies, and its hook comes first. A change to one of them fails here until the host's copy
-/// follows it.
+/// follows it. 2026-11-20 (S4 P8 review): the host's side too — each host fn of this file
+/// (`open_input`, `open_display`, `show`, `close`, `form_op`, `deliver`) holds the same shell
+/// statements in the same order, spelled with the documented renames (`self.show_secret(serial,
+/// window, form)` → `show(app, serial, form)`, `secret_seam::Op::` → `Op::`, `self.` → `app.`,
+/// `Self::` → `App::`); before, a change made only in the host (say, its `Refuse` arm no longer
+/// dropping the display secret) passed here.
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one table of the shell statements the host copies"
+    reason = "two tables of the shell statements the host copies"
 )]
 fn the_headless_secret_host_mirrors_the_shell() {
     /// The body of `fn name` in `source` (from `fn name(` to its closing brace), without `//`
@@ -715,7 +742,7 @@ fn the_headless_secret_host_mirrors_the_shell() {
     }
     /// A fn the check names is gone (fails the test).
     fn unreachable_fn(name: &str) -> usize {
-        assert!(name.is_empty(), "fn {name} not found in app.rs");
+        assert!(name.is_empty(), "fn {name} not found");
         0
     }
     fn squeeze(text: &str) -> String {
@@ -730,10 +757,20 @@ fn the_headless_secret_host_mirrors_the_shell() {
             from += at.unwrap_or(0) + part.len();
         }
     }
-    let source = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs"),
-    )
-    .unwrap();
+    /// A shell statement as the host spells it (the renames in the test's doc).
+    fn host_spelling(part: &str) -> String {
+        squeeze(part)
+            .replace(
+                "self.show_secret(serial,window,form)",
+                "show(app,serial,form)",
+            )
+            .replace("secret_seam::Op::", "Op::")
+            .replace("self.", "app.")
+            .replace("Self::", "App::")
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let source = std::fs::read_to_string(src.join("app.rs")).unwrap();
+    let host_source = std::fs::read_to_string(src.join("app/tests/s4_secret.rs")).unwrap();
     let checks: [(&str, &[&str]); 7] = [
         (
             "open_input_window",
@@ -841,6 +878,107 @@ fn the_headless_secret_host_mirrors_the_shell() {
         let text = body(&source, name);
         assert!(text.len() > 40, "fn {name} found");
         holds_in_order(name, &text, parts);
+    }
+    // 2026-11-20 (S4 P8 review): the statements both sides hold, in the shell's spelling: each
+    // is in the shell fn (`app.rs`) and, renamed, in the host fn (this file), in this order.
+    let shared: [(&str, &str, &[&str]); 6] = [
+        (
+            "open_input_window",
+            "open_input",
+            &[
+                "Self::log_capture(kind, excluded);",
+                "match capture_decision(kind, Ok(excluded)) { CaptureDecision::Show { warning } \
+                 => { let mut form = SecretForm::new(kind, lang, self.clock.now_ms(), \
+                 !warning); form.set_step(step); self.show_secret(serial, window, form); \
+                 OpenOutcome::Shown { capture_excluded: !warning, } } \
+                 CaptureDecision::Refuse(code) =>",
+                "OpenOutcome::Refused(code)",
+            ],
+        ),
+        (
+            "open_display_window",
+            "open_display",
+            &[
+                "capture_decision(kind, excluded)",
+                "CaptureDecision::Show { warning: false }",
+                "let Some(display) = self.take_display_secret(serial) else {",
+                "OpenOutcome::Refused(ErrorCode::Sec001)",
+                "let mut form = SecretForm::display(kind, lang, self.clock.now_ms(), display); \
+                 form.set_step(step); form.set_timeout_note(timeout_note); \
+                 self.show_secret(serial, window, form); OpenOutcome::Shown { \
+                 capture_excluded: true, }",
+                "CaptureDecision::Show { warning: true }",
+                "self.drop_display_secret(serial); OpenOutcome::Refused(ErrorCode::Sec001)",
+                "CaptureDecision::Refuse(code)",
+                "self.drop_display_secret(serial); OpenOutcome::Refused(code)",
+            ],
+        ),
+        (
+            "show_secret",
+            "show",
+            &[
+                "debug_assert!(self.secret.is_none(), \"a secret window is already open\");",
+                "secret_seam::log(secret_seam::Op::Show { kind: form.kind().id(), });",
+            ],
+        ),
+        (
+            "close_secret_window",
+            "close",
+            &[
+                "take_if(|",
+                ".serial == serial)",
+                ".form.wipe();",
+                "secret_seam::log(secret_seam::Op::Close { kind:",
+                ".form.kind().id(), left:",
+                ".form.test_held_units(), });",
+            ],
+        ),
+        (
+            "apply_form_op",
+            "form_op",
+            &[
+                "match op { SecretFormOp::Busy(busy) => form.set_busy(busy), \
+               SecretFormOp::Error(message) => form.set_error(message), \
+               SecretFormOp::Details(lines) => form.set_details(lines), \
+               SecretFormOp::Card(card) => form.set_card(card), SecretFormOp::Info(message) \
+               => form.set_info(message), SecretFormOp::FailPassword { now_ms } => \
+               form.fail_password(now_ms), SecretFormOp::ResetBackup { positions, message } \
+               => { form.reset_backup(positions, message); } }",
+            ],
+        ),
+        (
+            "on_secret",
+            "deliver",
+            &[
+                "let now = self.clock.now_ms();",
+                ".serial == serial)",
+                "Msg::Char(unit) =>",
+                "form.on_char(*unit, now)",
+                "Msg::KeyDown { vk, .. } => { let action = form.on_key( *vk, \
+                 secret_modifier(VK_CONTROL), secret_modifier(VK_SHIFT), \
+                 secret_modifier(VK_MENU), now, ); if matches!(action, FormAction::None) {",
+                "Reply::Default",
+                "Msg::Timer(SECRET_TIMER_ID) =>",
+                "form.on_tick(now)",
+                "Msg::Close => { if form.busy() {",
+                "Reply::Handled(0)",
+                "form.kind().is_display() && !form.kind().needs_hold() { form.wipe();",
+                "FormAction::Close",
+                "else { form.wipe();",
+                "FormAction::Cancel",
+                "self.apply_form_action(serial, action);",
+            ],
+        ),
+    ];
+    for (shell, host, parts) in shared {
+        let text = body(&source, shell);
+        assert!(text.len() > 40, "fn {shell} found");
+        holds_in_order(shell, &text, parts);
+        let text = body(&host_source, host);
+        assert!(text.len() > 40, "host fn {host} found");
+        let renamed: Vec<String> = parts.iter().map(|part| host_spelling(part)).collect();
+        let renamed: Vec<&str> = renamed.iter().map(String::as_str).collect();
+        holds_in_order(&format!("host::{host}"), &text, &renamed);
     }
     // The hooks are the fns' first statements (nothing of the shell runs before the host).
     for (name, hook) in [

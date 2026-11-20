@@ -225,6 +225,10 @@ impl App {
             // S4 P7a1: a secret window; an open is answered before `emit` returns.
             Effect::Secret(effect) => {
                 if let Some(answer) = self.apply_secret_effect(effect) {
+                    // 2026-11-20 (S4 P8 review): the recording secret host notes the answer's
+                    // `Debug` too (its scan for secrets); release builds have no such line.
+                    #[cfg(test)]
+                    crate::app::tests::s4_secret::host::saw_cmd(&answer);
                     self.on_cmd(answer);
                 }
             }

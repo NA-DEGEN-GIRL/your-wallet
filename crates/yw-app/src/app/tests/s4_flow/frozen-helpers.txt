@@ -615,6 +615,7 @@ yw-app/src/app_approval_flow_support.rs fn fail_open 1a69612a6c823361 mutable
 yw-app/src/app_approval_flow_support.rs impl App 6e67dfc1e54b92dd mutable
 yw-app/src/app_approval_flow_support.rs struct Fixture d7ff65971806330f mutable
 yw-app/src/app_approval_flow_support.rs impl Fixture a0562a84cc573b6a mutable
+yw-app/src/app_approval_flow_support.rs impl Fixture c47df6d36212b2e1 mutable
 yw-app/src/app_approval_flow_support.rs impl DropforFixture 0e42d120bf36b5a3 mutable
 yw-app/src/app_approval_flow_support.rs struct Outlet 947b36a31ad28718 mutable
 yw-app/src/app_approval_flow_support.rs impl Outlet eac19435d4f3f4ca mutable

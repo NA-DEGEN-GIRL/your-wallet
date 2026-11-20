@@ -192,7 +192,9 @@ pub(crate) struct SecretFacts {
     pub(crate) kind: &'static str,
     pub(crate) purpose: super::Purpose,
     pub(crate) topmost: Option<bool>,
-    /// Real Win32 state: the window is visible (not hidden or minimized).
+    /// Real Win32 state in the windowed run: the window is visible (not hidden or minimized).
+    /// Always `true` for a window the headless secret host made (2026-11-20, S4 P8 review: it
+    /// has no window to read; `app::tests::s4_secret::host::facts`).
     pub(crate) shown: bool,
     /// `SecretForm` facts (flags and counts).
     pub(crate) form: String,
