@@ -7,15 +7,18 @@
 //! (`Effect::OpenUrl` → `Cmd::Opened`, `Effect::OpenFolder` → `Cmd::FolderMissing`). While the
 //! executor applies effects at once the answer is handled before `emit` returns, so code after
 //! the emitting call sees the result; with an outbox (P10) it would not. The check reads the
-//! production sources of yw-app (comments, strings and `#[cfg(test)]` items blanked) and, for
-//! every call that emits one of them, takes what runs after that call inside its fn (see
-//! [`after_call`]: the rest of its block, then of each enclosing block, without the sibling
-//! arms of a `match` or the `else` of an `if`, the whole body of an enclosing loop, up to a
-//! `return`, `break` or `continue`). There:
+//! production sources of yw-app and yw-engine (comments, strings and `#[cfg(test)]` items
+//! blanked) and, for every call that emits one of them, takes what runs after that call inside
+//! its fn (see [`after_call`]: the rest of its block, then of each enclosing block, without the
+//! sibling arms of a `match` or the `else` of an `if`, the whole body of an enclosing loop, up
+//! to a `return`; after a `break` what follows its loop, after a `continue` its loop's body
+//! again and what follows). An emitting call is a call of an emitting fn or of a fn in which
+//! nothing runs after such a call (a tail emitter: `card_open_pin`, `sync_browser`, …), through
+//! `self.`, a closure's `app.`, `Self::` or `App::`; any other use of such a fn fails. There:
 //!
-//! - after an approval window's open (`show_next_approval` and the fns that only call it)
-//!   nothing may run: every caller with later steps hands them to the open
-//!   (`App::show_next_approval_then`, `AfterOpen`);
+//! - after an approval window's open nothing may run: every caller with later steps hands them
+//!   to the open (`App::show_next_approval_then`, `AfterOpen`), or is a line of
+//!   [`PENDING_P10`] that P10 decides;
 //! - after a secret window's open, nothing reads the session (`secret_purpose()`,
 //!   `secret_open()`, `secret_session`, `secret_form(..)`), directly or through a fn that does;
 //!   form operations travel with the session (`AfterShown::Forms`);
@@ -24,11 +27,19 @@
 //! - after a launch, nothing reads the launcher or writes the band (`self.info`), directly or
 //!   through a fn that does.
 //!
-//! "Through a fn that does" is one level: a fn whose own body names the token. The check finds
-//! every site it counts (it cannot pass on nothing, critique A-20) and checks its reader on
-//! made-up code first (it can fail).
+//! "Through a fn that does" is one level: a fn whose own body names the token (each kind pins
+//! the readers it found, `readers_floor`). A site whose opening path never reaches the code
+//! after it is a line of [`ENDS_ON_ITS_PATH`] with its reason. The check finds every site it
+//! counts (it cannot pass on nothing, critique A-20) and checks its reader on made-up code
+//! first (it can fail).
+//!
+//! 2026-11-20 (P9 review): before, the check read yw-app only, followed only fns whose whole
+//! body was one emitting call, ended at `break`/`continue` and counted `self.` calls only, so a
+//! caller of a fn that opens as its last step (`card_begin` after `card_open_pin`) and every
+//! entry-level step after an open (`refresh` after `sync_browser`, the grant revocations, the
+//! Bitcoin handlers, …) went unchecked. Those are now [`PENDING_P10`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Test code among yw-app's `src` files (each is a `#[cfg(test)]` module, or a file of one):
@@ -44,38 +55,99 @@ const TEST_FILES: [&str; 8] = [
     "ui/tour.rs",
 ];
 
-/// Whether `rel` (a `/` path under `src`) is test code.
-fn is_test_file(rel: &str) -> bool {
+/// The same for yw-engine's `src` (its `#[cfg(test)]` module files and `testkit`).
+const ENGINE_TEST_FILES: [&str; 3] = ["explain/tests.rs", "testkit.rs", "walletconnect/tests.rs"];
+
+/// Whether `rel` (a `/` path under a crate's `src`) is test code.
+fn is_test_file(engine: bool, rel: &str) -> bool {
+    if engine {
+        return ENGINE_TEST_FILES.contains(&rel) || rel.ends_with("_tests.rs");
+    }
     TEST_FILES.contains(&rel)
         || rel.starts_with("app/tests/")
         || rel.starts_with("ui/tour")
         || rel.ends_with("_tests.rs")
 }
 
-/// The production sources of yw-app: `(path under src, code)`, code as [`code_only`] leaves it.
-fn production_code() -> Vec<(String, String)> {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+/// One scanned source: its `crate/src/path`, its code as [`code_only`] and
+/// [`without_test_items`] leave it, and its blocks.
+struct Src {
+    file: String,
+    code: String,
+    blocks: Vec<Block>,
+}
+
+impl Src {
+    fn new(file: String, code: String) -> Self {
+        let blocks = blocks_of(code.as_bytes());
+        Self { file, code, blocks }
+    }
+}
+
+/// One `{ … }` block: its brace offsets and the block it is in (an index).
+struct Block {
+    open: usize,
+    close: usize,
+    parent: Option<usize>,
+}
+
+/// Every block of `code`, by opening offset (an unclosed one ends at the end).
+fn blocks_of(code: &[u8]) -> Vec<Block> {
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    for (at, &byte) in code.iter().enumerate() {
+        match byte {
+            b'{' => {
+                blocks.push(Block {
+                    open: at,
+                    close: code.len().saturating_sub(1),
+                    parent: stack.last().copied(),
+                });
+                stack.push(blocks.len() - 1);
+            }
+            b'}' => {
+                if let Some(index) = stack.pop() {
+                    blocks[index].close = at;
+                }
+            }
+            _ => {}
+        }
+    }
+    blocks
+}
+
+/// The production sources of yw-app and yw-engine. 2026-11-20 (P9 review, critique A-20):
+/// yw-engine's `src` too, so an emitter or reader that moves there (S4c/S4d) stays in the
+/// check.
+fn production_code() -> Vec<Src> {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut found = Vec::new();
-    let mut stack = vec![src.clone()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                let rel = path
-                    .strip_prefix(&src)
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                if !is_test_file(&rel) {
-                    let text = std::fs::read_to_string(&path).unwrap();
-                    found.push((rel, without_test_items(&code_only(&text))));
+    for krate in ["yw-app", "yw-engine"] {
+        let src = crates.join(krate).join("src");
+        let mut stack = vec![src.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let rel = path
+                        .strip_prefix(&src)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    if !is_test_file(krate == "yw-engine", &rel) {
+                        let text = std::fs::read_to_string(&path).unwrap();
+                        found.push(Src::new(
+                            format!("{krate}/src/{rel}"),
+                            without_test_items(&code_only(&text)),
+                        ));
+                    }
                 }
             }
         }
     }
-    found.sort();
+    found.sort_by(|a, b| a.file.cmp(&b.file));
     found
 }
 
@@ -221,21 +293,22 @@ fn without_test_items(code: &str) -> String {
 }
 
 /// The blocks (`{`, `}` offsets) that hold offset `at`, innermost first.
-fn enclosing(code: &[u8], at: usize) -> Vec<(usize, usize)> {
-    let mut open = Vec::new();
-    for (index, &byte) in code.iter().enumerate().take(at) {
-        match byte {
-            b'{' => open.push(index),
-            b'}' => {
-                open.pop();
-            }
-            _ => {}
+fn enclosing(blocks: &[Block], at: usize) -> Vec<(usize, usize)> {
+    let mut current = blocks
+        .partition_point(|block| block.open < at)
+        .checked_sub(1);
+    while let Some(index) = current {
+        if blocks[index].close >= at {
+            break;
         }
+        current = blocks[index].parent;
     }
-    open.iter()
-        .rev()
-        .map(|&brace| (brace, close_of(code, brace)))
-        .collect()
+    let mut out = Vec::new();
+    while let Some(index) = current {
+        out.push((blocks[index].open, blocks[index].close));
+        current = blocks[index].parent;
+    }
+    out
 }
 
 /// The text before the block at `open` back to the previous `;`, `{` or `}`: its `fn`, `if`,
@@ -284,35 +357,61 @@ fn in_arm(code: &[u8], open: usize, thing: usize) -> bool {
 /// of its block; then, block by block outwards, the rest of the enclosing block after the inner
 /// one, skipping the `else` branches that follow an `if` block and the sibling arms of a
 /// `match`; the whole body of an enclosing loop (it may run again); up to the fn's own block.
-/// A `return`, `break` or `continue` right after (at any level) ends it, named.
-pub(crate) fn after_call(code: &str, start: usize, end: usize) -> String {
+/// A `return` right after (at any level) ends it, named. A `break` right after leaves the
+/// blocks up to the innermost loop and goes on after that loop; a `continue` does the same but
+/// first takes that loop's whole body (it runs again). Both are named. 2026-11-20 (P9 review):
+/// before, `break` and `continue` ended it like `return`, so code after the loop was missed.
+/// A labelled `break`/`continue` is refused by [`no_result_read_after_its_emit`] (none today).
+fn after_call(code: &str, blocks: &[Block], start: usize, end: usize) -> String {
     let bytes = code.as_bytes();
     let mut out = String::new();
     let mut pos = end;
     let mut thing = start;
-    for (open, close) in enclosing(bytes, start) {
-        let seg = if in_arm(bytes, open, thing) {
-            ""
-        } else {
-            &code[pos.min(close)..close]
-        };
-        let lead = seg.trim_start().trim_start_matches([';', ',']).trim_start();
-        if let Some(word) = ["return", "break", "continue"]
-            .into_iter()
-            .find(|word| starts_with_word(lead, word))
-        {
-            out.push_str(word);
-            return out;
-        }
-        out.push_str(seg);
+    // Leaving blocks up to the innermost loop after a `break` (`false`) or `continue` (`true`).
+    let mut escaping: Option<bool> = None;
+    for (open, close) in enclosing(blocks, start) {
         let block_head = head(code, open);
-        if has_word(block_head, "fn") {
+        let is_fn = has_word(block_head, "fn");
+        let is_loop = ["loop", "while", "for"]
+            .iter()
+            .any(|word| has_word(block_head, word));
+        if escaping.is_none() {
+            let seg = if in_arm(bytes, open, thing) {
+                ""
+            } else {
+                &code[pos.min(close)..close]
+            };
+            let lead = seg.trim_start().trim_start_matches([';', ',']).trim_start();
+            if starts_with_word(lead, "return") {
+                out.push_str("return");
+                return out;
+            }
+            if let Some(word) = ["break", "continue"]
+                .into_iter()
+                .find(|word| starts_with_word(lead, word))
+            {
+                out.push_str(word);
+                out.push(' ');
+                escaping = Some(word == "continue");
+            } else {
+                out.push_str(seg);
+            }
+        }
+        if is_fn {
             return out;
         }
-        if ["loop", "while", "for"]
-            .iter()
-            .any(|word| has_word(block_head, word))
-        {
+        if let Some(again) = escaping {
+            if !is_loop {
+                // This block ends here; nothing more of it runs.
+                thing = open;
+                continue;
+            }
+            escaping = None;
+            if again {
+                out.push_str(" <loop> ");
+                out.push_str(&code[open + 1..close]);
+            }
+        } else if is_loop {
             out.push_str(" <loop> ");
             out.push_str(&code[open + 1..close]);
         }
@@ -329,25 +428,24 @@ pub(crate) fn after_call(code: &str, start: usize, end: usize) -> String {
 }
 
 /// The name of the fn whose body holds offset `at`.
-fn fn_at(code: &str, at: usize) -> Option<String> {
-    enclosing(code.as_bytes(), at)
-        .into_iter()
-        .find_map(|(open, _)| {
-            let block_head = head(code, open);
-            let (_, after) = block_head.rsplit_once("fn ")?;
-            has_word(block_head, "fn").then(|| {
-                after
-                    .trim_start()
-                    .chars()
-                    .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
-                    .collect()
-            })
+fn fn_at(code: &str, blocks: &[Block], at: usize) -> Option<String> {
+    enclosing(blocks, at).into_iter().find_map(|(open, _)| {
+        let block_head = head(code, open);
+        let (_, after) = block_head.rsplit_once("fn ")?;
+        has_word(block_head, "fn").then(|| {
+            after
+                .trim_start()
+                .chars()
+                .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+                .collect()
         })
+    })
 }
 
-/// One call site: the file, the fn it is in, the called name, and its offsets.
+/// One call site: the file (an index into the scanned sources), the fn it is in, the called
+/// name, and its offsets.
 struct Site {
-    file: String,
+    src: usize,
     func: String,
     name: String,
     start: usize,
@@ -372,26 +470,43 @@ fn paren_end(code: &[u8], from: usize) -> usize {
     code.len()
 }
 
-/// Every `self.<name>(` call of one of `names` in `code`.
-fn calls(file: &str, code: &str, names: &BTreeSet<String>) -> Vec<Site> {
+/// Whether `before` (code up to a `.` or `::`) ends with the word `word`.
+fn ends_with_word(before: &str, word: &str) -> bool {
+    before.ends_with(word)
+        && before
+            .len()
+            .checked_sub(word.len() + 1)
+            .is_none_or(|i| !is_ident(before.as_bytes()[i]))
+}
+
+/// The receivers of a counted call: `self.<name>(`, a closure's or `Forward`'s
+/// `app.<name>(`, `Self::<name>(`, `App::<name>(`.
+const DOT_RECEIVERS: [&str; 2] = ["self", "app"];
+const PATH_RECEIVERS: [&str; 2] = ["Self", "App"];
+
+/// Every counted call ([`DOT_RECEIVERS`], [`PATH_RECEIVERS`]) of one of `names` in `file`.
+/// 2026-11-20 (P9 review): before, only `self.<name>(`; any other way to reach one of `names`
+/// (another receiver, a fn pointer) is listed by [`other_uses`] and refused.
+fn calls(src: usize, file: &Src, names: &BTreeSet<String>) -> Vec<Site> {
+    let code = &file.code;
     let bytes = code.as_bytes();
     let mut sites = Vec::new();
     for name in names {
-        let pattern = format!(".{name}(");
-        for (at, _) in code.match_indices(&pattern) {
-            let before = code[..at].trim_end();
-            let receiver_ok = before.ends_with("self")
-                && before
-                    .len()
-                    .checked_sub(5)
-                    .is_none_or(|i| !is_ident(before.as_bytes()[i]));
-            if receiver_ok {
-                let start = before.len() - 4;
+        for (sep, receivers) in [(".", &DOT_RECEIVERS[..]), ("::", &PATH_RECEIVERS[..])] {
+            let pattern = format!("{sep}{name}(");
+            for (at, _) in code.match_indices(&pattern) {
+                if at > 0 && sep == "." && bytes[at - 1] == b':' {
+                    continue;
+                }
+                let before = code[..at].trim_end();
+                let Some(receiver) = receivers.iter().find(|r| ends_with_word(before, r)) else {
+                    continue;
+                };
                 sites.push(Site {
-                    file: file.to_owned(),
-                    func: fn_at(code, at).unwrap_or_default(),
+                    src,
+                    func: fn_at(code, &file.blocks, at).unwrap_or_default(),
                     name: name.clone(),
-                    start,
+                    start: before.len() - receiver.len(),
                     end: paren_end(bytes, at + pattern.len() - 1),
                 });
             }
@@ -400,10 +515,65 @@ fn calls(file: &str, code: &str, names: &BTreeSet<String>) -> Vec<Site> {
     sites
 }
 
-/// Every `self.emit(` call whose argument holds `literal`: `(file, fn, call start, call end)`.
-fn emits_of(files: &[(String, String)], literal: &str) -> Vec<Site> {
+/// Method calls named like an emitter that are another type's method, not `App`'s: `(file,
+/// name, receiver)`. `SecretField::copy` (a secret field's own copy, no effect).
+const NOT_APP: [(&str, &str, &str); 1] = [("yw-app/src/ui/secret.rs", "copy", "field")];
+
+/// The uses of one of `names` that [`calls`] does not count: `.<name>(` on another receiver
+/// (unless [`NOT_APP`]), `Self::<name>` or `App::<name>` without a call (a fn pointer).
+/// `.<name>` without a call is a field, and `<Type>::<name>` another type's fn: not uses.
+fn other_uses(files: &[Src], names: &BTreeSet<String>) -> Vec<String> {
+    let mut found = Vec::new();
+    for Src { file, code, blocks } in files {
+        let bytes = code.as_bytes();
+        for name in names {
+            for sep in [".", "::"] {
+                let pattern = format!("{sep}{name}");
+                for (at, _) in code.match_indices(&pattern) {
+                    let after = at + pattern.len();
+                    if bytes.get(after).is_some_and(|&b| is_ident(b))
+                        || (sep == "." && at > 0 && bytes[at - 1] == b':')
+                    {
+                        continue;
+                    }
+                    let before = code[..at].trim_end();
+                    let called = bytes.get(after) == Some(&b'(');
+                    let receiver: String = before
+                        .chars()
+                        .rev()
+                        .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    let refused = if sep == "." {
+                        called
+                            && !DOT_RECEIVERS.contains(&receiver.as_str())
+                            && !NOT_APP.contains(&(file.as_str(), name.as_str(), &receiver))
+                    } else {
+                        !called && PATH_RECEIVERS.contains(&receiver.as_str())
+                    };
+                    if refused {
+                        let line_start = code[..at].rfind('\n').map_or(0, |n| n + 1);
+                        let line_end = code[at..].find('\n').map_or(code.len(), |n| at + n);
+                        found.push(format!(
+                            "{file}: fn {}: {}",
+                            fn_at(code, blocks, at).unwrap_or_default(),
+                            code[line_start..line_end].trim()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Every `self.emit(` call whose argument holds `literal`.
+fn emits_of(files: &[Src], literal: &str) -> Vec<Site> {
     let mut sites = Vec::new();
-    for (file, code) in files {
+    for (src, file) in files.iter().enumerate() {
+        let code = &file.code;
         for (at, _) in code.match_indices(literal) {
             let Some(emit) = code[..at].rfind("self.emit(") else {
                 continue;
@@ -411,8 +581,8 @@ fn emits_of(files: &[(String, String)], literal: &str) -> Vec<Site> {
             let end = paren_end(code.as_bytes(), emit + "self.emit".len());
             if end > at {
                 sites.push(Site {
-                    file: file.clone(),
-                    func: fn_at(code, at).unwrap_or_default(),
+                    src,
+                    func: fn_at(code, &file.blocks, at).unwrap_or_default(),
                     name: literal.to_owned(),
                     start: emit,
                     end,
@@ -423,50 +593,83 @@ fn emits_of(files: &[(String, String)], literal: &str) -> Vec<Site> {
     sites
 }
 
-/// The fns (by name) whose body is one call of a fn in `set`: the wrappers, added to `set`
-/// until none is new (`show_next_approval`, `open_input`, `copy_text`, …).
-fn add_wrappers(files: &[(String, String)], set: &mut BTreeSet<String>) {
-    loop {
-        let mut new = Vec::new();
-        for (file, code) in files {
-            for site in calls(file, code, set) {
-                if set.contains(&site.func) {
-                    continue;
-                }
-                let Some((open, close)) = enclosing(code.as_bytes(), site.start)
-                    .into_iter()
-                    .find(|&(open, _)| has_word(head(code, open), "fn"))
-                else {
-                    continue;
-                };
-                let body: String = code[open + 1..close]
-                    .chars()
-                    .filter(|c| !c.is_whitespace())
-                    .collect();
-                let call: String = code[site.start..site.end]
-                    .chars()
-                    .filter(|c| !c.is_whitespace())
-                    .collect();
-                if body == call || body == format!("{call};") {
-                    new.push(site.func);
+/// What is left of `after` (an [`after_call`] text) once separators and closing brackets are
+/// dropped.
+fn rest_of(after: &str) -> String {
+    after
+        .chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, ';' | ',' | '}' | ')'))
+        .collect()
+}
+
+/// Whether `rest` (a [`rest_of`] text) runs nothing: empty, or (after an optional `return`) a
+/// plain value — names, paths, literals and constructors (a capitalised name before each `(`:
+/// `None`, `Ok(()`, `Reply::Handled(0`, `Some(reply`), no method, macro, assignment or
+/// reference.
+fn runs_nothing(rest: &str) -> bool {
+    let value = rest.strip_prefix("return").unwrap_or(rest);
+    let operators = ['.', '!', '=', '&', '[', '?', '|', '+', '-', '*', '<', '>'];
+    if value.contains(operators) || has_word(value, "self") {
+        return false;
+    }
+    value.match_indices('(').all(|(at, _)| {
+        let name: String = value[..at]
+            .chars()
+            .rev()
+            .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+            .collect();
+        name.chars().last().is_none_or(|c| c.is_ascii_uppercase())
+    })
+}
+
+/// What runs after `site` inside its fn ([`after_call`]).
+fn after_site(files: &[Src], site: &Site) -> String {
+    let file = &files[site.src];
+    after_call(&file.code, &file.blocks, site.start, site.end)
+}
+
+/// Whether nothing of `site`'s fn runs after it (its tail call).
+fn is_tail(files: &[Src], site: &Site) -> bool {
+    runs_nothing(&rest_of(&after_site(files, site)))
+}
+
+/// The effect executor: it applies every effect and feeds each answer to `on_cmd`, so it would
+/// make every emitting fn an emitter of everything. Its own order is P10's (plan §3.4).
+const EXECUTOR: [&str; 1] = ["emit"];
+
+/// The tail emitters, added to `set` until none is new: the fns in which nothing runs after one
+/// of their calls of a fn in `set` (`show_next_approval`, `open_input`, `card_open_pin`,
+/// `sync_browser`, …), except the executor ([`EXECUTOR`]). Their callers are sites in turn.
+/// 2026-11-20 (P9 review): before, only fns whose whole body was one such call counted, so a
+/// caller of a fn that opens a window as its last step was not checked (`card_begin` after
+/// `card_open_pin`).
+fn add_wrappers(files: &[Src], set: &mut BTreeSet<String>) {
+    let mut todo = set.clone();
+    while !todo.is_empty() {
+        let mut new = BTreeSet::new();
+        for (src, file) in files.iter().enumerate() {
+            for site in calls(src, file, &todo) {
+                if !site.func.is_empty()
+                    && !set.contains(&site.func)
+                    && !EXECUTOR.contains(&site.func.as_str())
+                    && is_tail(files, &site)
+                {
+                    new.insert(site.func);
                 }
             }
         }
-        let before = set.len();
-        set.extend(new);
-        if set.len() == before {
-            return;
-        }
+        set.extend(new.iter().cloned());
+        todo = new;
     }
 }
 
 /// The fns whose own body names one of `tokens` (one level of "reads through a fn").
-fn readers(files: &[(String, String)], tokens: &[&str]) -> BTreeSet<String> {
+fn readers(files: &[Src], tokens: &[&str]) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
-    for (_, code) in files {
+    for file in files {
         for token in tokens {
-            for (at, _) in code.match_indices(token) {
-                if let Some(func) = fn_at(code, at) {
+            for (at, _) in file.code.match_indices(token) {
+                if let Some(func) = fn_at(&file.code, &file.blocks, at) {
                     found.insert(func);
                 }
             }
@@ -475,7 +678,7 @@ fn readers(files: &[(String, String)], tokens: &[&str]) -> BTreeSet<String> {
     found
 }
 
-/// The tokens and one-level reader calls in `after`.
+/// The tokens and one-level reader calls (`.<reader>(`, `::<reader>(`) in `after`.
 fn reads_in(after: &str, tokens: &[&str], through: &BTreeSet<String>) -> Vec<String> {
     let mut hits: Vec<String> = tokens
         .iter()
@@ -483,9 +686,10 @@ fn reads_in(after: &str, tokens: &[&str], through: &BTreeSet<String>) -> Vec<Str
         .map(|token| (*token).to_owned())
         .collect();
     for func in through {
-        let call = format!(".{func}(");
-        if after.contains(&call) {
-            hits.push(call);
+        for call in [format!(".{func}("), format!("::{func}(")] {
+            if after.contains(&call) {
+                hits.push(call);
+            }
         }
     }
     hits
@@ -497,7 +701,7 @@ fn after_call_reads_what_runs_after() {
         let code = code_only(code);
         let start = code.find(call).unwrap();
         let end = paren_end(code.as_bytes(), start);
-        after_call(&code, start, end)
+        after_call(&code, &blocks_of(code.as_bytes()), start, end)
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect()
@@ -525,10 +729,72 @@ fn after_call_reads_what_runs_after() {
         after(code, "self.show_next_approval("),
         ";self.card_site_check();"
     );
+    // 2026-11-20 (P9 review): a `break` goes on after its loop; a `continue` runs the loop's
+    // body again, then what follows the loop.
+    let code = "fn f(&mut self) { for x in y { self.open(); break; } self.secret_purpose(); }";
+    assert_eq!(after(code, "self.open("), "breakself.secret_purpose();");
+    let code = "fn f(&mut self) { for x in y { self.a(); if c { self.open(); continue; } \
+                self.b(); } self.z(); }";
+    let seen = after(code, "self.open(");
+    assert!(seen.starts_with("continue<loop>self.a();"), "{seen}");
+    assert!(
+        seen.contains("self.b();") && seen.ends_with("self.z();"),
+        "{seen}"
+    );
+    let code = "fn f(&mut self) { loop { match a { A => { self.open(); break; } B => {} } } \
+                self.z(); }";
+    assert_eq!(after(code, "self.open("), "breakself.z();");
+    // What counts as running nothing after a call.
+    for rest in [
+        "",
+        "return",
+        "None",
+        "returnNone",
+        "Ok((",
+        "Reply::Handled(0",
+        "Some(reply",
+    ] {
+        assert!(runs_nothing(rest), "{rest}");
+    }
+    for rest in ["self.refresh(", "logging::info(&[", "x=1", "self.b", "f(x"] {
+        assert!(!runs_nothing(rest), "{rest}");
+    }
+    // Every receiver is seen: `Self::`/`App::` and a closure's `app.` are calls, another
+    // receiver or a fn pointer is refused, a field or another type's fn is no use.
+    let file = Src::new(
+        "made-up".to_owned(),
+        code_only(
+            "fn f(&mut self) { Self::open(self); App::open(self); run(|app| app.open()); \
+             other.open(); let g = Self::open; self.open = 1; Other::open(); }",
+        ),
+    );
+    let names: BTreeSet<String> = ["open".to_owned()].into();
+    assert_eq!(calls(0, &file, &names).len(), 3);
+    let refused = other_uses(std::slice::from_ref(&file), &names);
+    assert_eq!(refused.len(), 2, "{refused:?}");
+    // A fn whose last step is an open is an opener: a read after it in its caller is seen.
+    let files = [Src::new(
+        "made-up".to_owned(),
+        code_only(
+            "fn open_input_with(&mut self) {} \
+             fn card_open_pin(&mut self) { let x = 1; if x { self.open_input_with(); } } \
+             fn card_begin(&mut self) { self.card_open_pin(); let _ = self.secret_purpose(); }",
+        ),
+    )];
+    let mut openers: BTreeSet<String> = ["open_input_with".to_owned()].into();
+    add_wrappers(&files, &mut openers);
+    assert!(openers.contains("card_open_pin") && !openers.contains("card_begin"));
+    let site = calls(0, &files[0], &openers)
+        .into_iter()
+        .find(|site| site.func == "card_begin")
+        .unwrap();
+    assert!(after_site(&files, &site).contains("self.secret_purpose("));
 }
 
 /// What one kind of answered effect checks: its sites and what may not follow them.
 struct Kind {
+    /// Its name in [`PENDING_P10`] and [`ENDS_ON_ITS_PATH`].
+    key: &'static str,
     what: &'static str,
     /// The fns that emit it (by name) and the effect literals emitted elsewhere.
     emitters: &'static [&'static str],
@@ -537,20 +803,30 @@ struct Kind {
     literal_in_emitters: bool,
     /// The tokens no code after a site may name (`None`: nothing may run after it at all).
     tokens: Option<&'static [&'static str]>,
-    /// At least this many sites (A-20; the counts at P9, 2026-11-20).
+    /// At least this many sites (A-20; the counts at P9, 2026-11-20, raised by the P9 review
+    /// the same day when the tail emitters and the second crate came in: 18 → 294, 69 → 126,
+    /// 25 → 50, 15 → 27).
     min_sites: usize,
+    /// The one-level readers (fns whose own body names a token) that must still be found
+    /// (2026-11-20, P9 review): one renamed or moved out of the scanned code fails here
+    /// instead of dropping out of the check. New readers need no entry. Not listed: the
+    /// `Debug` impls named `fmt` in yw-engine that print a `self.info` of their own.
+    readers_floor: &'static [&'static str],
 }
 
 const KINDS: [Kind; 4] = [
     Kind {
+        key: "approval",
         what: "approval window open",
         emitters: &["open_approval", "show_next_approval_with"],
         literals: &["ApprovalEffect::Open {"],
         literal_in_emitters: true,
         tokens: None,
-        min_sites: 18,
+        min_sites: 294,
+        readers_floor: &[],
     },
     Kind {
+        key: "secret",
         what: "secret window open",
         emitters: &["open_input_with", "open_display_with"],
         literals: &["SecretEffect::OpenInput {", "SecretEffect::OpenDisplay {"],
@@ -561,40 +837,288 @@ const KINDS: [Kind; 4] = [
             "secret_session",
             "secret_form(",
         ]),
-        min_sites: 69,
+        min_sites: 126,
+        readers_floor: &[
+            "apply_secret_effect",
+            "begin_secret",
+            "card_counters",
+            "card_site_check",
+            "card_tick",
+            "close_secret",
+            "enter_target",
+            "escape_target",
+            "first_run_pending",
+            "on_imported_key_busy",
+            "on_key_imported",
+            "on_secret_opened",
+            "on_yk_connect_verified",
+            "on_yk_counters",
+            "on_yk_pin_changed",
+            "on_yk_pins_set",
+            "on_yk_protected",
+            "password_failure",
+            "recovery_failure",
+            "secret_form",
+            "secret_open",
+            "secret_purpose",
+            "shortcut_target",
+            "tab_shortcut_target",
+            "take_display_secret",
+            "with_clock",
+            "yk_connect_pin_submit",
+            "yk_pin_job",
+            "yk_show_counters",
+        ],
     },
     Kind {
+        key: "copy",
         what: "copy",
         emitters: &["copy"],
         literals: &["Effect::CopyText {"],
         literal_in_emitters: true,
         tokens: Some(&["self.copied", "self.info"]),
-        min_sites: 25,
+        min_sites: 50,
+        readers_floor: &[
+            "apply_form_action",
+            "begin_generate",
+            "begin_rpc_import",
+            "card_notice_clear",
+            "card_notice_set",
+            "confirm_yes",
+            "copied_tick",
+            "copy_done",
+            "copy_line",
+            "delete_rpc_json",
+            "discard_first_run",
+            "due",
+            "enter_screen",
+            "explorer_reset",
+            "explorer_save_edit",
+            "finish_rpc_import",
+            "generate",
+            "generate_and_report",
+            "items",
+            "layout_and_paint",
+            "on_command",
+            "on_core",
+            "on_folder_missing",
+            "on_key_imported",
+            "on_key_result",
+            "on_opened",
+            "on_sites",
+            "on_status",
+            "on_wallet_reset",
+            "on_yk",
+            "on_yk_outcome",
+            "on_yubikey_enrolled",
+            "open_chain_form",
+            "open_explorer",
+            "prune_dormant",
+            "refuse_receive",
+            "request_delete_chain",
+            "save_autolock",
+            "save_mnemonic_label",
+            "save_rename",
+            "save_settings",
+            "save_template_credentials",
+            "set_info",
+            "sol_save_fees",
+            "start_repin",
+            "tick",
+            "toggle_evm_token_hidden",
+            "toggle_sol_token_hidden",
+            "yk_note",
+            "yk_save_card_name",
+        ],
     },
     Kind {
+        key: "launch",
         what: "launch",
         emitters: &["open_explorer"],
         literals: &["Effect::OpenUrl {", "Effect::OpenFolder("],
         literal_in_emitters: false,
         tokens: Some(&["launcher", "self.info"]),
-        min_sites: 15,
+        min_sites: 27,
+        readers_floor: &[
+            "apply_form_action",
+            "begin_generate",
+            "begin_rpc_import",
+            "card_notice_clear",
+            "card_notice_set",
+            "confirm_yes",
+            "copy_done",
+            "copy_explorer_tx",
+            "delete_rpc_json",
+            "discard_first_run",
+            "emit",
+            "enter_screen",
+            "explorer_reset",
+            "explorer_save_edit",
+            "finish_rpc_import",
+            "generate",
+            "generate_and_report",
+            "layout_and_paint",
+            "on_folder_missing",
+            "on_key_imported",
+            "on_key_result",
+            "on_opened",
+            "on_sites",
+            "on_status",
+            "on_wallet_reset",
+            "on_yk",
+            "on_yk_outcome",
+            "on_yubikey_enrolled",
+            "open_chain_form",
+            "open_folder",
+            "prune_dormant",
+            "refuse_receive",
+            "request_delete_chain",
+            "save_autolock",
+            "save_mnemonic_label",
+            "save_rename",
+            "save_settings",
+            "save_template_credentials",
+            "set_info",
+            "sol_save_fees",
+            "start_repin",
+            "toggle_evm_token_hidden",
+            "toggle_sol_token_hidden",
+            "yk_note",
+            "yk_save_card_name",
+        ],
     },
 ];
 
+/// The sites where code runs after an open in the same entry and that P10 (the outbox flip,
+/// plan §4.6 rule 2) decides (2026-11-20, P9 review), one per line: `kind file fn called
+/// sites` (the file under `yw-app/src`). Each is the first fn up from an opener in which something runs after it, so
+/// one line covers that fn's callers too. Under the inline executor the open is answered before
+/// the call returns, so the code after it sees the answer as it always did (byte-equal; the
+/// census, `s4_flow`, `s4_secret` and `tour_forms` pin it). P10 converts or orders each one and
+/// removes its line; a site that is not here fails, and so does a line no longer found or a
+/// count that changed. spec/15 §11.4 S4 row (P9 review note) names them.
+const PENDING_P10: [&str; 63] = [
+    // The next step of the same entry: the next event or timer step, the next mapped step of
+    // the same window message, the rest of the press or answer handler.
+    "approval app.rs drain_events evm_rpc_event 1",
+    "approval app.rs drain_events on_dapp_event 1",
+    "approval app.rs drain_events on_key_result 1",
+    "approval app.rs lock browser_lock_begin 1",
+    "approval app.rs on_cmd on_approval_opened 1",
+    "approval app.rs on_cmd on_press 1",
+    "approval app.rs on_command on_cmd 2",
+    "approval app.rs on_key_result btc_after_meta 1",
+    "approval app.rs tick btc_tick 1",
+    "approval app_approval.rs on_approval_input approval_event 1",
+    "approval app_approval.rs run_step run_step 1",
+    "approval app_approval.rs run_steps run_step 1",
+    "approval app_evm.rs evm_tick tick_approval 1",
+    // The repaint: `refresh` syncs the dApp view (which may show the next request) before its
+    // `Effect::Render`; every caller of `refresh` goes on after it.
+    "approval app.rs refresh sync_browser 1",
+    // A revoked grant or a removed account or chain ends its waiting requests, then the grants
+    // are written, logged and repainted.
+    "approval app.rs confirm_yes delete_chain 1",
+    "approval app.rs hide_selected account_removed_from_sites 3",
+    "approval app_browser.rs disconnect_site revoke_waiting 1",
+    "approval app_browser.rs evm_key_removed_from_sites account_removed_from_sites 1",
+    "approval app_browser.rs network_url_changed btc_url_changed 1",
+    "approval app_browser.rs persist_grant_change revoke_waiting 3",
+    "approval app_chain_sites.rs chain_grants_removed revoke_waiting 1",
+    "approval app_chain_sites.rs disconnect_chain_site revoke_waiting 1",
+    // A prepare that fails ends its request and shows the next one; the caller goes on with
+    // the view, the AI draft or the signing.
+    "approval app_approval.rs consume_and_sign btc_consumed 1",
+    "approval app_approval.rs on_approval_opened rebuild_view 1",
+    "approval app_approval.rs on_prepared show_ready_draft 1",
+    "approval app_approval.rs on_typed_facts show_ready_draft 1",
+    "approval app_approval.rs prepare_site show_ready_draft 1",
+    "approval app_approval.rs start_prepare prepare_btc 1",
+    "approval app_approval.rs start_prepare prepare_hypercore 1",
+    "approval app_approval.rs start_prepare prepare_site 1",
+    "approval app_approval.rs start_prepare prepare_sol 1",
+    "approval app_approval.rs start_prepare prepare_transaction 1",
+    "approval app_approval.rs start_prepare prepare_zec 1",
+    // A Bitcoin screen action (or a journal or Zcash event) queues a request; the handler then
+    // fills a field or repaints.
+    "approval app_btc.rs btc_call_and_repaint btc_call 1",
+    "approval app_btc.rs btc_form btc_call 1",
+    "approval app_btc.rs btc_journal_changed btc_call 1",
+    "approval app_btc_commands.rs btc_apply_field btc_call 1",
+    "approval app_btc_commands.rs btc_set_unit btc_call 1",
+    "approval app_btc_commands.rs btc_toggle_max btc_call 1",
+    "approval app_btc_commands.rs on_btc btc_call 6",
+    "approval app_btc_commands.rs on_btc btc_continue 1",
+    "approval app_btc_commands.rs on_btc btc_discover 2",
+    "approval app_btc_commands.rs on_btc btc_mismatch_keep_meta 1",
+    "approval app_btc_commands.rs on_btc btc_mismatch_use_settings 1",
+    "approval app_btc_commands.rs on_btc btc_new_receive_address 1",
+    "approval app_btc_commands.rs on_btc btc_open_bump 1",
+    "approval app_btc_commands.rs on_btc btc_open_receive 1",
+    "approval app_btc_commands.rs on_btc btc_open_send 1",
+    "approval app_btc_commands.rs on_btc btc_refresh 1",
+    "approval app_btc_commands.rs on_btc btc_reset_tip 1",
+    "approval app_btc_commands.rs on_btc btc_review 1",
+    "approval app_btc_commands.rs on_btc btc_review_bump 1",
+    "approval app_btc_commands.rs on_btc btc_select_tab 1",
+    "approval app_btc_commands.rs on_btc btc_set_indexer 3",
+    "approval app_btc_commands.rs on_btc btc_settings_network 2",
+    "approval app_btc_commands.rs on_btc btc_toggle_enabled 1",
+    "approval app_btc_commands.rs on_btc on_btc_esplora 1",
+    "approval app_btc_commands.rs on_btc on_btc_indexed 1",
+    "approval app_btc_commands.rs on_btc_esplora btc_default_esplora_url 1",
+    "approval app_btc_commands.rs on_btc_esplora btc_save_esplora_url 1",
+    "approval app_btc_commands.rs on_btc_indexed btc_call 1",
+    "approval app_evm.rs evm_key_outcome btc_journal_changed 1",
+    "approval app_zec.rs zec_rpc_event zec_enqueue 1",
+];
+
+/// Sites the check reports whose opening path never reaches the code after them (it has no
+/// paths), each with the reason; they stay after P10. Same lines as [`PENDING_P10`].
+const ENDS_ON_ITS_PATH: [&str; 1] = [
+    // `card_filter` opens the PIN window again (`card_unused` → `card_open_pin`) only on its
+    // `KeyOutcome::CardUnused` path, which returns `None`; `on_key_result` returns at once on
+    // `None` (`let Some(outcome) = … else { return; }`), so its later session reads never run
+    // after that open.
+    "secret app.rs on_key_result card_filter 1",
+];
+
+/// One site with code after it that the rule refuses.
+struct Finding {
+    file: String,
+    func: String,
+    name: String,
+    problem: String,
+}
+
+/// What [`check_kind`] found for one kind.
+struct Checked {
+    sites: usize,
+    emitters: BTreeSet<String>,
+    misplaced: Vec<String>,
+    findings: Vec<Finding>,
+}
+
 /// The sites of `kind` and what is wrong after them.
-fn check_kind(files: &[(String, String)], kind: &Kind) -> (usize, Vec<String>) {
-    let mut errors = Vec::new();
+fn check_kind(files: &[Src], kind: &Kind) -> Checked {
+    let mut misplaced = Vec::new();
     let mut names: BTreeSet<String> = kind.emitters.iter().map(|&n| n.to_owned()).collect();
     let mut literal_sites = Vec::new();
     for literal in kind.literals {
         for site in emits_of(files, literal) {
             if kind.literal_in_emitters && !names.contains(&site.func) {
-                errors.push(format!(
+                misplaced.push(format!(
                     "{}: {} emitted in fn {} (only in {:?})",
-                    site.file, literal, site.func, kind.emitters
+                    files[site.src].file, literal, site.func, kind.emitters
                 ));
             }
             literal_sites.push(site);
+        }
+    }
+    // A fn that emits the literal as its last step is an emitter too (its callers are sites).
+    for site in &literal_sites {
+        if is_tail(files, site) {
+            names.insert(site.func.clone());
         }
     }
     add_wrappers(files, &mut names);
@@ -604,19 +1128,16 @@ fn check_kind(files: &[(String, String)], kind: &Kind) -> (usize, Vec<String>) {
         set
     });
     let mut sites = literal_sites;
-    for (file, code) in files {
-        sites.extend(calls(file, code, &names));
+    for (src, file) in files.iter().enumerate() {
+        sites.extend(calls(src, file, &names));
     }
+    let mut findings = Vec::new();
     for site in &sites {
-        let code = &files.iter().find(|(file, _)| *file == site.file).unwrap().1;
-        let after = after_call(code, site.start, site.end);
+        let after = after_site(files, site);
         let problem = match kind.tokens {
             None => {
-                let rest: String = after
-                    .chars()
-                    .filter(|c| !c.is_whitespace() && !matches!(c, ';' | ',' | '}' | ')'))
-                    .collect();
-                (!rest.is_empty() && rest != "return").then(|| rest.chars().take(160).collect())
+                let rest = rest_of(&after);
+                (!runs_nothing(&rest)).then(|| rest.chars().take(160).collect())
             }
             Some(tokens) => {
                 let hits = reads_in(&after, tokens, &through);
@@ -624,39 +1145,115 @@ fn check_kind(files: &[(String, String)], kind: &Kind) -> (usize, Vec<String>) {
             }
         };
         if let Some(problem) = problem {
-            errors.push(format!(
-                "{}: fn {} after {} ({}): {problem}",
-                site.file, site.func, site.name, kind.what
-            ));
+            findings.push(Finding {
+                file: files[site.src].file.clone(),
+                func: site.func.clone(),
+                name: site.name.clone(),
+                problem,
+            });
         }
     }
-    (sites.len(), errors)
+    Checked {
+        sites: sites.len(),
+        emitters: names,
+        misplaced,
+        findings,
+    }
 }
 
-/// The S5 source check (module doc). Reads yw-app's `src` only.
+/// The S5 source check (module doc).
 #[test]
 fn no_result_read_after_its_emit() {
     after_call_reads_what_runs_after();
     let files = production_code();
-    assert!(files.len() > 50, "scanned {} files", files.len());
-    assert!(files.iter().any(|(file, _)| file == "app_approval.rs"));
+    assert!(files.len() > 100, "scanned {} files", files.len());
+    for file in ["yw-app/src/app_approval.rs", "yw-engine/src/effect.rs"] {
+        assert!(files.iter().any(|src| src.file == file), "{file} scanned");
+    }
+    // `after_call` takes a `break`/`continue` to the innermost loop: no labelled one.
+    for src in &files {
+        assert!(
+            !src.code.contains("break '") && !src.code.contains("continue '"),
+            "{}: a labelled break or continue (after_call does not follow labels)",
+            src.file
+        );
+    }
     let mut errors = Vec::new();
     let mut counts = Vec::new();
+    let mut found: BTreeMap<(String, String, String, String), (usize, String)> = BTreeMap::new();
     for kind in &KINDS {
-        let (sites, mut found) = check_kind(&files, kind);
+        let checked = check_kind(&files, kind);
         assert!(
-            sites >= kind.min_sites,
-            "{}: {sites} sites (at least {})",
+            checked.sites >= kind.min_sites,
+            "{}: {} sites (at least {})",
             kind.what,
+            checked.sites,
             kind.min_sites
         );
-        counts.push((kind.what, sites));
-        errors.append(&mut found);
+        counts.push((kind.key, checked.sites));
+        errors.extend(checked.misplaced);
+        for other in other_uses(&files, &checked.emitters) {
+            errors.push(format!(
+                "{}: not a counted call of an emitter: {other}",
+                kind.key
+            ));
+        }
+        if let Some(tokens) = kind.tokens {
+            let all = readers(&files, tokens);
+            for reader in kind.readers_floor {
+                if !all.contains(*reader) {
+                    errors.push(format!("{}: reader {reader} no longer found", kind.key));
+                }
+            }
+        }
+        for finding in checked.findings {
+            let file = finding
+                .file
+                .strip_prefix("yw-app/src/")
+                .unwrap_or(&finding.file)
+                .to_owned();
+            let entry = found
+                .entry((kind.key.to_owned(), file, finding.func, finding.name))
+                .or_default();
+            entry.0 += 1;
+            entry.1 = finding.problem;
+        }
     }
-    // The one-level readers this rule leans on are found.
-    let secret = readers(&files, KINDS[1].tokens.unwrap_or_default());
-    for reader in ["yk_show_counters", "card_site_check", "secret_form"] {
-        assert!(secret.contains(reader), "{reader} reads the secret session");
+    let listed: BTreeMap<_, _> = PENDING_P10
+        .iter()
+        .chain(ENDS_ON_ITS_PATH.iter())
+        .map(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!(words.len(), 5, "{line}: not `kind file fn called sites`");
+            let key = (
+                words[0].to_owned(),
+                words[1].to_owned(),
+                words[2].to_owned(),
+                words[3].to_owned(),
+            );
+            (key, words[4].parse::<usize>().unwrap())
+        })
+        .collect();
+    assert_eq!(
+        listed.len(),
+        PENDING_P10.len() + ENDS_ON_ITS_PATH.len(),
+        "a line listed twice"
+    );
+    for (key, (sites, problem)) in &found {
+        match listed.get(key) {
+            None => errors.push(format!("{key:?} ({sites} sites): {problem}")),
+            Some(&listed_sites) if listed_sites != *sites => errors.push(format!(
+                "{key:?}: {sites} sites, {listed_sites} listed: {problem}"
+            )),
+            Some(_) => {}
+        }
+    }
+    for key in listed.keys() {
+        if !found.contains_key(key) {
+            errors.push(format!(
+                "{key:?} listed but no longer found: remove its line"
+            ));
+        }
     }
     assert!(errors.is_empty(), "{counts:?}\n{}", errors.join("\n"));
 }
