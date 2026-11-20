@@ -1657,6 +1657,83 @@ fn a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry() {
     assert!(app.evm.approval.is_none());
 }
 
+/// The `Suspend` shape of [`a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry`]
+/// (2026-11-21, S4 F14 review, spec/04 §5.3, spec/15 §18 item 14): a `Suspend` lock drains the
+/// outbox inside `App::lock` before its wait for the key worker (`AwaitKeyLock`), so the stale
+/// open queued earlier in the entry is applied and answered there, before the lock sets the mode
+/// and the screen. The lock dropped the kept steps before that drain (at the `lock_epoch` bump),
+/// so none runs inside the lock either. The kept `SetScreen` alone would not show it (the lock
+/// sets `Locked` after the drain), so a `HiddenNote` is kept too: its banner stays after the lock
+/// if it ran. A clear moved after the drain fails here (mutation probe of the F14 review, run and
+/// reverted). No key worker runs, so the lock's wait times out (1.5 s). Headless, no window.
+#[test]
+fn a_suspend_lock_drops_the_steps_kept_for_an_open_before_its_drain() {
+    use crate::app::Screen;
+    use crate::app_approval::AfterOpen;
+
+    let fx = fixture("open-lock-suspend");
+    let outlet = dapp(&fx, false, true);
+    let core = fx
+        .app
+        .borrow()
+        .browser
+        .as_ref()
+        .map(|browser| Arc::clone(&browser.core))
+        .unwrap();
+    personal_sign_frame_only(&fx, &outlet, &core);
+    let _ = headless_host::take_effects();
+    let note = {
+        let app = fx.app.borrow();
+        crate::app_hidden::hidden_note(app.settings.language, "kept-step")
+    };
+    {
+        let mut app = fx.app();
+        for event in outlet.events.drain() {
+            if let UiEvent::Dapp(event) = event {
+                app.on_dapp_event(event);
+            }
+        }
+        assert!(app.evm.open_unanswered.is_some(), "the open is queued");
+        app.after_pending_open(AfterOpen::SetScreen(Screen::Sites));
+        app.after_pending_open(AfterOpen::HiddenNote("kept-step".to_owned()));
+        assert_eq!(app.evm.after_open.len(), 2, "kept for the open's answer");
+        app.lock(LockReason::Suspend);
+        // The lock's own drain applied the stale open and answered it, inside the lock.
+        assert_eq!(
+            effect_names(&headless_host::take_effects()),
+            "open#1,close#1",
+            "the stale open was answered in the lock and its window closed"
+        );
+        assert_eq!(app.screen, Screen::Locked);
+        assert!(app.evm.approval.is_none(), "the lock ended the flow");
+        assert!(app.evm.after_open.is_empty(), "the lock dropped the steps");
+        assert_eq!(
+            app.evm.open_unanswered, None,
+            "no open waits after the lock"
+        );
+        assert!(
+            !app.banners.iter().any(|banner| banner.text == note),
+            "the kept steps did not run inside the lock"
+        );
+    }
+    assert!(
+        headless_host::take_effects().is_empty(),
+        "the entry's drain had no approval effect left"
+    );
+    assert_eq!(dapp_answers(&outlet), "4001 User rejected the request.");
+    let app = fx.app.borrow();
+    assert!(app.outbox.is_empty());
+    assert_eq!(app.evm.open_unanswered, None);
+    assert!(app.evm.after_open.is_empty());
+    assert_eq!(app.screen, Screen::Locked, "the kept steps did not run");
+    assert!(
+        !app.banners.iter().any(|banner| banner.text == note),
+        "nor after it"
+    );
+    assert!(app.approval_win.is_none(), "no window was made");
+    assert!(app.evm.approval.is_none());
+}
+
 /// The deferred-answer shape of [`a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry`]
 /// (2026-11-21, S4 F14, owner decision, spec/04 §5.3, spec/15 §18 item 14): the open and the step
 /// kept for its answer are made in one entry whose effects the shell applies only later (here the

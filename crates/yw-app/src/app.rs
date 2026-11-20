@@ -2429,7 +2429,8 @@ impl App {
         // later entry. The stale open is still answered and makes no window
         // (`open_approval_window`). A step asked for after this point runs at once, as with no
         // open waiting: the lock opens no window. Before F14 the kept steps stayed and ran with
-        // the stale answer, after the lock.
+        // the stale answer, after the lock. Clearing after the `Suspend` drain would be too late
+        // (`a_suspend_lock_drops_the_steps_kept_for_an_open_before_its_drain`, F14 review).
         self.evm.after_open.clear();
         self.evm.open_unanswered = None;
         let before = self.lock_signal.count();

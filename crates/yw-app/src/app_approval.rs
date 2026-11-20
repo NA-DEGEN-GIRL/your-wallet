@@ -1335,8 +1335,9 @@ fn bar_layout(
 /// call (`PENDING_P10` lines of the S5 check). A step reads the wallet when it runs, as the code
 /// it replaced did then. 2026-11-21 (S4 F14, owner decision, spec/04 §5.3): a lock drops the
 /// kept steps (`App::lock`), so none runs after it (pinned by
-/// `a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry` and
-/// `a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry`); from P10b (review,
+/// `a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry`,
+/// `a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry` and, since the F14 review,
+/// `a_suspend_lock_drops_the_steps_kept_for_an_open_before_its_drain`); from P10b (review,
 /// 2026-11-20) until F14 a lock in the entry that queued the open kept them, and they ran after
 /// the lock with the stale open's answer.
 pub(crate) enum AfterOpen {
@@ -1361,7 +1362,10 @@ pub(crate) enum AfterOpen {
     SetScreen(crate::app::Screen),
     /// The hidden account's note, then `refresh` (`hide_selected`); the label.
     HiddenNote(String),
-    /// The grants written, then `refresh` (a revoke the dispatcher reported).
+    /// The grants written, then `refresh` (a revoke the dispatcher reported). 2026-11-21 (S4 F14
+    /// review, spec/15 §18 item 16): dropped by a lock before the open's answer, so the revoke is
+    /// not saved to meta; the same before F14 (it ran after the lock, with no meta). Unreachable
+    /// while every entry drains; open for S4d E2.
     WriteGrantsThenRefresh,
     /// `finish_approval` (a consumed Bitcoin approval).
     Finish(QueueOutcome),
