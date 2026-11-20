@@ -39,6 +39,7 @@ use yw_engine::form::EditField;
 use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen, SettingsSection};
 use crate::events::{KeyJob, YubiKeyJobError};
 use crate::logging;
+use crate::secret_session::AfterShown;
 use crate::ui::main_window::Tone;
 use crate::ui::secret::DisplaySecret;
 use crate::workers::key::yubikey::{CounterTarget, YkJob, YkOutcome, YkPreview};
@@ -926,7 +927,7 @@ impl App {
                     self.refresh();
                 } else {
                     self.refresh();
-                    self.open_input_direct(
+                    self.open_input(
                         SecretKind::Mnemonic,
                         Purpose::YubiKey(YkPurpose::Mnemonic),
                         false,
@@ -985,7 +986,7 @@ impl App {
         if adopt {
             self.yk_run(Zeroizing::new(Vec::new()), Zeroizing::new(Vec::new()), None);
         } else if pgp {
-            self.open_input_direct(
+            self.open_input(
                 SecretKind::CardSecret(CardSecretKind::AdminPin),
                 Purpose::YubiKey(YkPurpose::AdminPin),
                 false,
@@ -1016,7 +1017,7 @@ impl App {
             } else {
                 (CardSecretKind::ManagementKey, YkPurpose::ManagementKey)
             };
-            self.open_input_direct(
+            self.open_input(
                 SecretKind::CardSecret(kind),
                 Purpose::YubiKey(purpose),
                 false,
@@ -1131,7 +1132,7 @@ impl App {
                     if let Some(wizard) = self.card.wizard.as_mut() {
                         wizard.phrase = Some(phrase);
                     }
-                    self.open_input_direct(
+                    self.open_input(
                         SecretKind::Passphrase { confirm: true },
                         Purpose::YubiKey(YkPurpose::Passphrase),
                         false,
@@ -1370,23 +1371,29 @@ impl App {
         }
     }
 
-    /// Opens W12 for card `serial` and reads its PIN counters for the window.
+    /// Opens W12 for card `serial` and reads its PIN counters for the window once it is shown.
+    /// 2026-11-20 (S4 P7a2): the read is the session's `AfterShown` step, taken when the shell
+    /// answers `Shown` ([`Self::yk_card_counters`]); before, this read the session right after the
+    /// open (the same point while the open is answered at once): a refused or failed window
+    /// reads no counters, as before.
     pub(crate) fn yk_open_card_secret(
         &mut self,
         kind: CardSecretKind,
         purpose: YkPurpose,
         serial: u32,
     ) {
-        self.open_input_direct(
+        self.open_input_then(
             SecretKind::CardSecret(kind),
             Purpose::YubiKey(purpose),
             false,
+            AfterShown::CardCounters { card: serial },
         );
-        if self.secret_purpose() == Some(Purpose::YubiKey(purpose)) {
-            self.key(KeyJob::YubiKey(YkJob::Counters(CounterTarget::Card(
-                serial,
-            ))));
-        }
+    }
+
+    /// The PIN counters read of a shown W12 (`AfterShown::CardCounters`, 2026-11-20 S4 P7a2;
+    /// read-only, spec/10 §9.1): `on_yk_counters` shows them in the open window.
+    pub(crate) fn yk_card_counters(&self, card: u32) {
+        self.key(KeyJob::YubiKey(YkJob::Counters(CounterTarget::Card(card))));
     }
 
     /// The PIN counters a W12 purpose shows.
@@ -1801,7 +1808,7 @@ impl App {
 
     /// S20 `시작하기`: W01.
     pub fn yk_new_wallet_start(&mut self) {
-        self.open_input_direct(
+        self.open_input(
             SecretKind::SetPassword,
             Purpose::YubiKey(YkPurpose::NewPassword),
             false,
@@ -1847,7 +1854,7 @@ impl App {
                         form.reset_backup(positions, Some(retry));
                     });
                 } else {
-                    self.open_input_direct(
+                    self.open_input(
                         SecretKind::Backup { positions },
                         Purpose::YubiKey(YkPurpose::Backup),
                         false,
@@ -1935,7 +1942,7 @@ impl App {
                     }
                     _ => code.text_in(self.settings.language),
                 };
-                self.open_input_direct(
+                self.open_input(
                     SecretKind::Mnemonic,
                     Purpose::YubiKey(YkPurpose::Mnemonic),
                     false,
@@ -2179,7 +2186,7 @@ impl App {
         let previous = self.previous_screen.clone();
         self.set_screen(previous);
         if let Some(id) = self.card.remove_target.take() {
-            self.open_input_direct(
+            self.open_input(
                 SecretKind::ConfirmPassword,
                 Purpose::ConfirmPassword(PasswordAction::RemoveHardwareKey(id)),
                 false,

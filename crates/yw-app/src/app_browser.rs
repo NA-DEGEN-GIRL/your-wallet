@@ -820,7 +820,7 @@ impl App {
         if let Some(browser) = self.browser.as_mut() {
             browser.dapp_unlock = true;
         }
-        self.open_input_direct(SecretKind::Unlock, crate::app::Purpose::Unlock, true);
+        self.open_input(SecretKind::Unlock, crate::app::Purpose::Unlock, true);
     }
 
     /// The dApp unlock window was dismissed (`나중에`): every waiting site item is rejected.

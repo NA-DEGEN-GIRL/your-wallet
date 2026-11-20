@@ -39,7 +39,7 @@ use crate::lock::{IdleTracker, LockReason, SystemAction, system_action};
 use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, Meta, RawAccount};
 use crate::network::NetworkId;
-use crate::secret_session::SecretSession;
+use crate::secret_session::{AfterShown, SecretSession};
 use crate::settings::{RpcTemplate, Settings};
 use crate::shell_msg::{
     WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT,
@@ -3189,10 +3189,12 @@ impl App {
     // (`Cmd::SecretOpened`), `close_secret` ends it and emits `SecretEffect::Close`. The shell's
     // half is `apply_secret_effect` (`open_input_window`, `close_secret_window`), `create_secret`,
     // `show_secret` and `on_secret`; its window record (`secret`) holds no purpose. Still opened
-    // directly (no effect): the display windows (`open_display`, S4 P7b) and the `YubiKey` and
-    // card input windows (`open_input_direct`, S4 P7a2). Before P7a1 `open_input`, `open_display`
-    // and `close_secret` made, showed and closed the windows themselves, and the purpose was in
-    // the window record.
+    // directly (no effect): the display windows (`open_display`, S4 P7b). Before P7a1
+    // `open_input`, `open_display` and `close_secret` made, showed and closed the windows
+    // themselves, and the purpose was in the window record. 2026-11-20 (S4 P7a2): the `YubiKey`
+    // and card input windows open through the seam too (from P7a1 to P7a2 they called the shell's
+    // half directly, `open_input_direct`); the step W12 takes once shown (its card's PIN
+    // counters) is the session's `AfterShown`, taken by `on_secret_opened`.
 
     /// Starts the secret session of a window (a fresh serial, never reused); the caller closed the
     /// previous one first. 2026-11-20 (S4 P7a1): the serial was counted in `create_secret` before.
@@ -3294,8 +3296,36 @@ impl App {
     /// with E-SEC-001 / E-APP-009 (`on_secret_opened`). Applied at once (the inline executor), so
     /// the window exists, or the banner is up, when this returns, as before.
     pub(crate) fn open_input(&mut self, kind: SecretKind, purpose: Purpose, topmost: bool) {
+        self.open_input_with(kind, purpose, topmost, None);
+    }
+
+    /// [`Self::open_input`] whose session takes `after` once the shell reports the window shown
+    /// (`on_secret_opened`), never for a refused or failed window (2026-11-20, S4 P7a2: W12's
+    /// card counters; before, the handler read the session right after the open).
+    pub(crate) fn open_input_then(
+        &mut self,
+        kind: SecretKind,
+        purpose: Purpose,
+        topmost: bool,
+        after: AfterShown,
+    ) {
+        self.open_input_with(kind, purpose, topmost, Some(after));
+    }
+
+    fn open_input_with(
+        &mut self,
+        kind: SecretKind,
+        purpose: Purpose,
+        topmost: bool,
+        after: Option<AfterShown>,
+    ) {
         self.close_secret();
         let serial = self.begin_secret(kind, purpose, topmost);
+        if let Some(after) = after
+            && let Some(session) = self.secret_session.as_mut()
+        {
+            session.then_when_shown(after);
+        }
         let lang = self.settings.language;
         self.emit(Effect::Secret(SecretEffect::OpenInput {
             serial,
@@ -3304,18 +3334,6 @@ impl App {
             topmost,
             lang,
         }));
-    }
-
-    /// Opens an input window without the seam: the shell's half is called here and its outcome
-    /// handed to `on_secret_opened` directly. Transitional (2026-11-20, S4 P7a1): only the
-    /// `YubiKey` and card sites (`app_yubikey*`, `app_card`, `app_browser`) call it, until S4
-    /// P7a2 moves them to [`Self::open_input`] (one reads the session right after the open).
-    pub(crate) fn open_input_direct(&mut self, kind: SecretKind, purpose: Purpose, topmost: bool) {
-        self.close_secret();
-        let serial = self.begin_secret(kind, purpose, topmost);
-        let lang = self.settings.language;
-        let outcome = self.open_input_window(serial, kind, flow_step(lang, purpose), topmost, lang);
-        self.on_secret_opened(serial, outcome);
     }
 
     /// The shell's half of an input window's open (today's `open_input` body before S4 P7a1):
@@ -3393,7 +3411,9 @@ impl App {
     /// answer for the open session counts: one for another serial (a session that has ended) or
     /// for a window already shown is dropped. `Shown` marks the session shown; `Refused`
     /// (E-SEC-001) and `Failed` (E-APP-009) end it and say so on the main window, as `open_input`
-    /// did.
+    /// did. 2026-11-20 (S4 P7a2): `Shown` then takes the session's `AfterShown` step (W12: the
+    /// card's PIN counters read, `App::yk_card_counters`), at the point the handler took it right
+    /// after the open before.
     fn on_secret_opened(&mut self, serial: u64, outcome: OpenOutcome) {
         let Some(session) = self
             .secret_session
@@ -3403,7 +3423,10 @@ impl App {
             return;
         };
         match outcome {
-            OpenOutcome::Shown { .. } => session.mark_shown(),
+            OpenOutcome::Shown { .. } => match session.mark_shown() {
+                Some(AfterShown::CardCounters { card }) => self.yk_card_counters(card),
+                None => {}
+            },
             OpenOutcome::Refused(code) | OpenOutcome::Failed(code) => {
                 self.secret_session = None;
                 self.error_banner(code);

@@ -740,7 +740,7 @@ impl App {
                         slots,
                     })));
                 } else {
-                    self.open_input_direct(
+                    self.open_input(
                         SecretKind::Mnemonic,
                         crate::app::Purpose::YubiKey(YkPurpose::ReslotMnemonic),
                         false,
@@ -967,7 +967,7 @@ impl App {
                     if let Some(flow) = self.reslot() {
                         flow.phrase = Some(phrase);
                     }
-                    self.open_input_direct(
+                    self.open_input(
                         SecretKind::Passphrase { confirm: true },
                         crate::app::Purpose::YubiKey(YkPurpose::ReslotPassphrase),
                         false,
@@ -1072,7 +1072,7 @@ impl App {
                     }
                     _ => code.text_in(self.settings.language),
                 };
-                self.open_input_direct(
+                self.open_input(
                     SecretKind::Mnemonic,
                     crate::app::Purpose::YubiKey(YkPurpose::ReslotMnemonic),
                     false,

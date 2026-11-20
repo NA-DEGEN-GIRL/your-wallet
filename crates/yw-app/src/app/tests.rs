@@ -7254,3 +7254,106 @@ fn secret_opens_make_windows_only_for_their_unshown_session() {
     app.close_secret();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// 2026-11-20 (S4 P7a2, spec/04 §4.5 item 3, spec/10 §9.1): the `YubiKey` and card input windows
+/// open through the seam, and W12 reads its card's PIN counters only once the shell answers
+/// `Shown` (the session's `AfterShown` step), exactly once: never for a refused or failed window,
+/// a stale answer or a second answer. Headless (no main window) `yk_open_card_secret` is refused
+/// as before: E-SEC-001 and no card read. (The windowed pin with a shown W12 is
+/// `ui::tour_secrets` `yk_card_secret_counters_only_when_shown`, golden `s4_secret/secret.txt`.)
+#[test]
+fn w12_reads_its_card_counters_only_once_shown() {
+    use yw_engine::approval::flow::OpenOutcome;
+    use yw_engine::cmd::Cmd;
+    use yw_engine::secret::{CardSecretKind, SecretKind};
+
+    use crate::app_yubikey::YkPurpose;
+    use crate::errors::ErrorCode;
+    use crate::events::KeyJob;
+    use crate::secret_session::AfterShown;
+    use crate::workers::key::yubikey::{CounterTarget, YkJob};
+
+    const CARD: u32 = 7_700_011;
+    let dir = temp_dir("secret-after-shown");
+    let mut app = app_at(&dir);
+    // The card of each queued counters read; any other key job is `None` (none is expected).
+    // `KeyQueue::pop` blocks on an empty queue, so it is called only while a job is queued.
+    let counter_reads = |app: &App| -> Vec<Option<u32>> {
+        let mut cards = Vec::new();
+        while !app.key_queue.is_empty()
+            && let Some((_, job)) = app.key_queue.pop()
+        {
+            cards.push(match job {
+                KeyJob::YubiKey(YkJob::Counters(CounterTarget::Card(card))) => Some(card),
+                _ => None,
+            });
+        }
+        cards
+    };
+    let purpose = Purpose::YubiKey(YkPurpose::AdminPin);
+    let kind = SecretKind::CardSecret(CardSecretKind::AdminPin);
+
+    // Headless: refused as before, no card read.
+    app.yk_open_card_secret(CardSecretKind::AdminPin, YkPurpose::AdminPin, CARD);
+    assert!(!app.secret_open());
+    assert_eq!(
+        app.banners
+            .iter()
+            .map(|banner| banner.code)
+            .collect::<Vec<_>>(),
+        [Some(ErrorCode::Sec001)]
+    );
+    assert!(
+        counter_reads(&app).is_empty(),
+        "a refused W12 read the card"
+    );
+    app.banners.clear();
+
+    // A session with the step: a stale answer takes nothing; `Shown` takes it once.
+    let serial = app.begin_secret(kind, purpose, false);
+    if let Some(session) = app.secret_session.as_mut() {
+        session.then_when_shown(AfterShown::CardCounters { card: CARD });
+    }
+    let shown = |serial: u64| Cmd::SecretOpened {
+        serial,
+        outcome: OpenOutcome::Shown {
+            capture_excluded: true,
+        },
+    };
+    app.on_cmd(shown(serial - 1));
+    assert!(
+        counter_reads(&app).is_empty(),
+        "a stale answer read the card"
+    );
+    app.on_cmd(shown(serial));
+    assert_eq!(counter_reads(&app), [Some(CARD)]);
+    app.on_cmd(shown(serial));
+    assert!(counter_reads(&app).is_empty(), "a second answer read again");
+    assert_eq!(app.secret_purpose(), Some(purpose));
+    app.close_secret();
+
+    // `Refused` and `Failed` end the session with their code and read nothing.
+    for outcome in [
+        OpenOutcome::Refused(ErrorCode::Sec001),
+        OpenOutcome::Failed(ErrorCode::App009),
+    ] {
+        let serial = app.begin_secret(kind, purpose, false);
+        if let Some(session) = app.secret_session.as_mut() {
+            session.then_when_shown(AfterShown::CardCounters { card: CARD });
+        }
+        app.on_cmd(Cmd::SecretOpened { serial, outcome });
+        assert!(!app.secret_open());
+        assert!(counter_reads(&app).is_empty(), "{outcome:?} read the card");
+    }
+    // A session without the step reads nothing when shown.
+    let serial = app.begin_secret(kind, purpose, false);
+    app.on_cmd(Cmd::SecretOpened {
+        serial,
+        outcome: OpenOutcome::Shown {
+            capture_excluded: false,
+        },
+    });
+    assert!(counter_reads(&app).is_empty());
+    app.close_secret();
+    let _ = std::fs::remove_dir_all(dir);
+}

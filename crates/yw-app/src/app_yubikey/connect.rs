@@ -187,7 +187,7 @@ impl App {
         }
         self.key(KeyJob::YubiKey(YkJob::Discard));
         self.card.wizard = None;
-        self.open_input_direct(
+        self.open_input(
             SecretKind::SetPassword,
             Purpose::YubiKey(YkPurpose::ConnectPassword),
             false,
@@ -333,7 +333,7 @@ impl App {
             .iter()
             .any(|slot| slot.role.curve() == Curve::Secp256k1);
         let lines = self.yk_connect_pin_lines(piv);
-        self.open_input_direct(
+        self.open_input(
             SecretKind::CardSecret(CardSecretKind::UserPin { piv }),
             Purpose::YubiKey(YkPurpose::ConnectPin),
             false,

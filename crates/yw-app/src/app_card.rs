@@ -1092,7 +1092,7 @@ impl App {
         let error = step.error.clone();
         let id = step.id;
         let card = self.card_step_card(step.role);
-        self.open_input_direct(kind, Purpose::CardSign(id), true);
+        self.open_input(kind, Purpose::CardSign(id), true);
         self.with_form(|form| {
             form.set_card(card);
             form.set_details(details);
