@@ -1333,8 +1333,12 @@ fn bar_layout(
 /// order it ran before (byte-equal by construction); with the outbox (since P10b) it runs after
 /// the open's answer, when the entry drains, as it did. Before, those steps ran right after the
 /// call (`PENDING_P10` lines of the S5 check). A step reads the wallet when it runs, as the code
-/// it replaced did then. 2026-11-20 (S4 P10b review): a lock in the entry that queued the open
-/// keeps the steps, so they run after the lock (accepted and pinned, spec/04 §5.3).
+/// it replaced did then. 2026-11-21 (S4 F14, owner decision, spec/04 §5.3): a lock drops the
+/// kept steps (`App::lock`), so none runs after it (pinned by
+/// `a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry` and
+/// `a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry`); from P10b (review,
+/// 2026-11-20) until F14 a lock in the entry that queued the open kept them, and they ran after
+/// the lock with the stale open's answer.
 pub(crate) enum AfterOpen {
     /// `card_site_check` (a revoke of signing requests or of an account: an approved request
     /// waiting for its `YubiKey` PIN ends too, spec/10 §9.2).
@@ -1632,8 +1636,9 @@ impl App {
     /// (`EvmUi::open_unanswered`) is answered, after the steps kept for it before; at once when
     /// none waits (2026-11-20, S4 P10a, plan §4.4 S5, §4.6 rule 2). 2026-11-20 (S4 P10b): an
     /// open waits in the outbox until its entry drains, so `after` follows the answer, as it
-    /// followed the open before; a lock in that entry does not drop it (it runs after the lock,
-    /// pinned by `a_step_kept_for_an_open_runs_after_a_lock_in_the_same_entry`, spec/04 §5.3).
+    /// followed the open before. 2026-11-21 (S4 F14, owner decision, spec/04 §5.3): a lock
+    /// before that answer drops `after` (`App::lock`); from P10b until F14 it ran after the lock
+    /// (pinned then by `a_step_kept_for_an_open_runs_after_a_lock_in_the_same_entry`).
     /// Before P10b the executor applied effects at once, an open was answered before `emit`
     /// returned, and `after` always ran here, where the caller ran it before.
     pub(crate) fn after_pending_open(&mut self, after: AfterOpen) {
@@ -1653,7 +1658,8 @@ impl App {
     /// step after `on_approval_opened` returned (2026-11-20, S4 P9); the steps are taken first now
     /// so that what runs after the answer's own steps is a single [`App::after_pending_open`]. An
     /// answer for a window whose flow has gone (stale) runs them too: they belong to the opener,
-    /// not to the window.
+    /// not to the window. 2026-11-21 (S4 F14): except after a lock, which dropped them, so the
+    /// stale answer of an open from before a lock finds none.
     pub(crate) fn approval_open_answered(&mut self, shown: ShownId) -> AfterOpen {
         if self.evm.open_unanswered == Some(shown) {
             self.evm.open_unanswered = None;

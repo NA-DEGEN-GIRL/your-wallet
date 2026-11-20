@@ -409,10 +409,11 @@ pub struct EvmUi {
     /// The steps an opener left for after the answer to the open of its window, by window
     /// (2026-11-20, S4 P9: `App::show_next_approval_then`, `App::after_approval_opened`; since
     /// P10a also `App::after_pending_open`, and the answer takes them in
-    /// `App::approval_open_answered`; not cleared by a lock: a late answer still runs them).
-    /// 2026-11-20 (S4 P10b review): with the outbox that late answer is the stale answer of an
-    /// open queued in the entry that then locked, so its steps run after the lock (accepted,
-    /// pinned by `a_step_kept_for_an_open_runs_after_a_lock_in_the_same_entry`, spec/04 §5.3).
+    /// `App::approval_open_answered`). 2026-11-21 (S4 F14, owner decision, spec/04 §5.3, spec/15
+    /// §18 item 14): cleared by a lock (`App::lock`, at the `lock_epoch` bump), so no kept step
+    /// runs after a lock. Before F14 a lock left them and a late answer still ran them; with the
+    /// outbox (2026-11-20, S4 P10b review) that late answer was the stale answer of an open
+    /// queued in the entry that then locked, so its steps ran after the lock.
     pub(crate) after_open: Vec<(
         yw_engine::approval::flow::ShownId,
         crate::app_approval::AfterOpen,
@@ -422,8 +423,9 @@ pub struct EvmUi {
     /// 2026-11-20 (S4 P10b): it names the open the outbox still holds, until the entry drains and
     /// the answer comes (`None` again between messages: every entry drains); before, the executor
     /// applied effects at once, the answer came before `emit` returned, and this was `None`
-    /// whenever logic code ran. Not cleared by a lock: a late answer still runs the steps kept
-    /// for it.
+    /// whenever logic code ran. 2026-11-21 (S4 F14): cleared by a lock with the kept steps
+    /// (`after_open`), so a step asked for after the lock runs at once; before F14 a lock left it
+    /// and a late answer still ran the steps kept for it.
     pub(crate) open_unanswered: Option<yw_engine::approval::flow::ShownId>,
     /// What the S12 receive QR encodes (session only, spec/04 §2.8).
     pub receive_qr: crate::ui::qr::EvmQrKind,

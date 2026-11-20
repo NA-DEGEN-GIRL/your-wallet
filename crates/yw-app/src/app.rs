@@ -2422,6 +2422,16 @@ impl App {
             AppMode::NoVault | AppMode::Starting | AppMode::Corrupt { .. } | AppMode::MainMissing
         );
         self.lock_epoch = self.lock_epoch.saturating_add(1);
+        // 2026-11-21 (S4 F14, owner decision, spec/04 §5.3, spec/15 §18 item 14): the steps kept
+        // for an approval-window open still waiting for its answer (`AfterOpen`) are dropped, and
+        // no open waits any more, so no kept step runs after the lock: not with the stale open's
+        // answer when the entry drains, nor inside this fn (the `Suspend` drain below), nor in a
+        // later entry. The stale open is still answered and makes no window
+        // (`open_approval_window`). A step asked for after this point runs at once, as with no
+        // open waiting: the lock opens no window. Before F14 the kept steps stayed and ran with
+        // the stale answer, after the lock.
+        self.evm.after_open.clear();
+        self.evm.open_unanswered = None;
         let before = self.lock_signal.count();
         self.key(KeyJob::Lock);
         self.card_lock();

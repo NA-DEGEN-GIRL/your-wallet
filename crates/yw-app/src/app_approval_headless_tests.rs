@@ -1590,14 +1590,19 @@ fn open_then_lock_same_entry() -> Vec<String> {
 /// `open_then_lock_same_entry` with a step its opener left for the answer to the open
 /// (`AfterOpen::SetScreen`, as a confirmation overlay's next screen; 2026-11-20, S4 P10b review).
 /// The lock in the same entry ends the flow, so the queued open is stale when the entry drains
-/// and makes no window (critique A-3, owner decision 2026-11-20). The kept step is not dropped by
-/// the lock (`EvmUi::after_open`: the steps belong to the opener, not to the window) and runs with
-/// the stale open's answer: after the lock. Before P10b the open was applied at once, so the step
-/// ran before the lock. No production entry opens with a kept step and locks in the same call
-/// (the lock's callers lock in their own entry, and every entry drains); this pins the order so
-/// a change of it is a decision (spec/04 §5.3). Headless, no window.
+/// and makes no window (critique A-3, owner decision 2026-11-20). 2026-11-21 (S4 F14, owner
+/// decision, spec/04 §5.3, spec/15 §18 item 14): the lock drops the kept step and the wait for the
+/// open's answer, so the step never runs; the stale open is still answered (`Failed`, dropped as
+/// stale) and its window closed (`open#1,close#1`, as `open_then_lock_same_entry`). From the P10b
+/// review until F14 this test was `a_step_kept_for_an_open_runs_after_a_lock_in_the_same_entry`
+/// and pinned the other order: the lock kept the step, which ran with the stale answer, after the
+/// lock (screen `Sites`). Before P10b the open was applied at once, so the step ran before the
+/// lock. No production entry opens with a kept step and locks in the same call (the lock's callers
+/// lock in their own entry, and every entry drains). Headless, no window.
 #[test]
-fn a_step_kept_for_an_open_runs_after_a_lock_in_the_same_entry() {
+fn a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry() {
+    use yw_engine::effect::Effect;
+
     use crate::app::Screen;
     use crate::app_approval::AfterOpen;
 
@@ -1611,6 +1616,7 @@ fn a_step_kept_for_an_open_runs_after_a_lock_in_the_same_entry() {
         .map(|browser| Arc::clone(&browser.core))
         .unwrap();
     personal_sign_frame_only(&fx, &outlet, &core);
+    let _ = headless_host::take_effects();
     {
         let mut app = fx.app();
         for event in outlet.events.drain() {
@@ -1624,13 +1630,116 @@ fn a_step_kept_for_an_open_runs_after_a_lock_in_the_same_entry() {
         app.lock(LockReason::Manual);
         assert_eq!(app.screen, Screen::Locked);
         assert!(app.evm.approval.is_none(), "the lock ended the flow");
-        assert_eq!(app.evm.after_open.len(), 1, "the lock keeps the step");
+        assert!(app.evm.after_open.is_empty(), "the lock dropped the step");
+        assert_eq!(
+            app.evm.open_unanswered, None,
+            "no open waits after the lock"
+        );
+        assert!(
+            app.outbox
+                .iter()
+                .any(|effect| matches!(effect, Effect::Approval(ApprovalEffect::Open { .. }))),
+            "the stale open is still queued"
+        );
     }
+    assert_eq!(
+        effect_names(&headless_host::take_effects()),
+        "open#1,close#1",
+        "the stale open was answered and its window closed"
+    );
+    assert_eq!(dapp_answers(&outlet), "4001 User rejected the request.");
     let app = fx.app.borrow();
     assert!(app.outbox.is_empty());
-    assert_eq!(app.evm.open_unanswered, None, "the stale open was answered");
-    assert!(app.evm.after_open.is_empty(), "and its kept step ran");
-    assert_eq!(app.screen, Screen::Sites, "after the lock");
+    assert_eq!(app.evm.open_unanswered, None);
+    assert!(app.evm.after_open.is_empty());
+    assert_eq!(app.screen, Screen::Locked, "the kept step did not run");
+    assert!(app.approval_win.is_none(), "no window was made");
+    assert!(app.evm.approval.is_none());
+}
+
+/// The deferred-answer shape of [`a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry`]
+/// (2026-11-21, S4 F14, owner decision, spec/04 §5.3, spec/15 §18 item 14): the open and the step
+/// kept for its answer are made in one entry whose effects the shell applies only later (here the
+/// test takes them out of the outbox, as a shell that answers after the entry returned would hold
+/// them: Android, the deferred schedule of S4d E2), a lock comes in a later entry, and the held
+/// open is applied and answered after the lock. The lock dropped the kept step, so it does not
+/// run then either: the screen stays `Locked`. The open is still answered (`Failed`: its flow
+/// ended with the lock, the answer is dropped as stale) and makes no window; the lock's close came
+/// first (`close#1,open#1`). Headless, no window.
+#[test]
+fn a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry() {
+    use yw_engine::effect::Effect;
+
+    use crate::app::Screen;
+    use crate::app_approval::AfterOpen;
+
+    let fx = fixture("open-lock-deferred");
+    let outlet = dapp(&fx, false, true);
+    let core = fx
+        .app
+        .borrow()
+        .browser
+        .as_ref()
+        .map(|browser| Arc::clone(&browser.core))
+        .unwrap();
+    personal_sign_frame_only(&fx, &outlet, &core);
+    let _ = headless_host::take_effects();
+    // Entry 1: the open is asked for and a step is kept for its answer; the shell holds the
+    // entry's effects instead of applying them before it returns.
+    let held: Vec<Effect> = {
+        let mut app = fx.app();
+        for event in outlet.events.drain() {
+            if let UiEvent::Dapp(event) = event {
+                app.on_dapp_event(event);
+            }
+        }
+        let shown = app.evm.open_unanswered;
+        assert!(shown.is_some(), "the open is queued");
+        app.after_pending_open(AfterOpen::SetScreen(Screen::Sites));
+        assert_eq!(app.evm.after_open.len(), 1, "kept for the open's answer");
+        let held: Vec<Effect> = app.outbox.drain(..).collect();
+        assert!(
+            held.iter()
+                .any(|effect| matches!(effect, Effect::Approval(ApprovalEffect::Open { .. }))),
+            "the open is held"
+        );
+        held
+    };
+    {
+        let app = fx.app.borrow();
+        assert!(app.evm.open_unanswered.is_some(), "the open still waits");
+        assert_eq!(app.evm.after_open.len(), 1, "and so does its step");
+    }
+    // Entry 2: a lock.
+    {
+        let mut app = fx.app();
+        app.lock(LockReason::Manual);
+        assert!(app.evm.after_open.is_empty(), "the lock dropped the step");
+        assert_eq!(
+            app.evm.open_unanswered, None,
+            "no open waits after the lock"
+        );
+    }
+    assert_eq!(fx.app.borrow().screen, Screen::Locked);
+    assert_eq!(effect_names(&headless_host::take_effects()), "close#1");
+    // Entry 3: the shell applies the held effects; the open is answered after the lock.
+    {
+        let mut app = fx.app();
+        for effect in held {
+            app.emit(effect);
+        }
+    }
+    assert_eq!(
+        effect_names(&headless_host::take_effects()),
+        "open#1",
+        "the held open was answered"
+    );
+    assert_eq!(dapp_answers(&outlet), "4001 User rejected the request.");
+    let app = fx.app.borrow();
+    assert!(app.outbox.is_empty());
+    assert_eq!(app.evm.open_unanswered, None);
+    assert!(app.evm.after_open.is_empty());
+    assert_eq!(app.screen, Screen::Locked, "the kept step did not run");
     assert!(app.approval_win.is_none(), "no window was made");
     assert!(app.evm.approval.is_none());
 }
