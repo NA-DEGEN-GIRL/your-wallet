@@ -7,24 +7,20 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 use yw_core::evm::address::Address;
 use yw_core::policy::{BrowserOrigin, ConnectedSite, ProviderError};
 use yw_json::Value;
-use yw_win::pipe::ServerError;
 
 use crate::app::{App, AppMode};
 use crate::app_approval::AfterOpen;
 use crate::app_evm::QueuedItem;
 use crate::browser::envelope::accounts_value;
 use crate::browser::grants::{sites_from_values, sites_to_values};
-use crate::browser::read::{ReadContext, run_worker};
-use crate::browser::server::{PipeServer, pipe_name, start};
+use crate::browser::read::ReadContext;
 use crate::browser::{
-    BrowserCore, ChainEntry, DappEvent, DappSink, GrantChange, READ_WORKERS, Reply, RequestKey,
-    SiteKind, SiteRequest, VaultView, WalletView, outcome_error, pinned_extension_id,
-    pinned_origin,
+    BrowserCore, ChainEntry, DappEvent, DappSink, GrantChange, Reply, RequestKey, SiteKind,
+    SiteRequest, VaultView, WalletView, outcome_error, pinned_extension_id,
 };
 use crate::errors::ErrorCode;
 use crate::events::{EventQueue, MessageSignFailure, MessageSigned, SignTicket};
@@ -117,19 +113,15 @@ impl SignWaiter {
     }
 }
 
-/// The UI side of the browser bridge.
+/// The UI side of the browser bridge. 2026-11-21 (S4 W1, plan §3.3): wallet state only; the pipe
+/// server, why there is none and the read worker threads are the shell's
+/// (`browser::server::PipeHost`, `App::pipe`; before, the fields `server`, `pipe_error` and
+/// `threads` here).
 pub struct BrowserUi {
     /// Dispatcher.
     pub core: Arc<BrowserCore>,
     /// Read workers' context (chain checks reset with the RPC worker's).
     pub reads: Arc<ReadContext>,
-    /// Pipe server (`None`: see [`Self::pipe_error`]).
-    pub server: Option<PipeServer>,
-    /// Why there is no server: E-PIPE-001, or E-PIPE-002 when the pipe name was already held
-    /// by another server (`ServerError::AlreadyExists`).
-    pub pipe_error: Option<ErrorCode>,
-    /// Read worker threads.
-    pub threads: Vec<JoinHandle<()>>,
     /// Live pipe connections.
     pub connections: usize,
     /// Pending signing jobs by ticket.
@@ -206,12 +198,13 @@ impl core::fmt::Debug for BrowserUi {
 }
 
 impl BrowserUi {
-    /// Starts the dispatcher, 4 read workers and the pipe server (spec/05 §8.1: within 2 s of
-    /// process start). A server failure keeps the dispatcher (E-PIPE-001 banner by the caller).
-    /// The dispatcher reads `clock`, the App's (2026-11-19, S4 B1a: one time base for the site
-    /// deadline and the App's approval reads; before, its own `SystemClock`, the same base).
+    /// The dispatcher (spec/05 §8.1). The dispatcher reads `clock`, the App's (2026-11-19, S4
+    /// B1a: one time base for the site deadline and the App's approval reads; before, its own
+    /// `SystemClock`, the same base). 2026-11-21 (S4 W1): the first half of the old
+    /// `BrowserUi::start`; the shell then starts the 4 read workers and the pipe server on it
+    /// (`browser::server::PipeHost::start`, the second half), in the same order as before.
     #[must_use]
-    pub fn start(
+    pub fn new(
         events: &Arc<EventQueue>,
         transport: Option<SharedTransport>,
         clock: Arc<dyn Clock>,
@@ -220,49 +213,9 @@ impl BrowserUi {
         let pinned = pinned_extension_id().unwrap_or_default();
         let core = BrowserCore::new(pinned, sink, clock);
         let reads = Arc::new(ReadContext::new(transport));
-        let mut threads = Vec::new();
-        for index in 0..READ_WORKERS {
-            let worker_core = Arc::clone(&core);
-            let context = Arc::clone(&reads);
-            if let Ok(handle) = std::thread::Builder::new()
-                .name(format!("yw-read-{index}"))
-                .spawn(move || run_worker(&worker_core, &context))
-            {
-                threads.push(handle);
-            }
-        }
-        let started = match (pinned_origin(), pipe_name()) {
-            (Some(origin), Ok(name)) => start(Arc::clone(&core), &name, origin).map_err(Some),
-            _ => Err(None),
-        };
-        // `AlreadyExists` with the single-instance mutex held: the per-user pipe name was taken
-        // by a server this app did not create (spec/05 §8.1, E-PIPE-002).
-        let pipe_squatted = matches!(started, Err(Some(ServerError::AlreadyExists)));
-        let server = started.ok();
-        let pipe_error = match (&server, pipe_squatted) {
-            (Some(_), _) => None,
-            (None, true) => Some(ErrorCode::Pipe002),
-            (None, false) => Some(ErrorCode::Pipe001),
-        };
-        if pipe_squatted {
-            logging::warn(
-                "pipe",
-                "server.squatted",
-                &[("code", Field::Code(ErrorCode::Pipe002))],
-            );
-        } else if server.is_none() {
-            logging::warn(
-                "pipe",
-                "server.failed",
-                &[("code", Field::Code(ErrorCode::Pipe001))],
-            );
-        }
         Self {
             core,
             reads,
-            server,
-            pipe_error,
-            threads,
             connections: 0,
             waiters: HashMap::new(),
             broadcasts: HashMap::new(),
@@ -275,28 +228,37 @@ impl BrowserUi {
         }
     }
 
-    /// Stops accepting and the read workers (shutdown, spec/04 §1.5-1).
+    /// Stops the dispatcher and its read workers (shutdown, spec/04 §1.5-1). 2026-11-21 (S4 W1):
+    /// the shell stops accepting first (`PipeHost::stop`); before, this fn did both, in that
+    /// order.
     pub fn stop(&mut self) {
-        if let Some(server) = self.server.as_mut() {
-            server.stop();
-        }
         self.core.stop();
     }
 }
 
-/// The status-line text (spec/04 §2.6) in `lang`.
+/// The status-line text (spec/04 §2.6) in `lang`. 2026-11-21 (S4 W1): the pipe facts come from
+/// the shell's `pipe` (before, from `browser`, which held them). The dispatcher and the pipe end
+/// are attached together; a dispatcher with no pipe end (tests) reads E-PIPE-001, as a
+/// dispatcher with no server and no recorded failure did before.
 #[must_use]
-pub fn status_text(lang: yw_core::lang::Lang, browser: Option<&BrowserUi>) -> String {
-    match browser {
-        Some(browser) if browser.server.is_some() => match browser.connections {
+pub fn status_text(
+    lang: yw_core::lang::Lang,
+    browser: Option<&BrowserUi>,
+    pipe: Option<&crate::browser::server::PipeHost>,
+) -> String {
+    match (browser, pipe) {
+        (Some(browser), Some(pipe)) if pipe.server.is_some() => match browser.connections {
             0 => text::STATUS_NONE.get(lang).to_owned(),
             count => text::STATUS_CONNECTED.fill(lang, [&count.to_string()]),
         },
-        Some(browser) => text::STATUS_UNAVAILABLE.fill(
+        (Some(_), pipe) => text::STATUS_UNAVAILABLE.fill(
             lang,
-            [browser.pipe_error.unwrap_or(ErrorCode::Pipe001).code()],
+            [pipe
+                .and_then(|pipe| pipe.error)
+                .unwrap_or(ErrorCode::Pipe001)
+                .code()],
         ),
-        None => text::STATUS_UNAVAILABLE.fill(lang, [ErrorCode::Pipe001.code()]),
+        (None, _) => text::STATUS_UNAVAILABLE.fill(lang, [ErrorCode::Pipe001.code()]),
     }
 }
 

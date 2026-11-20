@@ -1012,9 +1012,6 @@ mod tests {
         app.browser = Some(BrowserUi {
             core,
             reads: Arc::new(crate::browser::read::ReadContext::new(None)),
-            server: None,
-            pipe_error: None,
-            threads: Vec::new(),
             connections: 0,
             waiters: HashMap::new(),
             broadcasts: HashMap::new(),

@@ -417,7 +417,7 @@ impl App {
         ));
         let label = if !self.reset.phrase_ok {
             text::HOLD_NEEDS_PHRASE.fill(lang, [phrase])
-        } else if self.reset.holding.is_some() {
+        } else if self.reset.gate.active() {
             text::HOLD_KEEP.get(lang).to_owned()
         } else {
             text::HOLD_TO_RESET.get(lang).to_owned()

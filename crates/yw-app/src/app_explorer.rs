@@ -44,9 +44,11 @@ pub mod text {
 
 /// How a link or a folder is opened. Only the effect executor (`app_effects`: `Effect::OpenUrl`,
 /// `Effect::OpenFolder`) calls it (2026-11-20, S4 P3: before, `App::open_explorer` launched and
-/// `App::open_folder` started `explorer.exe` for a folder itself, also in unit-test builds). The
-/// field stays in `ExplorerUi` until the shell gets its own state (S4 W1); the census counts its
-/// record (`launch N`).
+/// `App::open_folder` started `explorer.exe` for a folder itself, also in unit-test builds); the
+/// census counts its record (`launch N`). 2026-11-21 (S4 W1, plan §3.3): it is shell state, the
+/// field `App::launcher`; before, `ExplorerUi.launcher` (the S15 card's wallet state). The type
+/// stays here, the only file that names the program (`explorer_exe`), until the files that move
+/// to the engine are cut (S4d E0c).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Launcher {
     /// `%SystemRoot%\explorer.exe <url or folder>` (the default browser or File Explorer;
@@ -104,7 +106,7 @@ fn explorer_exe(arg: impl AsRef<std::ffi::OsStr>) -> bool {
         .is_ok()
 }
 
-/// The S15 card's state and the launcher.
+/// The S15 card's state (2026-11-21, S4 W1: the launcher left for the shell, `App::launcher`).
 #[derive(Debug, Default)]
 pub struct ExplorerUi {
     /// The row whose `변경` form is open.
@@ -115,8 +117,6 @@ pub struct ExplorerUi {
     pub address_text: String,
     /// What `저장` refused (under the form).
     pub message: Option<String>,
-    /// How links are opened (tests record them).
-    pub launcher: Launcher,
 }
 
 /// The app's Solana cluster of a core cluster (the send result keeps the core one).

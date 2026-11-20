@@ -243,7 +243,7 @@ impl Env {
         {
             let mut app = fx.app();
             app.mode = mode;
-            assert!(matches!(app.explorer_ui.launcher, Launcher::Record(_)));
+            assert!(matches!(app.launcher, Launcher::Record(_)));
             assert!(!app.settings.allow_secret_copy);
             if headless {
                 assert!(app.main.is_none());

@@ -314,7 +314,7 @@ impl Census {
         let jobs = if keys { key_jobs(app) } else { Vec::new() };
         let names: Vec<&str> = jobs.iter().map(crate::events::KeyJob::name).collect();
         let rpc: Vec<&str> = rx.try_iter().map(|job| job.name()).collect();
-        let launched = match &app.explorer_ui.launcher {
+        let launched = match &app.launcher {
             Launcher::Record(urls) => urls.len(),
             Launcher::System => usize::MAX,
         };
@@ -1805,9 +1805,6 @@ fn headless_browser() -> crate::app_browser::BrowserUi {
             Arc::new(crate::system_clock::SystemClock),
         ),
         reads: Arc::new(crate::browser::read::ReadContext::new(None)),
-        server: None,
-        pipe_error: None,
-        threads: Vec::new(),
         connections: 0,
         waiters: std::collections::HashMap::new(),
         broadcasts: std::collections::HashMap::new(),

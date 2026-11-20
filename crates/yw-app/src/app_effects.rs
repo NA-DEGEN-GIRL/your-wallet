@@ -174,7 +174,7 @@ impl App {
                 None => return Some(Cmd::FolderMissing),
             },
         };
-        let started = self.explorer_ui.launcher.open_folder(&path);
+        let started = self.launcher.open_folder(&path);
         logging::info(
             "app",
             "folder.open",
@@ -351,7 +351,7 @@ impl App {
             Effect::Approval(effect) => self.apply_approval_effect(effect),
             // S4 P3: the browser is started now and its result answered.
             Effect::OpenUrl { url, which } => {
-                let ok = self.explorer_ui.launcher.launch(&url);
+                let ok = self.launcher.launch(&url);
                 Some(Cmd::Opened { ok, which })
             }
             // S4 P3: the folder is opened now; a missing extension folder is answered.
@@ -395,6 +395,8 @@ impl App {
                 if let Some(main) = self.main.as_ref() {
                     main.release_capture();
                 }
+                // 2026-11-21 (S4 W1): the held area is the shell's now; the hold ended.
+                self.reset_hold = None;
                 None
             }
             // S4 P7a1: a secret window; an open is answered.

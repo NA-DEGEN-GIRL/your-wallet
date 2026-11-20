@@ -112,10 +112,10 @@ pub struct ResetUi {
     pub phrase_ok: bool,
     /// `설정과 API 키도 함께 옮기기`.
     pub include_settings: bool,
-    /// The 2 s hold of the hold area.
+    /// The 2 s hold of the hold area: active exactly while the area is held (2026-11-21, S4 W1:
+    /// the held area's control id `holding` left for the shell, `App::reset_hold`; before, it was
+    /// `Some` exactly while this gate was active).
     pub gate: HoldGate,
-    /// The hold area being held.
-    pub holding: Option<u16>,
     /// Hold progress 0–1000 (drawn).
     pub progress: u16,
     /// The key worker is moving the files.
@@ -296,7 +296,6 @@ impl App {
         if ok != self.reset.phrase_ok {
             self.reset.phrase_ok = ok;
             self.reset.gate.cancel();
-            self.reset.holding = None;
             self.refresh();
         }
     }
@@ -425,45 +424,26 @@ impl App {
         false
     }
 
-    /// The hold area under the pointer was pressed.
-    pub(crate) fn hold_down(&mut self, x: i32, y: i32, now: u64) {
-        let hit = self
-            .placed
-            .holds
-            .iter()
-            .find(|(_, rect, enabled)| *enabled && rect.contains(x, y))
-            .map(|(id, ..)| *id);
-        if let Some(id) = hit {
-            self.reset.holding = Some(id);
-            self.reset.gate.begin(now);
-            self.reset.progress = 0;
-            if let Some(main) = self.main.as_ref() {
-                main.set_capture();
-            }
-            self.refresh();
-        }
+    /// `Cmd::HoldBegin`: the shell found the pointer pressed on S22's hold area (spec/04 §2.20).
+    /// The 2 s gate starts at `now`, the shell's clock read when the message arrived (an active
+    /// gate keeps its start). 2026-11-21 (S4 W1): the wallet half of the old `App::hold_down`,
+    /// whose hit test, held-area id and pointer capture are the shell's now (`App::hold_down`
+    /// in `app.rs`); its steps keep their order (the capture is taken after this returns, the
+    /// repaint is applied when the entry drains, as before).
+    pub(crate) fn reset_hold_begin(&mut self, now: u64) {
+        self.reset.gate.begin(now);
+        self.reset.progress = 0;
+        self.refresh();
     }
 
-    /// Pointer moved: leaving the area cancels the hold.
-    pub(crate) fn hold_move(&mut self, x: i32, y: i32) {
-        let Some(id) = self.reset.holding else {
-            return;
-        };
-        let inside = self
-            .placed
-            .holds
-            .iter()
-            .any(|(held, rect, _)| *held == id && rect.contains(x, y));
-        if !inside {
-            self.hold_cancel();
-        }
-    }
-
-    /// Released (early) or capture lost. 2026-11-20 (S4 P4): the pointer capture is released by
-    /// the shell, `Effect::ReleaseHold` at the same point (before, `release_capture` was called
-    /// here); `lock` and the hold's tick reach it through this fn.
+    /// Released (early), the pointer left the area (`Cmd::HoldEnd`), the screen changed or the
+    /// wallet locked. 2026-11-20 (S4 P4): the pointer capture is released by the shell,
+    /// `Effect::ReleaseHold` at the same point (before, `release_capture` was called here);
+    /// `lock` and the hold's tick reach it through this fn. 2026-11-21 (S4 W1): a hold is on
+    /// while the gate is active (before, while the area's id `ResetUi.holding` was set, which it
+    /// was exactly then).
     pub(crate) fn hold_cancel(&mut self) {
-        if self.reset.holding.take().is_some() {
+        if self.reset.gate.active() {
             self.reset.gate.cancel();
             self.reset.progress = 0;
             self.emit(yw_engine::effect::Effect::ReleaseHold);
@@ -471,20 +451,21 @@ impl App {
         }
     }
 
-    /// Main-timer part of the hold: progress, then the action after 2 s.
+    /// Main-timer part of the hold: progress, then the action after 2 s. 2026-11-21 (S4 W1): the
+    /// hold is the gate's (before, the held area's id `ResetUi.holding`, set exactly while the
+    /// gate was active); the action is the reset, the one hold area's (before, run only when that
+    /// id was `ui::screens_reset::ids::RESET_HOLD`, the only id `Placed::holds` ever held).
     pub(crate) fn reset_hold_tick(&mut self, now: u64) {
-        let Some(id) = self.reset.holding else {
+        if !self.reset.gate.active() {
             return;
-        };
+        }
         if self.screen != Screen::Reset {
             self.hold_cancel();
             return;
         }
         if self.reset.gate.complete(now) {
             self.hold_cancel();
-            if id == crate::ui::screens_reset::ids::RESET_HOLD {
-                self.reset_execute();
-            }
+            self.reset_execute();
             return;
         }
         let done = BACKUP_ACK_HOLD_MS.saturating_sub(self.reset.gate.remaining_ms(now));

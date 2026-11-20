@@ -7,12 +7,18 @@
 //!
 //! SDDL and flags were compared with `archive/spec-v2.4:crates/platform-windows/src/
 //! broker_channel.rs:505-558,889-918` (its random pipe naming is not used).
+//!
+//! 2026-11-21 (S4 W1, plan §3.3): also [`PipeHost`], the shell's end of the bridge (the server,
+//! its start failure and the read worker threads), cut out of the wallet's `BrowserUi`.
 
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use yw_engine::browser::read::{ReadContext, run_worker};
+use yw_engine::browser::{READ_WORKERS, pinned_origin};
+use yw_engine::errors::ErrorCode;
 use yw_json::frame::{MAX_FRAME_BYTES, read_frame, write_frame};
 use yw_win::pipe::{Duplex, PipeReader, PipeWriter, Server, ServerError, ServerStop};
 
@@ -40,6 +46,93 @@ impl PipeServer {
         self.stop.stop();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
+        }
+    }
+}
+
+/// The shell's end of the browser bridge (spec/05 §8.1; 2026-11-21, S4 W1, plan §3.3, spec/15
+/// §11.4 S4: shell state, `App::pipe`): the named-pipe server, why there is none, and the read
+/// worker threads that serve the dispatcher. Before W1 these were the fields `server`,
+/// `pipe_error` and `threads` of `app_browser::BrowserUi`, which keeps the dispatcher and its
+/// state (wallet).
+pub struct PipeHost {
+    /// The server (`None`: see [`Self::error`]).
+    pub server: Option<PipeServer>,
+    /// Why there is no server: E-PIPE-001, or E-PIPE-002 when the pipe name was already held
+    /// by another server (`ServerError::AlreadyExists`).
+    pub error: Option<ErrorCode>,
+    /// Read worker threads.
+    pub threads: Vec<JoinHandle<()>>,
+}
+
+impl core::fmt::Debug for PipeHost {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("PipeHost")
+            .field("server", &self.server.is_some())
+            .field("error", &self.error)
+            .field("threads", &self.threads.len())
+            .finish()
+    }
+}
+
+impl PipeHost {
+    /// Starts the 4 read workers on the dispatcher `core` and its read context `reads`, then the
+    /// pipe server (spec/05 §8.1: within 2 s of process start). A server failure keeps the
+    /// dispatcher (E-PIPE-001 banner by the caller) and is logged here. 2026-11-21 (S4 W1): the
+    /// second half of the old `BrowserUi::start`, moved unchanged (`BrowserUi::new` is the
+    /// first).
+    #[must_use]
+    pub fn start(core: &Arc<BrowserCore>, reads: &Arc<ReadContext>) -> Self {
+        let mut threads = Vec::new();
+        for index in 0..READ_WORKERS {
+            let worker_core = Arc::clone(core);
+            let context = Arc::clone(reads);
+            if let Ok(handle) = std::thread::Builder::new()
+                .name(format!("yw-read-{index}"))
+                .spawn(move || run_worker(&worker_core, &context))
+            {
+                threads.push(handle);
+            }
+        }
+        let started = match (pinned_origin(), pipe_name()) {
+            (Some(origin), Ok(name)) => start(Arc::clone(core), &name, origin).map_err(Some),
+            _ => Err(None),
+        };
+        // `AlreadyExists` with the single-instance mutex held: the per-user pipe name was taken
+        // by a server this app did not create (spec/05 §8.1, E-PIPE-002).
+        let pipe_squatted = matches!(started, Err(Some(ServerError::AlreadyExists)));
+        let server = started.ok();
+        let error = match (&server, pipe_squatted) {
+            (Some(_), _) => None,
+            (None, true) => Some(ErrorCode::Pipe002),
+            (None, false) => Some(ErrorCode::Pipe001),
+        };
+        if pipe_squatted {
+            logging::warn(
+                "pipe",
+                "server.squatted",
+                &[("code", Field::Code(ErrorCode::Pipe002))],
+            );
+        } else if server.is_none() {
+            logging::warn(
+                "pipe",
+                "server.failed",
+                &[("code", Field::Code(ErrorCode::Pipe001))],
+            );
+        }
+        Self {
+            server,
+            error,
+            threads,
+        }
+    }
+
+    /// Stops accepting (shutdown, spec/04 §1.5-1; 2026-11-21, S4 W1: the first half of the old
+    /// `BrowserUi::stop`, which now stops the dispatcher after it).
+    pub fn stop(&mut self) {
+        if let Some(server) = self.server.as_mut() {
+            server.stop();
         }
     }
 }

@@ -1230,7 +1230,7 @@ const NEXT_CALL_OF_AN_ENTRY: [&str; 0] = [];
 /// code emits queues behind the open and is applied after the answer in the same drain. Not
 /// converted because the fn would become an opener for every caller (each revoke and removal
 /// path, the shell's press entry, every `refresh`).
-const READS_NO_ANSWER: [&str; 6] = [
+const READS_NO_ANSWER: [&str; 7] = [
     // After the press: the press input is put back (the outer press's) and this press's is
     // wiped (`used`, debug: its unread credential count). An open's answer reads no press input:
     // `take_cred` (core, RPC, LLM and EVM settings handlers) and `take_clip`/`take_image` (the
@@ -1258,6 +1258,12 @@ const READS_NO_ANSWER: [&str; 6] = [
     // answer (4100) is the same either way; P10b's `s4_flow`/`s4_secret` decide the A-3 lines.
     "approval app_browser.rs evm_key_removed_from_sites account_removed_from_sites 1",
     "approval app_chain_sites.rs chain_grants_removed revoke_waiting 1",
+    // 2026-11-21 (S4 W1): the main window's pointer press. `hold_down` (shell) sends only
+    // `Cmd::HoldBegin` to the logic (`reset_hold_begin`: S22's gate, its progress, `refresh`),
+    // which opens no approval window; it counts because `on_cmd` also routes an open's answer.
+    // After it, the drop-downs' close and its repaint read and change nothing an open's answer
+    // does. Before W1 the hold's logic ran inside `hold_down` (`refresh`, a listed site above).
+    "approval app.rs on_main_msg hold_down 1",
 ];
 
 /// Sites the check reports whose opening path never reaches the code after them (it has no

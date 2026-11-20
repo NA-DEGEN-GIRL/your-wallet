@@ -17,6 +17,7 @@ use yw_app::app::{
 };
 use yw_app::app_approval::{APPROVAL_CLASS, PANEL_CLASS};
 use yw_app::app_browser::BrowserUi;
+use yw_app::browser::server::PipeHost;
 use yw_app::build_info::start_text;
 use yw_app::errors::ErrorCode;
 use yw_app::events::{EventQueue, KeyJob, UiEvent};
@@ -402,7 +403,12 @@ fn main() -> ExitCode {
             _ => return fail(start_text::THREADS_FAILED.get(lang)),
         }
         // Browser bridge: dispatcher, read workers, pipe server (spec/05 §8.1, within 2 s).
-        state.attach_browser(BrowserUi::start(&events, transport, clock));
+        // 2026-11-21 (S4 W1): the dispatcher is wallet state, the read workers and the pipe
+        // server the shell's (`PipeHost`); started in the same order as by the old
+        // `BrowserUi::start`.
+        let browser = BrowserUi::new(&events, transport, clock);
+        let pipe = PipeHost::start(&browser.core, &browser.reads);
+        state.attach_browser(browser, pipe);
         state.drain();
         // 8. Classify the vault. The key worker first learns the language: the default labels of
         // a new or imported wallet are written in it (spec/14 §1).

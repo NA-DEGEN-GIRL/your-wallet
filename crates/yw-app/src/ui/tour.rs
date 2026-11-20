@@ -416,12 +416,15 @@ fn tour_browser(state: &mut App) {
     let name = format!(r"\\.\pipe\YourWallet.tour.{}", std::process::id());
     let server = crate::browser::pinned_origin()
         .and_then(|origin| crate::browser::server::start(Arc::clone(&core), &name, origin).ok());
+    // 2026-11-21 (S4 W1): the server is the shell's (`App::pipe`), the dispatcher the wallet's.
+    state.pipe = Some(crate::browser::server::PipeHost {
+        server,
+        error: None,
+        threads: Vec::new(),
+    });
     state.browser = Some(crate::app_browser::BrowserUi {
         core,
         reads: Arc::new(crate::browser::read::ReadContext::new(None)),
-        server,
-        pipe_error: None,
-        threads: Vec::new(),
         connections: 1,
         waiters: std::collections::HashMap::new(),
         broadcasts: std::collections::HashMap::new(),
@@ -2292,6 +2295,10 @@ fn screenshot_tour() {
     save(main_hwnd(&app), "23-settings-ai");
     entry(&app).llm_shutdown();
 
+    // The pipe server first, then the dispatcher (2026-11-21, S4 W1: as `App::shutdown`).
+    if let Some(pipe) = entry(&app).pipe.as_mut() {
+        pipe.stop();
+    }
     if let Some(browser) = entry(&app).browser.as_mut() {
         browser.stop();
     }

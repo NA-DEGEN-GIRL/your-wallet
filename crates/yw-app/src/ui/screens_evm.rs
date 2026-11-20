@@ -660,7 +660,8 @@ impl App {
         let chain_id = self.settings.evm_chain_id;
         let network = NetworkId::Eip155(chain_id);
         let lang = self.settings.language;
-        let browser = crate::app_browser::status_text(lang, self.browser.as_ref());
+        let browser =
+            crate::app_browser::status_text(lang, self.browser.as_ref(), self.pipe.as_ref());
         let rpc = if !self.apikeys.has(crate::apikeys::KeyName::Rpc(network)) {
             text::RPC_NO_ADDRESS.get(lang)
         } else if let Some(kind) = self.evm.blocked(chain_id) {

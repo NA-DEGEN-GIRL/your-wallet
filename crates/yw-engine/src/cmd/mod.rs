@@ -72,6 +72,10 @@
 //! secret session's serial and the window's [`OpenOutcome`]; never a secret).
 //! 2026-11-20 (S4 P7b): it also answers `Effect::Secret(OpenDisplay)` (a display window's open;
 //! the displayed secret never travels in it).
+//!
+//! 2026-11-21 (S4 W1): [`Cmd::HoldBegin`] and [`Cmd::HoldEnd`], S22's 2 s hold area (spec/04
+//! §2.20): the shell finds the pressed area, keeps it and takes the pointer; the logic keeps only
+//! the hold's gate. The area is no [`Press`] (S3 D3: no control sends it).
 
 use core::fmt;
 
@@ -193,6 +197,18 @@ pub enum Cmd {
         /// What became of the open.
         outcome: OpenOutcome,
     },
+    /// S22's hold area was pressed (S4 W1, spec/04 §2.20): the shell found the pointer on it and
+    /// takes the pointer capture. The logic starts the hold's 2 s gate at `now_ms`, the shell's
+    /// monotonic clock read when the message arrived (one read per pointer press, hit or not,
+    /// as before the split).
+    HoldBegin {
+        /// When the press arrived (the logic's `Clock`, monotonic ms).
+        now_ms: u64,
+    },
+    /// The hold ended early (S4 W1): the button was released, or the pointer left the area it
+    /// pressed. The logic cancels a running hold (and releases the pointer through
+    /// `Effect::ReleaseHold`); with none running it does nothing.
+    HoldEnd,
 }
 
 /// Variant, field names and lengths only (D28): never a field's text or a credential unit.
@@ -238,6 +254,11 @@ impl fmt::Debug for Cmd {
                 .field("serial", serial)
                 .field("outcome", outcome)
                 .finish(),
+            Self::HoldBegin { now_ms } => formatter
+                .debug_struct("HoldBegin")
+                .field("now_ms", now_ms)
+                .finish(),
+            Self::HoldEnd => formatter.write_str("HoldEnd"),
         }
     }
 }
@@ -444,6 +465,16 @@ impl Press {
 mod tests {
     use super::*;
     use crate::form::{CredField, CredUnits};
+
+    /// 2026-11-21 (S4 W1): S22's hold area commands print their name and the time only.
+    #[test]
+    fn hold_commands_print_their_name_and_time() {
+        assert_eq!(
+            format!("{:?}", Cmd::HoldBegin { now_ms: 1_234 }),
+            "HoldBegin { now_ms: 1234 }"
+        );
+        assert_eq!(format!("{:?}", Cmd::HoldEnd), "HoldEnd");
+    }
 
     /// 2026-11-20 (S4 P6): a copy mark's band prints as the step's name (the words are the
     /// shell's catalogue's).

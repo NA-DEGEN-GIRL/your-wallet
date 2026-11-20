@@ -1,7 +1,9 @@
-//! Automatic lock triggers (spec/04 §5, D12): the app-input idle tracker and the mapping of
-//! session, power and shutdown messages to actions.
-
-use yw_win::ui::Msg;
+//! Automatic lock triggers (spec/04 §5, D12): the lock reasons and the app-input idle tracker.
+//! Wallet code: no Windows type (source check `the_lock_module_names_no_shell`).
+//!
+//! 2026-11-21 (S4 W1, spec/15 §11.4 S4, plan §3.3): the mapping of the Windows session, power
+//! and shutdown messages to actions (`SystemAction`, `system_action`, with its test LK-3) moved
+//! to the shell's `shell_msg`; before, this file held it and named `yw_win::ui::Msg`.
 
 /// Why the wallet locked (logged as `lock reason=<…>`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,34 +96,9 @@ impl IdleTracker {
     }
 }
 
-/// What a system message asks the main window to do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SystemAction {
-    /// Lock now.
-    Lock(LockReason),
-    /// Run the shutdown sequence (spec/04 §1.5).
-    Shutdown,
-    /// `WM_QUERYENDSESSION`: reply TRUE, change nothing.
-    AllowEndSession,
-}
-
-/// Session, power and shutdown mapping (spec/04 §1.5, §5.1; LK-3).
-#[must_use]
-pub const fn system_action(msg: &Msg) -> Option<SystemAction> {
-    match msg {
-        Msg::SessionLock => Some(SystemAction::Lock(LockReason::SessionLock)),
-        Msg::SessionDisconnect => Some(SystemAction::Lock(LockReason::SessionDisconnect)),
-        Msg::Suspend => Some(SystemAction::Lock(LockReason::Suspend)),
-        Msg::Close | Msg::EndSession | Msg::SessionLogoff => Some(SystemAction::Shutdown),
-        Msg::QueryEndSession => Some(SystemAction::AllowEndSession),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{IdleTracker, LockReason, SystemAction, system_action};
-    use yw_win::ui::Msg;
+    use super::IdleTracker;
 
     #[test]
     fn lk1_idle_threshold_and_pause() {
@@ -165,34 +142,23 @@ mod tests {
         assert!(!idle.should_lock(limit * 4, minutes));
     }
 
+    /// 2026-11-21 (S4 W1): the lock reasons and the idle tracker are wallet code; the Win32
+    /// message mapping is the shell's (`shell_msg::system_action`). Code lines only (comments
+    /// dropped), split so that this test's own text does not match.
     #[test]
-    fn lk3_system_messages() {
-        assert_eq!(
-            system_action(&Msg::SessionDisconnect),
-            Some(SystemAction::Lock(LockReason::SessionDisconnect))
-        );
-        assert_eq!(
-            system_action(&Msg::SessionLock),
-            Some(SystemAction::Lock(LockReason::SessionLock))
-        );
-        assert_eq!(
-            system_action(&Msg::Suspend),
-            Some(SystemAction::Lock(LockReason::Suspend))
-        );
-        assert_eq!(
-            system_action(&Msg::SessionLogoff),
-            Some(SystemAction::Shutdown)
-        );
-        assert_eq!(
-            system_action(&Msg::EndSession),
-            Some(SystemAction::Shutdown)
-        );
-        assert_eq!(system_action(&Msg::Close), Some(SystemAction::Shutdown));
-        assert_eq!(
-            system_action(&Msg::QueryEndSession),
-            Some(SystemAction::AllowEndSession)
-        );
-        assert_eq!(system_action(&Msg::SessionUnlock), None);
-        assert_eq!(system_action(&Msg::Resume), None);
+    fn the_lock_module_names_no_shell() {
+        let code: String = include_str!("lock.rs")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(code.contains("pub struct IdleTracker"), "found the file");
+        for shell in [
+            concat!("yw_", "win"),
+            concat!("Ms", "g::"),
+            concat!("system_", "action"),
+        ] {
+            assert!(!code.contains(shell), "lock.rs names {shell}");
+        }
     }
 }

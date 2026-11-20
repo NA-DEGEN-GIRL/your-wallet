@@ -35,15 +35,15 @@ use crate::events::{
     KeyJob, KeyOutcome, KeyQueue, KeyResult, LockSignal, MetaLoaded, RevealWhat, RpcEvent, UiEvent,
     accept_result,
 };
-use crate::lock::{IdleTracker, LockReason, SystemAction, system_action};
+use crate::lock::{IdleTracker, LockReason};
 use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, Meta, RawAccount};
 use crate::network::NetworkId;
 use crate::secret_session::{AfterShown, SecretSession};
 use crate::settings::{RpcTemplate, Settings};
 use crate::shell_msg::{
-    WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT,
-    WM_YW_TAB_SHORTCUT,
+    SystemAction, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT,
+    WM_YW_TAB_SHORTCUT, system_action,
 };
 use crate::system_clock::SystemClock;
 use crate::text::is_valid_label;
@@ -830,8 +830,24 @@ pub struct App {
     pub(crate) rpc_import: crate::app_rpc_import::RpcImportUi,
     /// S23 `Chrome 확장 설치` (spec/04 §2.21).
     pub(crate) ext: crate::app_extension::ExtensionUi,
-    /// Block explorer links: the S15 card's form and the launcher (`app_explorer`, 2026-11-11).
+    /// Block explorer links: the S15 card's form (`app_explorer`, 2026-11-11; the launcher was
+    /// here too until 2026-11-21, S4 W1: [`Self::launcher`]).
     pub(crate) explorer_ui: crate::app_explorer::ExplorerUi,
+    /// The shell (2026-11-21, S4 W1, plan §3.3: the state cut out of the wallet's parts): how a
+    /// link or a folder is opened (`explorer.exe`; unit-test builds record it). Only the effect
+    /// executor uses it (`Effect::OpenUrl`, `Effect::OpenFolder`). Before W1,
+    /// `ExplorerUi.launcher`.
+    pub(crate) launcher: crate::app_explorer::Launcher,
+    /// The shell (2026-11-21, S4 W1): the named-pipe server, why there is none and the read
+    /// worker threads (`PipeHost`, spec/05 §8.1), attached with the dispatcher (`browser`) by
+    /// [`App::attach_browser`]. Before W1, the fields `server`, `pipe_error` and `threads` of
+    /// `BrowserUi`.
+    pub(crate) pipe: Option<crate::browser::server::PipeHost>,
+    /// The shell (2026-11-21, S4 W1): the control id of the S22 hold area the pointer pressed
+    /// (`Placed::holds`), for the pointer's move test. The wallet holds only the hold's gate
+    /// (`ResetUi::gate`) and hears of the hold through `Cmd::HoldBegin`/`Cmd::HoldEnd`; it ends a
+    /// hold itself with `Effect::ReleaseHold`, which clears this. Before W1, `ResetUi.holding`.
+    pub(crate) reset_hold: Option<u16>,
     /// The shell's open secret window (window and form; S4 P7a1).
     secret: Option<SecretWin>,
     /// The wallet's open secret session (the purpose of the one secret window; S4 P7a1).
@@ -1285,6 +1301,9 @@ impl App {
             rpc_import: crate::app_rpc_import::RpcImportUi::default(),
             ext: crate::app_extension::ExtensionUi::default(),
             explorer_ui: crate::app_explorer::ExplorerUi::default(),
+            launcher: crate::app_explorer::Launcher::default(),
+            pipe: None,
+            reset_hold: None,
             secret: None,
             secret_session: None,
             secret_serial: 0,
@@ -1386,14 +1405,20 @@ impl App {
         self.main.as_ref().map(Window::poster)
     }
 
-    /// Attaches the started browser bridge (spec/05 §8.1).
-    pub fn attach_browser(&mut self, browser: crate::app_browser::BrowserUi) {
+    /// Attaches the started browser bridge (spec/05 §8.1): the dispatcher (wallet state) and the
+    /// shell's pipe end (2026-11-21, S4 W1: two parts; before, one `BrowserUi` held both).
+    pub fn attach_browser(
+        &mut self,
+        browser: crate::app_browser::BrowserUi,
+        pipe: crate::browser::server::PipeHost,
+    ) {
         let lang = self.settings.language;
-        // The failure was logged by `BrowserUi::start`.
-        if let Some(code) = browser.pipe_error {
+        // The failure was logged by `PipeHost::start` (before W1, `BrowserUi::start`).
+        if let Some(code) = pipe.error {
             self.banner(Some(code), code.text_in(lang));
         }
         self.browser = Some(browser);
+        self.pipe = Some(pipe);
     }
 
     /// The key queue and lock signal shared with the key worker.
@@ -1777,7 +1802,7 @@ impl App {
                 Reply::Default
             }
             Msg::MouseUp { .. } => {
-                self.hold_cancel();
+                self.on_cmd(Cmd::HoldEnd);
                 Reply::Default
             }
             Msg::Timer(crate::app_scroll::SCROLL_TIMER_ID) => {
@@ -1882,6 +1907,48 @@ impl App {
     #[cfg(test)]
     pub(crate) fn test_main_timer_windowless(&mut self) -> Reply {
         self.test_on_main_windowless(&Msg::Timer(MAIN_TIMER_ID))
+    }
+
+    /// S22's hold area: the area under the pointer was pressed (spec/04 §2.20). 2026-11-21 (S4
+    /// W1): the shell half of the old `App::hold_down` (`app_reset`): the hit test against the
+    /// laid-out areas, the held area's id ([`Self::reset_hold`]) and the pointer capture; the
+    /// gate starts in the logic (`Cmd::HoldBegin` with `now`, read by the caller when the message
+    /// arrived, as before). The capture is taken before the logic's state changes (before W1,
+    /// after); nothing reads either in between, and the repaint is applied when the entry
+    /// drains, after both, as before.
+    fn hold_down(&mut self, x: i32, y: i32, now: u64) {
+        let hit = self
+            .placed
+            .holds
+            .iter()
+            .find(|(_, rect, enabled)| *enabled && rect.contains(x, y))
+            .map(|(id, ..)| *id);
+        if let Some(id) = hit {
+            self.reset_hold = Some(id);
+            if let Some(main) = self.main.as_ref() {
+                main.set_capture();
+            }
+            self.on_cmd(Cmd::HoldBegin { now_ms: now });
+        }
+    }
+
+    /// S22's hold area: the pointer moved; leaving the held area ends the hold (`Cmd::HoldEnd`).
+    /// 2026-11-21 (S4 W1): the shell half of the old `App::hold_move` (`app_reset`). The held
+    /// area counts only while the logic's gate runs: the logic also ends a hold by replacing
+    /// S22's state (phrase change, reset, open, cancel) without telling the shell, as the area's
+    /// id `ResetUi.holding` was cleared then before W1.
+    fn hold_move(&mut self, x: i32, y: i32) {
+        let Some(id) = self.reset_hold.filter(|_| self.reset.gate.active()) else {
+            return;
+        };
+        let inside = self
+            .placed
+            .holds
+            .iter()
+            .any(|(held, rect, _)| *held == id && rect.contains(x, y));
+        if !inside {
+            self.on_cmd(Cmd::HoldEnd);
+        }
     }
 
     fn on_system(&mut self, action: SystemAction) -> Reply {
@@ -2526,7 +2593,12 @@ impl App {
         for (item, outcome) in self.evm.queue.shutdown() {
             self.approval_finished(&item.payload, outcome);
         }
+        // The shell's pipe server first, then the dispatcher and its read workers (2026-11-21,
+        // S4 W1: before, `BrowserUi::stop` did both, in this order).
         if let Some(browser) = self.browser.as_mut() {
+            if let Some(pipe) = self.pipe.as_mut() {
+                pipe.stop();
+            }
             browser.stop();
         }
         self.wc_shutdown();
@@ -4673,6 +4745,10 @@ impl App {
             Cmd::FolderMissing => self.on_folder_missing(),
             // A secret input window's open (`Effect::Secret(OpenInput)`, S4 P7a1).
             Cmd::SecretOpened { serial, outcome } => self.on_secret_opened(serial, outcome),
+            // S22's hold area, pressed and released (2026-11-21, S4 W1; the shell keeps the
+            // area and the pointer, the logic the gate).
+            Cmd::HoldBegin { now_ms } => self.reset_hold_begin(now_ms),
+            Cmd::HoldEnd => self.hold_cancel(),
         }
     }
 

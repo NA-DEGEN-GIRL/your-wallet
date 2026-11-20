@@ -175,12 +175,8 @@ fn only_the_effect_executor_starts_the_launcher() {
     };
     // The shapes the line scan missed: a wrapped chain, a local binding, a call after a URL
     // literal on the same line (and a commented-out call that must not count), a path.
-    let wrapped = ["self.explorer_ui\n    .launcher\n    .", "launch(&url);"].concat();
-    let bound = [
-        "let l = &mut self.explorer_ui.launcher; l.",
-        "open_folder(&p);",
-    ]
-    .concat();
+    let wrapped = ["self\n    .launcher\n    .", "launch(&url);"].concat();
+    let bound = ["let l = &mut self.launcher; l.", "open_folder(&p);"].concat();
     let after_url = [
         "let u = \"https://x\"; launcher.",
         "launch(u); // l.",
@@ -230,7 +226,7 @@ fn helpers_follow_user_chains_and_overrides_and_open_without_a_browser() {
         .evm_chains
         .push(user_chain(Some("https://scan.example")));
     let mut app = app(&dir, settings);
-    assert!(matches!(app.explorer_ui.launcher, Launcher::Record(_)));
+    assert!(matches!(app.launcher, Launcher::Record(_)));
     assert_eq!(
         app.explorer_tx_url(NetworkId::Eip155(10), HASH).as_deref(),
         Some(format!("https://scan.example/tx/{HASH}").as_str())
@@ -252,7 +248,7 @@ fn helpers_follow_user_chains_and_overrides_and_open_without_a_browser() {
     );
     app.drain();
     assert_eq!(
-        app.explorer_ui.launcher,
+        app.launcher,
         Launcher::Record(vec![
             format!("https://scan.example/tx/{HASH}"),
             "https://app.hyperliquid-testnet.xyz/explorer/address/0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646"
@@ -400,7 +396,7 @@ fn english_explorer_chain_and_site_texts() {
         Lang::En,
         &crate::app_book::Resembles::Sent("0x5290".to_owned()),
     ));
-    lines.push(crate::app_browser::status_text(Lang::En, None));
+    lines.push(crate::app_browser::status_text(Lang::En, None, None));
     lines.push(crate::explorer::TemplateError::Placeholder(LinkKind::Tx).text_in(Lang::En));
     lines.push(app.unlock_pending_text().unwrap_or_default());
     lines.push(

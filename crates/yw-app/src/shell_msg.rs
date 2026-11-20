@@ -2,6 +2,14 @@
 //! the main window, the keyboard shortcuts the loop observer recognizes ([`Shortcut`],
 //! [`NavKey`], [`chain_tab_key`]) and the main window timer. 2026-11-17 (spec/15 §11.4 S2): moved
 //! out of `events`, which keeps only the platform-neutral queues and events.
+//!
+//! 2026-11-21 (S4 W1, spec/15 §11.4 S4, plan §3.3): also what the main window does with the
+//! Windows session, power and shutdown messages ([`system_action`], spec/04 §5.1 and LK-3),
+//! moved from `lock`, which keeps the wallet's `LockReason` and `IdleTracker`.
+
+use yw_win::ui::Msg;
+
+use crate::lock::LockReason;
 
 /// Event queue doorbell (`WM_APP + 1`).
 pub const WM_YW_EVENTS: u32 = 0x8001;
@@ -158,3 +166,67 @@ pub const fn chain_tab_key(vk: u16) -> Option<usize> {
 
 /// Main window timer.
 pub const MAIN_TIMER_MS: u32 = 250;
+
+/// What a system message asks the main window to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemAction {
+    /// Lock now.
+    Lock(LockReason),
+    /// Run the shutdown sequence (spec/04 §1.5).
+    Shutdown,
+    /// `WM_QUERYENDSESSION`: reply TRUE, change nothing.
+    AllowEndSession,
+}
+
+/// Session, power and shutdown mapping (spec/04 §1.5, §5.1; LK-3). 2026-11-21 (S4 W1): moved
+/// from `lock` unchanged.
+#[must_use]
+pub const fn system_action(msg: &Msg) -> Option<SystemAction> {
+    match msg {
+        Msg::SessionLock => Some(SystemAction::Lock(LockReason::SessionLock)),
+        Msg::SessionDisconnect => Some(SystemAction::Lock(LockReason::SessionDisconnect)),
+        Msg::Suspend => Some(SystemAction::Lock(LockReason::Suspend)),
+        Msg::Close | Msg::EndSession | Msg::SessionLogoff => Some(SystemAction::Shutdown),
+        Msg::QueryEndSession => Some(SystemAction::AllowEndSession),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SystemAction, system_action};
+    use crate::lock::LockReason;
+    use yw_win::ui::Msg;
+
+    /// LK-3 (2026-11-21, S4 W1: moved from `lock::tests` unchanged).
+    #[test]
+    fn lk3_system_messages() {
+        assert_eq!(
+            system_action(&Msg::SessionDisconnect),
+            Some(SystemAction::Lock(LockReason::SessionDisconnect))
+        );
+        assert_eq!(
+            system_action(&Msg::SessionLock),
+            Some(SystemAction::Lock(LockReason::SessionLock))
+        );
+        assert_eq!(
+            system_action(&Msg::Suspend),
+            Some(SystemAction::Lock(LockReason::Suspend))
+        );
+        assert_eq!(
+            system_action(&Msg::SessionLogoff),
+            Some(SystemAction::Shutdown)
+        );
+        assert_eq!(
+            system_action(&Msg::EndSession),
+            Some(SystemAction::Shutdown)
+        );
+        assert_eq!(system_action(&Msg::Close), Some(SystemAction::Shutdown));
+        assert_eq!(
+            system_action(&Msg::QueryEndSession),
+            Some(SystemAction::AllowEndSession)
+        );
+        assert_eq!(system_action(&Msg::SessionUnlock), None);
+        assert_eq!(system_action(&Msg::Resume), None);
+    }
+}

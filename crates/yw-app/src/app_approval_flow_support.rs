@@ -539,9 +539,6 @@ impl Fixture {
             app.browser = Some(crate::app_browser::BrowserUi {
                 core,
                 reads: Arc::new(crate::browser::read::ReadContext::new(None)),
-                server: None,
-                pipe_error: None,
-                threads: Vec::new(),
                 connections: 0,
                 waiters: std::collections::HashMap::new(),
                 broadcasts: std::collections::HashMap::new(),

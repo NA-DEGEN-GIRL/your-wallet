@@ -3755,7 +3755,7 @@ fn links_and_folders_open_through_effects_answered_in_the_same_borrow() {
     const HASH: &str = "0x7a329aaf9f457ef8516d5a51631fe5a75e3c12d7d71b6a73a38ce42ad352de2d";
     let (mut app, dir) = unlocked_app("open-effects", false);
     let recorded = |app: &App| {
-        match &app.explorer_ui.launcher {
+        match &app.launcher {
             Launcher::Record(opened) => Some(opened.clone()),
             Launcher::System => None,
         }
@@ -6253,7 +6253,7 @@ fn wallet_reset_from_the_lock_screen_returns_to_first_run() {
             .any(|item| matches!(item, Item::Hold { enabled: true, .. }))
     );
     // The 2 s hold, then the reset (the hold area's rectangle is not laid out headless).
-    h.app.reset.holding = Some(reset_ids::RESET_HOLD);
+    // 2026-11-21 (S4 W1): the hold is the gate's; before, the area's id was set here too.
     let start = yw_win::time::monotonic_ms();
     h.app.reset.gate.begin(start);
     h.app.reset_hold_tick(start + 1_000);
@@ -6284,6 +6284,78 @@ fn wallet_reset_from_the_lock_screen_returns_to_first_run() {
     );
     // S01 creation works again.
     assert!(control_ids(&h.app.items()).contains(&ids::FIRST_CREATE));
+}
+
+/// 2026-11-21 (S4 W1, plan §3.3, spec/04 §2.20): S22's hold area is split. The shell finds the
+/// pressed area (`Placed::holds`), keeps its id (`App::reset_hold`) and takes the pointer; the
+/// logic hears `Cmd::HoldBegin { now_ms }` / `Cmd::HoldEnd` and keeps only the gate, which
+/// starts at the shell's time. A press beside the area, or on a disabled one, starts nothing;
+/// leaving the area or releasing the button ends the hold (`Effect::ReleaseHold` clears the
+/// shell's id); a hold the logic ended by replacing S22's state (a phrase change) is no longer
+/// the shell's to end (no second cancel, no `ReleaseHold`), as before W1. Headless: no main
+/// window, so no capture is taken or released.
+#[test]
+fn the_reset_hold_area_is_the_shells_and_its_gate_the_wallets() {
+    use crate::ui::screens_reset::ids as reset_ids;
+    use yw_engine::cmd::Cmd;
+    use yw_win::ui::Rect;
+    let (mut app, dir) = unlocked_app("reset-hold-split", false);
+    app.open_reset();
+    app.drain();
+    let phrase = crate::app_reset::RESET_PHRASE.get(app.settings.language);
+    app.reset_phrase_changed(phrase);
+    assert!(app.reset.phrase_ok);
+    app.drain();
+    let area = Rect {
+        x: 10,
+        y: 20,
+        w: 100,
+        h: 40,
+    };
+    app.placed.holds = vec![(reset_ids::RESET_HOLD, area, false)];
+    // A disabled area, and a press beside an enabled one: nothing starts.
+    app.hold_down(15, 25, 1_000);
+    assert_eq!((app.reset_hold, app.reset.gate.active()), (None, false));
+    app.placed.holds = vec![(reset_ids::RESET_HOLD, area, true)];
+    app.hold_down(5, 25, 1_000);
+    assert_eq!((app.reset_hold, app.reset.gate.active()), (None, false));
+    // On it: the shell keeps the area, the logic's gate starts at the shell's time.
+    app.reset.progress = 7;
+    app.hold_down(15, 25, 1_000);
+    assert_eq!(app.reset_hold, Some(reset_ids::RESET_HOLD));
+    assert!(app.reset.gate.active());
+    assert_eq!(app.reset.gate.remaining_ms(1_500), 1_500);
+    assert_eq!(app.reset.progress, 0);
+    app.drain();
+    // Moving inside keeps it; leaving ends it (the logic's cancel, then the shell's id).
+    app.hold_move(100, 50);
+    assert!(app.reset.gate.active());
+    app.hold_move(111, 50);
+    assert!(!app.reset.gate.active());
+    assert_eq!(
+        app.reset_hold,
+        Some(reset_ids::RESET_HOLD),
+        "until the drain"
+    );
+    app.drain();
+    assert_eq!(app.reset_hold, None, "Effect::ReleaseHold cleared it");
+    // Released: `Cmd::HoldEnd`.
+    app.hold_down(15, 25, 2_000);
+    app.dispatch(Cmd::HoldEnd);
+    assert_eq!((app.reset_hold, app.reset.gate.active()), (None, false));
+    // The logic ends a hold itself (a phrase change): the shell's id stays, but counts only
+    // while the gate runs, so leaving the area sends nothing.
+    app.hold_down(15, 25, 3_000);
+    app.drain();
+    app.reset_phrase_changed("");
+    app.drain();
+    assert!(!app.reset.gate.active());
+    assert_eq!(app.reset_hold, Some(reset_ids::RESET_HOLD));
+    app.hold_move(500, 500);
+    assert!(app.outbox.is_empty(), "no cancel, no ReleaseHold");
+    // The logic's half names no shell state (the source check
+    // `converted_handlers_reach_the_main_window_only_through_effects` reads its text).
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A lock while the reset moves the files (Windows lock, sleep) never strands it: the wait
@@ -7138,6 +7210,14 @@ fn scroll_effects_carry_what_they_read() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// 2026-11-21 (S4 W1): the wallet half of the S22 hold, checked with the converted handlers below
+/// (the shell keeps the area and the pointer: `App::hold_down`/`hold_move` in `app.rs`).
+const RESET_HOLD_LOGIC: [&str; 3] = [
+    "    pub(crate) fn reset_hold_begin(&mut self, now: u64) {",
+    "    pub(crate) fn reset_hold_tick(&mut self, now: u64) {",
+    "    pub(crate) fn reset_phrase_changed(&mut self, text: &str) {",
+];
+
 /// 2026-11-20 (S4 P4): the handlers P4 converted reach the main window only through effects —
 /// no scroll offset or memory, focus, pointer capture, foreground or reveal of their own — and
 /// the logic's press dispatch (`on_press`) resolves no key and reads no focus. Only the effect
@@ -7202,7 +7282,8 @@ fn converted_handlers_reach_the_main_window_only_through_effects() {
         ),
         ("app_zec.rs", "    pub fn zec_select_tab(&mut self) {"),
     ];
-    for (file, head) in converted {
+    let hold = RESET_HOLD_LOGIC.map(|head| ("app_reset.rs", head));
+    for (file, head) in converted.into_iter().chain(hold) {
         let code = body(file, head);
         for shell in shell_names {
             assert!(!code.contains(shell), "{file}: {head} names {shell}");
