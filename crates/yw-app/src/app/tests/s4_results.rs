@@ -2668,7 +2668,16 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// templates, the URL helpers, the S15 card's form, the account cards' and send results' links and
 /// the `Cmd::Opened` answer `on_opened`); `Launcher` is the shell's since W1. Neither file had
 /// shell reach left (S4b P2 and P3 removed it), so the row only lists its fns.
-const WALLET_FNS: [(&str, &str); 165] = [
+/// W6 (2026-11-21, preflight §3 W6): the received history (`app_received.rs`: which cards are
+/// shown, the list keys, the read jobs, the main-timer part `received_tick`, which reads the
+/// wallet's main-window mirror `main_hidden` since W3, the answers and the activity cards' presses;
+/// `received_lock` is W3a's) and the side-file choices (`app_sidecar.rs`: the E-VLT-006 overlays'
+/// key results and presses and the journal hold of the send forms). The overlays' render
+/// builders (`journal_send_items`, `journal_closed_items`, `refusal_items`, `advanced_link`,
+/// `meta_overlay`, `journal_overlay`) stay out (D-21; S4d E0c), and with them the free fn
+/// `local_time` (`yw_win::time::local_wall_ms`): no wallet fn formats a local time (plan D-30).
+/// Neither file had shell reach left, so the row only lists its fns.
+const WALLET_FNS: [(&str, &str); 186] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -2834,6 +2843,27 @@ const WALLET_FNS: [(&str, &str); 165] = [
     ("W5", "explorer_activity"),
     ("W5", "on_explorer"),
     ("W5", "explorer_activity_link"),
+    ("W6", "received_shown"),
+    ("W6", "received_explorer_net"),
+    ("W6", "received_key"),
+    ("W6", "received_tokens"),
+    ("W6", "received_kind"),
+    ("W6", "received_pending"),
+    ("W6", "received_list"),
+    ("W6", "received_pending_sum"),
+    ("W6", "received_start"),
+    ("W6", "received_tick"),
+    ("W6", "received_now"),
+    ("W6", "received_event"),
+    ("W6", "on_received"),
+    ("W6", "meta_unreadable"),
+    ("W6", "journal_unreadable"),
+    ("W6", "choose_sidecar"),
+    ("W6", "journal_choice_closed"),
+    ("W6", "on_sidecar_resolved"),
+    ("W6", "on_sidecar"),
+    ("W6", "reset_elapsed"),
+    ("W6", "journal_hold"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
