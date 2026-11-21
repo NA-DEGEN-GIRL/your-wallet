@@ -506,7 +506,9 @@ impl App {
             self.zec_use_hardware(*index);
         }
     }
+}
 
+impl App {
     /// The label and source of the drop-down item of `source` on the current network (`address`
     /// names an imported key, whose item is its whole address).
     fn zec_item_of(&self, source: ZecKeySource, address: &str) -> (String, AccountSource) {

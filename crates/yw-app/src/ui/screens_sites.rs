@@ -413,7 +413,9 @@ impl App {
         }
         Some(text::PENDING.fill(lang, [&count.to_string(), &list]))
     }
+}
 
+impl App {
     /// Presses of S13 (2026-11-18, S3 C2: a `SitesPress`; before, the control id).
     pub(crate) fn on_sites(&mut self, press: SitesPress) {
         match press {
@@ -470,7 +472,9 @@ impl App {
             }
         }
     }
+}
 
+impl App {
     /// Test adapter (S3 C2, plan §3.2): presses S13 control `id` directly, as the tests did
     /// before; `false` when `id` is not one.
     #[cfg(test)]

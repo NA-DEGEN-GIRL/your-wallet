@@ -289,7 +289,9 @@ impl App {
             kept: false,
         }
     }
+}
 
+impl App {
     /// A card key that leaves a card (a cleared or re-slotted slot, a removed record): its
     /// addresses and balance; lost when it has no recovery words and `others` hold none of it
     /// (`lose_key`: the key itself goes — false when only the record goes); the note says what

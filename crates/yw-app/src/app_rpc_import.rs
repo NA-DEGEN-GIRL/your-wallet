@@ -494,7 +494,9 @@ impl App {
             }
         }
     }
+}
 
+impl App {
     /// `취소` of the confirmation list: the plan is dropped (its credentials wiped).
     fn rpc_import_cancel(&mut self) {
         self.rpc_import = RpcImportUi::default();
@@ -506,7 +508,9 @@ impl App {
         self.rpc_import.confirm_delete = ask;
         self.refresh();
     }
+}
 
+impl App {
     /// Test adapter (S3 C5, plan §3.2): presses an import-card control `id` directly, as the
     /// module tests did before; `false` when `id` is not one.
     #[cfg(test)]
@@ -532,7 +536,9 @@ impl App {
         let deleted = delete_file(path);
         self.on_rpc_json_deleted(deleted);
     }
+}
 
+impl App {
     /// The wallet's half of `rpc.json 지우기` (2026-11-22, S4c W13, critique B-5): the shell
     /// deleted the file, `deleted` is the result; the band says what happened.
     fn on_rpc_json_deleted(&mut self, deleted: Result<(), DeleteError>) {
@@ -554,7 +560,9 @@ impl App {
         self.info = Some(message.get(self.settings.language).to_owned());
         self.refresh();
     }
+}
 
+impl App {
     /// Reads `path` and shows the confirmation list (or a fixed error text).
     /// 2026-11-22 (S4c W13, critique B-5): the shell's half, the read; the plan (or the read
     /// error) enters the wallet through `on_rpc_json_read`. Before, this fn did both and
@@ -564,7 +572,9 @@ impl App {
         let read = read_plan(path, &self.url_networks(), &self.settings);
         self.on_rpc_json_read(read);
     }
+}
 
+impl App {
     /// The typed in-process entry of critique B-5 (2026-11-22, S4c W13): the plan the shell
     /// parsed from `rpc.json` (or why it gave none) enters the wallet here and waits in the
     /// import state for `가져오기`/`덮어쓰기`/`비어 있는 네트워크만` ([`Self::finish_rpc_import`],
@@ -677,7 +687,9 @@ impl App {
             message.push_str(&text::IGNORED.fill(lang, [&plan.ignored.to_string()]));
         }
     }
+}
 
+impl App {
     /// The `rpc.json에서 가져오기` card of settings → 네트워크(RPC) ([`RpcImportUi::on_top`]):
     /// shown only when the file exists or a plan waits for confirmation.
     pub(crate) fn rpc_import_section(&self, items: &mut Vec<Item>) {

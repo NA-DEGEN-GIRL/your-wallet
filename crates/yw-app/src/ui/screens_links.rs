@@ -293,7 +293,9 @@ impl App {
     pub(crate) fn is_picker_button(id: u16) -> bool {
         ids::FIXED.contains(&id) || id == crate::ui::screens_evm::ids::NETWORK_PICKER
     }
+}
 
+impl App {
     /// Closes the open account and network drop-downs (2026-11-12: Esc, any other command, a
     /// click on the window, another screen); whether one was open. The caller lays out again.
     pub(crate) fn close_pickers(&mut self) -> bool {
@@ -301,14 +303,18 @@ impl App {
         let network = core::mem::take(&mut self.evm.network_picker);
         account || network
     }
+}
 
+impl App {
     /// Whether a drop-down is open: what [`Self::close_pickers`] would return (2026-11-20, S4
     /// P4: the shell's Esc resolution reads it before closing).
     #[must_use]
     pub(crate) const fn pickers_open(&self) -> bool {
         self.wallet.account_menu.is_some() || self.wallet.evm.network_picker
     }
+}
 
+impl App {
     /// The drop-down buttons and the activity recipients (2026-11-18, S3 C1: a `LinksPress`;
     /// before, the control id). The open drop-down is kept as its button's press (2026-11-20,
     /// S4 P6; before, as its control id).
@@ -357,7 +363,9 @@ impl App {
             self.copy_address_text(&address);
         }
     }
+}
 
+impl App {
     /// Test adapter (S3 C1, plan §3.2): presses drop-down or recipient control `id` directly, as
     /// the tests did before; `false` when `id` is not one.
     #[cfg(test)]

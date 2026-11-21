@@ -355,7 +355,9 @@ impl App {
             text::DISCONNECT_ALL.get(lang),
         )]));
     }
+}
 
+impl App {
     /// Presses of the panel (2026-11-18, S3 C2: a `WcPress`, the edits' text from the form
     /// state; before, the control id and reads of the edits here).
     pub(crate) fn on_wc(&mut self, press: WcPress) {

@@ -252,7 +252,9 @@ impl App {
         }
         rows
     }
+}
 
+impl App {
     /// The end of a `내 계정` card: `숨긴 계정 n개 보기 ▸` and, opened, the hidden rows with
     /// `다시 보이기` (nothing when no account is hidden).
     pub fn hidden_items(&self, family: Family, items: &mut Vec<Item>) {
@@ -316,7 +318,9 @@ impl App {
             )]));
         }
     }
+}
 
+impl App {
     /// The hidden-account presses (2026-11-18, S3 C1: a `HiddenPress`; before, the control id).
     pub(crate) fn on_hidden(&mut self, press: HiddenPress) {
         let family = match press {
@@ -331,7 +335,9 @@ impl App {
         };
         self.unhide(family.0, usize::from(family.1));
     }
+}
 
+impl App {
     /// Test adapter (S3 C1, plan §3.2): presses hidden-account control `id` directly, as the
     /// tests did before; `false` when `id` is not one.
     #[cfg(test)]
@@ -348,7 +354,9 @@ impl App {
             },
         )
     }
+}
 
+impl App {
     /// `다시 보이기` of hidden row `row`: clears the mark only (no site grant comes back).
     pub fn unhide(&mut self, family: Family, row: usize) {
         let Some(hidden) = self.hidden_rows(family).into_iter().nth(row) else {

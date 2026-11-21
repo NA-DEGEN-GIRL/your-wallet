@@ -438,7 +438,9 @@ impl App {
                 .then_some(JournalHold::Check),
         }
     }
+}
 
+impl App {
     /// Above a send form's `검토`: why the journal holds it — closed (one line; the header band
     /// has the reason and `선택 다시 보기`), or the wait or the check after a journal reset.
     pub(crate) fn journal_send_items(&self, chain: SendChain, items: &mut Vec<Item>) {

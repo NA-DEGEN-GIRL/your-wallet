@@ -860,7 +860,9 @@ impl App {
     pub fn mn_set_remove_typed(&mut self, text: String) {
         self.mn.remove_typed = text;
     }
+}
 
+impl App {
     /// The prominent banner of a receive screen whose account comes from the phrase `mnemonic`
     /// ([`Self::mn_backup_gate`]) while that phrase's backup is not confirmed (until its quiz
     /// passes).
@@ -929,7 +931,9 @@ impl App {
             )]));
         }
     }
+}
 
+impl App {
     /// The Solana / Bitcoin / Zcash mnemonic choices (spec/02 §8.6); `false` when a row names
     /// no phrase or `press` is not one of them (2026-11-18, S3 C6: the press; before, the id).
     fn on_chain_pick(&mut self, press: MnPress) -> bool {

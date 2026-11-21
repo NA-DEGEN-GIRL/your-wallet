@@ -489,7 +489,9 @@ impl App {
             .unwrap_or_default();
         items.push(Item::Help(text::RECIPIENT.fill(lang, [&name])));
     }
+}
 
+impl App {
     /// An account row's name with its recovery phrase while the wallet has several.
     fn evm_pref_title(&self, pref: crate::meta::EvmAccountPref, label: &str) -> String {
         match pref {
@@ -653,7 +655,9 @@ impl App {
             counterparty: parse_address(&entry.counterparty).ok(),
         }
     }
+}
 
+impl App {
     /// The S10 status line (spec/04 §2.6).
     #[must_use]
     pub fn evm_status_line(&self) -> String {
@@ -682,7 +686,9 @@ impl App {
         };
         format!("RPC: {rpc}   ·   {browser}")
     }
+}
 
+impl App {
     /// Network radios with "(차단됨)".
     #[must_use]
     pub fn network_label(&self, chain_id: u64) -> String {
@@ -701,7 +707,9 @@ impl App {
         }
         name
     }
+}
 
+impl App {
     /// The S10 network drop-down's text of a chain (2026-11-11): [`App::network_label`] with
     /// `(메인넷)` after a built-in mainnet whose name does not say so (`Arbitrum One (메인넷)`;
     /// `Sepolia 테스트넷` and `Ethereum 메인넷` already do; user chains carry no such flag).
@@ -1523,7 +1531,9 @@ impl App {
             items.push(Item::Help(text::PICK_NONE.get(lang).to_owned()));
         }
     }
+}
 
+impl App {
     /// The picker rows in display order: book entries and own accounts matching the filter of
     /// the rows on screen (`SendForm::picker_filter`), at most [`ids::SEND_PICK_SPAN`].
     fn picker_known(&self) -> Vec<crate::flow::evm::form::KnownAddress> {
@@ -1552,7 +1562,9 @@ impl App {
             .map(|entry| entry.address)
             .collect()
     }
+}
 
+impl App {
     /// S11 result.
     pub fn send_result_screen(&self, items: &mut Vec<Item>) {
         let lang = self.settings.language;

@@ -1459,7 +1459,9 @@ impl App {
             items.push(Item::Mono(grouped(&address)));
         }
     }
+}
 
+impl App {
     /// Picker entries: address book and own accounts only (spec/07 §12.3), filtered by the text.
     #[must_use]
     pub fn sol_picker_entries(&self) -> Vec<(String, SolAddress)> {
@@ -1494,7 +1496,9 @@ impl App {
             .take(usize::from(ids::SEND_PICK_SPAN))
             .collect()
     }
+}
 
+impl App {
     /// The SOL send result.
     pub fn sol_send_result_screen(&self, items: &mut Vec<Item>) {
         let lang = self.settings.language;
@@ -1796,7 +1800,9 @@ impl App {
             }
         }
     }
+}
 
+impl App {
     /// The transaction ids of the S10 Solana activity rows, in display order (the rows of
     /// [`Self::sol_activity_counterparties`]), for their `해시 복사`.
     #[must_use]
@@ -1848,7 +1854,9 @@ impl App {
         }
         out
     }
+}
 
+impl App {
     /// The transaction id line of activity row `row` (2026-11-11): a click copies it (the
     /// transaction id is public data, as on the other chains), `탐색기에서 열기` ↗ and
     /// `탐색기 링크 복사` 🔗 at its right end when the cluster has a transaction page; then the

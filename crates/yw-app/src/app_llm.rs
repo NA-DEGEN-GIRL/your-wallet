@@ -406,7 +406,9 @@ impl App {
             }
         }
     }
+}
 
+impl App {
     /// Test adapter (S3 C3, plan §3.2): presses AI-section control `id` directly, as the tests
     /// and the screenshot tour did before; `false` when `id` is not one.
     #[cfg(test)]
@@ -423,7 +425,9 @@ impl App {
             },
         )
     }
+}
 
+impl App {
     fn llm_toggle(&mut self, checked: Option<bool>) {
         let checked = checked.unwrap_or(false);
         let enabled = self.settings.llm_explain.enabled;

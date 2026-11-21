@@ -417,7 +417,9 @@ impl App {
             btc_accounts,
         }
     }
+}
 
+impl App {
     /// Tests (2026-11-18, S3 A3): whether the dispatcher holds the view the UI state gives now
     /// (`sync_browser` ran after the last change; spec/05 §4.5).
     #[cfg(test)]
@@ -426,7 +428,9 @@ impl App {
             format!("{:?}", browser.core.wallet()) == format!("{:?}", self.wallet_view())
         })
     }
+}
 
+impl App {
     /// Pushes the UI-owned state to the dispatcher and performs the lock/unlock grant
     /// transitions (spec/05 §4.3–§4.4). Called on every refresh. A session opened with an
     /// unverified passphrase (`VaultView::PassphraseUnverified`) counts as unlocked here, with no

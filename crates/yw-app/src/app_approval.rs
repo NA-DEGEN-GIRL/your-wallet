@@ -3375,7 +3375,9 @@ impl App {
             }
         }
     }
+}
 
+impl App {
     // ----- the approval window (shell) ----------------------------------------------------
 
     /// Applies one `Effect::Approval` (S4 B5), called by the executor `App::drain` in emission
@@ -4138,7 +4140,9 @@ impl App {
         }
         None
     }
+}
 
+impl App {
     /// `다시 시도` / `시뮬레이션 다시 실행` of the shown window (`ApprovalSignal::Retry`).
     fn retry_action(&mut self) {
         let failed_retryable = self.evm.approval.as_ref().is_some_and(|flow| {
@@ -4156,7 +4160,9 @@ impl App {
             self.start_resimulation(false);
         }
     }
+}
 
+impl App {
     /// A message to the panel of the window opened last (the tests' entry; 2026-11-19, S4 B6).
     #[cfg(test)]
     pub(crate) fn on_panel_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
@@ -4858,7 +4864,9 @@ impl App {
             window.invalidate();
         }
     }
+}
 
+impl App {
     // ----- AI explanation (spec/06) -------------------------------------------------------
 
     fn llm_busy(&self) -> bool {
@@ -5086,7 +5094,9 @@ impl App {
         let ended = ai.panel.on_result(now, done.generation, done.result);
         self.ai_after(ended, None, Some(&done.stats));
     }
+}
 
+impl App {
     #[expect(
         clippy::too_many_lines,
         reason = "the layout, then the panel's shapes, lines and focus in one pass"

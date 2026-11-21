@@ -422,7 +422,9 @@ impl App {
             _ => {}
         }
     }
+}
 
+impl App {
     /// Test adapter (S3 C9, plan §3.2): presses Bitcoin control `id` directly, as the tests did
     /// before; `false` when `id` is not one.
     #[cfg(test)]

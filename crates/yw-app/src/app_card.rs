@@ -915,7 +915,9 @@ impl App {
             )
         })
     }
+}
 
+impl App {
     /// The band of an account card or send form whose `YubiKey` is still on its factory PINs
     /// (spec/10 §9.3, 2026-11-10), with `PIN 설정` (that card's "PIN 설정" in 설정 → `YubiKey`).
     /// Display only: the card step's refusal stays the last line of defence.
@@ -947,7 +949,9 @@ impl App {
             )]));
         }
     }
+}
 
+impl App {
     /// Refuses a dApp signing request of a `YubiKey` key still on its factory PINs: 4100 before
     /// any window (the card step would refuse it only after the approval), and one notice
     /// saying where the PIN is set.

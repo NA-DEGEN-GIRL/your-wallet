@@ -297,7 +297,9 @@ impl App {
                     )
             })
     }
+}
 
+impl App {
     /// The folded card: the badge and one line (network, account value and spot count, or the
     /// load state), and `펼치기 ▸`. No action button and so no band (every place that draws
     /// the actions draws the network band too). The balances are still read every 60 s.
@@ -728,7 +730,9 @@ impl App {
         }
         items.push(Item::CardEnd);
     }
+}
 
+impl App {
     /// `HyperCore` presses (2026-11-18, S3 C7: an `HcPress`; before, the control id, and
     /// `false` for an id that was not one of them).
     pub(crate) fn on_hc(&mut self, press: HcPress) {

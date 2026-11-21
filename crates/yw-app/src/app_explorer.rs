@@ -590,7 +590,9 @@ impl App {
             }
         }
     }
+}
 
+impl App {
     /// Test adapter (S3 C3, plan §3.2): presses explorer control `id` directly, as the tests
     /// did before; `false` when `id` is not one.
     #[cfg(test)]

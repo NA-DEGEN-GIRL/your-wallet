@@ -214,7 +214,9 @@ impl App {
             })
             .collect()
     }
+}
 
+impl App {
     /// The source of a `YubiKey` account (2026-11-15): `YubiKey: 메인·백업` — the cards holding
     /// the key of `role` by name (`#serial` when unnamed; the serial stays in Settings and the
     /// PIN window, the item is kept short), more than two as the first two + ` +N`. `YubiKey`
@@ -243,7 +245,9 @@ impl App {
         }
         text::SOURCE_CARDS.fill(lang, [&cards])
     }
+}
 
+impl App {
     /// The `복구 단어 추가·관리` link of the account cards.
     #[must_use]
     pub fn mnemonics_link(&self) -> Ctl {

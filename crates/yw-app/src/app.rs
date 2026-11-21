@@ -1455,7 +1455,9 @@ impl App {
             last_flush_ms: now,
         }
     }
+}
 
+impl App {
     /// The App's clock, for the workers and the browser dispatcher that must share its time base
     /// (2026-11-19, S4 B1a: one `Arc` for the App, the RPC worker, the key worker and the
     /// dispatcher, spec/15 §11.4 S4 critique A-9/B-19).
@@ -1463,7 +1465,9 @@ impl App {
     pub fn clock(&self) -> Arc<dyn Clock> {
         Arc::clone(&self.clock)
     }
+}
 
+impl App {
     /// The installed commit read at start (`build_info::read_install_commit`, already checked).
     pub fn set_install_commit(&mut self, commit: Option<String>) {
         self.install_commit = commit.filter(|commit| crate::logging::is_commit(commit));
@@ -1480,7 +1484,9 @@ impl App {
                 .to_owned(),
         );
     }
+}
 
+impl App {
     /// Adds a banner once per code; a codeless one once per text (a failure repeated while its
     /// band is still up adds no second identical band).
     pub fn banner(&mut self, code: Option<ErrorCode>, text: String) {
@@ -1513,7 +1519,9 @@ impl App {
         logging::warn("app", "error", &[("code", Field::Code(code))]);
         self.banner(Some(code), code.text_in(lang));
     }
+}
 
+impl App {
     /// Creates the main window and stores it.
     ///
     /// # Errors
@@ -1640,7 +1648,9 @@ impl App {
             main.show();
         }
     }
+}
 
+impl App {
     /// Queues a key job in the current epoch.
     pub fn key(&self, job: KeyJob) {
         self.key_queue.push(self.lock_epoch, job);
@@ -1803,7 +1813,9 @@ impl App {
         self.sync_browser();
         self.emit(Effect::Render);
     }
+}
 
+impl App {
     /// `Effect::Render` on Windows: recomputes the layout, syncs the child controls and
     /// repaints the main window (nothing without a window). 2026-11-20 (S4 P4, critique B-12(b)):
     /// cutting the offset to the content height, and the second layout that cut needs, stay here
@@ -2429,7 +2441,9 @@ impl App {
             logging::flush();
         }
     }
+}
 
+impl App {
     /// The reads a main-window message made due (a tab, network or account choice, the unlock,
     /// a worker's answer) start right after it instead of up to one timer period later
     /// (2026-11-12): the timer's own checks, so the guards, the 15 s cycle and the retries are
@@ -2533,7 +2547,9 @@ impl App {
         self.yk_words_dropped();
         self.set_screen(Screen::FirstRun);
     }
+}
 
+impl App {
     /// The automatic clear of the pending secret copy (spec/04 §4.8), when due (copy + 30 s, or
     /// at lock). The first attempt retries `OpenClipboard` 5 times 20 ms apart; while another
     /// program holds the clipboard, every main tick tries once more (no sleep) for
@@ -2706,7 +2722,9 @@ impl App {
         }
         self.lock_after_wait(vault_present);
     }
+}
 
+impl App {
     /// The wallet's own lock (2026-11-21, S4 W3a, preflight critic C11): `잠금`, a cancelled
     /// passphrase, the vault's own lock, a reset, the idle lock and (2026-11-22, S4c W3b) the
     /// shutdown's lock ([`Self::shutdown_steps`]). [`Self::lock_steps`] then
@@ -2841,7 +2859,9 @@ impl App {
         // `Lock` first either way (spec/04 §5.3 step 2).
         self.key(KeyJob::Load);
     }
+}
 
+impl App {
     /// The shutdown sequence (spec/04 §1.5), the shell's composition of the wallet's three halves
     /// (2026-11-22, S4c W3b, preflight critic C11, owner's second batch item 1: split like the
     /// lock): [`Self::shutdown_begin`] (the mode and the queue's items), the shell's pipe server,
@@ -2901,7 +2921,9 @@ impl App {
         // the last step; before, the wallet's readers saw `None` as not hidden too).
         self.sync_main_hidden();
     }
+}
 
+impl App {
     /// The shutdown's first wallet half (2026-11-22, S4c W3b; wallet code, preflight §3.0):
     /// `false` when it has begun already (nothing runs twice); else `AppMode::ShuttingDown`, then
     /// every queued and shown approval item finishes with `QueueOutcome::Shutdown` (its dApp or
@@ -2942,7 +2964,9 @@ impl App {
         }
         self.llm_shutdown();
     }
+}
 
+impl App {
     // ----- events ------------------------------------------------------------------------
 
     /// Drains the event queue (screenshot tour: the worker results of a scene). Gated like
@@ -2978,7 +3002,9 @@ impl App {
             self.drain();
         }
     }
+}
 
+impl App {
     /// A `테스트` answer: its band, then the next queued test (one at a time).
     pub(crate) fn on_rpc_event(&mut self, network: NetworkId, message: String, ok: bool) {
         self.set_rpc_message(
@@ -3023,14 +3049,18 @@ impl App {
             self.emit(Effect::Secret(SecretEffect::Form { serial, op }));
         }
     }
+}
 
+impl App {
     /// A key worker's result, then the effects its handler emitted (2026-11-20, S4 P10b: an
     /// entry; the handler is [`Self::key_result`]).
     pub(crate) fn on_key_result(&mut self, result: KeyResult) {
         self.key_result(result);
         self.drain();
     }
+}
 
+impl App {
     #[expect(clippy::too_many_lines, reason = "one arm per key outcome")]
     fn key_result(&mut self, result: KeyResult) {
         let lang = self.settings.language;
@@ -3695,7 +3725,9 @@ impl App {
         self.secret_session = Some(SecretSession::new(serial, kind, purpose, topmost));
         serial
     }
+}
 
+impl App {
     /// The shell makes the window of secret session `serial` (hidden; yw-win applies and checks
     /// the capture exclusion before the handler exists). Without a main window (headless tests,
     /// the census) it refuses as yw-win refuses a `Required` window whose exclusion failed.
@@ -3782,7 +3814,9 @@ impl App {
             );
         }
     }
+}
 
+impl App {
     /// Opens an input window (W01–W07, W10–W12) through the seam (2026-11-20, S4 P7a1): the
     /// previous window is closed, a secret session starts, and the shell is asked for the window
     /// (`SecretEffect::OpenInput`); its answer (`Cmd::SecretOpened`) shows it or ends the session
@@ -3832,7 +3866,9 @@ impl App {
             lang,
         }));
     }
+}
 
+impl App {
     /// The shell's half of an input window's open (today's `open_input` body before S4 P7a1):
     /// create, check the capture exclusion (spec/04 §4.5: `Preferred` — not excluded opens with
     /// T-CAPTURE-WARN and `보기` off), make the form and show it.
@@ -3971,7 +4007,9 @@ impl App {
         }
         secret.window.invalidate();
     }
+}
 
+impl App {
     /// The answer to a secret window's open (`Cmd::SecretOpened`; S4 P7a1). Only the first
     /// answer for the open session counts: one for another serial (a session that has ended) or
     /// for a window already shown is dropped. `Shown` marks the session shown; `Refused`
@@ -4088,7 +4126,9 @@ impl App {
             lang,
         }));
     }
+}
 
+impl App {
     /// A display window's open, the composition's (2026-11-21, S4 W2, plan §3.4, D-4: called
     /// only by `App::drain`; before, the executor's `apply_secret_effect` arm, which moved the
     /// secret in `open_display_window`). Only the open of the open, unshown session goes on (the
@@ -4237,7 +4277,9 @@ impl App {
         form.set_timeout_note(timeout_note);
         self.show_secret(serial, window, form);
     }
+}
 
+impl App {
     /// The display secret of session `serial`, moved out once, only while `serial` is the open
     /// session and its window is not shown yet (2026-11-20, S4 P7b; plan §3.4 `App::drain`
     /// handoff, critique A-3). Called only after the shell verified the window's capture
@@ -4293,7 +4335,9 @@ impl App {
             }));
         }
     }
+}
 
+impl App {
     /// The shell's half of `SecretEffect::Close` (the body of `close_secret` before S4 P7a1):
     /// the window of session `serial`, when it is the open one, is wiped, its timer stopped, the
     /// main window enabled again, the window destroyed and the main window brought forward.
@@ -4465,7 +4509,9 @@ impl App {
             }
         }
     }
+}
 
+impl App {
     /// What the window of secret session `serial` ended or asked for that is the wallet's
     /// (2026-11-22, S4c W12, preflight critic C12; plan §3.6, §7.3): the typed in-process entry
     /// the shell's [`Self::apply_form_action`] calls. The arms are the ones that fn held before
@@ -4515,7 +4561,9 @@ impl App {
             }
         }
     }
+}
 
+impl App {
     fn paste(&mut self) {
         let lang = self.settings.language;
         let Some(secret) = self.secret.as_mut() else {
@@ -4598,7 +4646,9 @@ impl App {
             self.refresh();
         }
     }
+}
 
+impl App {
     #[expect(clippy::too_many_lines, reason = "one arm per secret-window purpose")]
     fn on_submit(&mut self, purpose: Purpose, submission: Submission) {
         if let Purpose::YubiKey(yk) = purpose {
@@ -5065,7 +5115,9 @@ impl App {
         logging::info("app", "settings.file_restored", &[]);
         self.save_settings(self.settings.clone(), "settingsFileRestored");
     }
+}
 
+impl App {
     // ----- commands ----------------------------------------------------------------------
 
     /// A command of the main window. Any command but Enter, Esc and a drop-down's own selector
@@ -5254,7 +5306,9 @@ impl App {
             Press::Back | Press::Enter => {}
         }
     }
+}
 
+impl App {
     /// A receive or receive-address copy press while the passphrase is unverified: refused
     /// before any chain handler runs (BTC would derive and store a new address).
     fn refuse_receive(&mut self) {
@@ -5265,7 +5319,9 @@ impl App {
         );
         self.refresh();
     }
+}
 
+impl App {
     /// Test adapter of a converted family (S3 C, plan §3.2): a module test or the tour presses
     /// control `id` directly, as before S3 — no copy mark or last command, no receive gate and
     /// no received-history read — with the form state and the press input taken as
@@ -5399,7 +5455,9 @@ impl App {
             | F::YkCardName => false,
         }
     }
+}
 
+impl App {
     /// Presses of the core screens, settings sections and URL rows (2026-11-18, S3 C12: a
     /// `CorePress`; before, the core arms of `dispatch_legacy` by control id, then
     /// `on_indexed_command` for the four row ranges). The receive gate ran before these arms
@@ -6077,7 +6135,9 @@ impl App {
             .text(field)
             .map(|text| Zeroizing::new(text.to_owned()))
     }
+}
 
+impl App {
     /// Debug builds: one form-state difference (tests: its field name in the shell-call log,
     /// never a text).
     #[cfg(debug_assertions)]
@@ -6182,7 +6242,9 @@ impl App {
             }
         }
     }
+}
 
+impl App {
     /// The units of credential edit `field` the shell read with the press being handled
     /// (2026-11-18, S3 C3, plan §3.4 and D-l): moved out of the press input, wiped when dropped;
     /// empty when the edit did not exist, exactly as a read of a missing edit. A field the press
@@ -6201,14 +6263,18 @@ impl App {
         }
         units
     }
+}
 
+impl App {
     /// Debug builds: credential reads of a field no press captured (tests assert 0).
     #[cfg(all(test, debug_assertions))]
     #[must_use]
     pub(crate) fn cred_misses(&self) -> u32 {
         self.cred_misses.saturating_add(self.input.misses())
     }
+}
 
+impl App {
     /// The text of credential edit `field` (2026-11-18, S3 C12, plan §3.4: the units the shell
     /// read with the press, `App::take_cred`; before, `read_wiping(id, max)` read the edit here
     /// into a wiping buffer). Decoded as before: one `char` per UTF-16 unit, a unit that is no
