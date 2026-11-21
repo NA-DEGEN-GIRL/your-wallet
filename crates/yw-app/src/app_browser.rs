@@ -138,7 +138,8 @@ pub struct BrowserUi {
     /// The lock procedure has started: the dispatcher already behaves as locked while the UI
     /// thread still finishes the lock (no `eth_accounts` answers during the suspend wait).
     pub locking: bool,
-    /// Chain-switch grant changes not yet written to meta, and when the last write happened.
+    /// Chain-switch grant changes and a revoke not yet written to meta, and when the last write
+    /// happened.
     pub grant_write: GrantWrite,
     /// S13 as last drawn: which grant each `연결 해제` button disconnects.
     pub site_rows: SiteRows,
@@ -154,11 +155,16 @@ pub struct SiteRows {
     pub keys: std::cell::RefCell<Vec<(BrowserOrigin, yw_core::policy::Family)>>,
 }
 
-/// Coalesced grant writes ([`GRANT_WRITE_INTERVAL_MS`]).
+/// Coalesced grant writes ([`GRANT_WRITE_INTERVAL_MS`]) and a revoke's write still waiting.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GrantWrite {
     /// A chain switch is waiting to be written.
     pub dirty: bool,
+    /// A revoke the dispatcher reported is waiting to be written: its write
+    /// (`AfterOpen::WriteGrantsThenRefresh`) may wait for the answer of an approval open
+    /// (2026-11-21, S4 F16, owner decision, spec/04 §5.3, spec/15 §18 item 16). The lock writes it
+    /// first ([`App::flush_grant_writes`]); the main timer does not ([`Self::due`]).
+    pub revoke: bool,
     /// Monotonic ms of the last grant write.
     pub last_ms: Option<u64>,
 }
@@ -171,7 +177,21 @@ impl GrantWrite {
         self.due(now_ms)
     }
 
-    /// Whether a pending write is due.
+    /// Notes a revoke whose write may wait for an approval open's answer (2026-11-21, S4 F16).
+    pub const fn note_revoke(&mut self) {
+        self.revoke = true;
+    }
+
+    /// Whether any write is waiting (a chain switch or a revoke), due or not: what the lock and
+    /// shutdown write first ([`App::flush_grant_writes`]; 2026-11-21, S4 F16: before, a chain
+    /// switch only).
+    #[must_use]
+    pub const fn pending(&self) -> bool {
+        self.dirty || self.revoke
+    }
+
+    /// Whether a pending chain-switch write is due (the main timer's; a waiting revoke is
+    /// written by its own step or by the lock, never by the timer).
     #[must_use]
     pub const fn due(&self, now_ms: u64) -> bool {
         self.dirty
@@ -184,6 +204,7 @@ impl GrantWrite {
     /// A write happened (any grant change).
     pub const fn written(&mut self, now_ms: u64) {
         self.dirty = false;
+        self.revoke = false;
         self.last_ms = Some(now_ms);
     }
 }
@@ -499,12 +520,17 @@ impl App {
         self.wc_grants_changed();
     }
 
-    /// Writes a coalesced chain switch now if one is pending (lock, shutdown paths).
+    /// Writes a coalesced chain switch now if one is pending (lock, shutdown paths), and a revoke
+    /// whose write still waits for an approval open's answer (2026-11-21, S4 F16, owner decision,
+    /// spec/04 §5.3, spec/15 §18 item 16: the lock calls this at its start, before it drops the
+    /// steps kept for that open (`App::lock_steps`, F14) and before the dispatcher locks, so the
+    /// revoke is in meta and does not come back at the next unlock; before F16 only a chain
+    /// switch, and a revoke's kept write was dropped by the lock unwritten).
     pub(crate) fn flush_grant_writes(&mut self) {
         if self
             .browser
             .as_ref()
-            .is_some_and(|browser| browser.grant_write.dirty)
+            .is_some_and(|browser| browser.grant_write.pending())
             && matches!(self.mode, AppMode::Unlocked { .. })
         {
             self.write_grants();
@@ -961,7 +987,16 @@ impl App {
     /// 2026-11-20 (S4 P10a): after a revoke, the grants are written and the screen repainted
     /// after the answer of an open the revoke asked for (`AfterOpen::WriteGrantsThenRefresh`;
     /// before, here directly, the repaint after the `match` for every change).
+    /// 2026-11-21 (S4 F16, owner decision, spec/04 §5.3, spec/15 §18 item 16): the revoke is noted
+    /// as a waiting write first (`GrantWrite::revoke`), so a lock before that answer writes it
+    /// (`flush_grant_writes`) before it drops the kept step; before, the lock dropped the step and
+    /// the revoke came back from meta at the next unlock.
     fn persist_grant_change(&mut self, origin: &BrowserOrigin, change: GrantChange) {
+        if !matches!(change, GrantChange::Chain(_))
+            && let Some(browser) = self.browser.as_mut()
+        {
+            browser.grant_write.note_revoke();
+        }
         match change {
             GrantChange::Revoked => {
                 self.revoke_waiting(origin, yw_core::policy::Family::Evm);
@@ -1441,6 +1476,24 @@ mod tests {
         assert!(write.due(1_000 + GRANT_WRITE_INTERVAL_MS));
         write.written(1_000 + GRANT_WRITE_INTERVAL_MS);
         assert!(!write.due(u64::MAX), "nothing pending");
+    }
+
+    /// 2026-11-21 (S4 F16, spec/15 §18 item 16): a revoke's waiting write is pending for the
+    /// lock's flush but never due for the main timer, and any write clears it.
+    #[test]
+    fn a_waiting_revoke_write_is_pending_but_not_due() {
+        let mut write = GrantWrite::default();
+        assert!(!write.pending());
+        write.note_revoke();
+        assert!(write.pending(), "the lock writes it");
+        assert!(!write.due(0), "the timer does not");
+        assert!(!write.due(u64::MAX));
+        write.written(5);
+        assert!(!write.pending(), "a write took it");
+        assert!(write.note_chain_switch(5 + GRANT_WRITE_INTERVAL_MS));
+        write.note_revoke();
+        write.written(5 + GRANT_WRITE_INTERVAL_MS);
+        assert!(!write.pending(), "one write takes both");
     }
 }
 

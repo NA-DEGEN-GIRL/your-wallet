@@ -1822,6 +1822,170 @@ fn a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry() {
     assert!(app.evm.approval.is_none());
 }
 
+/// The origins of the dispatcher's EVM grants, in its order.
+fn granted_origins(fx: &Fixture) -> Vec<String> {
+    let app = fx.app.borrow();
+    app.browser.as_ref().map_or_else(Vec::new, |browser| {
+        browser
+            .core
+            .grants()
+            .iter()
+            .map(|site| site.origin.as_str().to_owned())
+            .collect()
+    })
+}
+
+/// The meta document of the last `KeyJob::SaveMeta` in `jobs`, if any.
+fn last_saved_meta(jobs: Vec<KeyJob>) -> Option<crate::meta::Meta> {
+    jobs.into_iter().rev().find_map(|job| match job {
+        KeyJob::SaveMeta { meta } => Some(*meta),
+        _ => None,
+    })
+}
+
+/// An unlock in one entry: the mode is `Unlocked` and the key worker's meta load answers with
+/// `meta` (`KeyOutcome::Meta`, at the current epoch), as after the password.
+fn unlock_with_meta(fx: &Fixture, meta: crate::meta::Meta) {
+    use crate::app::AppMode;
+    use crate::events::MetaLoaded;
+
+    let mut app = fx.app();
+    app.mode = AppMode::Unlocked {
+        alt_passphrase: false,
+    };
+    let epoch = app.lock_epoch;
+    app.on_key_result(KeyResult {
+        epoch,
+        outcome: KeyOutcome::Meta(Ok(MetaLoaded {
+            meta: Box::new(meta),
+            mismatch: false,
+            prefs_reset: false,
+            has_mnemonic: true,
+            zec_keys: Vec::new(),
+            mnemonics: Vec::new(),
+        })),
+    });
+}
+
+/// 2026-11-21 (S4 F16, owner decision, spec/04 §5.3, spec/05 §4.5, spec/15 §18 item 16): a lock
+/// keeps a dApp revoke. The deferred-answer shape of
+/// [`a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry`]: in entry 1 a request of
+/// `app.example` asks for an approval open and, before its answer, the dispatcher reports the
+/// revoke of `other.example` (`GrantChange::Revoked`), whose grant write
+/// (`AfterOpen::WriteGrantsThenRefresh`) is kept for that answer; the shell holds the entry's
+/// effects. Entry 2 locks: the lock writes the waiting revoke first (`flush_grant_writes`, before
+/// F14 drops the kept step). Entry 3 applies the held effects (the stale open is answered). The
+/// next unlock (`KeyOutcome::Meta` with the last meta document saved) leaves `other.example`
+/// disconnected and `app.example` connected. Before F16 the lock dropped the write, the last
+/// saved document still held `other.example`, and its grant came back at the unlock. No
+/// production entry takes this path on Windows (every entry drains, so the answer comes in the
+/// revoke's own entry); it is the shape of a shell that answers in a later entry (S4d E2).
+/// Headless, no window; files only below the fixture's temp folder.
+#[test]
+fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
+    use yw_engine::effect::Effect;
+
+    use crate::app::Screen;
+    use crate::app_approval::AfterOpen;
+    use crate::browser::{DappEvent, GrantChange};
+    use yw_core::policy::BrowserOrigin;
+
+    let fx = fixture("revoke-lock-deferred");
+    let outlet = dapp(&fx, false, true);
+    grant(&fx, OTHER, ACCOUNT_B);
+    // Both grants are in meta (the document a later unlock reads).
+    fx.app().write_grants();
+    let mut saved = last_saved_meta(fx.key_jobs());
+    assert_eq!(
+        saved.as_ref().map(|meta| meta.connected_sites.len()),
+        Some(2),
+        "both sites are saved"
+    );
+    let core = fx
+        .app
+        .borrow()
+        .browser
+        .as_ref()
+        .map(|browser| Arc::clone(&browser.core))
+        .unwrap();
+    personal_sign_frame_only(&fx, &outlet, &core);
+    let _ = headless_host::take_effects();
+    // Entry 1: the open is asked for; the revoke's write is kept for its answer; the shell holds
+    // the entry's effects.
+    let held: Vec<Effect> = {
+        let mut app = fx.app();
+        for event in outlet.events.drain() {
+            if let UiEvent::Dapp(event) = event {
+                app.on_dapp_event(event);
+            }
+        }
+        assert!(app.evm.open_unanswered.is_some(), "the open is queued");
+        let other = BrowserOrigin::parse(OTHER).unwrap();
+        assert!(core.remove_grant(&other), "the dispatcher's revoke");
+        app.on_dapp_event(DappEvent::GrantChanged {
+            origin: other,
+            change: GrantChange::Revoked,
+        });
+        assert!(
+            app.evm
+                .after_open
+                .iter()
+                .any(|(_, after)| matches!(after, AfterOpen::WriteGrantsThenRefresh)),
+            "the revoke's write waits for the open's answer"
+        );
+        assert!(
+            app.browser
+                .as_ref()
+                .is_some_and(|browser| browser.grant_write.revoke),
+            "and is noted as waiting"
+        );
+        app.outbox.drain(..).collect()
+    };
+    if let Some(meta) = last_saved_meta(fx.key_jobs()) {
+        saved = Some(meta);
+    }
+    assert_eq!(
+        saved.as_ref().map(|meta| meta.connected_sites.len()),
+        Some(2),
+        "nothing written yet"
+    );
+    // Entry 2: a lock.
+    {
+        let mut app = fx.app();
+        app.lock(LockReason::Manual);
+        assert!(app.evm.after_open.is_empty(), "the lock dropped the step");
+        assert!(
+            app.browser
+                .as_ref()
+                .is_some_and(|browser| !browser.grant_write.revoke),
+            "the lock wrote the revoke"
+        );
+    }
+    assert_eq!(fx.app.borrow().screen, Screen::Locked);
+    if let Some(meta) = last_saved_meta(fx.key_jobs()) {
+        saved = Some(meta);
+    }
+    // Entry 3: the shell applies the held effects; the stale open is answered after the lock.
+    {
+        let mut app = fx.app();
+        for effect in held {
+            app.emit(effect);
+        }
+    }
+    assert_eq!(dapp_answers(&outlet), "4001 User rejected the request.");
+    assert!(granted_origins(&fx).is_empty(), "locked: no grants");
+    // The next unlock reads the last saved document.
+    unlock_with_meta(&fx, saved.expect("a saved meta document"));
+    assert_eq!(
+        granted_origins(&fx),
+        vec!["https://app.example".to_owned()],
+        "the revoked site stays disconnected after the unlock"
+    );
+    let app = fx.app.borrow();
+    assert!(app.evm.after_open.is_empty());
+    assert!(app.approval_win.is_none(), "no window was made");
+}
+
 /// The store state of request `id` (shown before a revoke or cancel), without the windowed
 /// fact's window count.
 fn store_fact(fx: &Fixture, id: Option<ApprovalId>) -> String {

@@ -2730,6 +2730,10 @@ impl App {
         // open waiting: the lock opens no window. Before F14 the kept steps stayed and ran with
         // the stale answer, after the lock. Clearing after the `Suspend` drain would be too late
         // (`a_suspend_lock_drops_the_steps_kept_for_an_open_before_its_drain`, F14 review).
+        // 2026-11-21 (S4 F16, owner decision, spec/15 §18 item 16): a revoke's kept grant write
+        // (`AfterOpen::WriteGrantsThenRefresh`) was done above by `browser_lock_begin`'s
+        // `flush_grant_writes`, while meta and the dispatcher's grants were still there; only
+        // its repaint is dropped here (the lock repaints). Before F16 the write was dropped too.
         self.evm.after_open.clear();
         self.evm.open_unanswered = None;
         let before = self.lock_signal.count();

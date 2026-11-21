@@ -1366,7 +1366,9 @@ pub(crate) enum AfterOpen {
     /// The grants written, then `refresh` (a revoke the dispatcher reported). 2026-11-21 (S4 F14
     /// review, spec/15 §18 item 16): dropped by a lock before the open's answer, so the revoke is
     /// not saved to meta; the same before F14 (it ran after the lock, with no meta). Unreachable
-    /// while every entry drains; open for S4d E2.
+    /// while every entry drains; open for S4d E2. 2026-11-21 (S4 F16, owner decision): the revoke
+    /// is noted as a waiting write (`GrantWrite::revoke`), which the lock writes at its start
+    /// (`App::flush_grant_writes`) before it drops this step, so the revoke is saved.
     WriteGrantsThenRefresh,
     /// `finish_approval` (a consumed Bitcoin approval).
     Finish(QueueOutcome),
