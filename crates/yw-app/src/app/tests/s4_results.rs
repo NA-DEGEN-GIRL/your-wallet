@@ -4631,6 +4631,8 @@ fn the_lock_composition_drains_only_for_suspend() {
 /// `on_system` and `on_command` call `shutdown`, `on_command` right after the `종료` press, whose
 /// wallet arm (`on_core`'s `CorePress::Exit`) does nothing. Before W3b, `on_core` called
 /// `shutdown`, the shell's composition, from wallet code. Finds every fn it checks (A-20).
+/// 2026-11-22 (S4c W3b review): it also pins the order of the statements inside each half (the
+/// lock count read before the wallet's lock above all); before, only the composition's order.
 fn the_shutdown_composition_runs_from_the_shell(files: &[Src]) {
     let app = src_of(files, "yw-app/src/app.rs");
     let flat = |name: &str| -> String {
@@ -4638,24 +4640,60 @@ fn the_shutdown_composition_runs_from_the_shell(files: &[Src]) {
         assert_eq!(bodies.len(), 1, "one fn {name} in app.rs");
         bodies[0].split_whitespace().collect()
     };
-    let shutdown = flat("shutdown");
-    let order = [
-        "if!self.shutdown_begin(){return;}",
-        "pipe.stop();",
-        "letbefore=self.shutdown_steps();self.drain();",
-        "self.lock_signal.wait_beyond(before,Duration::from_secs(5));self.shutdown_after_wait();\
-         self.save_window_state();",
-        "yw_win::ui::quit(0);",
-    ];
-    let mut at = 0;
-    for step in order {
-        let found = shutdown[at..].find(step);
-        assert!(
-            found.is_some(),
-            "shutdown lost or reordered {step}: {shutdown}"
-        );
-        at += found.unwrap_or_default() + step.len();
-    }
+    // Each step of `name`, whitespace-free, after the one before it.
+    let in_order = |name: &str, order: &[&str]| {
+        let body = flat(name);
+        let mut at = 0;
+        for step in order {
+            let found = body[at..].find(step);
+            assert!(found.is_some(), "{name} lost or reordered {step}: {body}");
+            at += found.unwrap_or_default() + step.len();
+        }
+    };
+    in_order(
+        "shutdown",
+        &[
+            "if!self.shutdown_begin(){return;}",
+            "pipe.stop();",
+            "letbefore=self.shutdown_steps();self.drain();",
+            "self.lock_signal.wait_beyond(before,Duration::from_secs(5));\
+             self.shutdown_after_wait();self.save_window_state();",
+            "yw_win::ui::quit(0);",
+        ],
+    );
+    // The halves keep the order the one fn had before W3b (2026-11-22, S4c W3b review): the
+    // mode before the queue's items finish; the dispatcher's stop, then `WalletConnect`, then the
+    // key worker's lock count read before the lock (read after it, a fast worker's signal can
+    // land first and every shutdown waits the full 5 s), the lock, the count returned; the key
+    // worker's stop, then the RPC worker's, then the AI explanation's.
+    in_order(
+        "shutdown_begin",
+        &[
+            "ifself.mode==AppMode::ShuttingDown{returnfalse;}",
+            "self.set_mode(AppMode::ShuttingDown);",
+            "self.evm.queue.shutdown()",
+            "self.approval_finished(",
+            "true}",
+        ],
+    );
+    in_order(
+        "shutdown_steps",
+        &[
+            "ifletSome(browser)=self.browser.as_mut(){browser.stop();}",
+            "self.wc_shutdown();",
+            "letbefore=self.lock_signal.count();",
+            "self.lock_wallet(WalletLock::Shutdown);",
+            "before}",
+        ],
+    );
+    in_order(
+        "shutdown_after_wait",
+        &[
+            "self.key_queue.push(self.lock_epoch,KeyJob::Shutdown);",
+            "ifletSome(tx)=self.rpc_tx.take(){let_=tx.send(RpcJob::Shutdown);}",
+            "self.llm_shutdown();",
+        ],
+    );
     for half in ["shutdown_begin", "shutdown_steps", "shutdown_after_wait"] {
         assert!(WALLET_FNS.contains(&("W3b", half)), "{half} is wallet code");
         let body = flat(half);
