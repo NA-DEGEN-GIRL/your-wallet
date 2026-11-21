@@ -7555,6 +7555,22 @@ fn secret_sessions_follow_their_window_results() {
     // A form action of another serial reaches no purpose; the open one's cancel ends it.
     app.apply_form_action(serial + 1, FormAction::Cancel);
     assert_eq!(app.secret_purpose(), Some(Purpose::ChangePassword));
+    // 2026-11-22 (S4c W12, critic C12): the wallet's half drops another serial's submission
+    // too (wiped where it is dropped): no key job, no form operation, the session stays.
+    assert!(app.key_queue.is_empty());
+    app.on_secret_action(
+        serial + 1,
+        crate::secret_session::SecretAction::Submit(crate::ui::secret::Submission {
+            values: vec![
+                Zeroizing::new(b"old".to_vec()),
+                Zeroizing::new(b"new".to_vec()),
+            ],
+            checkbox: false,
+        }),
+    );
+    assert!(app.key_queue.is_empty(), "no ChangePassword job");
+    assert!(app.outbox.is_empty(), "no Busy form operation");
+    assert_eq!(app.secret_purpose(), Some(Purpose::ChangePassword));
     app.apply_form_action(serial, FormAction::Cancel);
     assert!(!app.secret_open());
 

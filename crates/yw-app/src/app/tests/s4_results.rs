@@ -1027,6 +1027,9 @@ struct Kind {
     /// (2026-11-20, P9 review): one renamed or moved out of the scanned code fails here
     /// instead of dropping out of the check. New readers need no entry. Not listed: the
     /// `Debug` impls named `fmt` in yw-engine that print a `self.info` of their own.
+    /// 2026-11-22 (S4c W12, preflight critic C12): the copy and launch floors name
+    /// `on_secret_action` instead of `apply_form_action`: the time-out notice (`self.info`) moved
+    /// with the wallet's half of the secret form's actions.
     readers_floor: &'static [&'static str],
 }
 
@@ -1095,7 +1098,6 @@ const KINDS: [Kind; 4] = [
         tokens: Some(&["self.copied", "self.info"]),
         min_sites: 50,
         readers_floor: &[
-            "apply_form_action",
             "begin_generate",
             "begin_rpc_import",
             "card_notice_clear",
@@ -1121,6 +1123,7 @@ const KINDS: [Kind; 4] = [
             "on_key_imported",
             "key_result",
             "on_opened",
+            "on_secret_action",
             "on_sites",
             "on_status",
             "on_wallet_reset",
@@ -1156,7 +1159,6 @@ const KINDS: [Kind; 4] = [
         tokens: Some(&["launcher", "self.info"]),
         min_sites: 27,
         readers_floor: &[
-            "apply_form_action",
             "begin_generate",
             "begin_rpc_import",
             "card_notice_clear",
@@ -1178,6 +1180,7 @@ const KINDS: [Kind; 4] = [
             "on_key_imported",
             "key_result",
             "on_opened",
+            "on_secret_action",
             "on_sites",
             "on_status",
             "on_wallet_reset",
@@ -2867,7 +2870,23 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// (W14c-2 rewrites those paths, critic C10); no W11 fn takes an `App` in a closure.
 /// 2026-11-22 (S4 W11): a `static`, not a `const` (before, `const`): at 617 entries the table
 /// passes clippy's `large_const_arrays` size (16 KiB), and a `static` is one copy, not one per use.
-static WALLET_FNS: [(&str, &str); 617] = [
+/// W12 (2026-11-22, preflight §3 W12, critic C12): imported keys, recovery phrases and the
+/// `YubiKey` purposes (`app_keys.rs`: the imported keys, the key start, reveal and removal and
+/// the S-keys handler `on_keys`; `app_mnemonics.rs`: the phrases' names and accounts, the backup
+/// gates, the S-mnemonics handlers `on_mn`/`on_mn_edit`, the phrase windows' submit, cancel and
+/// hold `mn_submit`/`mn_cancel`/`mn_hold_complete` and the key worker's outcomes;
+/// `app_yubikey.rs`, `app_yubikey/connect.rs`, `app_yubikey/manage.rs`: the wizard, its PIN,
+/// counter and card-secret windows, the connect and manage flows, their handlers and outcomes;
+/// `yk_words_dropped` is W3a's, the test adapter `on_keys_command` is test code) and, in
+/// `app.rs`, the secret windows' purposes: `on_submit`, `preview_import`, `on_cancel`,
+/// `challenge_id` and the wallet's half of the secret form's actions, `on_secret_action` (the
+/// typed in-process entry `SecretAction`, plan §3.6), with its read `secret_session_is`. The
+/// shell's `apply_form_action` keeps the window's own arms (repaint, paste, copy) and calls it;
+/// before W12 that one fn held both halves (critic C12). The phrase banners' render builders
+/// `mn_receive_banner`, `mn_signing_banner` and `mn_backup_now` stay out (D-21; S4d E0c). The
+/// approval entry they call (`approval_lang`) is W14a's, the `WalletConnect` fn `origin_display`
+/// W13's, and the render helpers `{evm,sol,btc,zec}_removed` (`ui/removed.rs`) flip at W14c.
+static WALLET_FNS: [(&str, &str); 798] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -3485,6 +3504,187 @@ static WALLET_FNS: [(&str, &str); 617] = [
     ("W11", "card_abandon_sol"),
     ("W11", "card_abandon_dapp"),
     ("W11", "on_sites"),
+    ("W12", "key_only"),
+    ("W12", "imported_count"),
+    ("W12", "can_remove_imported"),
+    ("W12", "imported_of"),
+    ("W12", "can_import"),
+    ("W12", "open_key_import"),
+    ("W12", "key_start_open"),
+    ("W12", "key_start_cancel"),
+    ("W12", "key_start_next"),
+    ("W12", "key_start_password"),
+    ("W12", "key_start_key"),
+    ("W12", "on_key_start_preview"),
+    ("W12", "key_start_commit"),
+    ("W12", "key_start_wrong"),
+    ("W12", "on_key_imported"),
+    ("W12", "imported_reveal"),
+    ("W12", "btc_evm_shared_reveal"),
+    ("W12", "imported_remove"),
+    ("W12", "on_imported_key_busy"),
+    ("W12", "imported_confirmed"),
+    ("W12", "imported_target_text"),
+    ("W12", "imported_removed"),
+    ("W12", "on_evm_raw_key_removed"),
+    ("W12", "on_imported_key_removed"),
+    ("W12", "on_keys"),
+    ("W12", "mnemonic_label"),
+    ("W12", "primary_mnemonic_label"),
+    ("W12", "several_mnemonics"),
+    ("W12", "mnemonic_tagged"),
+    ("W12", "mnemonic_tag"),
+    ("W12", "mnemonic_named"),
+    ("W12", "mnemonic_busy"),
+    ("W12", "mnemonic_first_address"),
+    ("W12", "mnemonic_account_counts"),
+    ("W12", "mnemonic_account_rows"),
+    ("W12", "mnemonic_account"),
+    ("W12", "mnemonic_source"),
+    ("W12", "mnemonic_account_mut"),
+    ("W12", "can_add_account"),
+    ("W12", "add_account_clicked"),
+    ("W12", "add_primary_account"),
+    ("W12", "unlocked"),
+    ("W12", "mn_phrases_editable"),
+    ("W12", "mn_primary_pending"),
+    ("W12", "mn_backup_gate"),
+    ("W12", "evm_backup_gate"),
+    ("W12", "mn_unconfirmed"),
+    ("W12", "evm_account_unconfirmed"),
+    ("W12", "sol_backup_gate"),
+    ("W12", "sol_source_unconfirmed"),
+    ("W12", "btc_source_unconfirmed"),
+    ("W12", "btc_backup_gate"),
+    ("W12", "evm_selected_gate"),
+    ("W12", "refuse_unconfirmed"),
+    ("W12", "backup_refused_text"),
+    ("W12", "mn_send_blocked"),
+    ("W12", "mn_connect_tag"),
+    ("W12", "on_mn"),
+    ("W12", "on_mn_preview"),
+    ("W12", "mn_remove_clicked"),
+    ("W12", "mn_remove_reset"),
+    ("W12", "mn_leaving"),
+    ("W12", "mn_remove_unconfirmed"),
+    ("W12", "mn_remove_confirmed"),
+    ("W12", "on_mn_edit"),
+    ("W12", "mn_set_remove_typed"),
+    ("W12", "on_chain_pick"),
+    ("W12", "open_mn_input"),
+    ("W12", "save_mnemonic_label"),
+    ("W12", "mn_submit"),
+    ("W12", "mn_cancel"),
+    ("W12", "mn_hold_complete"),
+    ("W12", "after_change"),
+    ("W12", "mn_chain_accounts_removed"),
+    ("W12", "on_mn_outcome"),
+    ("W12", "yk_network"),
+    ("W12", "yk_open_wizard"),
+    ("W12", "yk_leaving"),
+    ("W12", "yk_wizard"),
+    ("W12", "yk_abandon_asks"),
+    ("W12", "yk_close_wizard"),
+    ("W12", "yk_plan_next"),
+    ("W12", "yk_send_preview"),
+    ("W12", "yk_import"),
+    ("W12", "yk_piv_credentials"),
+    ("W12", "yk_factory_key"),
+    ("W12", "yk_key_bytes"),
+    ("W12", "yk_run"),
+    ("W12", "yk_submit"),
+    ("W12", "yk_cancel"),
+    ("W12", "yk_hold_complete"),
+    ("W12", "yk_result_serial"),
+    ("W12", "yk_pin_serial"),
+    ("W12", "yk_pin_defaults"),
+    ("W12", "yk_pin_job"),
+    ("W12", "yk_open_pin_action"),
+    ("W12", "yk_open_card_secret"),
+    ("W12", "yk_card_counters"),
+    ("W12", "yk_counter_kinds"),
+    ("W12", "yk_show_counters"),
+    ("W12", "yk_counter_forms"),
+    ("W12", "on_yk_counters"),
+    ("W12", "yk_take_last_try"),
+    ("W12", "yk_take_puk_last_try"),
+    ("W12", "yk_note_last_try"),
+    ("W12", "yk_enter_credentials"),
+    ("W12", "on_yk_identified"),
+    ("W12", "on_yk_occupied"),
+    ("W12", "yk_pins_first"),
+    ("W12", "yk_card_on_defaults"),
+    ("W12", "yk_pin_later"),
+    ("W12", "yk_identify_again"),
+    ("W12", "on_yk_management"),
+    ("W12", "on_yk_protected"),
+    ("W12", "on_yk_pins_set"),
+    ("W12", "yk_new_wallet"),
+    ("W12", "yk_new_wallet_start"),
+    ("W12", "on_yk_outcome"),
+    ("W12", "yk_note"),
+    ("W12", "on_yk_preview"),
+    ("W12", "yk_enrolled"),
+    ("W12", "on_yk_checked"),
+    ("W12", "on_yk_pin_changed"),
+    ("W12", "yk_defaults_done"),
+    ("W12", "yk_remove"),
+    ("W12", "yk_can_remove"),
+    ("W12", "yk_remove_confirmed"),
+    ("W12", "yk_save_card_name"),
+    ("W12", "on_yk"),
+    ("W12", "on_yk_edit"),
+    ("W12", "yk_set_text"),
+    ("W12", "yk_connect_networks"),
+    ("W12", "yk_open_connect"),
+    ("W12", "yk_connect_new_wallet"),
+    ("W12", "yk_connect_password"),
+    ("W12", "yk_connect_begin"),
+    ("W12", "yk_connect_form"),
+    ("W12", "yk_connect_rescan"),
+    ("W12", "on_yk_scanned"),
+    ("W12", "yk_connect_choose"),
+    ("W12", "yk_connect_next"),
+    ("W12", "yk_connect_back"),
+    ("W12", "yk_connect_pin"),
+    ("W12", "yk_connect_pin_lines"),
+    ("W12", "yk_connect_pin_submit"),
+    ("W12", "on_yk_connect_verified"),
+    ("W12", "yk_connect_save"),
+    ("W12", "on_yk_connect"),
+    ("W12", "yk_manage_record"),
+    ("W12", "yk_reslot_open"),
+    ("W12", "yk_clear_open"),
+    ("W12", "yk_manage_close"),
+    ("W12", "reslot"),
+    ("W12", "clear_flow"),
+    ("W12", "yk_other_records"),
+    ("W12", "yk_reslot_next"),
+    ("W12", "yk_reslot_send_preview"),
+    ("W12", "yk_reslot_import"),
+    ("W12", "yk_reslot_backup"),
+    ("W12", "yk_clear_allowed"),
+    ("W12", "yk_clear_lost"),
+    ("W12", "yk_clear_ready"),
+    ("W12", "yk_clear_run"),
+    ("W12", "yk_clear_after_admin"),
+    ("W12", "yk_clear_job"),
+    ("W12", "yk_manage_submit"),
+    ("W12", "yk_manage_cancel"),
+    ("W12", "on_yk_manage"),
+    ("W12", "on_reslot_preview"),
+    ("W12", "on_reslotted"),
+    ("W12", "yk_flag_defaults"),
+    ("W12", "on_cleared"),
+    ("W12", "on_yk_manage_press"),
+    ("W12", "on_yk_manage_edit"),
+    ("W12", "yk_manage_set_text"),
+    ("W12", "on_secret_action"),
+    ("W12", "secret_session_is"),
+    ("W12", "on_submit"),
+    ("W12", "preview_import"),
+    ("W12", "on_cancel"),
+    ("W12", "challenge_id"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
@@ -3893,6 +4093,82 @@ fn wallet_fns_name_no_shell() {
     assert!(errors.is_empty(), "{}", errors.join("\n"));
     let names: BTreeSet<&str> = WALLET_FNS.iter().map(|&(_, name)| name).collect();
     assert_eq!(names.len(), WALLET_FNS.len(), "a fn listed twice");
+}
+
+/// The secret form's actions split at `on_secret_action` (2026-11-22, S4c W12, preflight critic
+/// C12; plan §3.6, §7.3): the shell's `apply_form_action` keeps only the window's own arms
+/// (repaint, paste, copy) and hands each of the five wallet actions to the wallet's half
+/// `on_secret_action` (in [`WALLET_FNS`], so [`wallet_fns_name_no_shell`] keeps it free of the
+/// shell), which is called from nowhere else in production code: no other path turns a form
+/// action into wallet work, and no wallet write is left in the shell's half for W15 to find
+/// (it compiled through `DerefMut` before). It finds both fns (A-20).
+#[test]
+fn the_secret_form_action_splits_at_on_secret_action() {
+    let files = production_code();
+    let app = src_of(&files, "yw-app/src/app.rs");
+    let shell = fn_bodies(app, "apply_form_action");
+    assert_eq!(shell.len(), 1, "one apply_form_action");
+    let wallet = fn_bodies(app, "on_secret_action");
+    assert_eq!(wallet.len(), 1, "one on_secret_action");
+    assert!(
+        WALLET_FNS.contains(&("W12", "on_secret_action")),
+        "on_secret_action is wallet code"
+    );
+    let shell_calls = app_calls(shell[0]);
+    for wallet_step in [
+        "on_submit",
+        "on_cancel",
+        "close_secret",
+        "refresh",
+        "key",
+        "yk_hold_complete",
+        "mn_hold_complete",
+    ] {
+        assert!(
+            !shell_calls.contains(wallet_step),
+            "apply_form_action calls {wallet_step} itself"
+        );
+        assert!(
+            app_calls(wallet[0]).contains(wallet_step),
+            "on_secret_action no longer calls {wallet_step}"
+        );
+    }
+    let fields = self_fields(shell[0]);
+    for field in ["info", "yk_words", "secret_session", "settings"] {
+        assert!(
+            !fields.contains(field),
+            "apply_form_action names self.{field}"
+        );
+    }
+    let shell_text = normalized(shell[0]);
+    for action in [
+        "Submit(submission)",
+        "Cancel",
+        "TimedOut",
+        "Close",
+        "HoldComplete",
+    ] {
+        assert_eq!(
+            shell_text
+                .matches(&format!(
+                    "self.on_secret_action(serial, SecretAction::{action})"
+                ))
+                .count(),
+            1,
+            "apply_form_action hands {action} to on_secret_action"
+        );
+    }
+    let callers = files
+        .iter()
+        .flat_map(|src| {
+            fn_blocks(src)
+                .into_iter()
+                .map(move |(name, body)| (src, name, body))
+        })
+        .filter(|(_, _, body)| app_calls(body).contains("on_secret_action"))
+        .map(|(src, name, _)| format!("{}:{name}", src.file))
+        .collect::<Vec<_>>();
+    assert_eq!(callers, ["yw-app/src/app.rs:apply_form_action"]);
 }
 
 /// The scanners of [`wallet_fns_name_no_shell`] on made-up code: they can fail.

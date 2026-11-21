@@ -29,13 +29,50 @@
 //! as before (the session had ended when the handler's `secret_form` ran). Before, the handler
 //! called `secret_form` after the open returned — the same point while the executor applies
 //! effects at once.
+//!
+//! 2026-11-22 (S4c W12, preflight critic C12): what the window's form ends or asks for that is
+//! the wallet's reaches it as a [`SecretAction`] through `App::on_secret_action`; the shell's
+//! `App::apply_form_action` keeps the window's own arms (repaint, paste, copy).
 
 use core::fmt;
 
 use yw_engine::secret::{SecretFormOp, SecretKind};
 
 use crate::app::Purpose;
-use crate::ui::secret::DisplaySecret;
+use crate::ui::secret::{DisplaySecret, Submission};
+
+/// What the open session's window ends or asks for that is the wallet's to handle: the typed,
+/// in-process entry `App::on_secret_action` (2026-11-22, S4c W12, preflight critic C12; plan
+/// §3.6 `SecretAction`, §7.3). Before, the shell's `App::apply_form_action` held these arms
+/// itself, mixed with its own (a repaint, the clipboard's paste and copy), which it keeps. Never
+/// a `Cmd` or an `Effect`: a submission's values are secrets (`Zeroizing`, wiped when dropped,
+/// so an action for a session that has ended is wiped where it is dropped, critique A-21). Plan
+/// §3.6's `Gone` is not here: no window end reaches the wallet that way yet (no dead variant).
+pub(crate) enum SecretAction {
+    /// The primary button or Enter with valid input: the form's values, moved out of its fields.
+    Submit(Submission),
+    /// `취소`, Esc, `나중에` or the close box of an input window (the form already wiped).
+    Cancel,
+    /// The window's time ran out (the form already wiped).
+    TimedOut,
+    /// `닫기` (or the close box) of a display window with no hold.
+    Close,
+    /// W08's 2 s acknowledgement hold completed.
+    HoldComplete,
+}
+
+/// The variant's name only; a submission prints its value count (D28, never a value).
+impl fmt::Debug for SecretAction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Submit(submission) => formatter.debug_tuple("Submit").field(submission).finish(),
+            Self::Cancel => formatter.write_str("Cancel"),
+            Self::TimedOut => formatter.write_str("TimedOut"),
+            Self::Close => formatter.write_str("Close"),
+            Self::HoldComplete => formatter.write_str("HoldComplete"),
+        }
+    }
+}
 
 /// One secret window as the logic sees it: from the request until its end.
 pub(crate) struct SecretSession {

@@ -39,7 +39,7 @@ use crate::lock::{IdleTracker, LockReason, WalletLock};
 use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, Meta, RawAccount};
 use crate::network::NetworkId;
-use crate::secret_session::{AfterShown, SecretSession};
+use crate::secret_session::{AfterShown, SecretAction, SecretSession};
 use crate::settings::{RpcTemplate, Settings};
 use crate::shell_msg::{
     SystemAction, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT,
@@ -4219,6 +4219,16 @@ impl App {
         self.secret_session.is_some()
     }
 
+    /// Whether `serial` is the open secret session's (2026-11-22, S4c W12): the read the shell's
+    /// [`Self::apply_form_action`] makes before its own arms, as it did before W12 by reading
+    /// the session's purpose.
+    #[must_use]
+    pub(crate) fn secret_session_is(&self, serial: u64) -> bool {
+        self.secret_session
+            .as_ref()
+            .is_some_and(|session| session.serial() == serial)
+    }
+
     /// Closes the open secret window (buffers wiped): ends the secret session and asks the shell
     /// to close its window (2026-11-20, S4 P7a1: `SecretEffect::Close`; before, the window was
     /// closed here). Nothing when no session is open.
@@ -4367,7 +4377,43 @@ impl App {
     /// What the form of the window of secret session `serial` asked for. 2026-11-20 (S4 P7a1):
     /// the purpose is the wallet session's, and an action of a window that is not the open
     /// session's is dropped (`on_secret` already finds the window by `serial`; the two agree).
+    /// 2026-11-22 (S4c W12, preflight critic C12): the shell's half. It keeps the window's own
+    /// arms (a repaint, the clipboard's paste and copy) and hands what is the wallet's (submit,
+    /// cancel, time-out, close, the acknowledgement hold) to [`Self::on_secret_action`] as a
+    /// [`SecretAction`], in-process (never a `Cmd`: a submission holds secrets). Before, this fn
+    /// held both, so it reached wallet state through `DerefMut`. Same arms, same order, same
+    /// drop of another serial's action (a dropped submission is wiped).
     fn apply_form_action(&mut self, serial: u64, action: FormAction) {
+        if !self.secret_session_is(serial) {
+            return;
+        }
+        match action {
+            FormAction::None => {}
+            FormAction::Redraw => {
+                if let Some(secret) = self.secret.as_ref() {
+                    secret.window.invalidate();
+                }
+            }
+            FormAction::Paste => self.paste(),
+            FormAction::Copy => self.copy_secret(),
+            FormAction::Submit(submission) => {
+                self.on_secret_action(serial, SecretAction::Submit(submission));
+            }
+            FormAction::Cancel => self.on_secret_action(serial, SecretAction::Cancel),
+            FormAction::TimedOut => self.on_secret_action(serial, SecretAction::TimedOut),
+            FormAction::Close => self.on_secret_action(serial, SecretAction::Close),
+            FormAction::HoldComplete => {
+                self.on_secret_action(serial, SecretAction::HoldComplete);
+            }
+        }
+    }
+
+    /// What the window of secret session `serial` ended or asked for that is the wallet's
+    /// (2026-11-22, S4c W12, preflight critic C12; plan §3.6, §7.3): the typed in-process entry
+    /// the shell's [`Self::apply_form_action`] calls. The arms are the ones that fn held before
+    /// W12, unchanged. An action of a session that is not the open one is dropped (its
+    /// submission wiped, critique A-21). Wallet code (`WALLET_FNS`); `impl Wallet` from W14c.
+    fn on_secret_action(&mut self, serial: u64, action: SecretAction) {
         let Some(purpose) = self
             .secret_session
             .as_ref()
@@ -4377,15 +4423,9 @@ impl App {
             return;
         };
         match action {
-            FormAction::None => {}
-            FormAction::Redraw => {
-                if let Some(secret) = self.secret.as_ref() {
-                    secret.window.invalidate();
-                }
-            }
-            FormAction::Submit(submission) => self.on_submit(purpose, submission),
-            FormAction::Cancel | FormAction::TimedOut => {
-                let timed_out = matches!(action, FormAction::TimedOut);
+            SecretAction::Submit(submission) => self.on_submit(purpose, submission),
+            SecretAction::Cancel | SecretAction::TimedOut => {
+                let timed_out = matches!(action, SecretAction::TimedOut);
                 // A new YubiKey wallet's W08/W10: S01's band about the unused paper says it.
                 let words_band = matches!(
                     purpose,
@@ -4400,13 +4440,11 @@ impl App {
                     self.refresh();
                 }
             }
-            FormAction::Close => {
+            SecretAction::Close => {
                 self.close_secret();
                 self.refresh();
             }
-            FormAction::Paste => self.paste(),
-            FormAction::Copy => self.copy_secret(),
-            FormAction::HoldComplete => {
+            SecretAction::HoldComplete => {
                 logging::info("app", "backup.written_ack", &[]);
                 if let Purpose::YubiKey(yk) = purpose {
                     self.yk_hold_complete(yk);
