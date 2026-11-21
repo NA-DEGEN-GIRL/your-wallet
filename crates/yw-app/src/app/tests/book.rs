@@ -76,6 +76,8 @@ fn book_saves_compare_with_the_whole_known_set() {
 /// S14's row `편집` opens the form at the top of the screen (2026-11-21, S4 W4): the handler
 /// queues `Effect::ScrollTop` before its `refresh`'s `Render` and writes no shell state; the
 /// offset is 0 once the entry drains. Before W4 `on_book_row` set the shell's offset itself.
+/// The W4 review (same day) also pins that the arm leaves the remembered offsets and any
+/// wheel glide alone, as the old write did.
 #[test]
 fn a_book_row_edit_opens_the_form_at_the_top_through_an_effect() {
     use crate::apikeys::ApiKeys;
@@ -107,6 +109,12 @@ fn a_book_row_edit_opens_the_form_at_the_top_through_an_effect() {
     .unwrap();
     app.meta = Some(meta);
     app.scroll = 120;
+    // 2026-11-21 (S4 W4 review): the executor arm sets the offset only. The remembered offsets
+    // stay (this entry pins it); the wheel glide's state is private to `app_scroll`, so the arm's
+    // body is pinned from the source below (no `stop_scroll`, no `scroll_memory` call).
+    let place = yw_engine::screen::ScrollPlace::AddressBook;
+    app.scroll_memory.set(place, 200);
+    app.scroll_memory.under_overlay = Some(40);
     app.on_book(BookPress::Row(Row(0), BookRowAction::Edit));
     assert_eq!(app.book.form.editing.as_deref(), Some(EVM));
     assert_eq!(app.scroll, 120, "the handler writes no shell state");
@@ -114,6 +122,20 @@ fn a_book_row_edit_opens_the_form_at_the_top_through_an_effect() {
     assert_eq!(app.outbox.back(), Some(&Effect::Render));
     app.drain();
     assert_eq!(app.scroll, 0);
+    assert_eq!(app.scroll_memory.get(place), Some(200));
+    assert_eq!(app.scroll_memory.under_overlay, Some(40));
+    let effects = include_str!("../../app_effects.rs")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(
+        effects
+            .matches("Effect::ScrollTop => { self.scroll = 0; None }")
+            .count(),
+        1,
+        "the ScrollTop arm sets the offset and nothing else"
+    );
+    assert_eq!(effects.matches("Effect::ScrollTop").count(), 1);
     // A row the screen does not show queues nothing.
     app.scroll = 120;
     app.on_book(BookPress::Row(Row(5), BookRowAction::Edit));
