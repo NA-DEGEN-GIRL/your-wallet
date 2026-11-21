@@ -2455,14 +2455,23 @@ impl App {
     /// window shown after another one without input in between does not pause again
     /// ([`IdleTracker::set_window`]), so a dApp's unattended requests — even re-sent back to
     /// back — cannot keep the wallet unlocked.
+    ///
+    /// 2026-11-22 (S4c W3b, preflight §3.0 and §3 W3b, critic C16): the display window is read
+    /// from the wallet's secret session — its kind, its serial (the window's) and whether the
+    /// shell reported its window shown — instead of the shell's window record (`App::secret`:
+    /// serial, window, form), so this wallet fn names no shell field. At the idle tick (the main
+    /// timer, an entry: every earlier open was applied and answered) the two agree: the session
+    /// is marked shown exactly when its window was made (`Cmd::SecretOpened` with `Shown`), and
+    /// a refused, failed or closed window ends the session. Headless tests, whose secret host
+    /// keeps the window outside `App::secret`, now see the shown display window too.
     fn idle_window(&self) -> Option<u64> {
         const DISPLAY: u64 = 1 << 63;
-        if let Some(secret) = self
-            .secret
+        if let Some(session) = self
+            .secret_session
             .as_ref()
-            .filter(|secret| secret.form.kind().is_display())
+            .filter(|session| session.shown() && session.kind().is_display())
         {
-            return Some(DISPLAY | secret.serial);
+            return Some(DISPLAY | session.serial());
         }
         match self.evm.queue.shown() {
             Some(item) => Some(item.id.0),
@@ -2686,9 +2695,10 @@ impl App {
     /// the drain of what they emitted (the secret close, the clip clear, the approval close and,
     /// last, `Effect::AwaitKeyLock`: the 1.5 s wait for the key worker's lock, so it ends before
     /// the mode and screen change and before `KeyJob::Load`); then [`Self::lock_after_wait`].
-    /// Called by the shell's entries (`on_system`, `lock_shortcut`, `shutdown`); wallet code locks
-    /// with [`Self::lock_wallet`], which cannot take `Suspend`. Before W3a this one fn held both
-    /// halves and drained itself between them for `Suspend`, at the same point.
+    /// Called by the shell's entries (`on_system`, `lock_shortcut`; 2026-11-22, S4c W3b: no
+    /// longer `shutdown`, whose wallet half locks with `lock_wallet(WalletLock::Shutdown)`);
+    /// wallet code locks with [`Self::lock_wallet`], which cannot take `Suspend`. Before W3a this
+    /// one fn held both halves and drained itself between them for `Suspend`, at the same point.
     pub fn lock(&mut self, reason: LockReason) {
         let vault_present = self.lock_steps(reason);
         if reason == LockReason::Suspend {
@@ -2698,7 +2708,8 @@ impl App {
     }
 
     /// The wallet's own lock (2026-11-21, S4 W3a, preflight critic C11): `잠금`, a cancelled
-    /// passphrase, the vault's own lock, a reset and the idle lock. [`Self::lock_steps`] then
+    /// passphrase, the vault's own lock, a reset, the idle lock and (2026-11-22, S4c W3b) the
+    /// shutdown's lock ([`Self::shutdown_steps`]). [`Self::lock_steps`] then
     /// [`Self::lock_after_wait`] with no drain between: the composition [`Self::lock`] drains only
     /// for `Suspend`, which [`WalletLock`] cannot name, so this is exactly what `lock` did for
     /// these reasons. Before W3a the callers called `lock` itself.
@@ -2831,26 +2842,30 @@ impl App {
         self.key(KeyJob::Load);
     }
 
-    /// The shutdown sequence (spec/04 §1.5).
+    /// The shutdown sequence (spec/04 §1.5), the shell's composition of the wallet's three halves
+    /// (2026-11-22, S4c W3b, preflight critic C11, owner's second batch item 1: split like the
+    /// lock): [`Self::shutdown_begin`] (the mode and the queue's items), the shell's pipe server,
+    /// [`Self::shutdown_steps`] (the dispatcher, `WalletConnect` and the wallet's own lock for
+    /// `Shutdown`), the drain of what the lock emitted and the 5 s wait for the key worker,
+    /// [`Self::shutdown_after_wait`] (the workers told to stop), then the shell's window place,
+    /// the worker joins, the controls and the main window. Called by the shell's entries only:
+    /// `on_system` (`WM_CLOSE`, `WM_ENDSESSION`, logoff) and `on_command` after the `종료` press
+    /// (`CorePress::Exit`, whose wallet arm does nothing more). Same statements in the same
+    /// order: before W3b this one fn held them all, called `lock(LockReason::Shutdown)` (for that
+    /// reason the same two halves with no drain) and was also called by the wallet's `on_core`.
     pub fn shutdown(&mut self) {
-        if self.mode == AppMode::ShuttingDown {
+        if !self.shutdown_begin() {
             return;
         }
-        self.set_mode(AppMode::ShuttingDown);
-        for (item, outcome) in self.evm.queue.shutdown() {
-            self.approval_finished(&item.payload, outcome);
-        }
         // The shell's pipe server first, then the dispatcher and its read workers (2026-11-21,
-        // S4 W1: before, `BrowserUi::stop` did both, in this order).
-        if let Some(browser) = self.wallet.browser.as_mut() {
-            if let Some(pipe) = self.pipe.as_mut() {
-                pipe.stop();
-            }
-            browser.stop();
+        // S4 W1: before, `BrowserUi::stop` did both, in this order). 2026-11-22 (S4c W3b): the
+        // dispatcher's stop is the first step of `shutdown_steps`, right after this.
+        if self.wallet.browser.is_some()
+            && let Some(pipe) = self.pipe.as_mut()
+        {
+            pipe.stop();
         }
-        self.wc_shutdown();
-        let before = self.lock_signal.count();
-        self.lock(LockReason::Shutdown);
+        let before = self.shutdown_steps();
         // 2026-11-20 (S4 P10b): the lock's secret close, clip clear (at exit) and approval close
         // are applied now, before the wait and while the main window still exists, as when
         // `emit` applied each effect at once.
@@ -2861,11 +2876,7 @@ impl App {
             ms: 5_000,
         });
         let _ = self.lock_signal.wait_beyond(before, Duration::from_secs(5));
-        self.key_queue.push(self.lock_epoch, KeyJob::Shutdown);
-        if let Some(tx) = self.rpc_tx.take() {
-            let _ = tx.send(RpcJob::Shutdown);
-        }
-        self.llm_shutdown();
+        self.shutdown_after_wait();
         // The window's place for the next start (`window.json`, 2026-11-10).
         self.save_window_state();
         let deadline = self.clock.now_ms().saturating_add(2_000);
@@ -2889,6 +2900,47 @@ impl App {
         // No main window is not hidden (2026-11-21, S4 W3, critique B-10: the wallet's mirror,
         // the last step; before, the wallet's readers saw `None` as not hidden too).
         self.sync_main_hidden();
+    }
+
+    /// The shutdown's first wallet half (2026-11-22, S4c W3b; wallet code, preflight §3.0):
+    /// `false` when it has begun already (nothing runs twice); else `AppMode::ShuttingDown`, then
+    /// every queued and shown approval item finishes with `QueueOutcome::Shutdown` (its dApp or
+    /// app answer), before the shell stops its pipe server.
+    fn shutdown_begin(&mut self) -> bool {
+        if self.mode == AppMode::ShuttingDown {
+            return false;
+        }
+        self.set_mode(AppMode::ShuttingDown);
+        for (item, outcome) in self.evm.queue.shutdown() {
+            self.approval_finished(&item.payload, outcome);
+        }
+        true
+    }
+
+    /// The shutdown's second wallet half (2026-11-22, S4c W3b; wallet code): after the shell's
+    /// pipe server stopped, the dispatcher and its read workers, `WalletConnect`, then the
+    /// wallet's own lock for `Shutdown` (its effects — the secret close, the clip clear at exit,
+    /// the approval close — are the composition's to drain before the wait). Returns the key
+    /// worker's lock count read before the lock, which the composition's wait goes beyond.
+    fn shutdown_steps(&mut self) -> u64 {
+        if let Some(browser) = self.browser.as_mut() {
+            browser.stop();
+        }
+        self.wc_shutdown();
+        let before = self.lock_signal.count();
+        self.lock_wallet(WalletLock::Shutdown);
+        before
+    }
+
+    /// The shutdown's third wallet half (2026-11-22, S4c W3b; wallet code): after the wait for
+    /// the key worker's lock, the key worker, the RPC worker and the AI explanation's worker are
+    /// told to stop (direct sends, never effects, S10). The composition then joins them.
+    fn shutdown_after_wait(&mut self) {
+        self.key_queue.push(self.lock_epoch, KeyJob::Shutdown);
+        if let Some(tx) = self.rpc_tx.take() {
+            let _ = tx.send(RpcJob::Shutdown);
+        }
+        self.llm_shutdown();
     }
 
     // ----- events ------------------------------------------------------------------------
@@ -5059,6 +5111,11 @@ impl App {
             match press {
                 Press::Enter => self.enter_key(),
                 Press::Back => self.escape_key(),
+                // `종료` (2026-11-22, S4c W3b, preflight critic C11): the shell's composition
+                // after the press reached the wallet; before, the wallet's `on_core` called
+                // `shutdown` inside this `dispatch` as the press's last step (only the press
+                // input's wipe and the dispatch's drain followed it, and both now precede it).
+                Press::Core(CorePress::Exit) => self.shutdown(),
                 _ => {}
             }
         } else {
@@ -5425,7 +5482,11 @@ impl App {
                     false,
                 );
             }
-            CorePress::Exit => self.shutdown(),
+            // 2026-11-22 (S4c W3b, preflight critic C11): the shell runs the shutdown right after
+            // this press (`on_command`, as it resolves Enter and Esc after theirs); the press
+            // still sets the last press and clears the copy mark (`on_press`). Before, this arm
+            // called the shell's composition `App::shutdown` itself.
+            CorePress::Exit => {}
             CorePress::MismatchRetry => {
                 self.key(KeyJob::RetryPassphrase);
             }

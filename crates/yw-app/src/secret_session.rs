@@ -171,6 +171,13 @@ impl SecretSession {
         self.serial
     }
 
+    /// The session's window kind (2026-11-22, S4c W3b: the idle clock's read of a shown W08/W09,
+    /// `App::idle_window`; before, it read the shell's window record).
+    #[must_use]
+    pub(crate) const fn kind(&self) -> SecretKind {
+        self.kind
+    }
+
     /// What the window is for.
     #[must_use]
     pub(crate) const fn purpose(&self) -> Purpose {

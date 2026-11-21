@@ -2886,7 +2886,28 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// `mn_receive_banner`, `mn_signing_banner` and `mn_backup_now` stay out (D-21; S4d E0c). The
 /// approval entry they call (`approval_lang`) is W14a's, the `WalletConnect` fn `origin_display`
 /// W13's, and the render helpers `{evm,sol,btc,zec}_removed` (`ui/removed.rs`) flip at W14c.
-static WALLET_FNS: [(&str, &str); 798] = [
+/// W3b (2026-11-22, preflight §3 W3b, critique B-3, critic C11; after W12 as C2.2 orders it):
+/// the core screens, the key results, the settings and the RPC rows of `app.rs` — the key
+/// worker's results `key_result` (the entry `on_key_result`, which drains, stays the shell's),
+/// the vault status `on_status`, `reload_after_failed_start`, the RPC test answer
+/// `on_rpc_event`, the core screens' handler `on_core` and its rows `on_core_row`, the RPC rows
+/// and templates (`delete_rpc_url`, `save_template_credentials` … `test_network`,
+/// `open_rpc_row`), the account choice, rename, hiding and auto-lock saves, the `완료` screens
+/// (`clear_done`, `done_connect*`), `close_overlay_in_place`, `confirm_yes`, the settings
+/// file's accept and restore, the receive refusal `refuse_receive`, the early reads `reads_due`
+/// and the idle part `idle_tick` with `idle_window`, `first_run_pending` and
+/// `discard_first_run`. Two had shell reach, removed here: `idle_window` read the shell's
+/// secret window record (`App::secret`) and now reads the wallet's secret session (its kind,
+/// serial and shown flag); `on_core`'s `종료` arm called the shell's composition `shutdown`,
+/// which is now split like the lock (owner's second batch item 1): the wallet's halves
+/// `shutdown_begin`, `shutdown_steps` (the wallet's own lock for `Shutdown`, a `WalletLock`,
+/// which has no `Suspend`) and `shutdown_after_wait`, listed here, and the shell's `App::shutdown`,
+/// which `on_command` runs right after the press ([`the_shutdown_composition_runs_from_the_shell`]).
+/// `after_settings_saved`, `bind_llm_key_to` and `reconcile_settings` are W3's (preflight §3
+/// W3). The approval entry they call (`show_next_approval`, `after_pending_open`, …) is W14a's
+/// and the reset and `WalletConnect` fns (`on_wallet_reset`, `reset_absorbs_load`,
+/// `wc_disconnect_all`, …) W13's.
+static WALLET_FNS: [(&str, &str); 835] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -3685,6 +3706,43 @@ static WALLET_FNS: [(&str, &str); 798] = [
     ("W12", "preview_import"),
     ("W12", "on_cancel"),
     ("W12", "challenge_id"),
+    ("W3b", "reads_due"),
+    ("W3b", "idle_window"),
+    ("W3b", "idle_tick"),
+    ("W3b", "first_run_pending"),
+    ("W3b", "discard_first_run"),
+    ("W3b", "shutdown_begin"),
+    ("W3b", "shutdown_steps"),
+    ("W3b", "shutdown_after_wait"),
+    ("W3b", "on_rpc_event"),
+    ("W3b", "key_result"),
+    ("W3b", "on_status"),
+    ("W3b", "reload_after_failed_start"),
+    ("W3b", "settings_accept_file"),
+    ("W3b", "settings_restore"),
+    ("W3b", "refuse_receive"),
+    ("W3b", "on_core"),
+    ("W3b", "on_core_row"),
+    ("W3b", "delete_rpc_url"),
+    ("W3b", "select_account"),
+    ("W3b", "save_rename"),
+    ("W3b", "hide_selected"),
+    ("W3b", "save_autolock"),
+    ("W3b", "save_template_credentials"),
+    ("W3b", "prune_dormant"),
+    ("W3b", "delete_template_credentials"),
+    ("W3b", "begin_generate"),
+    ("W3b", "generate_and_report"),
+    ("W3b", "generate"),
+    ("W3b", "save_replacement"),
+    ("W3b", "test_all_networks"),
+    ("W3b", "test_network"),
+    ("W3b", "open_rpc_row"),
+    ("W3b", "clear_done"),
+    ("W3b", "done_connect"),
+    ("W3b", "done_connect_with"),
+    ("W3b", "close_overlay_in_place"),
+    ("W3b", "confirm_yes"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
@@ -4542,13 +4600,13 @@ fn the_lock_composition_drains_only_for_suspend() {
         callers.sort_unstable();
         callers
     };
-    assert_eq!(
-        callers_of(".lock("),
-        ["lock_shortcut", "on_system", "shutdown"]
-    );
+    // 2026-11-22 (S4c W3b, critic C11): no longer `shutdown`, whose wallet half
+    // `shutdown_steps` locks with `lock_wallet(WalletLock::Shutdown)`.
+    assert_eq!(callers_of(".lock("), ["lock_shortcut", "on_system"]);
     // The wallet's own lock: exactly these callers (2026-11-21, S4 W3a review: before, at least
     // five), so a new caller, or one that replaces a current one, is a reviewed change here. The
-    // dispatcher's `core.lock_wallet()` (no argument) is another fn.
+    // dispatcher's `core.lock_wallet()` (no argument) is another fn. 2026-11-22 (S4c W3b): and
+    // `shutdown_steps`.
     assert_eq!(
         callers_of(".lock_wallet("),
         [
@@ -4556,8 +4614,75 @@ fn the_lock_composition_drains_only_for_suspend() {
             "key_result",
             "on_cancel",
             "on_core",
-            "reset_execute"
+            "reset_execute",
+            "shutdown_steps"
         ]
+    );
+    the_shutdown_composition_runs_from_the_shell(&files);
+}
+
+/// The shutdown's composition (2026-11-22, S4c W3b; preflight critic C11, owner's second batch
+/// item 1: `shutdown` is split like the lock; spec/04 §1.5), part of
+/// [`the_lock_composition_drains_only_for_suspend`]: `App::shutdown` calls the wallet's three
+/// halves in order (`shutdown_begin`, `shutdown_steps`, `shutdown_after_wait`) with the shell's
+/// pipe stop before the second, its drain and 5 s wait between the second and the third, and the
+/// window and the workers after it; the halves are W3b wallet fns (so
+/// [`wallet_fns_name_no_shell`] keeps them free of the shell); only the shell's entries
+/// `on_system` and `on_command` call `shutdown`, `on_command` right after the `종료` press, whose
+/// wallet arm (`on_core`'s `CorePress::Exit`) does nothing. Before W3b, `on_core` called
+/// `shutdown`, the shell's composition, from wallet code. Finds every fn it checks (A-20).
+fn the_shutdown_composition_runs_from_the_shell(files: &[Src]) {
+    let app = src_of(files, "yw-app/src/app.rs");
+    let flat = |name: &str| -> String {
+        let bodies = fn_bodies(app, name);
+        assert_eq!(bodies.len(), 1, "one fn {name} in app.rs");
+        bodies[0].split_whitespace().collect()
+    };
+    let shutdown = flat("shutdown");
+    let order = [
+        "if!self.shutdown_begin(){return;}",
+        "pipe.stop();",
+        "letbefore=self.shutdown_steps();self.drain();",
+        "self.lock_signal.wait_beyond(before,Duration::from_secs(5));self.shutdown_after_wait();\
+         self.save_window_state();",
+        "yw_win::ui::quit(0);",
+    ];
+    let mut at = 0;
+    for step in order {
+        let found = shutdown[at..].find(step);
+        assert!(
+            found.is_some(),
+            "shutdown lost or reordered {step}: {shutdown}"
+        );
+        at += found.unwrap_or_default() + step.len();
+    }
+    for half in ["shutdown_begin", "shutdown_steps", "shutdown_after_wait"] {
+        assert!(WALLET_FNS.contains(&("W3b", half)), "{half} is wallet code");
+        let body = flat(half);
+        assert!(!body.contains("drain("), "{half} drains");
+    }
+    assert!(flat("shutdown_steps").contains("self.lock_wallet(WalletLock::Shutdown);"));
+    let mut callers: Vec<String> = files
+        .iter()
+        .flat_map(|src| {
+            fn_blocks(src)
+                .into_iter()
+                .filter(|(_, body)| normalized(body).contains(".shutdown()"))
+                .map(|(name, _)| name)
+        })
+        .collect();
+    callers.sort_unstable();
+    // `BtcUi`/queue `shutdown()` calls are other fns' (`evm.queue.shutdown()` in
+    // `shutdown_begin`); the composition's callers are the shell's entries.
+    callers.retain(|name| name != "shutdown_begin");
+    assert_eq!(callers, ["on_command", "on_system"]);
+    assert!(
+        flat("on_command").contains("Press::Core(CorePress::Exit)=>self.shutdown(),"),
+        "on_command runs the shutdown after the 종료 press"
+    );
+    assert!(
+        flat("on_core").contains("CorePress::Exit=>{}"),
+        "the wallet's 종료 arm does nothing more"
     );
 }
 

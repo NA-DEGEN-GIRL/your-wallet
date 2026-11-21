@@ -42,14 +42,19 @@ impl LockReason {
 /// password change, a reset's lock) and the idle lock, through `App::lock_wallet`. Never
 /// `Suspend`: that lock waits for the key worker between its two halves, which only the shell's
 /// composition `App::lock` does (it drains there), so wallet code cannot ask for it and send
-/// `KeyJob::Load` before the wait. The session, power and shutdown reasons come from the shell's
-/// entries (`App::lock` from `on_system`, `lock_shortcut` and `shutdown`).
+/// `KeyJob::Load` before the wait. The session and power reasons come from the shell's entries
+/// (`App::lock` from `on_system` and `lock_shortcut`). 2026-11-22 (S4c W3b, preflight critic
+/// C11): also the shutdown's lock, which the wallet's half of the shutdown (`shutdown_steps`)
+/// takes; before, the shell's `App::shutdown` called `App::lock(LockReason::Shutdown)`, which
+/// for that reason was these same two halves with no drain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WalletLock {
     /// `잠금` button, a cancelled passphrase, the vault's own lock, a reset.
     Manual,
     /// No app input for `autoLockMinutes`.
     Idle,
+    /// App shutdown (`LockReason::Shutdown`; 2026-11-22, S4c W3b).
+    Shutdown,
 }
 
 impl From<WalletLock> for LockReason {
@@ -57,6 +62,7 @@ impl From<WalletLock> for LockReason {
         match reason {
             WalletLock::Manual => Self::Manual,
             WalletLock::Idle => Self::Idle,
+            WalletLock::Shutdown => Self::Shutdown,
         }
     }
 }
@@ -164,6 +170,22 @@ mod tests {
         idle.input(limit * 2);
         idle.set_window(Some(2));
         assert!(!idle.should_lock(limit * 4, minutes));
+    }
+
+    /// 2026-11-22 (S4c W3b, preflight critic C11, spec/04 §5.3): the reasons wallet code locks
+    /// for itself map to their own `LockReason`, and none is `Suspend` (that lock's wait between
+    /// its halves is the shell's composition `App::lock`).
+    #[test]
+    fn a_wallet_lock_is_never_suspend() {
+        use super::{LockReason, WalletLock};
+        for (wallet, reason) in [
+            (WalletLock::Manual, LockReason::Manual),
+            (WalletLock::Idle, LockReason::Idle),
+            (WalletLock::Shutdown, LockReason::Shutdown),
+        ] {
+            assert_eq!(LockReason::from(wallet), reason);
+            assert_ne!(LockReason::from(wallet), LockReason::Suspend);
+        }
     }
 
     /// 2026-11-21 (S4 W1): the lock reasons and the idle tracker are wallet code; the Win32

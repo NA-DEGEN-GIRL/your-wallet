@@ -729,6 +729,96 @@ fn idle_lock_pauses_while_an_approval_is_shown() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// LK-1 for a W08/W09 display window (2026-11-22, S4c W3b, spec/04 §5.1): the idle window is
+/// read from the wallet's secret session — a display kind whose window the shell reported shown,
+/// by its serial — not from the shell's window record (before W3b, `App::secret`). A session not
+/// yet shown, or an input window's, pauses nothing; the shown display window pauses the idle
+/// clock, and its end does not restart the count.
+#[test]
+fn idle_lock_pauses_while_a_display_window_is_shown() {
+    use crate::secret_session::SecretSession;
+    use yw_engine::secret::SecretKind;
+    const DISPLAY: u64 = 1 << 63;
+    let (mut app, dir) = unlocked_app("idle-display", false);
+    app.settings.auto_lock_minutes = 1;
+    app.idle = IdleTracker::new(0);
+    assert_eq!(app.idle_window(), None);
+    app.secret_session = Some(SecretSession::new(
+        7,
+        SecretKind::Unlock,
+        Purpose::Unlock,
+        false,
+    ));
+    let _ = app.secret_session.as_mut().map(SecretSession::mark_shown);
+    assert_eq!(app.idle_window(), None, "an input window pauses nothing");
+    app.secret_session = Some(SecretSession::new(
+        8,
+        SecretKind::ShowKey,
+        Purpose::ShowForBackup,
+        false,
+    ));
+    assert_eq!(app.idle_window(), None, "not shown yet");
+    let _ = app.secret_session.as_mut().map(SecretSession::mark_shown);
+    assert_eq!(app.idle_window(), Some(DISPLAY | 8));
+    // Five idle minutes with the display window open: no lock.
+    app.idle_tick(300_000);
+    assert!(matches!(app.mode, AppMode::Unlocked { .. }));
+    assert!(app.key_queue.is_empty());
+    // It closed by itself (no input): the count is not restarted, the wallet locks.
+    app.secret_session = None;
+    app.idle_tick(300_000);
+    assert_eq!(app.mode, AppMode::Locked);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// `종료` (2026-11-22, S4c W3b, preflight critic C11, spec/04 §1.5): the press reaches the wallet
+/// (last press, copy mark) and its arm does nothing more; the shell's entry `on_command` then runs
+/// the shutdown composition (`App::shutdown`): `ShuttingDown`, the key worker's `Lock` (the
+/// wallet's own lock for `Shutdown`, no `Load`) and then `Shutdown`. Before W3b the wallet's
+/// `on_core` called `App::shutdown` itself.
+#[test]
+fn the_exit_press_shuts_down_through_the_shell() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use yw_engine::cmd::{Cmd, CorePress, Press};
+    use yw_engine::form::PressInput;
+    let (mut app, dir) = unlocked_app("exit-press", false);
+    app.on_cmd(Cmd::Press {
+        press: Press::Core(CorePress::Exit),
+        input: PressInput::default(),
+    });
+    assert_eq!(app.last_press, Press::Core(CorePress::Exit));
+    assert!(
+        matches!(app.mode, AppMode::Unlocked { .. }),
+        "the wallet's arm does not shut down"
+    );
+    assert!(app.key_queue.is_empty());
+    // The key worker's lock answered, as the worker would (no 5 s sleep).
+    let signal = Arc::clone(&app.lock_signal);
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let ack = std::thread::spawn(move || {
+        while !flag.load(Ordering::SeqCst) {
+            signal.signal();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    });
+    app.on_command(crate::ui::screens::ids::EXIT);
+    stop.store(true, Ordering::SeqCst);
+    let _ = ack.join();
+    assert_eq!(app.mode, AppMode::ShuttingDown);
+    // (`pop` blocks for the next job: only as many as are queued.)
+    let mut jobs = Vec::new();
+    while !app.key_queue.is_empty() {
+        if let Some(entry) = app.key_queue.pop() {
+            jobs.push(entry.1.name());
+        }
+    }
+    assert_eq!(jobs, ["Lock", "Shutdown"]);
+    assert!(app.outbox.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Items 4, 5, 7, 8: imported-key backup texts, removal balance check, discard warning,
 /// mainnet badges and the import S08 text.
 #[test]
@@ -7450,7 +7540,8 @@ fn converted_handlers_reach_the_main_window_only_through_effects() {
 
 /// 2026-11-20 (S4 P4 review), part of
 /// [`converted_handlers_reach_the_main_window_only_through_effects`] (`body` is its fn reader):
-/// the shell's half — `on_command` resolves Enter and Esc right after their own press,
+/// the shell's half — `on_command` resolves Enter and Esc right after their own press (and,
+/// since 2026-11-22 S4c W3b, runs the shutdown right after the `종료` press),
 /// `enter_key` reads the window's focus, and the resolvers press what they find through
 /// `on_command`. Whitespace dropped, so only the code's shape counts.
 fn shell_resolves_the_keys(body: &dyn Fn(&str, &str) -> String) {
@@ -7463,8 +7554,10 @@ fn shell_resolves_the_keys(body: &dyn Fn(&str, &str) -> String) {
     let shell = [
         (
             "    fn on_command(&mut self, id: u16) {",
+            // 2026-11-22 (S4c W3b, critic C11): and the `종료` press's shutdown, the shell's
+            // composition (before, the wallet's `on_core` called it).
             "self.dispatch(Cmd::Press{press,input});matchpress{Press::Enter=>self.enter_key(),\
-             Press::Back=>self.escape_key(),_=>{}}",
+             Press::Back=>self.escape_key(),Press::Core(CorePress::Exit)=>self.shutdown(),_=>{}}",
         ),
         (
             "    fn enter_key(&mut self) {",
