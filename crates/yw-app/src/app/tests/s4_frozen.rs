@@ -833,11 +833,21 @@ const HELPERS: &str = include_str!("s4_flow/frozen-helpers.txt");
 const HELPER_LINES: usize = 643;
 
 /// The planned S4 commits (plan §5 with critique round 2), the only words of a commit-list rule.
-const PLANNED: [&str; 54] = [
+/// 2026-11-21 (owner decision, second batch before S4c part 2; spec/15 §11.4 S4, §18 18;
+/// spec/09 §2.1 (3)): 54 → 57, the in-place flip of every wallet fn to `impl Wallet`: `W14c`
+/// (the row: both halves and their review fixes) and its halves `W14c-1` (re-block only) and
+/// `W14c-2` (header flip and the associated-fn call sites). A rule word must equal a commit name,
+/// so a rule that one half alone may change needs that half's own name. No line of
+/// `frozen-helpers.txt` names them yet; S3's list (`…,W14a,W14b,E1`) needs no `W14c` (an in-place
+/// flip keeps the `ai_*` text it scans). The words `F14`, `F15`, `F16`, `F17` and `F19` are not
+/// added: no frozen line's rule names those owner-approved fixes; F14 and F15 left every frozen
+/// line byte-equal, and F16, F17 and F19 must too (or stop for the owner).
+const PLANNED: [&str; 57] = [
     "F1", "F2", "B1a", "B1b", "B2", "B3", "B4a", "B4b", "B5", "B6", "B7", "Z-a", "P1", "P2", "P3",
     "P4", "P5", "P6", "P7a1", "P7a2", "P7b", "P8", "P9", "P10", "Z-b", "W0", "W1", "W2", "W3",
     "W3a", "W3b", "W4", "W5", "W6", "W7", "W8", "W9", "W10", "W11", "W12", "W13", "W14a", "W14b",
-    "W15", "Z-c", "E0a", "E0b", "E0c", "E1", "E2", "E3a", "E3b", "E4", "Z-d",
+    "W14c", "W14c-1", "W14c-2", "W15", "Z-c", "E0a", "E0b", "E0c", "E1", "E2", "E3a", "E3b", "E4",
+    "Z-d",
 ];
 
 /// A frozen test file whose non-test items are pinned: its F-A path, the name prefix of the
