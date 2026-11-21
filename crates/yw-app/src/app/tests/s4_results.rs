@@ -2368,12 +2368,24 @@ fn self_calls(body: &str) -> BTreeSet<String> {
 /// before, they followed `self.<fn>(` only ([`self_calls`]), so a wallet fn that called a shell
 /// fn as `Self::drain(self)`, `App::drain(self)` or `run(|app| app.drain())` passed
 /// [`wallet_fns_name_no_shell`]. A name another type's path or receiver calls
-/// (`Other::drain(`, `self.app.drain(`, `my_app.drain(`) is not counted.
+/// (`Other::drain(`, `self.app.drain(`, `my_app.drain(`) is not counted. 2026-11-22 (S4 W9
+/// review): also a call on a name `body` types as an `App` ([`typed_app_names`]: a closure's
+/// `|x: &mut Self| x.drain()`, through `x.wallet.` too); before, a closure's parameter counted
+/// only when it was named `app`, so that probe in a W9 fn passed.
 fn app_calls(body: &str) -> BTreeSet<String> {
-    let text = normalized(body).replace("app.wallet.", "app.");
+    let mut text = normalized(body).replace("app.wallet.", "app.");
+    let typed = typed_app_names(&text);
+    for name in &typed {
+        text = text.replace(&format!("{name}.wallet."), &format!("{name}."));
+    }
     let bytes = text.as_bytes();
     let mut calls = BTreeSet::new();
-    for receiver in ["self.", "app.", "Self::", "App::"] {
+    let receivers = ["self.", "app.", "Self::", "App::"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(typed.iter().map(|name| format!("{name}.")));
+    for receiver in receivers {
+        let receiver = receiver.as_str();
         for (at, _) in text.match_indices(receiver) {
             if at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'.') {
                 continue;
@@ -2389,6 +2401,47 @@ fn app_calls(body: &str) -> BTreeSet<String> {
         }
     }
     calls
+}
+
+/// The names `text` (a normalized body) binds with an `App` type (2026-11-22, S4 W9 review):
+/// `<name>: &Self`, `&mut Self`, `&App` or `&mut App` (also with a lifetime or a path to `App`),
+/// as a closure's parameter or a typed `let`. [`app_calls`] counts calls on them. A name bound
+/// with no type (`|me| me.drain()`, `let me = &mut *self;`) is not found: it stays unchecked
+/// until W14c ([`wallet_fns_name_no_shell`]).
+fn typed_app_names(text: &str) -> BTreeSet<String> {
+    let bytes = text.as_bytes();
+    let mut names = BTreeSet::new();
+    for (at, _) in text.match_indices(':') {
+        if bytes.get(at + 1) == Some(&b':') || (at > 0 && bytes[at - 1] == b':') {
+            continue;
+        }
+        let Some(mut rest) = text[at + 1..].trim_start().strip_prefix('&') else {
+            continue;
+        };
+        rest = rest.trim_start();
+        if let Some(lifetime) = rest.strip_prefix('\'') {
+            rest = lifetime.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
+            rest = rest.trim_start();
+        }
+        if let Some(after_mut) = rest.strip_prefix("mut ") {
+            rest = after_mut.trim_start();
+        }
+        let path_len = rest
+            .bytes()
+            .take_while(|&b| is_ident(b) || b == b':')
+            .count();
+        let last = rest[..path_len].rsplit("::").next().unwrap_or_default();
+        if last != "Self" && last != "App" {
+            continue;
+        }
+        let before = text[..at].trim_end();
+        let name_len = before.bytes().rev().take_while(|&b| is_ident(b)).count();
+        let name = &before[before.len() - name_len..];
+        if !name.is_empty() && name != "self" && name != "app" {
+            names.insert(name.to_owned());
+        }
+    }
+    names
 }
 
 /// D-4 `the_executor_writes_no_wallet_state` (2026-11-21, S4 W2; plan §3.3–§3.4 D-4, preflight
@@ -3496,6 +3549,13 @@ const RENDER_LOCAL_TIME: [&str; 2] = ["activity_rows", "meta_activity_row"];
 /// Solana files for a `&mut *self` or `= self;` rebind, a bare `self` passed on and an
 /// `App::`/`Self::` path not followed by a call found neither form in an `impl App` body at W8
 /// (only doc comments name such paths).
+/// 2026-11-22 (S4 W9 review): a closure's parameter counted only when it was named `app`, so
+/// `let _ = |x: &mut Self| x.drain();` in the W9 fn `btc_set_unit` passed. Now a name the body
+/// types as an `App` (`&Self`, `&mut Self`, `&App`, `&mut App`, [`typed_app_names`]) is a
+/// receiver too. A closure's parameter with no type and another name (`|me| me.drain()`) is the
+/// first form above (a rebind) and stays unchecked until W14c. No listed W9 fn has a closure
+/// that takes an `App` (in `app_btc.rs` and `app_btc_commands.rs` only the test adapter
+/// `on_btc_command`'s `|app, press|` does, and it is not listed).
 #[test]
 fn wallet_fns_name_no_shell() {
     let files: Vec<Src> = production_code()
@@ -3682,6 +3742,10 @@ fn app_calls_on_made_up_code() {
         "{ crate::app::App::drain(self); }",
         "{ self.after(|app| app.drain()); }",
         "{ self.after(|app| app.wallet.drain()); }",
+        // 2026-11-22 (S4 W9 review): a closure's parameter typed as an `App`, any name.
+        "{ let _ = |x: &mut Self| x.drain(); }",
+        "{ self.after(|mut me: &mut App| me.wallet.drain()); }",
+        "{ let f = |a: &'a crate::app::App| a.drain(); }",
     ] {
         assert_eq!(
             shell_reach(body, &nowhere, &shell, &shell_fns, &none),
@@ -3692,7 +3756,8 @@ fn app_calls_on_made_up_code() {
     assert!(
         shell_reach(
             "{ Other::drain(self); self.app.drain(); my_app.drain(); MyApp::drain(); \
-             let f = Self::drain; }",
+             let f = Self::drain; let g = |x: &mut Other| x.drain(); \
+             let h = |y: &Selfish, z: &mut AppState| { y.drain(); z.drain() }; }",
             &nowhere,
             &shell,
             &shell_fns,
