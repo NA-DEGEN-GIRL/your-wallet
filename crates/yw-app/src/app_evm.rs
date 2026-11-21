@@ -21,7 +21,7 @@ use yw_engine::cmd::{CopyBand, CopyMark, Press};
 use yw_engine::effect::{Effect, TimerId};
 
 use crate::apikeys::{KeyName, mask_url};
-use crate::app::{App, AppMode, Confirm, Screen};
+use crate::app::{AppMode, Confirm, Screen, Wallet};
 use crate::app_sol::{ReviewBlocker, ReviewRefusal};
 use crate::errors::ErrorCode;
 use crate::events::{
@@ -540,7 +540,7 @@ pub fn seed_notes<S: std::hash::BuildHasher>(
     }
 }
 
-impl App {
+impl Wallet {
     // ----- chain helpers ------------------------------------------------------------------
 
     /// The active chain's runtime info.
@@ -579,7 +579,7 @@ impl App {
     }
 
     /// The effective selection: the stored preference when it names a listed account, else the
-    /// first row (what [`App::selected_account`] shows).
+    /// first row (what [`Wallet::selected_account`] shows).
     #[must_use]
     pub fn selected_pref(&self) -> Option<EvmAccountPref> {
         let stored = self.meta.as_ref()?.prefs.evm_account;
@@ -1078,7 +1078,7 @@ impl App {
     /// A balance job's answer (the latest job of its chain only): the snapshot and when it came,
     /// or the error with the old values kept.
     fn on_balances(&mut self, job: u64, chain_id: u64, result: Result<BalanceSnapshot, ErrorCode>) {
-        let state = self.wallet.evm.balances.entry(chain_id).or_default();
+        let state = self.evm.balances.entry(chain_id).or_default();
         if state.job != job {
             return;
         }
@@ -1086,7 +1086,7 @@ impl App {
             Ok(snapshot) => {
                 state.snapshot = Some(snapshot);
                 state.error = None;
-                state.updated_unix_ms = Some(self.wallet.clock.now_unix_ms());
+                state.updated_unix_ms = Some(self.clock.now_unix_ms());
             }
             Err(code) => state.error = Some(code),
         }
@@ -2064,16 +2064,16 @@ impl App {
     }
 
     /// `주소 복사` of every chain (S12, the S10 account cards; 2026-11-11 one path): the plain
-    /// copy of [`App::copy_text`], and its caption keeps the paste check in short ("복사됨 ·
+    /// copy of [`Wallet::copy_text`], and its caption keeps the paste check in short ("복사됨 ·
     /// 붙여넣은 뒤 전체 확인"; a failure keeps E-SEC-002).
     pub fn copy_address_text(&mut self, address: &str) {
         self.copy(address, true, None);
     }
 
     /// A setup step's plain copy (2026-11-20, S4 P6: S23's path and `chrome://extensions`, the
-    /// `WalletConnect` panel's `dashboard.reown.com`): [`App::copy_text`] whose success is
+    /// `WalletConnect` panel's `dashboard.reown.com`): [`Wallet::copy_text`] whose success is
     /// answered with `band`'s instruction instead of the mark at the control
-    /// ([`App::copy_done`]). Before P6 each handler read the result right after `copy_text`
+    /// ([`Wallet::copy_done`]). Before P6 each handler read the result right after `copy_text`
     /// (`copied.take()`) and replaced the mark with the band itself.
     pub(crate) fn copy_with_band(&mut self, text: &str, band: CopyBand) {
         self.copy(text, false, Some(band));
@@ -2081,7 +2081,7 @@ impl App {
 
     /// 2026-11-18 (S3 B4): the copy is `Effect::CopyText`, applied at once (Windows:
     /// `clipboard::set_text` when the main window exists, nothing headless); its result comes
-    /// back as `Cmd::CopyDone` ([`App::copy_done`]) with the mark made here from the press being
+    /// back as `Cmd::CopyDone` ([`Wallet::copy_done`]) with the mark made here from the press being
     /// handled. Before, this function called `clipboard::set_text` and marked `self.command`.
     /// 2026-11-20 (S4 P6): the mark also carries the setup step's band.
     fn copy(&mut self, text: &str, address: bool, band: Option<CopyBand>) {
@@ -2140,7 +2140,7 @@ impl App {
         }
     }
 
-    /// Copy part of the main timer: the mark of [`App::copy_text`] goes at its deadline.
+    /// Copy part of the main timer: the mark of [`Wallet::copy_text`] goes at its deadline.
     pub fn copied_tick(&mut self, now: u64) {
         if self.copied.is_some_and(|copied| now >= copied.until_ms) {
             self.copied = None;
@@ -2290,14 +2290,11 @@ impl App {
             Some(url) => {
                 let job = self.evm.job();
                 let chain_id = valid.chain_id;
-                if let Some(state) = self.wallet.evm.chain_form.as_mut() {
+                if let Some(state) = self.evm.chain_form.as_mut() {
                     state.job = job;
                     state.pending = Some((valid, None));
-                    state.message = Some(
-                        text::CHECKING_CHAIN
-                            .get(self.wallet.settings.language)
-                            .to_owned(),
-                    );
+                    state.message =
+                        Some(text::CHECKING_CHAIN.get(self.settings.language).to_owned());
                 }
                 let _ = self.rpc(RpcJob::Probe {
                     job,
@@ -2643,12 +2640,8 @@ impl App {
         let valid = validate_fee_caps(&value, chain.native_decimals)
             .filter(|caps| parse_caps(caps, chain.native_decimals).is_some());
         let Some(valid) = valid else {
-            if let Some(caps) = self.wallet.evm.caps.as_mut() {
-                caps.message = Some(
-                    text::CAPS_RANGE
-                        .get(self.wallet.settings.language)
-                        .to_owned(),
-                );
+            if let Some(caps) = self.evm.caps.as_mut() {
+                caps.message = Some(text::CAPS_RANGE.get(self.settings.language).to_owned());
             }
             self.refresh();
             return;
@@ -2692,7 +2685,7 @@ impl App {
     /// Whether settings are loaded for chain lists (always).
     #[must_use]
     pub const fn settings_ref(&self) -> &Settings {
-        &self.wallet.settings
+        &self.settings
     }
 
     /// The approval id for a new queue item.

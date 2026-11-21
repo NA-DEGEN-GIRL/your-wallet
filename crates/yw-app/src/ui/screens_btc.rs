@@ -12,7 +12,7 @@ use yw_core::btc::{BtcMeta, BtcNetwork, FeeRate, Sats, Txid, encode_address};
 use yw_core::lang::{Lang, Text};
 
 use crate::apikeys::KeyName;
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMode, Wallet};
 use crate::app_book::{BookTarget, PromptPlace};
 use crate::app_btc::{
     BtcCtx, BtcFeeChoice, BtcFeeForm, BtcFlowStage, BtcGate, BtcUi, DISCOVERY_INCOMPLETE,
@@ -869,7 +869,7 @@ impl App {
             let account = ctx.accounts().into_iter().find(|meta| meta.id() == row.id);
             let source = account.map_or(
                 crate::ui::screens_accounts::AccountSource::Card(None),
-                |meta| Self::btc_source(meta.account(), net),
+                |meta| Wallet::btc_source(meta.account(), net),
             );
             if row.selected {
                 chosen = Some((row.id, row.name.clone()));

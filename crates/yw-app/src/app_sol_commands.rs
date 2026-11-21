@@ -4,7 +4,7 @@ use yw_engine::cmd::{Row, SolPress, SolScanAction};
 use yw_engine::effect::Effect;
 use yw_engine::form::EditField;
 
-use crate::app::{App, Screen};
+use crate::app::{App, Screen, Wallet};
 use crate::app_sol::SolSendForm;
 use crate::meta::Tab;
 use crate::network::SolCluster;
@@ -18,7 +18,7 @@ pub(crate) mod text {
     }
 }
 
-impl App {
+impl Wallet {
     /// The text of a Solana edit for a handler (2026-11-18, S3 C8: the form state,
     /// `App::form_text`; before, a read of the edit with the module's cap 256, now
     /// `EditField::cap`).

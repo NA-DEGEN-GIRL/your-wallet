@@ -5,6 +5,7 @@
 
 use super::tests::EVM;
 use super::*;
+use crate::app::App;
 
 /// A new entry is compared with everything the send forms know, not only the book: a poison
 /// of a past recipient is flagged on save with the sent-history wording (it used to save

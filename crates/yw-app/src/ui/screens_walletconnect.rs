@@ -4,7 +4,7 @@
 //! `연결 확인 중` until the dApp confirms, Verify state, accounts, chains, expiry) with
 //! `연결 해제` and `모든 WalletConnect 세션 끊기`.
 
-use crate::app::App;
+use crate::app::{App, Wallet};
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::walletconnect::VerifyStatus;
 use yw_core::secret::Zeroizing;
@@ -357,7 +357,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// Presses of the panel (2026-11-18, S3 C2: a `WcPress`, the edits' text from the form
     /// state; before, the control id and reads of the edits here).
     pub(crate) fn on_wc(&mut self, press: WcPress) {

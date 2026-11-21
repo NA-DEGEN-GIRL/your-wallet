@@ -14,7 +14,7 @@ use yw_core::evm::address::Address;
 use yw_core::lang::{Lang, Text};
 
 use crate::apikeys::{ApiKeys, KeyName};
-use crate::app::{App, Confirm, Screen};
+use crate::app::{App, Confirm, Screen, Wallet};
 use crate::events::UiEvent;
 use crate::explain::config::{
     KEY_REENTER_TEXT, StoredKey, effectively_enabled, parse_endpoint, valid_api_key, valid_model,
@@ -224,7 +224,7 @@ pub fn log_request(host: &str, kind: RequestKind, ended: &Ended, stats: Option<&
     );
 }
 
-impl App {
+impl Wallet {
     /// (Re)creates or drops the `yw-llm` worker to match the settings and the key (spec/06 §9):
     /// off → `None`; a changed endpoint, model, format, `max_tokens`, reasoning effort or key → a
     /// new worker.
@@ -281,16 +281,13 @@ impl App {
 
     /// Opens S15 `AI 설명` with the drafts loaded from the settings.
     pub fn open_llm_settings(&mut self) {
-        let settings = &self.wallet.settings.llm_explain;
-        self.wallet
-            .llm_ui
-            .endpoint_text
-            .clone_from(&settings.endpoint);
-        self.wallet.llm_ui.model_text.clone_from(&settings.model);
-        self.wallet.llm_ui.max_tokens_text = settings.max_tokens.to_string();
-        self.wallet.llm_ui.format = ResponseFormatMode::parse(&settings.response_format)
+        let settings = &self.settings.llm_explain;
+        self.llm_ui.endpoint_text.clone_from(&settings.endpoint);
+        self.llm_ui.model_text.clone_from(&settings.model);
+        self.llm_ui.max_tokens_text = settings.max_tokens.to_string();
+        self.llm_ui.format = ResponseFormatMode::parse(&settings.response_format)
             .unwrap_or(ResponseFormatMode::JsonSchema);
-        self.wallet.llm_ui.effort = settings.reasoning_effort;
+        self.llm_ui.effort = settings.reasoning_effort;
         self.llm_ui.message = None;
         self.set_screen(Screen::Settings(SettingsSection::Ai));
     }
@@ -427,7 +424,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     fn llm_toggle(&mut self, checked: Option<bool>) {
         let checked = checked.unwrap_or(false);
         let enabled = self.settings.llm_explain.enabled;
@@ -672,6 +669,6 @@ impl App {
     /// Whether the `yw-llm` worker exists (spec/06 E1: none while the feature is off).
     #[must_use]
     pub const fn llm_running(&self) -> bool {
-        self.wallet.llm.is_some()
+        self.llm.is_some()
     }
 }

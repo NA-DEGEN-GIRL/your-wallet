@@ -10,7 +10,7 @@ use yw_core::policy::{BrowserOrigin, ProviderError};
 use yw_engine::form::{ClipInput, ImageInput};
 use yw_engine::services::WcPlatform;
 
-use crate::app::App;
+use crate::app::Wallet;
 use crate::browser::{SiteRequest, VaultView};
 use crate::logging::{self, Field};
 use crate::walletconnect::engine::ProposalView;
@@ -130,7 +130,7 @@ pub struct WcUi {
     pub rows: std::cell::RefCell<Vec<[u8; 32]>>,
 }
 
-impl App {
+impl Wallet {
     /// The peer and Verify state of a session or pending proposal origin.
     pub(crate) fn wc_peer_of(&self, origin: &BrowserOrigin) -> Option<(Metadata, VerifyStatus)> {
         if !is_session_origin(origin) {
@@ -294,7 +294,7 @@ pub fn image_magic_ok(head: &[u8]) -> bool {
         || head.starts_with(b"GIF89a")
 }
 
-/// See [`App::wc_connect_patch`].
+/// See [`Wallet::wc_connect_patch`].
 #[derive(Clone, Debug)]
 pub struct ConnectPatch {
     proposal: ProposalView,
@@ -363,7 +363,7 @@ impl ConnectPatch {
     }
 }
 
-impl App {
+impl Wallet {
     // ----- worker lifetime -------------------------------------------------------------
 
     fn wc_start(&mut self) {
@@ -410,9 +410,9 @@ impl App {
 
     /// The meta state, with a relay client key created (and saved) when a project id is set.
     fn wc_store(&mut self) -> Option<WcStore> {
-        let meta = self.wallet.meta.as_mut()?;
+        let meta = self.meta.as_mut()?;
         let mut store = WcStore::from_value(meta.chain_sites.walletconnect.as_ref());
-        if store.client_seed.is_none() && !self.wallet.settings.walletconnect_project.is_empty() {
+        if store.client_seed.is_none() && !self.settings.walletconnect_project.is_empty() {
             let mut seed = yw_core::secret::Zeroizing::new([0_u8; 32]);
             yw_core::entropy::fill_random(seed.as_mut()).ok()?;
             store.client_seed = Some(seed);

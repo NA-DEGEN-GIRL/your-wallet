@@ -27,7 +27,7 @@ use yw_win::ui::{
     create_window,
 };
 
-use crate::app::App;
+use crate::app::{App, Wallet};
 use crate::app_evm::{AppApproval, QueuedItem};
 use crate::app_llm::log_request;
 use crate::approval_flow::{AiFlow, AiReserved, ApprovalFlow, ApprovalPaint};
@@ -1330,10 +1330,10 @@ fn bar_layout(
     layout
 }
 
-/// What a caller of [`App::show_next_approval_then`] did after the call before 2026-11-20 (S4
+/// What a caller of [`Wallet::show_next_approval_then`] did after the call before 2026-11-20 (S4
 /// P9, plan §4.4 S5, §4.6): it runs once the open of the next window is answered
 /// (`Cmd::ApprovalOpened`; P9's `App::after_approval_opened`, since P10a
-/// [`App::approval_open_answered`] and [`App::after_pending_open`]: after the answer's own steps
+/// [`Wallet::approval_open_answered`] and [`Wallet::after_pending_open`]: after the answer's own steps
 /// — the first view and the preparation, or the rejection of a window that could not be made),
 /// or at once when no window was asked for. While the executor applied effects at once (until
 /// P10b) that was the point where the caller went on before; with the outbox (since P10b) the
@@ -1341,7 +1341,7 @@ fn bar_layout(
 ///
 /// 2026-11-20 (S4 P10a, plan §4.4 S5, §4.6 rule 2): the steps that ran after a call that may
 /// open an approval window, in the same fn, are these too (except the lines the S5 check lists
-/// with their reasons) and go through [`App::after_pending_open`]: kept for the answer of the
+/// with their reasons) and go through [`Wallet::after_pending_open`]: kept for the answer of the
 /// open still waiting for one, else run at once. While the executor applied effects at once
 /// (until P10b) no open waited when logic code ran, so each step ran at the point and in the
 /// order it ran before (byte-equal by construction); with the outbox (since P10b) it runs after
@@ -1474,7 +1474,7 @@ impl core::fmt::Debug for AfterOpen {
     }
 }
 
-impl App {
+impl Wallet {
     // ----- queue and window lifecycle -----------------------------------------------------
 
     /// Shows the next queued approval (unlocked only, spec/04 §3.7). Site items that need no
@@ -1678,7 +1678,7 @@ impl App {
     /// P10a): no longer waiting (unless a later open waits), and the steps its opener left for
     /// then, in the order they were kept. Before P10a, `after_approval_opened` took the one kept
     /// step after `on_approval_opened` returned (2026-11-20, S4 P9); the steps are taken first now
-    /// so that what runs after the answer's own steps is a single [`App::after_pending_open`]. An
+    /// so that what runs after the answer's own steps is a single [`Wallet::after_pending_open`]. An
     /// answer for a window whose flow has gone (stale) runs them too: they belong to the opener,
     /// not to the window. 2026-11-21 (S4 F14): except after a lock, which dropped them, so the
     /// stale answer of an open from before a lock finds none.
@@ -1908,17 +1908,16 @@ impl App {
         }
         match outcome {
             OpenOutcome::Shown { .. } => {
-                if let Some(flow) = self.wallet.evm.approval.as_mut() {
+                if let Some(flow) = self.evm.approval.as_mut() {
                     // 2026-11-19 (S4 B4b): the AI panel's state is the flow's `AiFlow`, its body
                     // child and scroll the shell's `AiBody`, made in the open in the same order.
                     // 2026-11-19 (S4 B5 review): attached from the reservation made at the open
                     // (was `explain_kind(item)` and the endpoint read again here).
                     if let Some(reserved) = flow.take_ai_reserved() {
-                        self.wallet.llm_ui.next_window =
-                            self.wallet.llm_ui.next_window.saturating_add(1);
+                        self.llm_ui.next_window = self.llm_ui.next_window.saturating_add(1);
                         flow.attach_ai(AiFlow {
                             panel: AiPanel::new(true, flow.lang()),
-                            serial: self.wallet.llm_ui.next_window,
+                            serial: self.llm_ui.next_window,
                             host: reserved.host,
                             model: reserved.model,
                             kind: reserved.kind,
@@ -1960,11 +1959,11 @@ impl App {
 
     fn start_prepare(&mut self) {
         let job = self.evm.job();
-        let Some(flow) = self.wallet.evm.approval.as_mut() else {
+        let Some(flow) = self.evm.approval.as_mut() else {
             return;
         };
         let item = flow.item().clone();
-        flow.begin_prepare(job, self.wallet.clock.now_ms());
+        flow.begin_prepare(job, self.clock.now_ms());
         match item {
             QueuedItem::App(app) => self.prepare_transaction(job, &app, None),
             QueuedItem::Site(site) => self.prepare_site(job, &site),
@@ -2317,8 +2316,8 @@ impl App {
     }
 
     pub(crate) fn show_failure(&mut self, code: ErrorCode, retryable: bool, text: String) {
-        if let Some(flow) = self.wallet.evm.approval.as_mut() {
-            flow.fail(text, code, retryable, self.wallet.clock.now_ms());
+        if let Some(flow) = self.evm.approval.as_mut() {
+            flow.fail(text, code, retryable, self.clock.now_ms());
         }
         self.ai_ready(AiReady::Skip(SKIP_FAILED.get(self.approval_lang())));
         self.rebuild_view();
@@ -2396,10 +2395,10 @@ impl App {
 
     /// `eth_simulateV1` started.
     pub fn on_simulating(&mut self, job: u64, since_ms: u64) {
-        if let Some(flow) = self.wallet.evm.approval.as_mut()
+        if let Some(flow) = self.evm.approval.as_mut()
             && flow.job() == job
         {
-            flow.simulating(since_ms, self.wallet.clock.now_ms());
+            flow.simulating(since_ms, self.clock.now_ms());
             self.rebuild_view();
         }
     }
@@ -2552,9 +2551,9 @@ impl App {
             return;
         }
         let Some(prepared) = result.prepared else {
-            if let Some(flow) = self.wallet.evm.approval.as_mut() {
+            if let Some(flow) = self.evm.approval.as_mut() {
                 // Same content, but a new approval (checkbox, arm delay, fresh interaction).
-                flow.resim_no_result(self.wallet.clock.now_ms());
+                flow.resim_no_result(self.clock.now_ms());
             }
             self.rebuild_view();
             return;
@@ -2736,13 +2735,13 @@ impl App {
             extra_warnings,
             limits: Limits::PRODUCTION,
         })));
-        if let Some(flow) = self.wallet.evm.approval.as_mut() {
+        if let Some(flow) = self.evm.approval.as_mut() {
             if sent {
                 // C1: the approval that asked for this re-simulation has been acted on; the
                 // terminal `Approved` status must not dispatch it again on the next tick.
-                flow.resim_sent(self.wallet.clock.now_ms());
+                flow.resim_sent(self.clock.now_ms());
             } else {
-                flow.resim_not_sent(self.wallet.clock.now_ms());
+                flow.resim_not_sent(self.clock.now_ms());
             }
         }
         self.rebuild_view();
@@ -3047,8 +3046,8 @@ impl App {
                 self.after_pending_open(AfterOpen::CloseIfShown(shown));
             }
             ApprovalSignal::Activated => {
-                if let Some(flow) = self.wallet.evm.approval.as_mut() {
-                    flow.activated(self.wallet.clock.now_ms());
+                if let Some(flow) = self.evm.approval.as_mut() {
+                    flow.activated(self.clock.now_ms());
                 }
             }
             ApprovalSignal::ToggleAck => {
@@ -4125,7 +4124,8 @@ impl App {
             // 2026-11-20 (S4 P10b): each of its two calls into the flow is drained before the
             // next step, as when `emit` applied each effect at once.
             Step::TimerTail => {
-                self.ai_tick(self.clock.now_ms());
+                let now = self.clock.now_ms();
+                self.ai_tick(now);
                 self.drain();
                 if let Some(flow) = self.evm.approval.as_ref()
                     && matches!(
@@ -4142,7 +4142,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// `다시 시도` / `시뮬레이션 다시 실행` of the shown window (`ApprovalSignal::Retry`).
     fn retry_action(&mut self) {
         let failed_retryable = self.evm.approval.as_ref().is_some_and(|flow| {
@@ -4866,7 +4866,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     // ----- AI explanation (spec/06) -------------------------------------------------------
 
     fn llm_busy(&self) -> bool {
@@ -4886,7 +4886,7 @@ impl App {
         stats: Option<&RequestStats>,
     ) {
         let now = self.clock.now_ms();
-        let crate::app::Wallet { evm, llm, .. } = &mut self.wallet;
+        let crate::app::Wallet { evm, llm, .. } = self;
         let Some(flow) = evm.approval.as_mut() else {
             return;
         };

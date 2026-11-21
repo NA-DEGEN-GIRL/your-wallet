@@ -25,7 +25,7 @@ use yw_core::yubikey::CardError;
 use yw_core::yubikey::plan::{KeyRole, PlannedSlot};
 use yw_core::yubikey::record::HwKeyRecord;
 
-use crate::app::{App, Purpose};
+use crate::app::{App, Purpose, Wallet};
 use crate::events::{
     ChainMessageSigned, EvmSigned, KeyJob, KeyOutcome, MessageSigned, SignInfo, SignTicket,
     YubiKeyJobError,
@@ -296,7 +296,7 @@ impl core::fmt::Debug for PinBuffer {
     }
 }
 
-/// What the enrolment wizard hands to [`App::enrol_yubikey`]: every secret is moved into the
+/// What the enrolment wizard hands to [`Wallet::enrol_yubikey`]: every secret is moved into the
 /// `EnrolYubiKey` job and wiped with it.
 pub struct EnrolRequest {
     /// Mnemonic text (entered once).
@@ -398,7 +398,7 @@ pub struct CardUi {
     pub list_defaults: Vec<(u32, yw_core::yubikey::enrol::DefaultsSeen)>,
     /// The card step's touch prompt where it was placed (2026-11-10).
     pub notice: Option<CardNotice>,
-    /// The waiter ticket of a step [`App::card_site_check`] ended while the worker's failure of
+    /// The waiter ticket of a step [`Wallet::card_site_check`] ended while the worker's failure of
     /// its refused PIN was still to come (2026-11-13): that failure is dropped once, as the
     /// step's own `swallow_failure` would have — the step ended because its site went away, and
     /// no card error band is shown beside that notice.
@@ -550,7 +550,7 @@ const fn retryable(error: CardJobError) -> bool {
 // waiting for the touch) is not signed, the running one continues ([`text::BUSY`], spec/10
 // §9.2).
 
-impl App {
+impl Wallet {
     // ----- card names (meta `hw_card_names`, spec/10 §8, 2026-11-15) -------------------------
 
     /// The user's names of the enrolled cards (`(serial, name)`; empty while locked).
@@ -568,7 +568,7 @@ impl App {
         crate::yubikey::card_label(self.card_names(), serial)
     }
 
-    /// [`App::card_name`] of each of `serials`, joined with `separator`.
+    /// [`Wallet::card_name`] of each of `serials`, joined with `separator`.
     #[must_use]
     pub(crate) fn card_name_list(&self, serials: &[u32], separator: &str) -> String {
         crate::yubikey::card_labels(self.card_names(), serials, separator)
@@ -588,7 +588,7 @@ impl App {
 
     /// Enrols the inserted `YubiKey` (spec/10 §7.3): queues `KeyJob::EnrolYubiKey` with the
     /// request's buffers (moved, wiped with the job). The result arrives in
-    /// [`App::on_yubikey_enrolled`]: the accounts are reconciled from vault tag 5 (meta reload)
+    /// [`Wallet::on_yubikey_enrolled`]: the accounts are reconciled from vault tag 5 (meta reload)
     /// and [`CardUi::enrol`] tells the wizard the serial and the defaults to change.
     pub fn enrol_yubikey(&mut self, request: EnrolRequest) {
         let EnrolRequest {
@@ -951,7 +951,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// Refuses a dApp signing request of a `YubiKey` key still on its factory PINs: 4100 before
     /// any window (the card step would refuse it only after the approval), and one notice
     /// saying where the PIN is set.
@@ -1142,7 +1142,7 @@ impl App {
             return;
         }
         let now = self.clock.now_ms();
-        let Some(step) = self.wallet.card.step.as_mut().filter(|step| step.id == id) else {
+        let Some(step) = self.card.step.as_mut().filter(|step| step.id == id) else {
             drop(pin);
             return;
         };
@@ -1155,11 +1155,10 @@ impl App {
             // admin PIN and PUK) is never sent for a signature.
             drop(pin);
             drop(approved);
-            if let Some(step) = self.wallet.card.step.take() {
-                self.wallet.card.pin_needed =
-                    crate::yubikey::holders(&self.wallet.card.records, step.role)
-                        .first()
-                        .copied();
+            if let Some(step) = self.card.step.take() {
+                self.card.pin_needed = crate::yubikey::holders(&self.card.records, step.role)
+                    .first()
+                    .copied();
                 logging::info("app", "card.factory_pin_refused", &[]);
                 // The yellow T-YK-PIN-NEEDED band with `PIN 설정` says it (one band); a key no
                 // enrolled card holds has no such band, so the red text says it.
@@ -1167,7 +1166,7 @@ impl App {
                     .card
                     .pin_needed
                     .is_none()
-                    .then_some(text::FACTORY_PIN.get(self.wallet.settings.language));
+                    .then_some(text::FACTORY_PIN.get(self.settings.language));
                 self.card_resolve_failed(step, text);
             }
             return;
@@ -1175,10 +1174,10 @@ impl App {
         if now >= step.deadline_ms {
             drop(pin);
             drop(approved);
-            if let Some(step) = self.wallet.card.step.take() {
+            if let Some(step) = self.card.step.take() {
                 self.card_resolve_failed(
                     step,
-                    Some(text::STEP_EXPIRED.get(self.wallet.settings.language)),
+                    Some(text::STEP_EXPIRED.get(self.settings.language)),
                 );
             }
             return;
@@ -1187,7 +1186,7 @@ impl App {
         step.presence = None;
         let ticket = step.ticket;
         let kind = step.kind.clone();
-        let touch = touch_text_in(self.wallet.settings.language, &kind, step.touches);
+        let touch = touch_text_in(self.settings.language, &kind, step.touches);
         let form = self.card_form(&kind, ticket);
         match kind {
             CardJobKind::EvmTx { info } => self.key(KeyJob::SignEvmCard {
@@ -1510,7 +1509,7 @@ impl App {
     /// shown as usual.
     fn card_unused(&mut self, approved: Box<Approved>, error: CardJobError) {
         let now = self.clock.now_ms();
-        let Some(step) = self.wallet.card.step.as_mut() else {
+        let Some(step) = self.card.step.as_mut() else {
             return;
         };
         if step.approved.is_some() || step.approval_id != approved.id() {
@@ -1549,19 +1548,18 @@ impl App {
         }
         // A blocked PIN says what is safe for this card's keys (2026-11-10).
         let serial = step.counters.map(|counters| counters.serial).or_else(|| {
-            crate::yubikey::holders(&self.wallet.card.records, step.role)
+            crate::yubikey::holders(&self.card.records, step.role)
                 .first()
                 .copied()
         });
         let names = self
-            .wallet
             .meta
             .as_ref()
             .map_or(&[][..], |meta| meta.hw_card_names.as_slice());
         let context = serial.map_or_else(crate::yubikey::PinContext::default, |serial| {
-            crate::yubikey::PinContext::of(&self.wallet.card.records, names, serial, kind)
+            crate::yubikey::PinContext::of(&self.card.records, names, serial, kind)
         });
-        step.error = Some(error.text_for_in(self.wallet.settings.language, kind, &context));
+        step.error = Some(error.text_for_in(self.settings.language, kind, &context));
         // A site disconnected (or a page gone) while the card checked the PIN: the step ends
         // here instead of asking for the PIN again (2026-11-13).
         if self.card_site_check() {

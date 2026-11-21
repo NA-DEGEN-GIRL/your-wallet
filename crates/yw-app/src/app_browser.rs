@@ -12,7 +12,7 @@ use yw_core::evm::address::Address;
 use yw_core::policy::{BrowserOrigin, ConnectedSite, ProviderError};
 use yw_json::Value;
 
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMode, Wallet};
 use crate::app_approval::AfterOpen;
 use crate::app_evm::QueuedItem;
 use crate::browser::envelope::accounts_value;
@@ -38,7 +38,7 @@ pub const GRANT_WRITE_INTERVAL_MS: u64 = 2_000;
 
 /// The `YubiKey` accounts of a meta document a dApp grant may name (hidden ones included): the
 /// EVM addresses, the Solana keys and the stable addresses (receive 0) of the cards' Bitcoin
-/// accounts. Compared across a meta reload by [`App::hardware_accounts_reloaded`].
+/// accounts. Compared across a meta reload by [`Wallet::hardware_accounts_reloaded`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct HardwareSiteAccounts {
     evm: Vec<Address>,
@@ -163,7 +163,7 @@ pub struct GrantWrite {
     /// A revoke the dispatcher reported is waiting to be written: its write
     /// (`AfterOpen::WriteGrantsThenRefresh`) may wait for the answer of an approval open
     /// (2026-11-21, S4 F16, owner decision, spec/04 §5.3, spec/15 §18 item 16). The lock writes it
-    /// first ([`App::flush_grant_writes`]); the main timer does not ([`Self::due`]), and neither
+    /// first ([`Wallet::flush_grant_writes`]); the main timer does not ([`Self::due`]), and neither
     /// does the shutdown (spec/15 §18 item 21).
     pub revoke: bool,
     /// Monotonic ms of the last grant write.
@@ -184,7 +184,7 @@ impl GrantWrite {
     }
 
     /// Whether any write is waiting (a chain switch or a revoke), due or not: what the lock
-    /// writes first ([`App::flush_grant_writes`]; 2026-11-21, S4 F16: before, a chain switch
+    /// writes first ([`Wallet::flush_grant_writes`]; 2026-11-21, S4 F16: before, a chain switch
     /// only). The shutdown writes neither: `App::shutdown` sets `AppMode::ShuttingDown` before
     /// its lock, and the flush writes only while unlocked (2026-11-21, F16 review: an open
     /// question, spec/15 §18 item 21).
@@ -344,7 +344,7 @@ pub fn broadcast_answer(
     }
 }
 
-impl App {
+impl Wallet {
     pub(crate) fn vault_view(&self) -> VaultView {
         let locking = self.browser.as_ref().is_some_and(|browser| browser.locking);
         match self.mode {
@@ -430,7 +430,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// Pushes the UI-owned state to the dispatcher and performs the lock/unlock grant
     /// transitions (spec/05 §4.3–§4.4). Called on every refresh. A session opened with an
     /// unverified passphrase (`VaultView::PassphraseUnverified`) counts as unlocked here, with no
@@ -503,10 +503,10 @@ impl App {
 
     /// Writes the dispatcher's grants to meta and saves it.
     pub(crate) fn write_grants(&mut self) {
-        let Some(browser) = self.wallet.browser.as_mut() else {
+        let Some(browser) = self.browser.as_mut() else {
             return;
         };
-        browser.grant_write.written(self.wallet.clock.now_ms());
+        browser.grant_write.written(self.clock.now_ms());
         let core = Arc::clone(&browser.core);
         if let Some(meta) = self.meta.as_mut() {
             meta.connected_sites = sites_to_values(&core.grants());

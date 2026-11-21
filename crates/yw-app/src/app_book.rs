@@ -20,7 +20,7 @@ use yw_core::evm::address::{Address, AddressError, parse_address};
 use yw_core::lang::Lang;
 use yw_core::sol::SolAddress;
 
-use crate::app::{App, Confirm, Screen};
+use crate::app::{Confirm, Screen, Wallet};
 use crate::errors::ErrorCode;
 use crate::meta::{BookChain, Contact, ListError, MAX_ADDRESS_BOOK};
 use crate::text::is_valid_label;
@@ -241,11 +241,11 @@ pub fn look_alike_note(lang: Lang, known: &Resembles) -> String {
     text::LOOK_ALIKE.fill(lang, [&whom])
 }
 
-impl App {
+impl Wallet {
     /// The note of a new book entry `address` (canonical, of `chain`) that looks like an
     /// address the user knows — the family's whole known set, as the send forms compare it:
-    /// book entries, own accounts and sent history (EVM [`App::known_addresses`], Solana
-    /// [`App::sol_known`], Bitcoin the network's book, own and sent addresses). An exact own
+    /// book entries, own accounts and sent history (EVM [`Wallet::known_addresses`], Solana
+    /// [`Wallet::sol_known`], Bitcoin the network's book, own and sent addresses). An exact own
     /// account or verified book entry is never a look-alike. Comparing only with the book would
     /// let a poison of a past recipient be saved silently, and the saved entry would then pass
     /// for known (spec/04 §2.10).
@@ -588,13 +588,12 @@ impl App {
             .is_none()
             .then(|| self.book_look_alike(form.chain, &address))
             .flatten();
-        let Some(meta) = self.wallet.meta.as_mut() else {
+        let Some(meta) = self.meta.as_mut() else {
             return;
         };
         if form.editing.is_none() {
             if meta.contact(form.chain, &address).is_some() {
-                self.wallet.book.form.message =
-                    Some(ErrorCode::Inp016.text_in(self.wallet.settings.language));
+                self.book.form.message = Some(ErrorCode::Inp016.text_in(self.settings.language));
                 self.refresh();
                 return;
             }
@@ -603,9 +602,9 @@ impl App {
             if let Some(note) = note
                 && (!form.ack || form.look_alike.as_deref() != Some(note.as_str()))
             {
-                self.wallet.book.form.look_alike = Some(note);
-                self.wallet.book.form.ack = false;
-                self.wallet.book.form.message = None;
+                self.book.form.look_alike = Some(note);
+                self.book.form.ack = false;
+                self.book.form.message = None;
                 self.refresh();
                 return;
             }
@@ -615,7 +614,7 @@ impl App {
             address: address.clone(),
             label,
             verified: form.verified,
-            added_at_unix_ms: self.wallet.clock.now_unix_ms(),
+            added_at_unix_ms: self.clock.now_unix_ms(),
         };
         let result = if form.editing.is_some() {
             meta.update_contact(&entry);

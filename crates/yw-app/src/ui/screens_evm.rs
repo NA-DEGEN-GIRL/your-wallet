@@ -9,7 +9,7 @@ use yw_core::evm::display::format_address;
 use yw_core::journal::evm::{EvmRecord, ReceiptStatus, TxState, groups};
 use yw_core::lang::Lang;
 
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMode, Wallet};
 use crate::app_book::{BookTarget, PromptPlace};
 use crate::app_evm::{SendAsset, hash_text};
 use crate::app_tokens::EvmTokenRow;
@@ -491,7 +491,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// An account row's name with its recovery phrase while the wallet has several.
     fn evm_pref_title(&self, pref: crate::meta::EvmAccountPref, label: &str) -> String {
         match pref {
@@ -688,7 +688,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// Network radios with "(차단됨)".
     #[must_use]
     pub fn network_label(&self, chain_id: u64) -> String {
@@ -710,7 +710,7 @@ impl App {
 }
 
 impl App {
-    /// The S10 network drop-down's text of a chain (2026-11-11): [`App::network_label`] with
+    /// The S10 network drop-down's text of a chain (2026-11-11): [`Wallet::network_label`] with
     /// `(메인넷)` after a built-in mainnet whose name does not say so (`Arbitrum One (메인넷)`;
     /// `Sepolia 테스트넷` and `Ethereum 메인넷` already do; user chains carry no such flag).
     #[must_use]
@@ -1533,7 +1533,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The picker rows in display order: book entries and own accounts matching the filter of
     /// the rows on screen (`SendForm::picker_filter`), at most [`ids::SEND_PICK_SPAN`].
     fn picker_known(&self) -> Vec<crate::flow::evm::form::KnownAddress> {

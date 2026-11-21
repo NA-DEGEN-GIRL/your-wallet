@@ -14,7 +14,7 @@ use yw_core::zec::{
     parse_user_zec, plan_send,
 };
 
-use crate::app::{App, AppMode};
+use crate::app::{AppMode, Wallet};
 use crate::errors::ErrorCode;
 use crate::events::KeyJob;
 use crate::logging::{self, Field};
@@ -258,7 +258,7 @@ fn zec_key_held(
         })
 }
 
-impl App {
+impl Wallet {
     /// The Zcash tab is selected.
     #[must_use]
     pub fn zec_tab_active(&self) -> bool {
@@ -288,7 +288,7 @@ impl App {
     /// The settings network.
     #[must_use]
     pub const fn zec_network(&self) -> ZecNetwork {
-        self.wallet.settings.zcash.network
+        self.settings.zcash.network
     }
 
     /// The account of the settings network, if known.
@@ -843,7 +843,7 @@ impl App {
         };
     }
 
-    /// The backup gate of the account's key source ([`App::mn_backup_gate`]: an added phrase's
+    /// The backup gate of the account's key source ([`Wallet::mn_backup_gate`]: an added phrase's
     /// standard path, or the primary phrase's derived or EVM-shared key).
     #[must_use]
     pub fn zec_backup_gate(&self) -> Option<yw_core::vault::RecordId> {

@@ -11,7 +11,7 @@
 use yw_core::lang::Lang;
 use yw_core::policy::{BrowserOrigin, Family};
 
-use crate::app::{App, Confirm};
+use crate::app::{App, Confirm, Wallet};
 use crate::meta::BookChain;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::screens_book::shown_address;
@@ -67,7 +67,7 @@ pub mod ids {
 }
 
 /// The page being drawn: which cards of the combined list it shows, and the grant behind each
-/// row button (recorded for [`App::on_sites`]).
+/// row button (recorded for [`Wallet::on_sites`]).
 struct Page<'a> {
     start: usize,
     end: usize,
@@ -415,7 +415,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// Presses of S13 (2026-11-18, S3 C2: a `SitesPress`; before, the control id).
     pub(crate) fn on_sites(&mut self, press: SitesPress) {
         match press {

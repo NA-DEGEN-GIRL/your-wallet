@@ -8,7 +8,7 @@ use yw_engine::cmd::{BtcActivityAction, BtcPress, Row};
 use yw_engine::effect::Effect;
 use yw_engine::form::EditField;
 
-use crate::app::{App, Screen};
+use crate::app::{App, Screen, Wallet};
 use crate::app_btc::{BtcAction, BtcAmountUnit, BtcBumpForm, BtcFeeChoice, BtcSendForm};
 use crate::btc::{app_network, core_network};
 use crate::settings::BtcIndexer;
@@ -48,7 +48,7 @@ const fn fee_choice(press: BtcPress) -> Option<(BtcFeeChoice, bool)> {
     })
 }
 
-impl App {
+impl Wallet {
     /// The controller's copy of a form edit.
     fn btc_field_text(&self, field: EditField) -> &str {
         match field {
@@ -93,9 +93,7 @@ impl App {
             &self.btc.send.fee
         };
         if fee.needs_typed.is_none() && !fee.typed_text.is_empty() {
-            self.wallet
-                .btc
-                .set_typed_fee(self.wallet.settings.language, "", bump);
+            self.btc.set_typed_fee(self.settings.language, "", bump);
         }
     }
 

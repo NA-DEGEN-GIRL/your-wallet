@@ -28,7 +28,7 @@ use yw_engine::cmd::{Row, YkManagePress};
 use yw_engine::form::EditField;
 
 use super::{YkPurpose, failure_text, failure_text_for};
-use crate::app::{App, Screen};
+use crate::app::{Screen, Wallet};
 use crate::events::{KeyJob, YubiKeyJobError};
 use crate::logging;
 use crate::workers::key::yubikey::YkJob;
@@ -627,7 +627,7 @@ impl ReslotFlow {
     }
 }
 
-impl App {
+impl Wallet {
     fn yk_manage_record(&self, row: usize) -> Option<HwKeyRecord> {
         self.card.records.get(row).cloned()
     }

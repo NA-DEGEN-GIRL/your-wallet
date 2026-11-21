@@ -11,7 +11,7 @@
 use yw_core::bip32::path::BtcChain;
 use yw_core::btc::{BtcAccountId, BtcAccountKey, BtcMeta, BtcNetwork};
 
-use crate::app::App;
+use crate::app::Wallet;
 use crate::app_btc::{ACCOUNT_SWITCH_BUSY, BtcUi};
 use crate::app_hidden::HiddenId;
 use crate::errors::ErrorCode;
@@ -22,7 +22,7 @@ use crate::ui::main_window::Tone;
 use crate::ui::screens_accounts::AccountSource;
 use crate::workers::journal::btc::BtcMetaOp;
 
-impl App {
+impl Wallet {
     /// The name of a Bitcoin account of the settings network (meta `btc_account_view`, default
     /// `Bitcoin N`).
     #[must_use]

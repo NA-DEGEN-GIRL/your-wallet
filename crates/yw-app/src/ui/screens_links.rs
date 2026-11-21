@@ -9,7 +9,7 @@
 //! copied. The senders of the received history (`screens_received`) never are — they stay
 //! display-only (address poisoning, spec/07 §12.3).
 
-use crate::app::App;
+use crate::app::{App, Wallet};
 use crate::explorer::ExplorerNet;
 use crate::ui::main_window::{Ctl, GLYPH_LINK, GLYPH_OPEN, GLYPH_SAVE, Item};
 use crate::ui::theme::{AddressKind, own_address_spans};
@@ -295,7 +295,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// Closes the open account and network drop-downs (2026-11-12: Esc, any other command, a
     /// click on the window, another screen); whether one was open. The caller lays out again.
     pub(crate) fn close_pickers(&mut self) -> bool {
@@ -314,7 +314,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The drop-down buttons and the activity recipients (2026-11-18, S3 C1: a `LinksPress`;
     /// before, the control id). The open drop-down is kept as its button's press (2026-11-20,
     /// S4 P6; before, as its control id).

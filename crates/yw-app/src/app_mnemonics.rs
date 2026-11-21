@@ -10,7 +10,7 @@ use yw_core::evm::address::Address;
 use yw_core::secret::Zeroizing;
 use yw_core::vault::{BackupChallenge, EvmKeySource, MnemonicInfo, RecordId};
 
-use crate::app::{App, AppMode, Purpose, Screen};
+use crate::app::{App, AppMode, Purpose, Screen, Wallet};
 use crate::errors::{key_code, vault_code};
 use crate::events::KeyJob;
 use crate::logging;
@@ -146,7 +146,7 @@ pub mod text {
     }
 }
 
-impl App {
+impl Wallet {
     /// The label of mnemonic `id` (meta `mnemonics`; `니모닉 N` by vault position otherwise).
     #[must_use]
     pub fn mnemonic_label(&self, id: RecordId) -> String {
@@ -933,7 +933,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The Solana / Bitcoin / Zcash mnemonic choices (spec/02 §8.6); `false` when a row names
     /// no phrase or `press` is not one of them (2026-11-18, S3 C6: the press; before, the id).
     fn on_chain_pick(&mut self, press: MnPress) -> bool {
@@ -985,7 +985,7 @@ impl App {
             return;
         };
         let infos = self.mn.infos.clone();
-        if let Some(meta) = self.wallet.meta.as_mut() {
+        if let Some(meta) = self.meta.as_mut() {
             // A wallet whose meta has no entries yet (one mnemonic, default label) gets them
             // here; the next meta load fills in the accounts of added mnemonics.
             for (position, info) in infos.iter().enumerate() {
@@ -997,7 +997,7 @@ impl App {
                     meta.mnemonics.push(crate::meta::MnemonicEntry {
                         record_id: *info.id.as_bytes(),
                         label: crate::workers::key::mnemonics::default_label(
-                            self.wallet.settings.language,
+                            self.settings.language,
                             position.saturating_add(1),
                         ),
                         evm: Vec::new(),
@@ -1342,14 +1342,14 @@ impl App {
                     .meta
                     .as_ref()
                     .map_or(1, crate::meta::Meta::next_evm_number);
-                if let Some(entry) = self.wallet.meta.as_mut().and_then(|meta| {
+                if let Some(entry) = self.meta.as_mut().and_then(|meta| {
                     meta.mnemonics
                         .iter_mut()
                         .find(|entry| entry.record_id == *id.as_bytes())
                 }) && !entry.evm.iter().any(|account| account.index == index)
                 {
                     entry.evm.push(crate::workers::key::new_account(
-                        self.wallet.settings.language,
+                        self.settings.language,
                         index,
                         number,
                         &address,

@@ -77,7 +77,7 @@ AI explanations can be wrong and are not used for the approval decision or the r
 
 - **자동 실행으로 정한다.** 기능이 켜져 있으면 조건이 충족되는 즉시 1회 요청한다. 수동 시작 버튼은 없다.
 - 작업자 스레드 1개(`yw-llm`)가 동기 WinHTTP로 보내고 결과를 `UiEvent::Llm`으로 승인 창에 전달한다([04](04-app-ui.md) §1.2–§1.3). UI 스레드는 블록하지 않으며, 승인 창 타이머가 `started_at + REQUEST_DEADLINE_MS`에 `Failed(Timeout)`으로 전이시킨다(WinHTTP 반환을 기다리지 않음). 이전 작업자가 WinHTTP에서 아직 돌아오지 않았으면 새 요청은 `Waiting`에 머물고 "다시 요청" / "Ask again"은 비활성이다.
-- **언어(2026-11-14, D39)**: 입력·프롬프트·응답 문자 규칙·패널 고정 문구는 그 요청의 승인 창 언어(`App::approval_lang`, [14] §1 — 창이 열릴 때의 언어로 끝까지 간다)를 따른다. 입력(`ExplainInput::lang`)과 패널(`AiPanel::new(target, lang)`)이 언어를 가진다. 언어는 위험·digest·승인과 무관하다(D21 그대로).
+- **언어(2026-11-14, D39)**: 입력·프롬프트·응답 문자 규칙·패널 고정 문구는 그 요청의 승인 창 언어(`Wallet::approval_lang`, [14] §1 — 창이 열릴 때의 언어로 끝까지 간다)를 따른다. 입력(`ExplainInput::lang`)과 패널(`AiPanel::new(target, lang)`)이 언어를 가진다. 언어는 위험·digest·승인과 무관하다(D21 그대로).
 - 요청마다 승인 창별 `generation: u64`를 붙이고, 결과는 요청 시 generation이 현재 값과 같을 때만 반영한다. 재시뮬레이션(D23, [03](03-evm.md) §6.6의 60초 규칙, 또는 [03]이 정한 다시 시도)으로 시뮬레이션 상태·결과가 바뀌어 입력 JSON 바이트가 바뀌면 이전 설명을 즉시 지우고 generation을 올려 자동 재요청한다. 승인 창이 닫히면(승인·거절·만료) 진행 중인 결과를 버린다.
 
 | 상태 | 진입 | 전이 |

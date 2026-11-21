@@ -15,7 +15,7 @@ use yw_core::sol::template::spl_entries;
 use yw_core::sol::token::TokenHolding;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SplAllowEntry};
 
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMode, Wallet};
 use crate::app_book::{BookTarget, PromptPlace};
 use crate::app_sol::SolAccountId;
 use crate::meta::{BookChain, Tab};
@@ -707,7 +707,7 @@ impl App {
             match (self.sol_balance(address), failure) {
                 (Some(lamports), Some(_)) => {
                     // The earlier value, dimmed, and since when (2026-11-12, like EVM).
-                    items.push(Item::DisplayMuted(App::sol_text(lamports)));
+                    items.push(Item::DisplayMuted(Wallet::sol_text(lamports)));
                     items.push(Item::Help(crate::ui::screens::balance_stale_text(
                         self.settings.language,
                         None,
@@ -715,7 +715,7 @@ impl App {
                     )));
                 }
                 (Some(lamports), None) => {
-                    items.push(Item::Display(App::sol_text(lamports)));
+                    items.push(Item::Display(Wallet::sol_text(lamports)));
                     let read = crate::ui::screens::balance_read_text(
                         self.settings.language,
                         None,
@@ -1225,7 +1225,7 @@ impl App {
         let path = source.path_text_in(lang);
         items.push(Item::Help(self.sol_balance(&from).map_or_else(
             || path.clone(),
-            |lamports| text::PATH_BALANCE.fill(lang, [&path, &App::sol_text(lamports)]),
+            |lamports| text::PATH_BALANCE.fill(lang, [&path, &Wallet::sol_text(lamports)]),
         )));
         // U7: `검토` stays off while the phrase waits for its backup quiz, and while the
         // YubiKey is still on its factory PINs (spec/10 §9.3).
@@ -1376,7 +1376,7 @@ impl App {
         if asset == SolAsset::Sol {
             items.push(Item::Help(self.sol_balance(from).map_or_else(
                 || text::SOL_HOLDING_UNREAD.get(lang).to_owned(),
-                |lamports| text::SOL_HOLDING.fill(lang, [&App::sol_text(lamports)]),
+                |lamports| text::SOL_HOLDING.fill(lang, [&Wallet::sol_text(lamports)]),
             )));
         }
         if let SolAsset::Spl(entry) = asset {
@@ -1416,8 +1416,8 @@ impl App {
         items.push(Item::Text(text::FEE_ESTIMATE.fill(
             lang,
             [
-                &App::sol_text(5_000),
-                &App::sol_text(self.settings.solana.max_fee_lamports),
+                &Wallet::sol_text(5_000),
+                &Wallet::sol_text(self.settings.solana.max_fee_lamports),
             ],
         )));
         if self.show_advanced {
@@ -1461,7 +1461,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// Picker entries: address book and own accounts only (spec/07 §12.3), filtered by the text.
     #[must_use]
     pub fn sol_picker_entries(&self) -> Vec<(String, SolAddress)> {
@@ -1764,7 +1764,7 @@ impl App {
                     let mut line = format!(
                         "{} · {}",
                         row.source.path_text_in(lang),
-                        App::sol_text(balance)
+                        Wallet::sol_text(balance)
                     );
                     for (entry, holding) in &tokens {
                         if let Some(raw) = holding.balance().filter(|raw| *raw > 0) {
@@ -1802,7 +1802,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The transaction ids of the S10 Solana activity rows, in display order (the rows of
     /// [`Self::sol_activity_counterparties`]), for their `해시 복사`.
     #[must_use]

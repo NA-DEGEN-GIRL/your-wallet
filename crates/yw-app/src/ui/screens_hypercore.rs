@@ -7,7 +7,7 @@ use yw_core::lang::Lang;
 use yw_engine::cmd::{HcPress, Row};
 use yw_engine::form::EditField;
 
-use crate::app::App;
+use crate::app::{App, Wallet};
 use crate::app_hypercore::{HcAsset, HcFormKind};
 use crate::ui::main_window::{Ctl, Item, Tone};
 
@@ -278,7 +278,7 @@ fn network_band(lang: Lang, network: HcNetwork, items: &mut Vec<Item>) {
     });
 }
 
-impl App {
+impl Wallet {
     /// Whether the `HyperCore` card may be folded to one line (2026-11-10): the selected EVM
     /// chain is not one the card works with ([`HC_UNFOLDED_CHAINS`]) and no `HyperCore` action of
     /// the selected account is being signed or sent.
@@ -333,7 +333,7 @@ impl App {
     }
 
     /// The S10 `HyperCore` card (balances, actions, session activity), folded to one line next
-    /// to a chain it does not work with ([`App::hc_foldable`]) until `펼치기 ▸` (this run only).
+    /// to a chain it does not work with ([`Wallet::hc_foldable`]) until `펼치기 ▸` (this run only).
     #[expect(clippy::too_many_lines, reason = "the card's sections in order")]
     pub fn hc_card(&self, items: &mut Vec<Item>) {
         if !self.hc_visible() {
@@ -732,7 +732,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// `HyperCore` presses (2026-11-18, S3 C7: an `HcPress`; before, the control id, and
     /// `false` for an id that was not one of them).
     pub(crate) fn on_hc(&mut self, press: HcPress) {

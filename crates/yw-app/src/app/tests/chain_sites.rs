@@ -95,7 +95,7 @@ fn signing_preflight_and_drafts() {
         app.chain_sign_draft(&blocked).unwrap().display.risk,
         RiskLevel::Blocked
     );
-    let waiter = App::chain_waiter(&sign, &draft.payload);
+    let waiter = crate::app::Wallet::chain_waiter(&sign, &draft.payload);
     assert!(matches!(
         waiter,
         Some(crate::app_browser::SignWaiter::Chain(_, _))
@@ -2069,4 +2069,25 @@ fn a_refused_pin_after_the_site_went_ends_the_step_quietly() {
     assert_eq!(app.info.as_deref(), Some(T_CARD_SITE_REVOKED));
     assert!(answers(&frames).is_empty());
     assert!(job_names(&app).is_empty());
+}
+
+/// Two frozen tests of this file (`approved_requests_go_to_the_key_worker_or_the_presign_check`,
+/// `signatures_and_hashes_answer_only_while_the_grant_holds`; `frozen-tests.txt` never changes)
+/// call a wallet fn on an `App` with an argument that reads the same `App`
+/// (`app.push_sign_waiter(SignWaiter::Tx(reply(&app), …))`). Since S4c W14c-2 (2026-11-22) those
+/// fns are `impl Wallet`, reached through `DerefMut`, and a call through an overloaded deref
+/// gets no two-phase borrow, so that form no longer compiles. These private forwards, visible
+/// only in this test module, take the `App` itself as before (autoref, two-phase borrow) and
+/// hand the call to the wallet unchanged. Test builds only; no production path names them.
+impl App {
+    fn push_sign_waiter(
+        &mut self,
+        waiter: crate::app_browser::SignWaiter,
+    ) -> crate::events::SignTicket {
+        self.wallet.push_sign_waiter(waiter)
+    }
+
+    fn sol_dapp_consumed(&mut self, approved: yw_core::approval::Approved, site: &SiteRequest) {
+        self.wallet.sol_dapp_consumed(approved, site);
+    }
 }

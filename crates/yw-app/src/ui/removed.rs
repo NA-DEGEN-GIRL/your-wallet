@@ -12,7 +12,7 @@ use yw_core::yubikey::record::{HwKeyRecord, RecordedSlot};
 
 use yw_core::lang::Lang;
 
-use crate::app::App;
+use crate::app::{App, Wallet};
 use crate::ui::main_window::{Item, Tone};
 
 /// A native balance as last read.
@@ -142,7 +142,7 @@ const fn role_chain(role: KeyRole) -> &'static str {
     }
 }
 
-impl App {
+impl Wallet {
     /// The EVM native balance of `address` on the selected network, as last read.
     #[must_use]
     pub fn evm_last_balance(&self, address: &Address) -> LastBalance {

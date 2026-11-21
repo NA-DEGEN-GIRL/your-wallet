@@ -30,7 +30,7 @@ use crate::apikeys::{
     ApiKeys, KeyName, TemplateCred, parse_quicknode_url, template_entry, template_url,
     valid_provider_token,
 };
-use crate::app::App;
+use crate::app::{App, Wallet};
 use crate::logging::{self, Field};
 use crate::network::NetworkId;
 use crate::settings::{RpcTemplate, Settings};
@@ -496,7 +496,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// `취소` of the confirmation list: the plan is dropped (its credentials wiped).
     fn rpc_import_cancel(&mut self) {
         self.rpc_import = RpcImportUi::default();
@@ -538,7 +538,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The wallet's half of `rpc.json 지우기` (2026-11-22, S4c W13, critique B-5): the shell
     /// deleted the file, `deleted` is the result; the band says what happened.
     fn on_rpc_json_deleted(&mut self, deleted: Result<(), DeleteError>) {
@@ -574,7 +574,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The typed in-process entry of critique B-5 (2026-11-22, S4c W13): the plan the shell
     /// parsed from `rpc.json` (or why it gave none) enters the wallet here and waits in the
     /// import state for `가져오기`/`덮어쓰기`/`비어 있는 네트워크만` ([`Self::finish_rpc_import`],

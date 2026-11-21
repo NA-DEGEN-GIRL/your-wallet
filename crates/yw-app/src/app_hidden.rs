@@ -5,7 +5,7 @@
 //! are not restored (the user connects again from the dApp). Bitcoin accounts can be hidden since
 //! 2026-11-15 (meta `btc_account_view`, spec/08 §12.3d); the list shows the settings network's.
 
-use crate::app::App;
+use crate::app::{App, Wallet};
 use crate::app_sol::SolAccountId;
 use crate::meta::EvmAccountPref;
 use crate::ui::main_window::{Ctl, Item, Tone};
@@ -143,7 +143,7 @@ pub fn hidden_note(lang: Lang, label: &str) -> String {
     text::HIDDEN_NOTE.fill(lang, [label])
 }
 
-impl App {
+impl Wallet {
     /// The hidden accounts of `family`, in the order of the visible rows' sources.
     #[must_use]
     #[expect(clippy::too_many_lines, reason = "one block per kind of account")]
@@ -299,7 +299,7 @@ impl App {
                     yw_core::sol::SolAddress::parse(&hidden.address)
                         .ok()
                         .and_then(|address| self.sol_balance(&address))
-                        .map(|lamports| text::BALANCE.fill(lang, [&Self::sol_text(lamports)])),
+                        .map(|lamports| text::BALANCE.fill(lang, [&Wallet::sol_text(lamports)])),
                 ),
                 // The whole address, grouped like the tab's (spec/04 §3.3), and the available
                 // balance the account's last refresh left in meta.
@@ -320,7 +320,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The hidden-account presses (2026-11-18, S3 C1: a `HiddenPress`; before, the control id).
     pub(crate) fn on_hidden(&mut self, press: HiddenPress) {
         let family = match press {
@@ -356,7 +356,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// `다시 보이기` of hidden row `row`: clears the mark only (no site grant comes back).
     pub fn unhide(&mut self, family: Family, row: usize) {
         let Some(hidden) = self.hidden_rows(family).into_iter().nth(row) else {

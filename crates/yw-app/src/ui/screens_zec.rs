@@ -10,7 +10,7 @@ use yw_core::zec::{ZecKeySource, ZecNetwork, format_zec, format_zec_and_zats};
 use yw_engine::cmd::{Row, ZecPress};
 use yw_engine::form::EditField;
 
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMode, Wallet};
 use crate::app_zec::SourceChoice;
 use crate::settings::ZecIndexer;
 use crate::ui::badge::Badge;
@@ -336,7 +336,7 @@ fn grouped(address: &str) -> String {
     out
 }
 
-impl App {
+impl Wallet {
     /// The `YubiKey` Zcash slot indices of the current network (`KeyRole::Zec`).
     fn zec_hw_slots(&self) -> Vec<u32> {
         let network = self.zec_network();
@@ -771,7 +771,9 @@ impl App {
         items.push(Item::Row(row));
         items.push(Item::CardEnd);
     }
+}
 
+impl Wallet {
     /// The recipients of the activity rows, newest first as drawn (`None` without one): the
     /// copy of a click on a row's recipient (2026-11-11).
     #[must_use]
@@ -783,7 +785,9 @@ impl App {
             .map(|record| record.recipient().map(|dest| dest.encode(network)))
             .collect()
     }
+}
 
+impl App {
     /// The S10 Zcash tab body.
     #[expect(clippy::too_many_lines, reason = "the Zcash tab sections in order")]
     pub fn zec_main_screen(&self, items: &mut Vec<Item>) {

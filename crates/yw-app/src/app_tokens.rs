@@ -10,7 +10,7 @@ use yw_core::evm::amount::U256;
 use yw_core::sol::SplAllowEntry;
 use yw_core::sol::template::spl_entries;
 
-use crate::app::{App, Confirm, Screen};
+use crate::app::{Confirm, Screen, Wallet};
 use crate::app_evm::SendAsset;
 use crate::network::NetworkId;
 use crate::token_view::{MAX_HIDDEN_PER_NETWORK, MAX_HIDDEN_TOTAL, RowPlace, place};
@@ -18,7 +18,7 @@ use crate::token_view::{MAX_HIDDEN_PER_NETWORK, MAX_HIDDEN_TOTAL, RowPlace, plac
 /// One token of an EVM chain and where its card row goes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvmTokenRow {
-    /// Index in [`App::chain_tokens`]: row buttons and send radios use it, so hiding a token
+    /// Index in [`Wallet::chain_tokens`]: row buttons and send radios use it, so hiding a token
     /// never renumbers the others.
     pub index: usize,
     /// Contract.
@@ -79,7 +79,7 @@ pub mod text {
     }
 }
 
-impl App {
+impl Wallet {
     /// Whether the user hid `token` on `chain_id` (meta `token_view`).
     #[must_use]
     pub fn evm_token_hidden(&self, chain_id: u64, token: &Address) -> bool {

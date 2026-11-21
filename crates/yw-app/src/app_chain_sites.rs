@@ -16,7 +16,7 @@ use yw_core::slip10::SolKeySource;
 use yw_core::sol::msgsign::{SolMessageRequest, build_sol_message_request};
 use yw_json::Value;
 
-use crate::app::App;
+use crate::app::Wallet;
 use crate::app_browser::SignWaiter;
 use crate::browser::{SiteKind, SiteRequest};
 use crate::events::{ChainMessageSigned, ChainSignature};
@@ -181,10 +181,10 @@ pub fn chain_answer_value(answer: &ChainAnswer, signature: &ChainSignature) -> O
     }
 }
 
-impl App {
+impl Wallet {
     /// The settings Bitcoin network.
     pub(crate) const fn btc_network_now(&self) -> BtcNetwork {
-        crate::btc::core_network(self.wallet.settings.bitcoin.network)
+        crate::btc::core_network(self.settings.bitcoin.network)
     }
 
     /// Visible Solana accounts usable by dApps (standard accounts, then imported keys).

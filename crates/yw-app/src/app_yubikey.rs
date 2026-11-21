@@ -36,7 +36,7 @@ use yw_core::yubikey::record::HwKeyRecord;
 use yw_engine::cmd::{Row, YkPress};
 use yw_engine::form::EditField;
 
-use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen};
+use crate::app::{AppMode, Confirm, PasswordAction, Purpose, Screen, Wallet};
 use crate::events::{KeyJob, YubiKeyJobError};
 use crate::logging;
 use crate::secret_session::AfterShown;
@@ -770,7 +770,7 @@ pub const CARD_SCRIPTS: [ScriptType; 3] = [
     ScriptType::P2pkh,
 ];
 
-impl App {
+impl Wallet {
     /// The current Bitcoin network of the settings (the network of a planned Bitcoin key).
     #[must_use]
     pub fn yk_network(&self) -> BtcNetwork {
@@ -1983,7 +1983,7 @@ impl App {
             self.set_mode(AppMode::Unlocked {
                 alt_passphrase: false,
             });
-            self.wallet.idle.input(self.wallet.clock.now_ms());
+            self.idle.input(self.clock.now_ms());
             if let Ok((_, enrolled)) = result {
                 let bitcoin = enrolled
                     .record

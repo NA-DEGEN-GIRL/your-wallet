@@ -4,7 +4,7 @@
 //!
 //! Flow: form → [`HcApprovalItem`] → A01 (draft built in yw-core from the item) → consume →
 //! `SignMessage { typed: true }` (vault) or the card step (`YubiKey`) → the signature comes back
-//! through [`App::hc_message_signed`] → `POST /exchange` on the RPC worker → the reply status is
+//! through [`Wallet::hc_message_signed`] → `POST /exchange` on the RPC worker → the reply status is
 //! the activity status (Hyperliquid has no transaction hash; the nonce/time is the key) →
 //! balances refresh.
 
@@ -22,7 +22,7 @@ use yw_core::hypercore::{
 use yw_core::lang::Lang;
 use yw_core::vault::EvmKeySource;
 
-use crate::app::{App, AppMode, Screen};
+use crate::app::{AppMode, Screen, Wallet};
 use crate::app_evm::{QueuedItem, SendAsset};
 use crate::browser::SiteRequest;
 use crate::events::{KeyJob, MessageSignFailure, MessageSigned, SignTicket};
@@ -278,7 +278,7 @@ impl HcUi {
     }
 }
 
-impl App {
+impl Wallet {
     /// The S-HC checks of a dApp-requested Hyperliquid transfer (spec/11 §7): the recipient check
     /// of its `destination` (own accounts, address book, look-alikes — the form's
     /// [`check_recipient`]) and the cached `spotMeta` of its `hyperliquidChain`. `None` for other
@@ -333,7 +333,7 @@ impl App {
     /// The card's network.
     #[must_use]
     pub const fn hc_network(&self) -> HcNetwork {
-        self.wallet.settings.hypercore.network
+        self.settings.hypercore.network
     }
 
     fn hc_endpoint(&self, network: HcNetwork) -> HcEndpoint {

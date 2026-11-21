@@ -3590,21 +3590,22 @@ fn an_id_that_is_no_press_only_clears_the_copy_mark() {
 /// and the fields read only at their `저장` are claimed by none.
 #[test]
 fn edits_route_to_the_one_handler_that_claims_them() {
+    use super::Wallet;
     use yw_engine::form::EditField;
-    type Handler = fn(&mut App, EditField, &str) -> bool;
+    type Handler = fn(&mut Wallet, EditField, &str) -> bool;
     let handlers: [(&str, Handler); 12] = [
-        ("wc", App::on_wc_edit),
-        ("reset", App::on_reset_edit),
-        ("book", App::on_book_edit),
-        ("mn", App::on_mn_edit),
-        ("hc", App::on_hc_edit),
-        ("zec", App::on_zec_edit),
-        ("sol", App::on_sol_edit),
-        ("btc", App::on_btc_edit),
-        ("evm", App::on_evm_edit),
-        ("yk", App::on_yk_edit),
-        ("explorer", App::on_explorer_edit),
-        ("llm", App::on_llm_edit),
+        ("wc", Wallet::on_wc_edit),
+        ("reset", Wallet::on_reset_edit),
+        ("book", Wallet::on_book_edit),
+        ("mn", Wallet::on_mn_edit),
+        ("hc", Wallet::on_hc_edit),
+        ("zec", Wallet::on_zec_edit),
+        ("sol", Wallet::on_sol_edit),
+        ("btc", Wallet::on_btc_edit),
+        ("evm", Wallet::on_evm_edit),
+        ("yk", Wallet::on_yk_edit),
+        ("explorer", Wallet::on_explorer_edit),
+        ("llm", Wallet::on_llm_edit),
     ];
     let (mut app, dir) = unlocked_app("edit-route", false);
     let mut unclaimed = Vec::new();

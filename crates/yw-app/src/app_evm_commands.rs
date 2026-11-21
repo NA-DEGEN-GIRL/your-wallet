@@ -5,13 +5,13 @@ use yw_engine::cmd::{ChainRowAction, EvmActivityAction, EvmPress, Row};
 use yw_engine::effect::Effect;
 use yw_engine::form::{CredField, EditField};
 
-use crate::app::{App, AppMode, Confirm, Screen};
+use crate::app::{AppMode, Confirm, Screen, Wallet};
 use crate::app_evm::{SendAsset, SendForm, hash_text};
 use crate::flow::evm::prepare::ReplaceMode;
 use crate::network::NetworkId;
 use yw_engine::screen::SettingsSection;
 
-impl App {
+impl Wallet {
     /// The text of an EVM edit for a handler (2026-11-18, S3 C10: the form state,
     /// `App::form_text`; before, a read of the edit with the module's cap 512, now
     /// `EditField::cap`).

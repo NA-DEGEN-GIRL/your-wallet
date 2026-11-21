@@ -13,7 +13,7 @@
 //! The source part is app chrome only: approval display notes (`[내 계정: …]`, Solana
 //! `RECIPIENT_OWN_HARDWARE`) carry account labels and never card names (they are digested).
 
-use crate::app::App;
+use crate::app::{App, Wallet};
 use crate::app_hidden::Family;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_links::PickerEntry;
@@ -185,7 +185,7 @@ impl App {
 
     /// The drop-down items of `accounts`, `label · source` (2026-11-15). An imported key and a
     /// `YubiKey` account always name their source; an account of recovery words names its set
-    /// when the wallet has several ([`App::mnemonic_tag`]), else `복구 단어` / `Recovery words`
+    /// when the wallet has several ([`Wallet::mnemonic_tag`]), else `복구 단어` / `Recovery words`
     /// when the list mixes kinds — so every item of a mixed list has a source — and nothing in
     /// a list of one set of recovery words only (`계정 1`, as before).
     #[must_use]
@@ -216,7 +216,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The source of a `YubiKey` account (2026-11-15): `YubiKey: 메인·백업` — the cards holding
     /// the key of `role` by name (`#serial` when unnamed; the serial stays in Settings and the
     /// PIN window, the item is kept short), more than two as the first two + ` +N`. `YubiKey`

@@ -25,7 +25,7 @@ use yw_core::sol::token::TokenHolding;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SplAllowEntry};
 use yw_core::vault::RecordId;
 
-use crate::app::{App, AppMode, Screen};
+use crate::app::{AppMode, Screen, Wallet};
 use crate::app_evm::QueuedItem;
 use crate::errors::ErrorCode;
 use crate::events::{KeyJob, RpcEvent, SolKeysPurpose, SolSignFailure, SolSignedSummary};
@@ -507,7 +507,7 @@ pub struct SolUi {
     /// Approved transfer waiting for its blockhash.
     pub pending_sign: Option<PendingSign>,
     /// Approved dApp sends waiting for their pre-sign check, by RPC job (spec/07 §20.10-2;
-    /// answered 4001 by [`App::sol_lock`] before the lock clears it).
+    /// answered 4001 by [`Wallet::sol_lock`] before the lock clears it).
     pub dapp_presign: HashMap<u64, crate::app_sol_dapp::PendingDappSign>,
     /// Broadcast loop per signature.
     pub tracking: HashMap<[u8; 64], SolTrackState>,
@@ -554,7 +554,7 @@ impl SolUi {
     }
 }
 
-impl App {
+impl Wallet {
     // ----- basics -------------------------------------------------------------------------
 
     /// The selected cluster (settings `solana.cluster`).
@@ -828,7 +828,7 @@ impl App {
     }
 
     /// The picker's choice: the next standard account of mnemonic `id` (the primary one through
-    /// [`App::sol_add_account`]).
+    /// [`Wallet::sol_add_account`]).
     pub fn sol_add_account_of(&mut self, id: RecordId, primary: bool) {
         self.sol.add_pick = false;
         if primary {
@@ -1299,10 +1299,9 @@ impl App {
                             self.sol.tokens.insert((cluster, row.address), row.tokens);
                         }
                         self.sol.balance_error.remove(&cluster);
-                        self.wallet
-                            .sol
+                        self.sol
                             .balance_at
-                            .insert(cluster, self.wallet.clock.now_unix_ms());
+                            .insert(cluster, self.clock.now_unix_ms());
                     }
                     Err(code) => {
                         self.sol.balance_error.insert(cluster, code);
@@ -1774,7 +1773,7 @@ impl App {
 
     /// `consume` succeeded (spec/07 §13.1 step 4): fetch the finalized blockhash now; a
     /// `YubiKey` transfer first goes through the card step (PIN window, spec/10 §9.2) and comes
-    /// back in [`App::sol_consumed_card`].
+    /// back in [`Wallet::sol_consumed_card`].
     pub fn sol_consumed(&mut self, approved: Approved, cluster: SolCluster, consumed_at_ms: u64) {
         let approved = match self.card_begin(
             approved,
@@ -2141,7 +2140,7 @@ impl App {
     /// A broadcast round finished (RPC worker).
     fn on_sol_tracked(&mut self, result: &TrackResult) {
         let now = self.clock.now_ms();
-        let Some(state) = self.wallet.sol.tracking.get_mut(&result.signature) else {
+        let Some(state) = self.sol.tracking.get_mut(&result.signature) else {
             return;
         };
         state.busy = false;
@@ -2193,7 +2192,7 @@ impl App {
                 "sol.terminal",
                 &[("kind", Field::Word(transition.name()))],
             );
-            if matches!(self.wallet.mode, AppMode::Unlocked { .. }) {
+            if matches!(self.mode, AppMode::Unlocked { .. }) {
                 state.halt = Some(SolHalt::Saving { since_ms: now });
                 self.key(KeyJob::SolApply {
                     transition,

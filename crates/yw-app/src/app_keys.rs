@@ -13,7 +13,7 @@ use yw_core::lang::Text;
 use yw_core::secret::Zeroizing;
 use yw_core::vault::RecordId;
 
-use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen};
+use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen, Wallet};
 use crate::errors::{key_code, vault_code};
 use crate::events::{ImportedAccount, KeyJob};
 use crate::logging::{self, Field};
@@ -194,11 +194,11 @@ fn btc_imported_account(meta: &crate::meta::Meta, id: [u8; 16]) -> Option<&yw_co
         .find(|account| account.id() == yw_core::btc::BtcAccountId::Imported { id })
 }
 
-impl App {
+impl Wallet {
     /// The wallet has no recovery words (spec/02 §4.6).
     #[must_use]
     pub const fn key_only(&self) -> bool {
-        !self.wallet.keys.has_mnemonic
+        !self.keys.has_mnemonic
     }
 
     /// Imported keys of every chain (meta lists; Bitcoin: the single-key accounts of both
@@ -386,11 +386,11 @@ impl App {
             }
         };
         self.close_secret();
-        if let Some(meta) = self.wallet.meta.as_mut() {
+        if let Some(meta) = self.meta.as_mut() {
             match &account {
                 ImportedAccount::Evm(id, address) => {
                     let label = crate::meta::next_imported_label(
-                        self.wallet.settings.language,
+                        self.settings.language,
                         crate::meta::EVM_IMPORTED_LABEL,
                         meta.evm_raw_accounts.iter().map(|raw| raw.label.as_str()),
                     );
@@ -402,7 +402,7 @@ impl App {
                 }
                 ImportedAccount::Sol(id, address) => {
                     let label = crate::meta::next_imported_label(
-                        self.wallet.settings.language,
+                        self.settings.language,
                         crate::meta::SOL_IMPORTED_LABEL,
                         meta.sol_raw_accounts.iter().map(|raw| raw.label.as_str()),
                     );

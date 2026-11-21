@@ -15,7 +15,7 @@
 use yw_core::lang::Lang;
 use yw_core::vault::FileKind;
 
-use crate::app::{App, AppMode, Screen};
+use crate::app::{AppMode, Screen, Wallet};
 use crate::errors::ErrorCode;
 use crate::events::KeyJob;
 use crate::lock::WalletLock;
@@ -168,7 +168,7 @@ pub fn reset_failed_text(lang: Lang, error: &ResetError) -> String {
     }
 }
 
-impl App {
+impl Wallet {
     /// Queues `KeyJob::LoadMeta` and starts its wait clock (a failed load's T-META-FAILED
     /// gives way to the loading line; no meta is in memory until the answer).
     pub(crate) fn request_meta(&mut self) {

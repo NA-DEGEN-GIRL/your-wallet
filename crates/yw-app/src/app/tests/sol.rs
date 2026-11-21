@@ -166,7 +166,8 @@ fn a_final_state_not_saved_shows_the_save_texts_not_the_cluster_text() {
     );
     // Still `Pending` in the journal long after `SolApply`: the write failed. The loop
     // resumes (to observe and save again) and says so.
-    app.sol_tick_tracking(app.clock.now_ms().saturating_add(SOL_APPLY_RETRY_MS));
+    let later = app.clock.now_ms().saturating_add(SOL_APPLY_RETRY_MS);
+    app.sol_tick_tracking(later);
     let state = app.sol.tracking[&signature];
     assert_eq!(state.halt, None);
     assert!(state.save_failed);
@@ -375,7 +376,8 @@ fn dapp_sends_are_tracked_together_and_do_not_hold_the_send_form() {
         crate::network::NetworkId::Solana(crate::network::SolCluster::Mainnet),
         &url,
     );
-    app.sol_tick_tracking(app.clock.now_ms());
+    let now = app.clock.now_ms();
+    app.sol_tick_tracking(now);
     let mut sent: Vec<([u8; 64], bool)> = jobs
         .try_iter()
         .filter_map(|job| match job {

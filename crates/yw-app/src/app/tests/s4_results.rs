@@ -656,7 +656,7 @@ fn emits_of(files: &[Src], literal: &str) -> Vec<Site> {
 }
 
 /// The fns through which a step hands itself to the answer of the open still waiting for one
-/// ([`App::after_pending_open`](crate::app::App::after_pending_open), 2026-11-20, S4 P10a).
+/// ([`Wallet::after_pending_open`](crate::app::Wallet::after_pending_open), 2026-11-20, S4 P10a).
 const DEFERRALS: [&str; 1] = ["after_pending_open"];
 
 /// `after` (an [`after_call`] text) without its deferrals: `self.<deferral>(<value>)` whose
@@ -2473,7 +2473,11 @@ fn typed_app_names(text: &str) -> BTreeSet<String> {
 /// `open_display_composed`, which only `App::drain` calls) takes or drops it, and the executor
 /// reaches none of the three. The scanners are tried on made-up code
 /// ([`wallet_writes_and_self_calls_on_made_up_code`]: they can fail) and the
-/// check finds its targets (it cannot pass on nothing, critique A-20).
+/// check finds its targets (it cannot pass on nothing, critique A-20). 2026-11-22 (S4c
+/// W14c-2): the wallet's fns are `impl Wallet` now, so a wallet fn the executor calls is found
+/// there: one that takes `&mut self` fails unless [`EXECUTOR_WALLET_CALLS`] lists the call (the
+/// list is checked first; before, it only stopped the descent), and a `&self` one (the render
+/// helpers that flipped with the wallet fns) is followed and scanned like an `impl App` fn.
 #[test]
 fn the_executor_writes_no_wallet_state() {
     let files: Vec<Src> = production_code()
@@ -2524,8 +2528,14 @@ fn the_executor_writes_no_wallet_state() {
         if !reached.insert(name.clone()) {
             continue;
         }
-        let bodies = fns.get(&name);
-        assert!(bodies.is_some(), "fn {name} of impl App found");
+        // 2026-11-22 (S4c W14c-2): a wallet fn the executor reaches is `impl Wallet` now; the
+        // `&self` ones (the render helpers that flipped with the wallet fns) are followed like
+        // the `impl App` ones, the `&mut self` ones are refused but the listed calls.
+        let bodies = fns.get(&name).or_else(|| wallet_fns.get(&name));
+        assert!(
+            bodies.is_some(),
+            "fn {name} of impl App or impl Wallet found"
+        );
         for (file, body, takes_mut) in bodies.into_iter().flatten() {
             let (findings, listed) = executor_findings(&name, body, *takes_mut, &fields);
             assert!(
@@ -2533,12 +2543,6 @@ fn the_executor_writes_no_wallet_state() {
                 "{file}: the executor's fn {name} changes wallet state: {findings:?}"
             );
             cells += listed;
-            for call in self_calls(body) {
-                assert!(
-                    !wallet_writers.contains(&call),
-                    "{file}: the executor's fn {name} calls the wallet's fn {call}"
-                );
-            }
             // 2026-11-21 (S4 W2 review): every `impl App` fn called, `&self` ones too (before,
             // only `&mut self` ones, so the render builders' cell writes went unseen).
             for call in self_calls(body) {
@@ -2548,7 +2552,11 @@ fn the_executor_writes_no_wallet_state() {
                 {
                     continue;
                 }
-                if fns.contains_key(&call) {
+                assert!(
+                    !wallet_writers.contains(&call),
+                    "{file}: the executor's fn {name} calls the wallet's fn {call}"
+                );
+                if fns.contains_key(&call) || wallet_fns.contains_key(&call) {
                     todo.push(call);
                 }
             }
@@ -2973,7 +2981,21 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// `sol_dapp_consumed`) W7's–W9's and the AI flow (`ai_retry`) W14a's. `consume_and_sign` calls
 /// W11's self-less `chain_waiter` as `Self::chain_waiter(` (W14c-2, critic C10); no W14b fn
 /// takes an `App` in a closure.
-static WALLET_FNS: [(&str, &str); 939] = [
+/// W14c (2026-11-22, preflight §3 W14c, critic C10, C16; owner's second batch item 1): the flip.
+/// W14c-1 re-blocked the `impl App` blocks so that every run of listed fns is a block of its own;
+/// W14c-2 made those blocks `impl Wallet` in place (no fn changed file), so every fn listed here
+/// is now `impl Wallet` and [`wallet_fns_name_no_shell`] finds them there. The row adds the
+/// `impl App` render helpers the listed fns call, which flip with them (preflight §3.0, plus
+/// what that list missed): `account_label`, `activity_rows`, `meta_activity_row`,
+/// `record_status`, `evm_pref_title`, `network_label`, `evm_last_balance`, `evm_removed`,
+/// `picker_entries`, `picker_known`, `card_source`, `sol_activity_counterparties`,
+/// `sol_activity_tx_ids`, `sol_picker_entries`, `sol_last_balance`, `sol_removed`,
+/// `btc_last_balance`, `btc_removed`, `zec_activity_recipients` (called across a line break, so
+/// W14c-1's call scan missed it and W14c-2 gave it its block), `zec_evm_indices`,
+/// `zec_hw_slots`, `zec_last_balance`, `zec_removed` and `hc_foldable`. `activity_rows` and
+/// `meta_activity_row` still format a local time through `format_local`
+/// ([`RENDER_LOCAL_TIME`], plan D-30: S5's).
+static WALLET_FNS: [(&str, &str); 963] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -3913,6 +3935,30 @@ static WALLET_FNS: [(&str, &str); 939] = [
     ("W14b", "on_approval_input"),
     ("W14b", "approval_event"),
     ("W14b", "retry_action"),
+    ("W14c", "account_label"),
+    ("W14c", "activity_rows"),
+    ("W14c", "meta_activity_row"),
+    ("W14c", "record_status"),
+    ("W14c", "evm_pref_title"),
+    ("W14c", "network_label"),
+    ("W14c", "evm_last_balance"),
+    ("W14c", "evm_removed"),
+    ("W14c", "picker_entries"),
+    ("W14c", "picker_known"),
+    ("W14c", "card_source"),
+    ("W14c", "sol_activity_counterparties"),
+    ("W14c", "sol_activity_tx_ids"),
+    ("W14c", "sol_picker_entries"),
+    ("W14c", "sol_last_balance"),
+    ("W14c", "sol_removed"),
+    ("W14c", "btc_last_balance"),
+    ("W14c", "btc_removed"),
+    ("W14c", "zec_activity_recipients"),
+    ("W14c", "zec_evm_indices"),
+    ("W14c", "zec_hw_slots"),
+    ("W14c", "zec_last_balance"),
+    ("W14c", "zec_removed"),
+    ("W14c", "hc_foldable"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
@@ -4206,7 +4252,9 @@ fn shell_reach(
 /// `format_local`). Plan "Left out of S4": `local_wall_ms` in render helpers is S5's, and the
 /// render helpers wallet fns call flip with them at W14c or move (preflight §3.0); so
 /// [`wallet_fns_name_no_shell`] does not count a call of these as shell reach, and a new one
-/// fails it.
+/// fails it. 2026-11-22 (S4c W14c-2): both flipped with the wallet fns (`impl Wallet`, row W14c
+/// of [`WALLET_FNS`]); their own call of `format_local` is the one shell free-fn call a listed
+/// fn may make, and only these two may make it.
 const RENDER_LOCAL_TIME: [&str; 2] = ["activity_rows", "meta_activity_row"];
 
 /// `wallet_fns_name_no_shell` (2026-11-21, S4 W3; preflight §3.0 prep rows, critique B-2, B-11,
@@ -4242,7 +4290,18 @@ const RENDER_LOCAL_TIME: [&str; 2] = ["activity_rows", "meta_activity_row"];
 /// first form above (a rebind) and stays unchecked until W14c. No listed W9 fn has a closure
 /// that takes an `App` (in `app_btc.rs` and `app_btc_commands.rs` only the test adapter
 /// `on_btc_command`'s `|app, press|` does, and it is not listed).
+/// 2026-11-22 (S4c W14c-2, the flip): every listed fn is now `impl Wallet` (in place, the same
+/// file), so the check finds them among the `impl Wallet` fns and fails on one still in an
+/// `impl App` block; the compiler now rejects a shell field, a shell fn or `App` itself in their
+/// bodies (the two forms above included: `self` is a `Wallet` there), and the scan keeps
+/// checking what the compiler allows, `yw_win` and the shell's free fns (but `format_local` in
+/// [`RENDER_LOCAL_TIME`]). It also checks that `impl Wallet` holds nothing else but the wallet's
+/// own fns of before the flip ([`WALLET_OWN_FNS`]), so a new wallet fn is listed here.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one check per kind of shell reach, then the listed fns and their blocks"
+)]
 fn wallet_fns_name_no_shell() {
     let files: Vec<Src> = production_code()
         .into_iter()
@@ -4279,13 +4338,16 @@ fn wallet_fns_name_no_shell() {
         )),
         "shell free fn local_time found"
     );
+    // 2026-11-22 (S4c W14c-2): the wallet's fns are `impl Wallet` now.
+    let wallet = impl_fns(&files, "Wallet");
+    let calls_shell_free = |bodies: &Vec<(String, String, bool)>| {
+        bodies
+            .iter()
+            .any(|(file, body, _)| !free_calls(body, src_of(&files, file), &shell_free).is_empty())
+    };
     let free_callers: BTreeSet<String> = fns
         .iter()
-        .filter(|(_, bodies)| {
-            bodies.iter().any(|(file, body, _)| {
-                !free_calls(body, src_of(&files, file), &shell_free).is_empty()
-            })
-        })
+        .filter(|(_, bodies)| calls_shell_free(bodies))
         .map(|(name, _)| name.clone())
         .collect();
     assert!(
@@ -4294,7 +4356,7 @@ fn wallet_fns_name_no_shell() {
     );
     for name in RENDER_LOCAL_TIME {
         assert!(
-            free_callers.contains(name),
+            wallet.get(name).is_some_and(calls_shell_free),
             "{name} no longer calls a shell free fn: remove its RENDER_LOCAL_TIME line"
         );
     }
@@ -4307,12 +4369,28 @@ fn wallet_fns_name_no_shell() {
     let shell_fns = shell_closure(&fns, seed);
     let mut errors = Vec::new();
     for &(row, name) in &WALLET_FNS {
-        let Some(bodies) = fns.get(name) else {
-            errors.push(format!("{row} {name}: no fn of impl App"));
+        if fns.contains_key(name) {
+            errors.push(format!("{row} {name}: still a fn of impl App"));
+        }
+        let Some(bodies) = wallet.get(name) else {
+            errors.push(format!("{row} {name}: no fn of impl Wallet"));
             continue;
         };
         for (file, body, _) in bodies {
-            let reach = shell_reach(body, src_of(&files, file), &shell, &shell_fns, &shell_free);
+            let caller = src_of(&files, file);
+            let local_time: BTreeSet<String> = if RENDER_LOCAL_TIME.contains(&name) {
+                free_calls(body, caller, &shell_free)
+                    .into_iter()
+                    .filter(|call| call == "format_local")
+                    .map(|call| format!("calls {call}"))
+                    .collect()
+            } else {
+                BTreeSet::new()
+            };
+            let reach: Vec<String> = shell_reach(body, caller, &shell, &shell_fns, &shell_free)
+                .into_iter()
+                .filter(|found| !local_time.contains(found))
+                .collect();
             if !reach.is_empty() {
                 errors.push(format!("{file}: {row} fn {name}: {reach:?}"));
             }
@@ -4321,7 +4399,28 @@ fn wallet_fns_name_no_shell() {
     assert!(errors.is_empty(), "{}", errors.join("\n"));
     let names: BTreeSet<&str> = WALLET_FNS.iter().map(|&(_, name)| name).collect();
     assert_eq!(names.len(), WALLET_FNS.len(), "a fn listed twice");
+    for name in WALLET_OWN_FNS {
+        assert!(
+            wallet.contains_key(name),
+            "the wallet's own fn {name} found"
+        );
+        assert!(!names.contains(name), "{name} is listed and own");
+    }
+    let unlisted: Vec<&String> = wallet
+        .keys()
+        .filter(|name| !names.contains(name.as_str()) && !WALLET_OWN_FNS.contains(&name.as_str()))
+        .collect();
+    assert!(
+        unlisted.is_empty(),
+        "impl Wallet fns not listed: {unlisted:?}"
+    );
 }
+
+/// The `impl Wallet` fns of before the flip (2026-11-22, S4c W14c-2): the outbox's `emit` and
+/// `next_effect` (S4 W3), the main-window mirror's read `main_hidden` (W3) and the debug builds'
+/// credential log `take_cred_log` (W3). With [`WALLET_FNS`] they are every `impl Wallet` fn
+/// ([`wallet_fns_name_no_shell`]).
+const WALLET_OWN_FNS: [&str; 4] = ["emit", "next_effect", "main_hidden", "take_cred_log"];
 
 /// The yw-app production sources as test builds compile them (2026-11-22, S4 W14a): as
 /// [`production_code`] leaves them, but with their `#[cfg(test)]` items kept.
@@ -4361,7 +4460,9 @@ fn test_build_code() -> Vec<Src> {
 /// items kept ([`test_build_code`]): no listed fn calls an `impl App` fn of the test build's
 /// shell closure ([`shell_namers`] plus [`SHELL_FNS`], at any depth, [`shell_closure`]) that
 /// the release build's scan does not already reject, i.e. a test-only shell fn. It finds
-/// `assert_flow_and_window_in_step` among them (A-20).
+/// `assert_flow_and_window_in_step` among them (A-20). 2026-11-22 (S4c W14c-2): the listed fns
+/// are read from the test build's `impl Wallet` blocks (the compiler now also rejects such a
+/// call there; the scan keeps the reason readable).
 #[test]
 fn wallet_fns_name_no_shell_in_test_builds() {
     let files = test_build_code();
@@ -4379,10 +4480,11 @@ fn wallet_fns_name_no_shell_in_test_builds() {
         test_only.contains("assert_flow_and_window_in_step"),
         "the test builds' pairing check is a test-only shell fn: {test_only:?}"
     );
+    let wallet = impl_fns(&files, "Wallet");
     let mut errors = Vec::new();
     for &(row, name) in &WALLET_FNS {
-        let Some(bodies) = fns.get(name) else {
-            errors.push(format!("{row} {name}: no fn of impl App"));
+        let Some(bodies) = wallet.get(name) else {
+            errors.push(format!("{row} {name}: no fn of impl Wallet"));
             continue;
         };
         for (file, body, _) in bodies {

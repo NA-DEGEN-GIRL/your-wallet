@@ -1,7 +1,7 @@
 //! Block explorer links on the UI thread (2026-11-11, spec/04 §2.6, §2.11 "블록 탐색기",
-//! §2.14): the templates in use per network ([`App::explorer_templates`]), the URL helpers other
-//! screens call ([`App::explorer_tx_url`], [`App::open_explorer_tx`],
-//! [`App::explorer_address_url`], [`App::open_explorer_address`]), the commands of the
+//! §2.14): the templates in use per network ([`Wallet::explorer_templates`]), the URL helpers other
+//! screens call ([`Wallet::explorer_tx_url`], [`Wallet::open_explorer_tx`],
+//! [`Wallet::explorer_address_url`], [`Wallet::open_explorer_address`]), the commands of the
 //! `탐색기에서 열기` / `탐색기 링크 복사` / `탐색기에서 주소 보기` buttons and the S15 card's
 //! edit form.
 //!
@@ -9,11 +9,11 @@
 //! (`crate::explorer::build_url`) and opened with `%SystemRoot%\explorer.exe <url>` like a
 //! folder (§2.14) — no shell API, no `cmd.exe`. The log names only the network. 2026-11-20
 //! (S4 P3): the handlers emit `Effect::OpenUrl`; the effect executor starts the [`Launcher`] and
-//! answers `Cmd::Opened` ([`App::on_opened`]).
+//! answers `Cmd::Opened` ([`Wallet::on_opened`]).
 
 use std::path::{Path, PathBuf};
 
-use crate::app::App;
+use crate::app::{App, Wallet};
 use crate::explorer::{
     self, ExplorerNet, ExplorerOverride, LinkKind, Templates, validate_template,
 };
@@ -128,7 +128,7 @@ pub const fn app_cluster(cluster: yw_core::sol::SolCluster) -> SolCluster {
     }
 }
 
-impl App {
+impl Wallet {
     /// A user chain's own `explorer` base (its default; spec/04 §2.17).
     fn user_chain_explorer(&self, net: ExplorerNet) -> Option<&str> {
         let ExplorerNet::Evm(chain_id) = net else {
@@ -220,7 +220,7 @@ impl App {
     }
 
     /// 2026-11-20 (S4 P3): the launch is `Effect::OpenUrl`, applied by the shell; its result
-    /// comes back as `Cmd::Opened` ([`App::on_opened`]: the log and the band). Before, this
+    /// comes back as `Cmd::Opened` ([`Wallet::on_opened`]: the log and the band). Before, this
     /// called the launcher and went on with its `bool`. The host the band names is taken from
     /// the URL here and travels in the [`LinkTarget`].
     fn open_explorer(&mut self, net: ExplorerNet, kind: LinkKind, value: &str) {

@@ -235,7 +235,7 @@ pub mod ids {
     /// The Solana failure band's `RPC 설정`.
     pub const SOL_RPC_ROW: u16 = 16_714;
     /// A failed network's link (S08 result lines, the RPC summary): `RPC_ROW_OPEN_BASE + row`
-    /// of [`App::url_networks`](crate::app::App::url_networks) opens that row.
+    /// of [`Wallet::url_networks`](crate::app::Wallet::url_networks) opens that row.
     pub const RPC_ROW_OPEN_BASE: u16 = 16_720;
     /// Span of [`RPC_ROW_OPEN_BASE`].
     pub const RPC_ROW_OPEN_SPAN: u16 = 64;

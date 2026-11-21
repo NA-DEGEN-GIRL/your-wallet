@@ -22,7 +22,7 @@ use yw_core::sol::dapp::{
 use yw_core::sol::{SolAddress, SolCluster};
 use yw_json::Value;
 
-use crate::app::{App, AppMode};
+use crate::app::{AppMode, Wallet};
 use crate::app_browser::SignWaiter;
 use crate::app_card::{CardJobKind, PinBuffer};
 use crate::app_chain_sites::ChainAnswer;
@@ -149,7 +149,7 @@ fn sign_reason(lang: Lang, failure: SolSignFailure) -> String {
     }
 }
 
-impl App {
+impl Wallet {
     /// Why a granted dApp transaction request of `public` on `cluster` ends before its window
     /// (spec/05 §3.6): `cluster` is no longer the wallet's (-32602, Q16: switched while it
     /// waited), no endpoint for the cluster (4901; the preview needs RPC), or for a send the

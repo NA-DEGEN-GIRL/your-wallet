@@ -988,7 +988,7 @@ payload digest(transcript `"your-wallet/v3/sol-tx"`, `u16 1`): 출처 태그·�
 2. **서명 전(전송만)**: 제네시스; `isBlockhashValid(processed)`(false → `BlockhashExpired`); 테이블 다시 읽기·다시 해석(오류 → `TablesChanged`); `getLatestBlockhash(processed, minContextSlot)`와 `getBlockHeight(confirmed)`로 lvbh 범위 검사(→ `RpcAnomaly`)와 저장값(§14.3).
 3. **서명**: 코어가 **승인된** 바이트를 다시 파싱한다(사이트의 사본이 아님). 동일성·종류·체인·계정·키 출처를 확인하고, 전송은 마감·블록해시(`EncodingMismatch`)·테이블(`check.loaded == item.loaded`; 조회가 없는 메시지는 `check.loaded`가 `None`이거나 빈 집합, 아니면 `TablesChanged`)도 확인한다. 우리 슬롯만 바꾸고 `verify_strict`.
 4. **응답**: grant 재확인(§20.8). 확장 provider는 64바이트 슬롯 하나만 바뀌고 메시지 바이트가 같은지 다시 본다([05] §2.13).
-5. **잠금**(단계 사이): 서명 전 대기자는 4001, 전송 대기자는 저널의 서명으로 답한다. `App::sol_lock`이 `self.sol.clear_unlocked()` **전에** 답한다.
+5. **잠금**(단계 사이): 서명 전 대기자는 4001, 전송 대기자는 저널의 서명으로 답한다. `Wallet::sol_lock`이 `self.sol.clear_unlocked()` **전에** 답한다.
 
 ### 20.11 상한
 

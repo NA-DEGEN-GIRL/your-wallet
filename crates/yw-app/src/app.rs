@@ -693,7 +693,7 @@ pub struct Wallet {
     /// before, per-file `now_ms`/`now_unix_ms` wrappers over yw-win `time::monotonic_ms` and
     /// `SystemTime`, with a `cfg(test)` approval test clock read first): `SystemClock` from
     /// [`App::new`]; `main.rs` hands the same `Arc` to the RPC worker, the key worker and the
-    /// browser dispatcher ([`App::clock`]); tests inject theirs ([`App::with_clock`]).
+    /// browser dispatcher ([`Wallet::clock`]); tests inject theirs ([`App::with_clock`]).
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) key_queue: Arc<KeyQueue>,
     pub(crate) lock_signal: Arc<LockSignal>,
@@ -775,7 +775,7 @@ pub struct Wallet {
     /// The text of each plain edit (2026-11-18 S3 B5, spec/15 §11.4): kept equal to what the
     /// edits show — read again at every press (`Cmd::Form`), on every `EN_CHANGE`
     /// (`Cmd::Edit`) and after every render (Windows-transitional; engine-owned in S5).
-    /// Handlers read it through [`App::form_text`].
+    /// Handlers read it through [`Wallet::form_text`].
     pub(crate) form: FormState,
     /// The credential units captured with the press being handled (S3 B5), wiped when it ends.
     pub(crate) input: PressInput,
@@ -826,7 +826,7 @@ pub struct Wallet {
     challenge: Option<BackupChallenge>,
     pub(crate) idle: IdleTracker,
     startup_load: bool,
-    /// When [`App::reads_due`] last started a balance read ahead of the timer.
+    /// When [`Wallet::reads_due`] last started a balance read ahead of the timer.
     reads_due_ms: u64,
     /// The effects the logic emitted and the shell has not applied yet (2026-11-20, S4 P10b,
     /// spec/15 §11.4 S4, plan §3.4): [`Wallet::emit`] queues, `App::drain` takes them one at a
@@ -841,7 +841,7 @@ pub struct Wallet {
     /// Before W3, `App::main_hidden` read the window itself at each call.
     main_hidden: bool,
     /// Debug builds (2026-11-21, S4 W3, critique B-11): the credential fields the press being
-    /// handled took ([`App::take_cred`]), for the shell's comparison when the next drain starts
+    /// handled took ([`Wallet::take_cred`]), for the shell's comparison when the next drain starts
     /// (`App::cred_check`); before W3, `take_cred` read the edit itself. 2026-11-21 (W3 review):
     /// with the length and SHA-256 of the units taken ([`cred_fingerprint`], no copy of them), so
     /// the units the logic got are compared, not only two shell reads; before, names only.
@@ -1457,7 +1457,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The App's clock, for the workers and the browser dispatcher that must share its time base
     /// (2026-11-19, S4 B1a: one `Arc` for the App, the RPC worker, the key worker and the
     /// dispatcher, spec/15 §11.4 S4 critique A-9/B-19).
@@ -1477,16 +1477,14 @@ impl App {
     /// settings → 보안 for the rest of the run.
     pub fn note_wer_unprotected(&mut self) {
         self.guard.wer_unprotected = true;
-        self.banner(
-            None,
-            crate::ui::screens::T_WER_UNPROTECTED
-                .get(self.settings.language)
-                .to_owned(),
-        );
+        let text = crate::ui::screens::T_WER_UNPROTECTED
+            .get(self.settings.language)
+            .to_owned();
+        self.banner(None, text);
     }
 }
 
-impl App {
+impl Wallet {
     /// Adds a banner once per code; a codeless one once per text (a failure repeated while its
     /// band is still up adds no second identical band).
     pub fn banner(&mut self, code: Option<ErrorCode>, text: String) {
@@ -1650,7 +1648,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// Queues a key job in the current epoch.
     pub fn key(&self, job: KeyJob) {
         self.key_queue.push(self.lock_epoch, job);
@@ -1677,7 +1675,7 @@ impl App {
     #[must_use]
     pub const fn passphrase_unverified(&self) -> bool {
         matches!(
-            self.wallet.mode,
+            self.mode,
             AppMode::Unlocked {
                 alt_passphrase: true
             }
@@ -1779,9 +1777,8 @@ impl App {
         ) {
             self.llm_ui.key_deleted = false;
         }
-        self.wallet
-            .wait
-            .screen_changed(&self.wallet.screen, &screen, self.wallet.clock.now_ms());
+        self.wait
+            .screen_changed(&self.screen, &screen, self.clock.now_ms());
         if let Screen::Settings(section) = &screen {
             self.settings_last = *section;
         }
@@ -1943,7 +1940,8 @@ impl App {
                     // (2026-11-20, S4 P10b: `on_command` drains before it returns.)
                     self.on_command(*id);
                     // What the click made due starts now, not at the next tick (2026-11-12).
-                    self.reads_due(self.clock.now_ms());
+                    let now = self.clock.now_ms();
+                    self.reads_due(now);
                 } else if *code == EN_CHANGE {
                     self.on_edit_notify(*id);
                 }
@@ -1998,7 +1996,8 @@ impl App {
                 self.drain();
                 // A worker's answer, a shortcut or the window shown again may have made a
                 // read due.
-                self.reads_due(self.clock.now_ms());
+                let now = self.clock.now_ms();
+                self.reads_due(now);
                 Reply::Handled(0)
             }
             Msg::Resume => {
@@ -2059,7 +2058,8 @@ impl App {
                     _ => {}
                 }
                 self.drain();
-                self.reads_due(self.clock.now_ms());
+                let now = self.clock.now_ms();
+                self.reads_due(now);
                 Reply::Handled(0)
             }
             _ => Reply::Default,
@@ -2443,7 +2443,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The reads a main-window message made due (a tab, network or account choice, the unlock,
     /// a worker's answer) start right after it instead of up to one timer period later
     /// (2026-11-12): the timer's own checks, so the guards, the 15 s cycle and the retries are
@@ -2593,10 +2593,8 @@ impl App {
                 if pending.retry.noticed {
                     self.drop_clip_notice();
                     if cleared {
-                        self.notice(
-                            T_CLIP_CLEARED_LATE.get(self.settings.language).to_owned(),
-                            Tone::Info,
-                        );
+                        let text = T_CLIP_CLEARED_LATE.get(self.settings.language).to_owned();
+                        self.notice(text, Tone::Info);
                     }
                     self.refresh();
                 }
@@ -2604,10 +2602,8 @@ impl App {
             ClipStep::Retry(notice) => {
                 self.secret_clip = Some(pending);
                 if notice {
-                    self.notice(
-                        T_CLIP_NOT_CLEARED.get(self.settings.language).to_owned(),
-                        Tone::Warn,
-                    );
+                    let text = T_CLIP_NOT_CLEARED.get(self.settings.language).to_owned();
+                    self.notice(text, Tone::Warn);
                     self.refresh();
                 }
             }
@@ -2615,10 +2611,8 @@ impl App {
             // slept through the whole retry period.)
             ClipStep::GiveUp => {
                 if !pending.retry.noticed {
-                    self.notice(
-                        T_CLIP_NOT_CLEARED.get(self.settings.language).to_owned(),
-                        Tone::Warn,
-                    );
+                    let text = T_CLIP_NOT_CLEARED.get(self.settings.language).to_owned();
+                    self.notice(text, Tone::Warn);
                     self.refresh();
                 }
             }
@@ -2643,10 +2637,8 @@ impl App {
             // The usual start: nothing left behind (not logged).
             ClipStep::Done(false) => return,
             ClipStep::Done(true) => {
-                self.notice(
-                    T_CLIP_CLEARED_LATE.get(self.settings.language).to_owned(),
-                    Tone::Info,
-                );
+                let text = T_CLIP_CLEARED_LATE.get(self.settings.language).to_owned();
+                self.notice(text, Tone::Info);
                 "yes"
             }
             ClipStep::Retry(_) | ClipStep::GiveUp => {
@@ -2724,7 +2716,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The wallet's own lock (2026-11-21, S4 W3a, preflight critic C11): `잠금`, a cancelled
     /// passphrase, the vault's own lock, a reset, the idle lock and (2026-11-22, S4c W3b) the
     /// shutdown's lock ([`Self::shutdown_steps`]). [`Self::lock_steps`] then
@@ -2923,7 +2915,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The shutdown's first wallet half (2026-11-22, S4c W3b; wallet code, preflight §3.0):
     /// `false` when it has begun already (nothing runs twice); else `AppMode::ShuttingDown`, then
     /// every queued and shown approval item finishes with `QueueOutcome::Shutdown` (its dApp or
@@ -3004,7 +2996,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// A `테스트` answer: its band, then the next queued test (one at a time).
     pub(crate) fn on_rpc_event(&mut self, network: NetworkId, message: String, ok: bool) {
         self.set_rpc_message(
@@ -3060,7 +3052,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     #[expect(clippy::too_many_lines, reason = "one arm per key outcome")]
     fn key_result(&mut self, result: KeyResult) {
         let lang = self.settings.language;
@@ -3371,9 +3363,9 @@ impl App {
             }
             KeyOutcome::RawKeyImported(Ok((id, address))) => {
                 self.close_secret();
-                if let Some(meta) = self.wallet.meta.as_mut() {
+                if let Some(meta) = self.meta.as_mut() {
                     let label = crate::meta::next_imported_label(
-                        self.wallet.settings.language,
+                        self.settings.language,
                         crate::meta::EVM_IMPORTED_LABEL,
                         meta.evm_raw_accounts.iter().map(|raw| raw.label.as_str()),
                     );
@@ -3481,7 +3473,7 @@ impl App {
                 result,
             } => self.on_sidecar_resolved(kind, use_prev, result),
             KeyOutcome::Addresses(Ok(list)) => {
-                if let Some(meta) = self.wallet.meta.as_mut() {
+                if let Some(meta) = self.meta.as_mut() {
                     for (index, address) in list {
                         if !meta
                             .evm_accounts
@@ -3490,7 +3482,7 @@ impl App {
                         {
                             let number = meta.next_evm_number();
                             meta.evm_accounts.push(new_account(
-                                self.wallet.settings.language,
+                                self.settings.language,
                                 index,
                                 number,
                                 &address,
@@ -3816,7 +3808,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// Opens an input window (W01–W07, W10–W12) through the seam (2026-11-20, S4 P7a1): the
     /// previous window is closed, a secret session starts, and the shell is asked for the window
     /// (`SecretEffect::OpenInput`); its answer (`Cmd::SecretOpened`) shows it or ends the session
@@ -4009,7 +4001,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The answer to a secret window's open (`Cmd::SecretOpened`; S4 P7a1). Only the first
     /// answer for the open session counts: one for another serial (a session that has ended) or
     /// for a window already shown is dropped. `Shown` marks the session shown; `Refused`
@@ -4279,7 +4271,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The display secret of session `serial`, moved out once, only while `serial` is the open
     /// session and its window is not shown yet (2026-11-20, S4 P7b; plan §3.4 `App::drain`
     /// handoff, critique A-3). Called only after the shell verified the window's capture
@@ -4511,7 +4503,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// What the window of secret session `serial` ended or asked for that is the wallet's
     /// (2026-11-22, S4c W12, preflight critic C12; plan §3.6, §7.3): the typed in-process entry
     /// the shell's [`Self::apply_form_action`] calls. The arms are the ones that fn held before
@@ -4648,7 +4640,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     #[expect(clippy::too_many_lines, reason = "one arm per secret-window purpose")]
     fn on_submit(&mut self, purpose: Purpose, submission: Submission) {
         if let Purpose::YubiKey(yk) = purpose {
@@ -4871,9 +4863,9 @@ impl App {
         // `vault.ywv` rolled back on its own is noticed at the next unlock.
         if let Some((found, written)) = self.store.vault_file_info() {
             self.guard.vault_file = Some((found, written));
-            if let Some(meta) = self.wallet.meta.as_mut()
+            if let Some(meta) = self.meta.as_mut()
                 && found > meta.security.vault_generation_seen
-                && self.wallet.guard.rollback.is_none()
+                && self.guard.rollback.is_none()
             {
                 meta.security.vault_generation_seen = found;
             }
@@ -5308,7 +5300,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// A receive or receive-address copy press while the passphrase is unverified: refused
     /// before any chain handler runs (BTC would derive and store a new address).
     fn refuse_receive(&mut self) {
@@ -5457,7 +5449,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// Presses of the core screens, settings sections and URL rows (2026-11-18, S3 C12: a
     /// `CorePress`; before, the core arms of `dispatch_legacy` by control id, then
     /// `on_indexed_command` for the four row ranges). The receive gate ran before these arms
@@ -6118,14 +6110,14 @@ impl App {
     /// `Cmd::Edit` only, not along the `PAIR` handler path (as before S3, when it was the plain
     /// `controls.text`; the copy count is unchanged, and `on_wc_edit` still keeps the plain
     /// `wc.uri_text`). 2026-11-20 (S4 P5, critique B-12(c)): `PAIR` reads it with
-    /// [`App::form_text_wiping`] instead, so it keeps no plain copy beyond `wc.uri_text`; before,
+    /// [`Wallet::form_text_wiping`] instead, so it keeps no plain copy beyond `wc.uri_text`; before,
     /// this note said "S4: return `Zeroizing<String>` here, or add a `WcUri` reader".
     #[must_use]
     pub(crate) fn form_text(&self, field: EditField) -> Option<String> {
         self.form.text(field).map(str::to_owned)
     }
 
-    /// [`App::form_text`] as a wiped string (2026-11-20, S4 P5, critique B-12(c)): for the
+    /// [`Wallet::form_text`] as a wiped string (2026-11-20, S4 P5, critique B-12(c)): for the
     /// `WalletConnect` pairing link (`EditField::WcUri`, it holds the pairing `symKey`). The same
     /// form-state read (2026-11-21, S4 W3, critique B-11: only that; before, debug builds compared
     /// it with a wiped read of the edit here).
@@ -6244,7 +6236,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The units of credential edit `field` the shell read with the press being handled
     /// (2026-11-18, S3 C3, plan §3.4 and D-l): moved out of the press input, wiped when dropped;
     /// empty when the edit did not exist, exactly as a read of a missing edit. A field the press
@@ -6274,7 +6266,7 @@ impl App {
     }
 }
 
-impl App {
+impl Wallet {
     /// The text of credential edit `field` (2026-11-18, S3 C12, plan §3.4: the units the shell
     /// read with the press, `App::take_cred`; before, `read_wiping(id, max)` read the edit here
     /// into a wiping buffer). Decoded as before: one `char` per UTF-16 unit, a unit that is no
@@ -6355,7 +6347,7 @@ impl App {
 
     /// The stored credential of the selected template (`None` for `직접 입력`).
     const fn template_key(&self) -> Option<KeyName> {
-        match self.wallet.settings.rpc_template {
+        match self.settings.rpc_template {
             RpcTemplate::QuickNode => Some(KeyName::TplQuickNode),
             RpcTemplate::Alchemy => Some(KeyName::TplAlchemy),
             RpcTemplate::Manual => None,
@@ -6440,7 +6432,7 @@ impl App {
         }
     }
 
-    /// [`App::generate`] from settings → 네트워크(RPC), with T-RPC-GENERATED: the new addresses
+    /// [`Wallet::generate`] from settings → 네트워크(RPC), with T-RPC-GENERATED: the new addresses
     /// are being tested and their results are on the rows.
     fn generate_and_report(&mut self) {
         let Some(written) = self.generate() else {
@@ -6477,12 +6469,12 @@ impl App {
             return None;
         };
         let (targets, _) = self.generation_plan();
-        let written = self.wallet.apikeys.generate_urls(
+        let written = self.apikeys.generate_urls(
             template,
             &credential,
-            &self.wallet.settings,
+            &self.settings,
             &targets,
-            self.wallet.overwrite_checked,
+            self.overwrite_checked,
         );
         drop(credential);
         if !self.save_apikeys() {
@@ -6510,13 +6502,9 @@ impl App {
             return Vec::new();
         };
         let (targets, _) = self.generation_plan();
-        let written = self.wallet.apikeys.generate_urls(
-            template,
-            &credential,
-            &self.wallet.settings,
-            &targets,
-            false,
-        );
+        let written =
+            self.apikeys
+                .generate_urls(template, &credential, &self.settings, &targets, false);
         drop(credential);
         if written.is_empty() || !self.save_apikeys() {
             return Vec::new();

@@ -21,7 +21,7 @@ use yw_core::zec::ZecNetwork;
 use yw_engine::cmd::YkConnectPress;
 
 use super::{WizardOrigin, WizardStep, YkPurpose, YkWizard};
-use crate::app::{App, AppMode, Purpose, Screen};
+use crate::app::{AppMode, Purpose, Screen, Wallet};
 use crate::events::KeyJob;
 use crate::logging;
 use crate::workers::key::yubikey::YkJob;
@@ -158,7 +158,7 @@ const fn default_choice(slot: CardSlot) -> Choice {
     }
 }
 
-impl App {
+impl Wallet {
     /// The networks a connected Bitcoin / Zcash key is used on: the settings' Bitcoin network,
     /// and the Zcash network of the settings when Zcash is on (else the one matching Bitcoin).
     #[must_use]

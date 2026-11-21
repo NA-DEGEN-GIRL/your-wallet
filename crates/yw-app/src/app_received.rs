@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 use yw_core::bip32::path::BtcChain;
 
-use crate::app::{App, AppMode, Screen};
+use crate::app::{AppMode, Screen, Wallet};
 use crate::meta::Tab;
 use crate::network::NetworkId;
 use crate::received::{
@@ -240,7 +240,7 @@ pub(crate) fn refresh_chain(id: u16) -> Option<RecvChain> {
     })
 }
 
-impl App {
+impl Wallet {
     /// The chains whose activity cards the main screen shows now (by tab; the `HyperCore` card
     /// on the EVM tab while it is shown and open).
     #[must_use]

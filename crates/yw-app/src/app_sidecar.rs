@@ -25,7 +25,7 @@ use yw_core::error::VaultError;
 use yw_core::lang::{Lang, Text};
 use yw_core::vault::FileKind;
 
-use crate::app::{App, AppMode, Confirm, Screen};
+use crate::app::{App, AppMode, Confirm, Screen, Wallet};
 use crate::errors::ErrorCode;
 use crate::events::{KeyJob, SidecarMoves, SidecarRefusal};
 use crate::logging::{self, Field};
@@ -188,7 +188,7 @@ pub struct SidecarUi {
     pub reset_ack: bool,
 }
 
-/// A send form, for [`App::journal_hold`].
+/// A send form, for [`Wallet::journal_hold`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SendChain {
     /// S11 and EVM approvals.
@@ -266,7 +266,7 @@ pub fn resolved_text(lang: Lang, kind: FileKind, use_prev: bool, moves: &Sidecar
     }
 }
 
-impl App {
+impl Wallet {
     /// `KeyOutcome::Meta` could not open or read `meta.ywm` (E-VLT-006).
     pub(crate) fn meta_unreadable(&mut self, error: VaultError) {
         logging::warn(
@@ -362,8 +362,8 @@ impl App {
             if !use_prev {
                 // Saved before the reload below reads the meta again.
                 self.sidecar.reset_ack = false;
-                if let Some(meta) = self.wallet.meta.as_mut() {
-                    meta.security.journal_reset_at = self.wallet.clock.now_unix_ms() / 1_000;
+                if let Some(meta) = self.meta.as_mut() {
+                    meta.security.journal_reset_at = self.clock.now_unix_ms() / 1_000;
                 }
                 self.save_meta();
             }

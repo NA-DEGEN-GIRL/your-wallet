@@ -499,7 +499,7 @@ dApp에 실패(`BroadcastFailed`)를 알린 거래는 자동으로 보내지 않
   - `tip' = max(⌈old_tip × 11/10⌉, f.tip)`, `max_fee' = max(⌈old_max_fee × 11/10⌉, 2 × f.base_fee_next + tip')`.
 - **취소**: `to = account`, `value = 0`, `data` 빈 값, `access_list` 빈 값, `gas_limit = ⌈estimate × 1.2⌉`, 수수료는 위와 같은 +10% 규칙.
 - 둘 다: 상한 검사(E05), 시뮬레이션(D15, nonce = 같은 nonce), 새 승인 요청(kind `EvmSpeedUp`/`EvmCancel`)과 재승인. 표시에 대체 대상 해시, 기존·새 최대 수수료를 넣는다. 저널에 같은 nonce의 새 레코드(role `SpeedUp`/`Cancel`)를 추가한다.
-- 서명자(2026-11-08): 그 그룹 계정 자신의 키 출처(`App::account_source`: 파생 → 가져온 키 → 추가한 니모닉 → YubiKey `EvmKeySource::Hardware`, YubiKey면 승인 뒤 카드 단계 [10] §9.2). 키가 없는 계정(지운 키·니모닉, 빠진 YubiKey 키)이면 승인을 만들지 않고 알림 "이 거래를 보낸 계정의 키가 이 지갑에 없어 수수료 올리기·취소를 할 수 없습니다…"(`T_REPLACE_NO_KEY`)만 띄운다 — 다른 키(계정 0 등)로 대신 서명하지 않는다.
+- 서명자(2026-11-08): 그 그룹 계정 자신의 키 출처(`Wallet::account_source`: 파생 → 가져온 키 → 추가한 니모닉 → YubiKey `EvmKeySource::Hardware`, YubiKey면 승인 뒤 카드 단계 [10] §9.2). 키가 없는 계정(지운 키·니모닉, 빠진 YubiKey 키)이면 승인을 만들지 않고 알림 "이 거래를 보낸 계정의 키가 이 지갑에 없어 수수료 올리기·취소를 할 수 없습니다…"(`T_REPLACE_NO_KEY`)만 띄운다 — 다른 키(계정 0 등)로 대신 서명하지 않는다.
 - 벡터: old tip 1.2 gwei, old maxFee 21.2 gwei, 새 base_next 12 gwei, 새 tip 1 gwei → tip' 1.32 gwei, maxFee' 25.32 gwei.
 
 ## 5. 저널 (journal.ywj, EVM 레코드)
@@ -1144,7 +1144,7 @@ pub fn build_typed_request(/* 같은 앞 인수 */ t: &DecodedTypedData, facts: 
 ```
 
 - `warnings`는 §3.7 단계 1–7에서 생긴 경고다(차단 E05·E06·E10·E11·E34·E35, 고위험 E37, 주의 E38, 정보 E31). 차단이 있으면 `sim`은 `Unavailable { reason: Skipped }`이다. `simulation` 필드는 `sim.binding()`이다. 빌더의 `now_unix_ms`는 상대 시각 표시와 T12·S04·S07 판정용이며 만료와 무관하다.
-- `signer`는 yw-app이 서명 계정에서 정한다(`App::account_source`: meta `evm_accounts` → `Derived(index)`, `evm_raw_accounts` → `Raw(record_id)`, 추가한 복구 단어의 계정 → `Mnemonic(record_id, index)`, YubiKey 계정(`hw_accounts.evm`) → `Hardware(index)`; [02] §5.3·§10.3, [10] §9.2). digest에 넣지 않는다: 다른 키로 서명하면 §4.3-5 복구 주소 검사가 막는다.
+- `signer`는 yw-app이 서명 계정에서 정한다(`Wallet::account_source`: meta `evm_accounts` → `Derived(index)`, `evm_raw_accounts` → `Raw(record_id)`, 추가한 복구 단어의 계정 → `Mnemonic(record_id, index)`, YubiKey 계정(`hw_accounts.evm`) → `Hardware(index)`; [02] §5.3·§10.3, [10] §9.2). digest에 넣지 않는다: 다른 키로 서명하면 §4.3-5 복구 주소 검사가 막는다.
 - **`BrowserOrigin`**(`yw_core::policy::BrowserOrigin`, [01](01-repo-build.md) §2.2; `policy` 모듈은 승인 모델이 쓰는 이 타입으로 M2에 시작하고 나머지는 M5): [05](05-browser.md) §4.7 Origin 형식을 그대로 구현한 유일한 origin 타입이다. API는 [05] §6.5(`parse`, `is_http`, `as_str`)에 `effective_port(&self) -> u16`(https 443, http 80; §9.4 S05)을 더한다. `as_str()`이 직렬화(`origin_serialized`, §11.4)다: `https://host[:port]` 또는 허용된 `http://localhost|127.0.0.1[:port]`, port 규칙 포함. yw-app은 별도 origin 파서를 두지 않고 이 타입을 쓴다. localhost 허용 토글은 [05](05-browser.md) §4.6이 따로 판정한다. 이식: `archive/spec-v2.4:crates/wallet-model/src/context.rs:42-131`.
 - 제목 형식: `[{네트워크 이름}] {작업 제목}`(예: `[Sepolia 테스트넷] 토큰 전송: 10 USDC`, 영어 `[Sepolia Testnet] Token transfer: 10 USDC`). LLM 설명([06](06-llm-explain.md))은 이 타입에 들어가지 않는다(D21).
 - 언어(2026-11-14, D39, [14](14-language.md) §3): 모든 `build_*`는 `lang: Lang`을 첫 인자로 받고 제목·값·sub_label·경고 문구를 그 언어로 만든다. 위험 규칙 문구는 `base_text(rule, lang)`, 경고는 `warning(lang, rule, cause)`(원인 줄도 같은 언어). 승인 창은 필드 이름·고정 문구를 `display.lang`으로만 그린다. 영어 문구 전문은 [14] §5.
