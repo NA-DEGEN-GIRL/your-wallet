@@ -1334,7 +1334,8 @@ fn bar_layout(
 /// the open's answer, when the entry drains, as it did. Before, those steps ran right after the
 /// call (`PENDING_P10` lines of the S5 check). A step reads the wallet when it runs, as the code
 /// it replaced did then. 2026-11-21 (S4 F14, owner decision, spec/04 §5.3): a lock drops the
-/// kept steps (`App::lock`), so none runs after it (pinned by
+/// kept steps (`App::lock_steps`, at the `lock_epoch` bump; 2026-11-21, S4 W3a: before,
+/// `App::lock`), so none runs after it (pinned by
 /// `a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry`,
 /// `a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry` and, since the F14 review,
 /// `a_suspend_lock_drops_the_steps_kept_for_an_open_before_its_drain`); from P10b (review,
@@ -1641,7 +1642,8 @@ impl App {
     /// none waits (2026-11-20, S4 P10a, plan §4.4 S5, §4.6 rule 2). 2026-11-20 (S4 P10b): an
     /// open waits in the outbox until its entry drains, so `after` follows the answer, as it
     /// followed the open before. 2026-11-21 (S4 F14, owner decision, spec/04 §5.3): a lock
-    /// before that answer drops `after` (`App::lock`); from P10b until F14 it ran after the lock
+    /// before that answer drops `after` (`App::lock_steps`, at the `lock_epoch` bump; 2026-11-21,
+    /// S4 W3a: before, `App::lock`); from P10b until F14 it ran after the lock
     /// (pinned then by `a_step_kept_for_an_open_runs_after_a_lock_in_the_same_entry`).
     /// Before P10b the executor applied effects at once, an open was answered before `emit`
     /// returned, and `after` always ran here, where the caller ran it before.

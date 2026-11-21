@@ -2990,8 +2990,9 @@ fn shell_reach_on_made_up_code() {
 /// half; the first half emits `AwaitKeyLock` only for `Suspend` and as its last step; the
 /// wallet's own lock (`lock_wallet`, a `WalletLock` with no `Suspend`) composes the halves with
 /// no drain; and only the shell's entries (`on_system`, `lock_shortcut`, `shutdown`) call `lock`,
-/// so no wallet fn can lock for `Suspend` and send `KeyJob::Load` before the wait (the P10b
-/// regression `1fb17c1` fixed). Finds every fn it checks (A-20).
+/// through any receiver, so no wallet fn can lock for `Suspend` and send `KeyJob::Load` before
+/// the wait (the P10b regression `1fb17c1` fixed), while `lock_wallet` has exactly its five
+/// wallet callers (2026-11-21, S4 W3a review). Finds every fn it checks (A-20).
 #[test]
 fn the_lock_composition_drains_only_for_suspend() {
     let files: Vec<Src> = production_code()
@@ -3030,36 +3031,47 @@ fn the_lock_composition_drains_only_for_suspend() {
     let after = one("lock_after_wait");
     assert!(!after.contains("emit("), "the second half emits nothing");
     assert!(after.ends_with("self.key(KeyJob::Load);}"), "{after}");
-    // Who calls the composition: the shell's entries only.
-    let mut callers: Vec<String> = files
-        .iter()
-        .flat_map(|src| {
-            fn_blocks(src)
-                .into_iter()
-                // `BtcUi::lock()` (the Bitcoin controller's, no argument) is another fn.
-                .filter(|(_, body)| {
-                    normalized(body)
-                        .replace("self.lock()", "")
-                        .contains("self.lock(")
-                })
-                .map(|(name, _)| name)
-        })
-        .collect();
-    callers.sort_unstable();
-    assert_eq!(callers, ["lock_shortcut", "on_system", "shutdown"]);
-    let wallet: Vec<String> = files
-        .iter()
-        .flat_map(|src| {
-            fn_blocks(src)
-                .into_iter()
-                .filter(|(_, body)| normalized(body).contains("self.lock_wallet("))
-                .map(|(name, _)| name)
-        })
-        .collect();
-    assert!(
-        wallet.len() >= 5,
-        "the wallet's own lock has its callers: {wallet:?}"
+    // Who calls the composition: the shell's entries only. 2026-11-21 (S4 W3a review): any
+    // receiver (`app.lock(..)`, `self.app.lock(..)`, not only `self.`) and any argument; before,
+    // only `self.lock(`. A call with no argument (`BtcUi::lock()`, the Bitcoin controller's; a
+    // mutex's) is another fn.
+    let callers_of = |call: &str| -> Vec<String> {
+        let mut callers: Vec<String> = files
+            .iter()
+            .flat_map(|src| {
+                fn_blocks(src)
+                    .into_iter()
+                    .filter(|(_, body)| calls_with_an_argument(&normalized(body), call))
+                    .map(|(name, _)| name)
+            })
+            .collect();
+        callers.sort_unstable();
+        callers
+    };
+    assert_eq!(
+        callers_of(".lock("),
+        ["lock_shortcut", "on_system", "shutdown"]
     );
+    // The wallet's own lock: exactly these callers (2026-11-21, S4 W3a review: before, at least
+    // five), so a new caller, or one that replaces a current one, is a reviewed change here. The
+    // dispatcher's `core.lock_wallet()` (no argument) is another fn.
+    assert_eq!(
+        callers_of(".lock_wallet("),
+        [
+            "idle_tick",
+            "key_result",
+            "on_cancel",
+            "on_core",
+            "reset_execute"
+        ]
+    );
+}
+
+/// Whether `body` calls `call` (a `.name(` text) with an argument, through any receiver.
+fn calls_with_an_argument(body: &str, call: &str) -> bool {
+    body.split(call)
+        .skip(1)
+        .any(|rest| !rest.trim_start().starts_with(')'))
 }
 
 // ---- The main-window mirror (2026-11-21, S4 W3; critique B-10, preflight critic C7) ------------

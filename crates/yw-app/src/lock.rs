@@ -45,7 +45,7 @@ impl LockReason {
 /// `KeyJob::Load` before the wait. The session, power and shutdown reasons come from the shell's
 /// entries (`App::lock` from `on_system`, `lock_shortcut` and `shutdown`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WalletLock {
+pub(crate) enum WalletLock {
     /// `잠금` button, a cancelled passphrase, the vault's own lock, a reset.
     Manual,
     /// No app input for `autoLockMinutes`.
