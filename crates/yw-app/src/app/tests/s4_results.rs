@@ -2967,9 +2967,164 @@ fn shell_closure(
     }
 }
 
-/// What in `body` (a wallet fn's) reaches the shell: a shell field, `yw_win`, or a call of a
-/// shell fn (`shell_fns`, the fixed point of [`shell_closure`]).
-fn shell_reach(body: &str, shell: &BTreeSet<String>, shell_fns: &BTreeSet<String>) -> Vec<String> {
+/// The module-level fns of `files` (2026-11-21, S4 W6 review): a fn none of whose enclosing
+/// blocks is anything but a `mod` (no `impl`, `trait` or fn), by name, each body with its file.
+fn free_fns(files: &[Src]) -> BTreeMap<String, Vec<(String, String)>> {
+    let mut fns: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    for src in files {
+        for block in &src.blocks {
+            let fn_head = head(&src.code, block.open);
+            let Some((_, after)) = fn_head.rsplit_once("fn ") else {
+                continue;
+            };
+            if !has_word(fn_head, "fn") {
+                continue;
+            }
+            let mut parent = block.parent;
+            let mut top = true;
+            while let Some(index) = parent {
+                let outer = head(&src.code, src.blocks[index].open);
+                if !has_word(outer, "mod") || has_word(outer, "fn") {
+                    top = false;
+                    break;
+                }
+                parent = src.blocks[index].parent;
+            }
+            if !top {
+                continue;
+            }
+            let name: String = after
+                .trim_start()
+                .chars()
+                .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+                .collect();
+            fns.entry(name).or_default().push((
+                src.file.clone(),
+                src.code[block.open..=block.close].to_owned(),
+            ));
+        }
+    }
+    fns
+}
+
+/// The module a yw-app source file is (2026-11-21, S4 W6 review): its file stem, its folder's
+/// name for a `mod.rs`, `crate` for the crate root.
+fn module_stem(file: &str) -> &str {
+    let path = file.strip_suffix(".rs").unwrap_or(file);
+    let mut parts = path.rsplit('/');
+    match parts.next().unwrap_or_default() {
+        "mod" => parts.next().unwrap_or_default(),
+        "main" | "lib" => "crate",
+        stem => stem,
+    }
+}
+
+/// The `use … ;` statements of `code`.
+fn use_statements(code: &str) -> Vec<&str> {
+    code.match_indices("use ")
+        .filter(|&(at, _)| at == 0 || !is_ident(code.as_bytes()[at - 1]))
+        .map(|(at, _)| {
+            let end = code[at..].find(';').map_or(code.len(), |n| at + n);
+            &code[at..end]
+        })
+        .collect()
+}
+
+/// Which yw-app free fns of `set` (`(file, name)`) `body`, a fn of `caller`, calls (2026-11-21,
+/// S4 W6 review): the name followed by `(` or `::<`, not after `.` (a method), `fn ` (a
+/// definition) or an identifier character, and either bare — in the file that defines it, or
+/// where a `use` statement of `caller` names it (or `*`) with its module — or after a path whose
+/// last segment is its module ([`module_stem`]; `super`/`self` in its own file, `crate` for the
+/// crate root). So `Instant::now(` or another module's `start(` is not a call of `server::start`.
+fn free_calls(body: &str, caller: &Src, set: &BTreeSet<(String, String)>) -> BTreeSet<String> {
+    let text = normalized(body);
+    let bytes = text.as_bytes();
+    let uses = use_statements(&caller.code);
+    let mut calls = BTreeSet::new();
+    for (file, name) in set {
+        let stem = module_stem(file);
+        let same_file = *file == caller.file;
+        let imported = same_file
+            || uses
+                .iter()
+                .any(|stmt| has_word(stmt, stem) && (has_word(stmt, name) || stmt.contains('*')));
+        for (at, _) in text.match_indices(name.as_str()) {
+            let stop = at + name.len();
+            if bytes.get(stop).is_some_and(|&b| is_ident(b)) {
+                continue;
+            }
+            let rest = text[stop..].trim_start();
+            if !(rest.starts_with('(') || rest.starts_with("::<")) {
+                continue;
+            }
+            let before = &text[..at];
+            if before
+                .as_bytes()
+                .last()
+                .is_some_and(|&b| is_ident(b) || b == b'.')
+                || ends_with_word(before.trim_end(), "fn")
+            {
+                continue;
+            }
+            let counts = match before.strip_suffix("::") {
+                None => imported,
+                Some(path) => {
+                    let start = path
+                        .bytes()
+                        .rposition(|b| !(is_ident(b) || b == b':'))
+                        .map_or(0, |n| n + 1);
+                    let last = path[start..].rsplit("::").next().unwrap_or_default();
+                    last == stem || (same_file && (last == "super" || last == "self"))
+                }
+            };
+            if counts {
+                calls.insert(name.clone());
+            }
+        }
+    }
+    calls
+}
+
+/// The shell's free fns as a fixed point (2026-11-21, S4 W6 review; plan D-30): every yw-app
+/// module-level fn ([`free_fns`]) whose body names `yw_win` (`app_sidecar::local_time`, which
+/// reads `yw_win::time::local_wall_ms`), plus every one that calls ([`free_calls`]) a fn already
+/// in the set, until it stops growing; as `(file, name)`.
+fn shell_free_fns(
+    files: &[Src],
+    free: &BTreeMap<String, Vec<(String, String)>>,
+) -> BTreeSet<(String, String)> {
+    let all = || {
+        free.iter()
+            .flat_map(|(name, bodies)| bodies.iter().map(move |(file, body)| (file, name, body)))
+    };
+    let mut set: BTreeSet<(String, String)> = all()
+        .filter(|(_, _, body)| body.contains("yw_win"))
+        .map(|(file, name, _)| (file.clone(), name.clone()))
+        .collect();
+    loop {
+        let more: Vec<(String, String)> = all()
+            .filter(|(file, name, _)| !set.contains(&((*file).clone(), (*name).clone())))
+            .filter(|(file, _, body)| !free_calls(body, src_of(files, file), &set).is_empty())
+            .map(|(file, name, _)| (file.clone(), name.clone()))
+            .collect();
+        if more.is_empty() {
+            return set;
+        }
+        set.extend(more);
+    }
+}
+
+/// What in `body` (a wallet fn's) reaches the shell: a shell field, `yw_win`, a call of a
+/// shell fn (`shell_fns`, the fixed point of [`shell_closure`]) or, since the W6 review
+/// (2026-11-21), a call of a shell free fn (`shell_free`, [`shell_free_fns`]: before, a wallet fn
+/// that called `local_time` passed).
+fn shell_reach(
+    body: &str,
+    caller: &Src,
+    shell: &BTreeSet<String>,
+    shell_fns: &BTreeSet<String>,
+    shell_free: &BTreeSet<(String, String)>,
+) -> Vec<String> {
     let mut found: Vec<String> = self_fields(body)
         .into_iter()
         .filter(|field| shell.contains(field))
@@ -2984,8 +3139,23 @@ fn shell_reach(body: &str, shell: &BTreeSet<String>, shell_fns: &BTreeSet<String
             .filter(|call| shell_fns.contains(call))
             .map(|call| format!("calls self.{call}")),
     );
+    found.extend(
+        free_calls(body, caller, shell_free)
+            .into_iter()
+            .map(|call| format!("calls {call}")),
+    );
     found
 }
+
+/// The `impl App` render helpers that format a local time through a shell free fn and that
+/// [`WALLET_FNS`] fns reach (2026-11-21, S4 W6 review): `activity_rows` (`ui/screens_evm.rs`, its
+/// `format_local`, `yw_win::time::local_wall_ms`), which W4's `activity_counterparty` and
+/// `on_links` call for a row's counterparty, and its row helper `meta_activity_row` (the same
+/// `format_local`). Plan "Left out of S4": `local_wall_ms` in render helpers is S5's, and the
+/// render helpers wallet fns call flip with them at W14c or move (preflight §3.0); so
+/// [`wallet_fns_name_no_shell`] does not count a call of these as shell reach, and a new one
+/// fails it.
+const RENDER_LOCAL_TIME: [&str; 2] = ["activity_rows", "meta_activity_row"];
 
 /// `wallet_fns_name_no_shell` (2026-11-21, S4 W3; preflight §3.0 prep rows, critique B-2, B-11,
 /// A-20): every fn of [`WALLET_FNS`] — wallet code that stays `impl App` until W14c flips it in
@@ -2997,7 +3167,12 @@ fn shell_reach(body: &str, shell: &BTreeSet<String>, shell_fns: &BTreeSet<String
 /// (calls written `self.<fn>(`; 2026-11-21, S4 W3 review: before, one level only, so a wallet fn
 /// that called a helper which called `render_main` passed). The check finds every listed fn (it
 /// cannot pass on nothing), and its scanners are tried on made-up code
-/// ([`shell_reach_on_made_up_code`]).
+/// ([`shell_reach_on_made_up_code`]). 2026-11-21 (S4 W6 review): the shell's free fns too
+/// ([`shell_free_fns`]: yw-app module-level fns that name `yw_win`, at any depth): a listed fn
+/// that calls one (`local_time`, plan D-30's local time) reaches the shell, and so does an
+/// `impl App` fn that calls one (a seed of [`shell_closure`]) but [`RENDER_LOCAL_TIME`]; before,
+/// only `self.<fn>(` calls were followed, so a wallet fn that called `local_time` passed and
+/// D-30's "no wallet fn calls `local_time`" (spec/04 §1.3 W6) was not checked.
 #[test]
 fn wallet_fns_name_no_shell() {
     let files: Vec<Src> = production_code()
@@ -3025,6 +3200,40 @@ fn wallet_fns_name_no_shell() {
         assert!(seed.contains(name), "shell fn {name} found");
     }
     seed.extend(SHELL_FNS.iter().map(|&name| name.to_owned()));
+    // 2026-11-21 (S4 W6 review): the free fns that reach `yw_win`, and the `impl App` fns that
+    // call one.
+    let shell_free = shell_free_fns(&files, &free_fns(&files));
+    assert!(
+        shell_free.contains(&(
+            "yw-app/src/app_sidecar.rs".to_owned(),
+            "local_time".to_owned()
+        )),
+        "shell free fn local_time found"
+    );
+    let free_callers: BTreeSet<String> = fns
+        .iter()
+        .filter(|(_, bodies)| {
+            bodies.iter().any(|(file, body, _)| {
+                !free_calls(body, src_of(&files, file), &shell_free).is_empty()
+            })
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    assert!(
+        free_callers.contains("journal_send_items"),
+        "journal_send_items calls local_time"
+    );
+    for name in RENDER_LOCAL_TIME {
+        assert!(
+            free_callers.contains(name),
+            "{name} no longer calls a shell free fn: remove its RENDER_LOCAL_TIME line"
+        );
+    }
+    seed.extend(
+        free_callers
+            .into_iter()
+            .filter(|name| !RENDER_LOCAL_TIME.contains(&name.as_str())),
+    );
     // 2026-11-21 (S4 W3 review): every level, not only the fns that name the shell themselves.
     let shell_fns = shell_closure(&fns, seed);
     let mut errors = Vec::new();
@@ -3034,7 +3243,7 @@ fn wallet_fns_name_no_shell() {
             continue;
         };
         for (file, body, _) in bodies {
-            let reach = shell_reach(body, &shell, &shell_fns);
+            let reach = shell_reach(body, src_of(&files, file), &shell, &shell_fns, &shell_free);
             if !reach.is_empty() {
                 errors.push(format!("{file}: {row} fn {name}: {reach:?}"));
             }
@@ -3053,12 +3262,16 @@ fn shell_reach_on_made_up_code() {
         .map(str::to_owned)
         .collect();
     let shell_fns: BTreeSet<String> = ["drain"].into_iter().map(str::to_owned).collect();
+    let none = BTreeSet::new();
+    let nowhere = Src::new("yw-app/src/y.rs".to_owned(), String::new());
     assert_eq!(
         shell_reach(
             "{ let t = self.form.text(f); self.wallet.controls.text(1); self.drain(); \
              let w = yw_win::ui::x(); self.refresh(); if self.main.is_some() {} }",
+            &nowhere,
             &shell,
             &shell_fns,
+            &none,
         ),
         [
             "names self.controls",
@@ -3070,8 +3283,10 @@ fn shell_reach_on_made_up_code() {
     assert!(
         shell_reach(
             "{ self.form.set(a, b); self.refresh(); self.main_hidden(); }",
+            &nowhere,
             &shell,
-            &shell_fns
+            &shell_fns,
+            &none
         )
         .is_empty()
     );
@@ -3114,10 +3329,76 @@ fn shell_reach_on_made_up_code() {
             .collect::<BTreeSet<_>>()
     );
     assert_eq!(
-        shell_reach("{ self.banner(); self.deeper(); }", &shell, &closed),
+        shell_reach(
+            "{ self.banner(); self.deeper(); }",
+            &nowhere,
+            &shell,
+            &closed,
+            &none
+        ),
         ["calls self.deeper"]
     );
-    assert!(shell_reach("{ self.refresh(); }", &shell, &closed).is_empty());
+    assert!(shell_reach("{ self.refresh(); }", &nowhere, &shell, &closed, &none).is_empty());
+}
+
+/// The free-fn scanners of [`wallet_fns_name_no_shell`] on made-up code (2026-11-21, S4 W6
+/// review): they can fail.
+#[test]
+fn free_fn_reach_on_made_up_code() {
+    let shell: BTreeSet<String> = ["main"].into_iter().map(str::to_owned).collect();
+    // `stamp` names `yw_win`, `label` and the inline module's `deep` call it, `plain` does not,
+    // and `method` is no free fn. A wallet fn in `y.rs`, which imports `stamp`, reaches the shell
+    // by a bare `stamp(` and by `x::label(`; a method call, a type's path, another module's path,
+    // a bare call of a fn it does not import, a definition and a longer name do not.
+    let x = Src::new(
+        "yw-app/src/x.rs".to_owned(),
+        "fn stamp(s: u64) -> u64 { yw_win::time::now(s) }\n\
+         pub(crate) fn label(s: u64) -> u64 { stamp(s) }\n\
+         fn plain() {}\n\
+         mod inner { fn deep() { super::label(1); } }\n\
+         impl App { fn method(&self) { stamp(1); } }\n"
+            .to_owned(),
+    );
+    let y = Src::new(
+        "yw-app/src/y.rs".to_owned(),
+        "use crate::x::stamp;\n".to_owned(),
+    );
+    let files = [x, y];
+    let free = free_fns(&files);
+    assert_eq!(
+        free.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["deep", "label", "plain", "stamp"]
+    );
+    let shell_free = shell_free_fns(&files, &free);
+    let no_fns = BTreeSet::new();
+    assert_eq!(
+        shell_free
+            .iter()
+            .map(|(_, name)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["deep", "label", "stamp"]
+    );
+    assert_eq!(
+        shell_reach(
+            "{ let a = stamp(at); let b = crate::x::label (at); }",
+            &files[1],
+            &shell,
+            &no_fns,
+            &shell_free
+        ),
+        ["calls label", "calls stamp"]
+    );
+    assert!(
+        shell_reach(
+            "{ self.stamp(1); a.label(2); Clock::stamp(3); yw_engine::text::label(4); \
+             label(5); restamp(6); fn label() {} plain(); }",
+            &files[1],
+            &shell,
+            &no_fns,
+            &shell_free
+        )
+        .is_empty()
+    );
 }
 
 // ---- The lock's composition (2026-11-21, S4 W3a; critique B-1, A-2, preflight critic C11) ------
