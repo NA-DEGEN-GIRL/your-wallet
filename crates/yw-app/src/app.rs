@@ -4221,9 +4221,11 @@ impl App {
 
     /// Whether `serial` is the open secret session's (2026-11-22, S4c W12): the read the shell's
     /// [`Self::apply_form_action`] makes before its own arms, as it did before W12 by reading
-    /// the session's purpose.
+    /// the session's purpose. Private (2026-11-22, S4c W12 review: it was `pub(crate)`, a new
+    /// crate-wide read of the session's serial with one caller in this file; `Wallet` is declared
+    /// here, so a private fn stays callable after W14c, A-15).
     #[must_use]
-    pub(crate) fn secret_session_is(&self, serial: u64) -> bool {
+    fn secret_session_is(&self, serial: u64) -> bool {
         self.secret_session
             .as_ref()
             .is_some_and(|session| session.serial() == serial)
@@ -4382,7 +4384,11 @@ impl App {
     /// cancel, time-out, close, the acknowledgement hold) to [`Self::on_secret_action`] as a
     /// [`SecretAction`], in-process (never a `Cmd`: a submission holds secrets). Before, this fn
     /// held both, so it reached wallet state through `DerefMut`. Same arms, same order, same
-    /// drop of another serial's action (a dropped submission is wiped).
+    /// drop of another serial's action (a dropped submission is wiped). 2026-11-22 (S4c W12
+    /// review): one wallet write is still reached from here, the copy's clip-notice drop and its
+    /// repaint (`copy_secret` → `drop_clip_notice`, `refresh`), a named exception until W15; the
+    /// serial check that opens this fn is pinned by the source check
+    /// `the_secret_form_action_splits_at_on_secret_action`.
     fn apply_form_action(&mut self, serial: u64, action: FormAction) {
         if !self.secret_session_is(serial) {
             return;

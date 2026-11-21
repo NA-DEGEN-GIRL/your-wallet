@@ -4100,8 +4100,19 @@ fn wallet_fns_name_no_shell() {
 /// (repaint, paste, copy) and hands each of the five wallet actions to the wallet's half
 /// `on_secret_action` (in [`WALLET_FNS`], so [`wallet_fns_name_no_shell`] keeps it free of the
 /// shell), which is called from nowhere else in production code: no other path turns a form
-/// action into wallet work, and no wallet write is left in the shell's half for W15 to find
-/// (it compiled through `DerefMut` before). It finds both fns (A-20).
+/// action into wallet work. It finds both fns (A-20).
+///
+/// 2026-11-22 (S4c W12 review): the doc said "no wallet write is left in the shell's half for
+/// W15 to find"; that was not so. The copy arm's `copy_secret` still calls `drop_clip_notice`
+/// (it writes the wallet's `banners`) and `refresh`, through `DerefMut`. They are now the named
+/// exceptions of [`SECRET_FORM_SHELL_WALLET_CALLS`]: the shell half's own fns (`paste`,
+/// `copy_secret`) call no other `App` fn and write no wallet field, and W15 (the non-test
+/// `DerefMut` goes) must resolve the two. The check also pins what the review found unpinned:
+/// the shell half starts by dropping another serial's action (`secret_session_is`; the stale
+/// `Cancel` of `secret_sessions_follow_their_window_results` is dropped by `on_secret_action`
+/// too, so that test passes without it, and a stale `Redraw`, `Paste` or `Copy` would act on
+/// whatever secret window is open), and `on_submit`/`on_cancel`, which take the submission and
+/// the purpose, have no production caller but `on_secret_action` (plan §7.3 item 3).
 #[test]
 fn the_secret_form_action_splits_at_on_secret_action() {
     let files = production_code();
@@ -4158,18 +4169,97 @@ fn the_secret_form_action_splits_at_on_secret_action() {
             "apply_form_action hands {action} to on_secret_action"
         );
     }
-    let callers = files
-        .iter()
-        .flat_map(|src| {
-            fn_blocks(src)
-                .into_iter()
-                .map(move |(name, body)| (src, name, body))
-        })
-        .filter(|(_, _, body)| app_calls(body).contains("on_secret_action"))
-        .map(|(src, name, _)| format!("{}:{name}", src.file))
-        .collect::<Vec<_>>();
-    assert_eq!(callers, ["yw-app/src/app.rs:apply_form_action"]);
+    // 2026-11-22 (S4c W12 review): the shell half drops another serial's action first.
+    let opening = shell_text
+        .split_once('{')
+        .map(|(_, rest)| rest.trim_start())
+        .unwrap_or_default();
+    assert!(
+        opening.starts_with("if !self.secret_session_is(serial) { return; }"),
+        "apply_form_action no longer starts by dropping another serial's action"
+    );
+    assert_secret_form_shell_reach(app, &shell_calls);
+    let callers_of = |wanted: &str| {
+        files
+            .iter()
+            .flat_map(|src| {
+                fn_blocks(src)
+                    .into_iter()
+                    .map(move |(name, body)| (src, name, body))
+            })
+            .filter(|(_, _, body)| app_calls(body).contains(wanted))
+            .map(|(src, name, _)| format!("{}:{name}", src.file))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        callers_of("on_secret_action"),
+        ["yw-app/src/app.rs:apply_form_action"]
+    );
+    // 2026-11-22 (S4c W12 review): the submission and the purpose enter only through it.
+    for purpose_step in ["on_submit", "on_cancel"] {
+        assert_eq!(
+            callers_of(purpose_step),
+            ["yw-app/src/app.rs:on_secret_action"],
+            "{purpose_step} has a production caller other than on_secret_action"
+        );
+    }
 }
+
+/// The shell half of the secret form's actions (`apply_form_action`, whose `App` calls are
+/// `shell_calls`) calls only the guard, its own arms and the wallet half, and its own arms
+/// (`paste`, `copy_secret`) call no `App` fn but their [`SECRET_FORM_SHELL_WALLET_CALLS`] and
+/// write no wallet field (2026-11-22, S4c W12 review).
+fn assert_secret_form_shell_reach(app: &Src, shell_calls: &BTreeSet<String>) {
+    assert_eq!(
+        *shell_calls,
+        [
+            "copy_secret",
+            "on_secret_action",
+            "paste",
+            "secret_session_is"
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>(),
+        "apply_form_action's calls"
+    );
+    let wallet_state = wallet_fields(app);
+    for own in ["paste", "copy_secret"] {
+        let bodies = fn_bodies(app, own);
+        assert_eq!(bodies.len(), 1, "one {own}");
+        let allowed: BTreeSet<String> = SECRET_FORM_SHELL_WALLET_CALLS
+            .iter()
+            .filter(|&&(from, _, _)| from == own)
+            .map(|&(_, call, _)| call.to_owned())
+            .collect();
+        assert_eq!(
+            app_calls(bodies[0]),
+            allowed,
+            "{own} calls an App fn that is not its named exception"
+        );
+        let writes = wallet_writes(bodies[0], &wallet_state);
+        assert!(writes.is_empty(), "{own} writes wallet state: {writes:?}");
+    }
+    for (_, call, reason) in SECRET_FORM_SHELL_WALLET_CALLS {
+        assert!(!reason.is_empty(), "{call}: no reason");
+    }
+}
+
+/// The wallet calls left in the shell's half of the secret form's actions, each with its reason
+/// (2026-11-22, S4c W12 review, preflight critic C12): `(shell fn, App fn it calls, why)`.
+/// [`the_secret_form_action_splits_at_on_secret_action`] allows nothing else. W15, which removes
+/// the non-test `DerefMut`, must resolve them (make `drop_clip_notice` wallet code, as `refresh`
+/// already is, and call both through the wallet, or carry the notice drop in an answer).
+const SECRET_FORM_SHELL_WALLET_CALLS: [(&str, &str, &str); 2] = [
+    (
+        "copy_secret",
+        "drop_clip_notice",
+        "the clip-clear notice (spec/04 §4.8): a new copy replaced one whose clear was still \
+         being retried and noticed, so T-CLIP-NOT-CLEARED leaves the wallet's `banners`; the \
+         shell knows it where the clipboard answered. Not wallet code yet (W15)",
+    ),
+    ("copy_secret", "refresh", "the repaint of that band"),
+];
 
 /// The scanners of [`wallet_fns_name_no_shell`] on made-up code: they can fail.
 #[test]
