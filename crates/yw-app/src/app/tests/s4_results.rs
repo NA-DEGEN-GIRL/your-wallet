@@ -2738,7 +2738,24 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// the three files had shell reach left, so the row only lists its fns. `on_sol_previewed` and
 /// `sol_dapp_draft` call W10's `Self::new_approval_id()` (self-less and pure); no W8 fn calls
 /// through a closure's `app.`.
-const WALLET_FNS: [(&str, &str); 350] = [
+/// W9 (2026-11-22, preflight §3 W9): Bitcoin (`app_btc.rs`'s `impl App` block: the controller
+/// calls `btc_call`, `btc_update`, `btc_call_and_repaint` and the batch `btc_apply`/
+/// `btc_apply_rest`, the settings save, the tab, the main-timer part `btc_tick`, the key
+/// worker's and the RPC worker's results, the network and indexer settings, discovery, receive
+/// and copy, the send and bump forms and their reviews, the signed-transaction choices, prepare,
+/// the consumed handler `btc_consumed`, `btc_approval_finished`, the account labels and the
+/// controller context `btc_ctx`; `btc_lock` is W3a's, the `BtcUi` controller above the block is
+/// no `impl App`; `app_btc_commands.rs`: the form reads and writes, the handlers `on_btc_edit`,
+/// `on_btc`, `on_btc_esplora`, `on_btc_indexed`, `on_btc_activity` and their helpers; the test
+/// adapter `on_btc_command` is test code). The approval entry they call
+/// (`show_next_approval_then`, `show_ready_draft_at`, `after_pending_open`, `approval_lang`,
+/// `show_failure` in `app_approval.rs`) is W14a's, the card and site fns (`card_begin`,
+/// `btc_selected_card_gate`, `btc_addresses_removed_from_sites`) W11's and the backup gates
+/// (`btc_backup_gate`, `mn_send_blocked`, `mn_unconfirmed`, `backup_refused_text`,
+/// `mnemonic_tagged`) W12's. Neither file had shell reach left, so the row only lists its fns.
+/// `prepare_btc` calls W10's `Self::new_approval_id()` (self-less and pure); no W9 fn calls
+/// through a closure's `app.`.
+const WALLET_FNS: [(&str, &str); 418] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -3089,6 +3106,74 @@ const WALLET_FNS: [(&str, &str); 350] = [
     ("W8", "on_sol_dapp_signed"),
     ("W8", "sol_dapp_min_context_slot"),
     ("W8", "browser_sol_broadcast"),
+    ("W9", "btc_call"),
+    ("W9", "btc_controller"),
+    ("W9", "btc_update"),
+    ("W9", "btc_call_and_repaint"),
+    ("W9", "btc_apply"),
+    ("W9", "btc_apply_rest"),
+    ("W9", "btc_save_settings"),
+    ("W9", "btc_tab_active"),
+    ("W9", "btc_select_tab"),
+    ("W9", "btc_after_meta"),
+    ("W9", "btc_journal_changed"),
+    ("W9", "btc_open_tab_if_idle"),
+    ("W9", "btc_tick"),
+    ("W9", "btc_key_outcome"),
+    ("W9", "btc_rpc_event"),
+    ("W9", "btc_url_changed"),
+    ("W9", "btc_enable"),
+    ("W9", "btc_disable"),
+    ("W9", "btc_choose_network"),
+    ("W9", "btc_mismatch_keep_meta"),
+    ("W9", "btc_mismatch_use_settings"),
+    ("W9", "btc_set_indexer"),
+    ("W9", "btc_save_esplora_url"),
+    ("W9", "btc_default_esplora_url"),
+    ("W9", "btc_test_esplora_url"),
+    ("W9", "btc_confirm_yes"),
+    ("W9", "btc_confirm_no"),
+    ("W9", "btc_refresh"),
+    ("W9", "btc_discover"),
+    ("W9", "btc_cancel_discovery"),
+    ("W9", "btc_open_receive"),
+    ("W9", "btc_new_receive_address"),
+    ("W9", "btc_copy_address"),
+    ("W9", "btc_card_address"),
+    ("W9", "btc_copy_card_address"),
+    ("W9", "btc_open_send"),
+    ("W9", "btc_form"),
+    ("W9", "btc_review"),
+    ("W9", "btc_open_bump"),
+    ("W9", "btc_review_bump"),
+    ("W9", "btc_continue"),
+    ("W9", "btc_cancel_signed"),
+    ("W9", "btc_reset_tip"),
+    ("W9", "btc_toggle_address_ack"),
+    ("W9", "btc_rebroadcast"),
+    ("W9", "btc_abandon"),
+    ("W9", "btc_esplora_broadcast"),
+    ("W9", "btc_freeze"),
+    ("W9", "prepare_btc"),
+    ("W9", "btc_consumed"),
+    ("W9", "btc_approval_finished"),
+    ("W9", "btc_account_label"),
+    ("W9", "btc_mnemonic_busy"),
+    ("W9", "btc_pick_mnemonic"),
+    ("W9", "btc_ctx"),
+    ("W9", "btc_field_text"),
+    ("W9", "btc_apply_field"),
+    ("W9", "btc_drop_stale_typed"),
+    ("W9", "btc_sync_form"),
+    ("W9", "on_btc_edit"),
+    ("W9", "btc_set_unit"),
+    ("W9", "btc_toggle_max"),
+    ("W9", "btc_settings_network"),
+    ("W9", "btc_toggle_enabled"),
+    ("W9", "on_btc"),
+    ("W9", "on_btc_esplora"),
+    ("W9", "on_btc_indexed"),
+    ("W9", "on_btc_activity"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
