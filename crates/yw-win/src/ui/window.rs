@@ -1463,6 +1463,20 @@ impl Window {
         };
     }
 
+    /// Minimizes the window as its caption's minimize box does (2026-11-21: for the windowed form
+    /// test of yw-app, which checks the main-window mirror on a real minimized window; [`Self::show`]
+    /// restores it).
+    pub fn minimize(&self) {
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Minimizes our live window handle.
+        unsafe {
+            ShowWindow(
+                hwnd,
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_MINIMIZE,
+            )
+        };
+    }
+
     /// Shows the window maximized (its restored rectangle stays for `복원`).
     pub fn show_maximized(&self) {
         let Some(hwnd) = self.live() else { return };

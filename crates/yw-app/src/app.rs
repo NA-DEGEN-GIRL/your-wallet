@@ -841,10 +841,33 @@ pub struct Wallet {
     /// Before W3, `App::main_hidden` read the window itself at each call.
     main_hidden: bool,
     /// Debug builds (2026-11-21, S4 W3, critique B-11): the credential fields the press being
-    /// handled took ([`App::take_cred`]), names only, for the shell's comparison when the next
-    /// drain starts (`App::cred_check`); before W3, `take_cred` read the edit itself.
+    /// handled took ([`App::take_cred`]), for the shell's comparison when the next drain starts
+    /// (`App::cred_check`); before W3, `take_cred` read the edit itself. 2026-11-21 (W3 review):
+    /// with the length and SHA-256 of the units taken ([`cred_fingerprint`], no copy of them), so
+    /// the units the logic got are compared, not only two shell reads; before, names only.
     #[cfg(debug_assertions)]
-    cred_taken: Vec<CredField>,
+    cred_taken: Vec<CredTaken>,
+}
+
+/// Debug builds: one credential take (2026-11-21, S4 W3 review): the field, and the length and
+/// SHA-256 of the units the handler got ([`cred_fingerprint`]).
+#[cfg(debug_assertions)]
+pub(crate) type CredTaken = (CredField, usize, Zeroizing<[u8; 32]>);
+
+/// Debug builds (2026-11-21, S4 W3 review, critique B-11): the length and SHA-256 of credential
+/// units (UTF-16 little-endian), so the units a handler took can be compared with the shell's
+/// read of the edit without a second copy of them living until the next drain. Both sides use
+/// it; the bytes hashed are wiped.
+#[cfg(debug_assertions)]
+fn cred_fingerprint(units: &[u16]) -> (usize, Zeroizing<[u8; 32]>) {
+    let mut bytes = Zeroizing::new(Vec::with_capacity(units.len().saturating_mul(2)));
+    for unit in units {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    (
+        units.len(),
+        Zeroizing::new(yw_core::codec::sha256(bytes.as_slice())),
+    )
 }
 
 impl core::fmt::Debug for Wallet {
@@ -867,9 +890,10 @@ impl Wallet {
     }
 
     /// Debug builds (2026-11-21, S4 W3, critique B-11): the credential fields taken since the
-    /// last call, names only (the shell's comparison when a drain starts, `App::cred_check`).
+    /// last call, each with the length and digest of its units (W3 review; before, names only),
+    /// for the shell's comparison when a drain starts (`App::cred_check`).
     #[cfg(debug_assertions)]
-    pub(crate) fn take_cred_log(&mut self) -> Vec<CredField> {
+    pub(crate) fn take_cred_log(&mut self) -> Vec<CredTaken> {
         core::mem::take(&mut self.cred_taken)
     }
 }
@@ -2344,7 +2368,10 @@ impl App {
     }
 
     /// Debug builds: the wallet's main-window mirror equals the window (2026-11-21, S4 W3,
-    /// critique B-10), checked at the end of every drain.
+    /// critique B-10), checked at the end of every drain. It compares with [`Self::main_hidden_now`]
+    /// itself, so it finds a missed sync, not a wrong live read (2026-11-21, W3 review: that read's
+    /// body is pinned by `the_main_hidden_mirror_changes_where_the_window_does`, and checked on a
+    /// real window by the windowed `ui::tour_forms`).
     ///
     /// # Panics
     ///
@@ -5912,9 +5939,15 @@ impl App {
     /// what the plain edits show (`controls.text(id, field.cap())`, the read `Cmd::Form` makes) for
     /// every field; each difference is counted ([`Self::note_form_mismatch`]). Run at the end of
     /// every drain, when no field write is queued. Before W3 this comparison ran in the wallet's
-    /// `form_text`/`form_text_wiping`, for the field read, at each read.
+    /// `form_text`/`form_text_wiping`, for the field read, at each read. Not once the shutdown
+    /// has begun (2026-11-21, S4 W3 review): `shutdown` clears the controls and drops the main
+    /// window while the form state keeps its last values, so every field shown at exit would
+    /// count (its own last drain and the `Exit` press's); before W3 nothing read a field then.
     #[cfg(debug_assertions)]
     pub(crate) fn check_form_in_step(&self) {
+        if self.mode == AppMode::ShuttingDown {
+            return;
+        }
         for field in EditField::ALL {
             let shown = self
                 .controls
@@ -5953,13 +5986,22 @@ impl App {
     /// the handler took the units. Before W3, `take_cred` read the edit itself at the take and
     /// compared it with the units the press captured (`cred_compare`); a field the press did not
     /// capture is still a miss (`PressInput::take`).
+    ///
+    /// 2026-11-21 (S4 W3 review): the units the handler took are compared too, by the length and
+    /// SHA-256 its take noted ([`cred_fingerprint`]) against the shadow's, so a take that hands
+    /// over another field's units counts as before W3; from W3 until this review only the shadow
+    /// and the edit now, two shell reads, were compared. Not compared once the shutdown has begun
+    /// (its controls are gone; [`Self::check_form_in_step`]).
     #[cfg(debug_assertions)]
     pub(crate) fn cred_check(&mut self) {
         let shadow = core::mem::take(&mut self.cred_shadow);
-        for field in self.wallet.take_cred_log() {
+        for (field, took_len, took_digest) in self.wallet.take_cred_log() {
             #[cfg(test)]
             self.cred_reads
                 .push((cmd_table::id_of(self.last_press), field));
+            if self.mode == AppMode::ShuttingDown {
+                continue;
+            }
             let read = self
                 .controls
                 .text_wiping(cmd_table::cred_id_of(field), field.cap());
@@ -5969,11 +6011,14 @@ impl App {
                 .and_then(|(_, units)| units.as_ref())
                 .map(yw_win::mem::WipeBuf::as_slice)
                 .unwrap_or_default();
+            let (captured_len, captured_digest) = cred_fingerprint(captured);
             if captured
                 != read
                     .as_ref()
                     .map(yw_win::mem::WipeBuf::as_slice)
                     .unwrap_or_default()
+                || took_len != captured_len
+                || *took_digest != *captured_digest
             {
                 self.form_mismatch
                     .set(self.form_mismatch.get().saturating_add(1));
@@ -5987,13 +6032,19 @@ impl App {
     /// (2026-11-18, S3 C3, plan §3.4 and D-l): moved out of the press input, wiped when dropped;
     /// empty when the edit did not exist, exactly as a read of a missing edit. A field the press
     /// did not capture is a credential miss (`PressInput::take`, debug builds). 2026-11-21 (S4 W3,
-    /// critique B-11): debug builds note the field (names only) for the shell's comparison when
-    /// the next drain starts (`App::cred_check`); before, they read the edit itself here and compared (the
-    /// shadow read of S3 plan §3.2a).
+    /// critique B-11): debug builds note the field for the shell's comparison when the next drain
+    /// starts (`App::cred_check`); before, they read the edit itself here and compared (the shadow
+    /// read of S3 plan §3.2a). 2026-11-21 (W3 review): the note carries the length and SHA-256 of
+    /// the units taken ([`cred_fingerprint`]), so a take that hands over another field's units is
+    /// counted; from W3 until the review it held the field name only.
     pub(crate) fn take_cred(&mut self, field: CredField) -> Zeroizing<Vec<u16>> {
+        let units = self.input.take(field);
         #[cfg(debug_assertions)]
-        self.cred_taken.push(field);
-        self.input.take(field)
+        {
+            let (len, digest) = cred_fingerprint(units.as_slice());
+            self.cred_taken.push((field, len, digest));
+        }
+        units
     }
 
     /// Debug builds: credential reads of a field no press captured (tests assert 0).

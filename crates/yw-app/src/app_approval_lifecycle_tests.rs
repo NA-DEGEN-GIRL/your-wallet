@@ -1698,8 +1698,13 @@ fn rpc_import_on_temp_data() -> Vec<String> {
 /// mirror (`Cmd::MainHidden`). The test puts the stand-in window in (or takes it out) itself, as
 /// no message does, so it then runs the shell's own sync (`App::sync_main_hidden`, which reads
 /// the window as `main_hidden` did before W3) inside the same entry; the lines are unchanged.
-/// The visible-window case is checked where a main window is shown: `ui::tour_forms` (after
-/// `show_main`) and the end-of-drain debug check (`App::assert_main_hidden_in_step`).
+/// The visible-window case is still not checked here, nor anywhere in the gate (2026-11-21, S4
+/// W3 review; the W3 note here said `ui::tour_forms` and the end-of-drain debug check covered it,
+/// but the first did not look at the mirror and the second compares it with the same live read,
+/// `App::main_hidden_now`). The gate pins that read's body exactly (source check
+/// `the_main_hidden_mirror_changes_where_the_window_does`), and the on-request windowed
+/// `ui::tour_forms` (`main_hidden_follows_the_window`) checks it on a real main window shown,
+/// minimized, hidden and shown again, with a due balance tick each time.
 fn polling_while_hidden() -> Vec<String> {
     let fx = fixture("polling");
     let timer = spare_window();

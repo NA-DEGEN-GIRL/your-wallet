@@ -23,17 +23,26 @@
 //! and in the account rename must press their button. Before, the test called the census's
 //! `App::enter_on`, which skips the key and the focus read.
 //!
-//! After every step the form state is compared with the window for all 58 plain edits, through
-//! `App::form_text` (the debug shadow read, which counts a difference in `form_mismatch`); then
-//! a render is forced and the comparison runs again. Credential units captured with a press are
-//! compared with a read of the edit when the handler takes them (`App::take_cred`; before S3
-//! C12, also `App::cred_shadow` for the reads not converted yet). The test fails unless
+//! After every step the form state is compared with the window for all 58 plain edits, by the
+//! test itself (`App::form_text` against the edit) and, debug builds, by the shell at the end of
+//! every drain (`App::check_form_in_step`, which counts a difference in `form_mismatch`; before
+//! S4 W3, 2026-11-21, `App::form_text` compared at each read); then a render is forced and the
+//! comparison runs again. Credential units the handler took (`App::take_cred`: their length and
+//! digest, debug builds) are compared, when the next drain starts, with the shell's own read of
+//! the edit made with the press and with the edit then (`App::cred_check`; 2026-11-21, S4 W3
+//! review: before, only the two shell reads were compared, so a misrouted take went unseen;
+//! before W3, `take_cred` compared the units with the edit itself). The test fails unless
 //! `form_mismatch` and the credential misses stay 0; it prints the fields it saw shown and typed.
+//!
+//! The main-window mirror (2026-11-21, S4 W3 review, critique B-10): on one more app, the
+//! wallet's `main_hidden()` and a due balance tick with the real main window shown, minimized,
+//! shown, hidden and shown again (`main_hidden_follows_the_window`).
 //!
 //! Safety: no worker is attached (no RPC, `WalletConnect`, LLM or key worker runs; RPC jobs land
 //! in a channel that is only dropped, key jobs stay queued), no browser bridge, explorer links go
 //! to `Launcher::Record`, no copy, clipboard, folder, file-QR or LLM-test press is made, and no
-//! message loop runs (no timer fires). No secret window is opened.
+//! message loop runs (no timer fires). No secret window is opened. The mirror check's balance
+//! reads land in the same dropped channel.
 //!
 //! `cargo test -p yw-app --lib ui::tour_forms -- --ignored --test-threads=1 --nocapture`
 
@@ -295,6 +304,73 @@ fn scenarios(census: &Census, tally: &mut Tally) {
     }
 }
 
+/// One due EVM balance tick (`evm_balance_tick`, the main timer's): the wallet's main-window
+/// mirror must be `hidden`, and the tick reads (and queues its RPC job) exactly when it is not.
+/// Returns the RPC jobs it queued.
+fn balance_tick(state: &mut App, rx: &Receiver<RpcJob>, hidden: bool, what: &str) -> usize {
+    assert_eq!(state.main_hidden(), hidden, "{what}: the wallet's mirror");
+    while rx.try_recv().is_ok() {}
+    state.evm.next_balance_ms = 0;
+    let now = state.clock.now_ms();
+    let due = state.evm_balance_tick(now);
+    state.drain();
+    let jobs = rx.try_iter().count();
+    assert_eq!(
+        due, !hidden,
+        "{what}: a due balance tick reads only while shown"
+    );
+    if hidden {
+        assert_eq!(jobs, 0, "{what}: no read queued");
+    } else {
+        assert!(jobs > 0, "{what}: the read is queued");
+    }
+    jobs
+}
+
+/// The main-window mirror on a real main window (2026-11-21, S4 W3 review, critique B-10): the
+/// wallet's `main_hidden()` (`Cmd::MainHidden`, sent by the shell's `App::sync_main_hidden` when
+/// `App::main_hidden_now` differs) is false while the window is shown, true while it is minimized
+/// or hidden, and false again once it is shown; a due balance tick reads only while it is shown.
+/// The gate does not check a visible window (its tests have none, or a hidden stand-in), and the
+/// drain-end debug check compares the mirror with the same live read, so a wrong read would pass
+/// both; this is the check of that read on a real window. The minimize's and the hide's `WM_SIZE`
+/// or `WM_SHOWWINDOW` come inside this borrow and are dropped by the `Forward`, as the shell's own
+/// show's are, so the test then runs what every main window message runs first
+/// (`on_main_msg`'s sync); the live read must already ask for the change. Returns the RPC jobs
+/// queued by the three shown ticks.
+fn main_hidden_follows_the_window(census: &Census, tally: &mut Tally) -> [usize; 3] {
+    use yw_engine::cmd::Cmd;
+    let (app, rx) = open(census, Base::Main(crate::meta::Tab::Evm, false), no_setup);
+    let mut jobs = [0; 3];
+    {
+        let mut state = app.borrow_mut();
+        // `open` showed it (`show_main`).
+        assert!(state.main_hidden_answer().is_none(), "shown: in step");
+        jobs[0] = balance_tick(&mut state, &rx, false, "shown");
+        for (index, how) in ["minimized", "hidden"].into_iter().enumerate() {
+            if let Some(main) = state.main.as_ref() {
+                if how == "minimized" {
+                    main.minimize();
+                } else {
+                    main.hide();
+                }
+            }
+            assert!(
+                matches!(state.main_hidden_answer(), Some(Cmd::MainHidden(true))),
+                "{how}: the live read sees it"
+            );
+            state.sync_main_hidden();
+            balance_tick(&mut state, &rx, true, how);
+            state.show_main();
+            state.drain();
+            assert!(state.main_hidden_answer().is_none(), "{how}, shown again");
+            jobs[index + 1] = balance_tick(&mut state, &rx, false, &format!("{how}, shown again"));
+        }
+    }
+    close(app, rx, census, tally);
+    jobs
+}
+
 /// Form scenarios the write scenarios do not cover: screens with plain edits reached by a press
 /// or a state change (values are made up; nothing is sent).
 #[expect(clippy::too_many_lines, reason = "one scenario per form")]
@@ -481,6 +557,7 @@ fn form_state_equals_the_window() {
     let mut tally = Tally::default();
     states(&census, &mut tally);
     scenarios(&census, &mut tally);
+    let mirror_jobs = main_hidden_follows_the_window(&census, &mut tally);
     let not_shown: Vec<EditField> = EditField::ALL
         .into_iter()
         .filter(|field| !tally.shown.contains(field))
@@ -509,6 +586,10 @@ fn form_state_equals_the_window() {
         "tour_forms: Enter through IDOK: {} steps, {} edits where it pressed a control",
         tally.enters,
         tally.enter_pressed.len()
+    );
+    println!(
+        "tour_forms: main window mirror: shown, minimized, hidden, shown again; RPC jobs of the \
+         shown ticks {mirror_jobs:?}, none while minimized or hidden"
     );
     for difference in tally.differences.iter().take(40) {
         println!("tour_forms: difference: {difference}");

@@ -2773,8 +2773,35 @@ fn shell_namers(
         .collect()
 }
 
+/// The shell's fns as a fixed point (2026-11-21, S4 W3 review: before, only `seed` — the fns that
+/// name a shell field or `yw_win` themselves, [`shell_namers`], and [`SHELL_FNS`] — so a wallet fn
+/// that reached the shell through an `impl App` helper went unseen): `seed` plus every `impl App`
+/// fn that calls (`self.<fn>(`, [`self_calls`]) a fn already in the set, until it stops growing.
+fn shell_closure(
+    fns: &BTreeMap<String, Vec<(String, String, bool)>>,
+    seed: BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut shell_fns = seed;
+    loop {
+        let more: Vec<String> = fns
+            .iter()
+            .filter(|(name, _)| !shell_fns.contains(*name))
+            .filter(|(_, bodies)| {
+                bodies
+                    .iter()
+                    .any(|(_, body, _)| self_calls(body).iter().any(|c| shell_fns.contains(c)))
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if more.is_empty() {
+            return shell_fns;
+        }
+        shell_fns.extend(more);
+    }
+}
+
 /// What in `body` (a wallet fn's) reaches the shell: a shell field, `yw_win`, or a call of a
-/// shell fn (`shell_fns`).
+/// shell fn (`shell_fns`, the fixed point of [`shell_closure`]).
 fn shell_reach(body: &str, shell: &BTreeSet<String>, shell_fns: &BTreeSet<String>) -> Vec<String> {
     let mut found: Vec<String> = self_fields(body)
         .into_iter()
@@ -2796,10 +2823,13 @@ fn shell_reach(body: &str, shell: &BTreeSet<String>, shell_fns: &BTreeSet<String
 /// `wallet_fns_name_no_shell` (2026-11-21, S4 W3; preflight §3.0 prep rows, critique B-2, B-11,
 /// A-20): every fn of [`WALLET_FNS`] — wallet code that stays `impl App` until W14c flips it in
 /// place — names no shell field (`pub struct App`'s fields but `wallet`), no `yw_win`, and calls
-/// no shell fn ([`SHELL_FNS`] and every `impl App` fn that names a shell field or `yw_win`
-/// itself, [`shell_namers`]). So the flip can make them `impl Wallet` without a body change, and
-/// a later row cannot give one of them shell reach again unseen. The check finds every listed fn
-/// (it cannot pass on nothing), and its scanners are tried on made-up code
+/// no shell fn ([`SHELL_FNS`], every `impl App` fn that names a shell field or `yw_win` itself,
+/// [`shell_namers`], and every `impl App` fn that calls one of those, at any depth,
+/// [`shell_closure`]). So the flip can make them `impl Wallet` without a body change, and a later
+/// row cannot give one of them shell reach again unseen, directly or through `impl App` helpers
+/// (calls written `self.<fn>(`; 2026-11-21, S4 W3 review: before, one level only, so a wallet fn
+/// that called a helper which called `render_main` passed). The check finds every listed fn (it
+/// cannot pass on nothing), and its scanners are tried on made-up code
 /// ([`shell_reach_on_made_up_code`]).
 #[test]
 fn wallet_fns_name_no_shell() {
@@ -2823,11 +2853,13 @@ fn wallet_fns_name_no_shell() {
         assert!(!shell.contains(field), "{field} is the wallet's");
     }
     let fns = app_fns(&files);
-    let mut shell_fns = shell_namers(&fns, &shell);
+    let mut seed = shell_namers(&fns, &shell);
     for name in ["render_main", "paint_main", "show_main", "on_main_msg"] {
-        assert!(shell_fns.contains(name), "shell fn {name} found");
+        assert!(seed.contains(name), "shell fn {name} found");
     }
-    shell_fns.extend(SHELL_FNS.iter().map(|&name| name.to_owned()));
+    seed.extend(SHELL_FNS.iter().map(|&name| name.to_owned()));
+    // 2026-11-21 (S4 W3 review): every level, not only the fns that name the shell themselves.
+    let shell_fns = shell_closure(&fns, seed);
     let mut errors = Vec::new();
     for (row, name) in WALLET_FNS {
         let Some(bodies) = fns.get(name) else {
@@ -2889,6 +2921,36 @@ fn shell_reach_on_made_up_code() {
         ["f".to_owned()].into_iter().collect::<BTreeSet<_>>()
     );
     assert!(shell_namers(&one("{ self.main_hidden(); self.form.x(); }"), &shell).is_empty());
+    // Two levels (2026-11-21, S4 W3 review): `notice` calls a helper that calls a shell fn; the
+    // fixed point finds the helper, so `notice`'s call of it is a reach. `refresh` stays wallet.
+    let fns: BTreeMap<String, Vec<(String, String, bool)>> = [
+        ("render_main", "{ self.controls.clear(); }"),
+        ("probe", "{ self.render_main(); }"),
+        ("deeper", "{ self.wallet.probe(); }"),
+        ("notice", "{ self.banner(); self.deeper(); }"),
+        ("refresh", "{ self.emit(Effect::Render); }"),
+    ]
+    .into_iter()
+    .map(|(name, body)| {
+        (
+            name.to_owned(),
+            vec![("x.rs".to_owned(), body.to_owned(), true)],
+        )
+    })
+    .collect();
+    let closed = shell_closure(&fns, shell_namers(&fns, &shell));
+    assert_eq!(
+        closed,
+        ["deeper", "notice", "probe", "render_main"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>()
+    );
+    assert_eq!(
+        shell_reach("{ self.banner(); self.deeper(); }", &shell, &closed),
+        ["calls self.deeper"]
+    );
+    assert!(shell_reach("{ self.refresh(); }", &shell, &closed).is_empty());
 }
 
 // ---- The main-window mirror (2026-11-21, S4 W3; critique B-10, preflight critic C7) ------------
@@ -2905,7 +2967,8 @@ fn fns_naming<'a>(src: &'a Src, pattern: &str) -> Vec<(String, &'a str)> {
 /// `main_hidden` is a mirror (`Cmd::MainHidden`), and the shell sends it at every place the
 /// main window's hidden-or-minimized state can change, so the periodic reads pause exactly as
 /// when they read the window (before W3, `App::main_hidden` read it at each call):
-/// - only the shell's `main_hidden_now` reads the window's state (`is_hidden_or_minimized`);
+/// - only the shell's `main_hidden_now` reads the window's state, and its body is exactly
+///   `self.main.as_ref().is_some_and(Window::is_hidden_or_minimized)` (2026-11-21, S4 W3 review);
 /// - `App::main` is set only in `create_main_window` and taken only in `shutdown`, and each then
 ///   syncs the mirror; the window is shown only in `show_main_window`, whose callers are
 ///   `show_main` (which syncs right after) and the executor's `raise_main`; `App::drain`
@@ -2918,8 +2981,12 @@ fn fns_naming<'a>(src: &'a Src, pattern: &str) -> Vec<(String, &'a str)> {
 ///
 /// Headless (no window is never hidden), the mirror follows `Cmd::MainHidden` and the sync puts
 /// it back to the window's value. A hidden window's case is the winui lifecycle golden
-/// `polling_while_hidden`; a shown window's, `ui::tour_forms`; debug builds check the mirror
-/// against the window at the end of every drain (`assert_main_hidden_in_step`).
+/// `polling_while_hidden`. Debug builds check the mirror against `main_hidden_now` at the end
+/// of every drain (`assert_main_hidden_in_step`): that finds a missed sync, not a wrong read
+/// (both sides use the same read), hence the exact body above. 2026-11-21 (S4 W3 review): a
+/// visible, a minimized and a hidden real main window, with a due balance tick each, are checked
+/// only by the on-request windowed `ui::tour_forms` (`main_hidden_follows_the_window`), not by
+/// the gate; before, this note said `ui::tour_forms` checked the shown window, which it did not.
 #[test]
 fn the_main_hidden_mirror_changes_where_the_window_does() {
     let files: Vec<Src> = production_code()
@@ -2944,6 +3011,14 @@ fn the_main_hidden_mirror_changes_where_the_window_does() {
         assert_eq!(bodies.len(), 1, "one fn {name}");
         flat(bodies[0])
     };
+    // The live read, exactly (2026-11-21, S4 W3 review): a window that exists and is hidden or
+    // minimized, the read `App::main_hidden` made before W3. The drain-end debug check compares
+    // the mirror with this same read, so it cannot find a wrong read; the windowed
+    // `ui::tour_forms` (`main_hidden_follows_the_window`) checks it on a real window.
+    assert_eq!(
+        body_of("main_hidden_now"),
+        "fnmain_hidden_now(&self)->bool{self.main.as_ref().is_some_and(Window::is_hidden_or_minimized)}"
+    );
     // The window comes and goes; each time the mirror follows in the same fn.
     assert_eq!(named(app, "state.main = "), ["create_main_window"]);
     assert!(
