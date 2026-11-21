@@ -6291,16 +6291,19 @@ fn wallet_reset_from_the_lock_screen_returns_to_first_run() {
 /// logic hears `Cmd::HoldBegin { now_ms }` / `Cmd::HoldEnd` and keeps only the gate, which
 /// starts at the shell's time. A press beside the area, or on a disabled one, starts nothing;
 /// leaving the area or releasing the button ends the hold (`Effect::ReleaseHold` clears the
-/// shell's id); a hold the logic ended by replacing S22's state (a phrase change) is no longer
-/// the shell's to end (no second cancel, no `ReleaseHold`), as before W1. Headless: no main
-/// window, so no capture is taken or released. 2026-11-21 (W1 review): that last part pins
-/// today's behaviour, not intent: such a hold leaves the main window's pointer capture taken
-/// (the later `Cmd::HoldEnd` finds no active gate), an older bug kept by W1 and open for the
-/// owner (spec/15 §18 item 19); a fix changes this assertion.
+/// shell's id); a hold the logic ended by a phrase change is no longer the shell's to end (no
+/// second cancel). Headless: no main window, so no capture is taken or released. 2026-11-21
+/// (S4 F19, owner decision, spec/04 §2.20, spec/15 §18 item 19): the phrase change itself
+/// sends `Effect::ReleaseHold` (before the repaint), which clears the shell's id and lets the
+/// pointer go. Before F19 it sent none, the shell's id stayed and the main window kept the
+/// pointer capture (the later `Cmd::HoldEnd` found no running gate), which this test pinned as
+/// W1's unchanged behaviour (W1 review). The state-replacement paths:
+/// [`a_reset_hold_the_logic_ends_releases_the_pointer`].
 #[test]
 fn the_reset_hold_area_is_the_shells_and_its_gate_the_wallets() {
     use crate::ui::screens_reset::ids as reset_ids;
     use yw_engine::cmd::Cmd;
+    use yw_engine::effect::Effect;
     use yw_win::ui::Rect;
     let (mut app, dir) = unlocked_app("reset-hold-split", false);
     app.open_reset();
@@ -6346,18 +6349,120 @@ fn the_reset_hold_area_is_the_shells_and_its_gate_the_wallets() {
     app.hold_down(15, 25, 2_000);
     app.dispatch(Cmd::HoldEnd);
     assert_eq!((app.reset_hold, app.reset.gate.active()), (None, false));
-    // The logic ends a hold itself (a phrase change): the shell's id stays, but counts only
-    // while the gate runs, so leaving the area sends nothing.
+    // The logic ends a hold itself (a phrase change): it lets the pointer go before the repaint
+    // (F19; before, no `ReleaseHold` and the shell's id stayed), and leaving the area or
+    // releasing the button afterwards sends nothing.
     app.hold_down(15, 25, 3_000);
     app.drain();
     app.reset_phrase_changed("");
-    app.drain();
     assert!(!app.reset.gate.active());
-    assert_eq!(app.reset_hold, Some(reset_ids::RESET_HOLD));
+    assert_eq!(
+        app.outbox.iter().collect::<Vec<_>>(),
+        [&Effect::ReleaseHold, &Effect::Render],
+        "the release, then the repaint"
+    );
+    assert_eq!(
+        app.reset_hold,
+        Some(reset_ids::RESET_HOLD),
+        "until the drain"
+    );
+    app.drain();
+    assert_eq!(app.reset_hold, None, "Effect::ReleaseHold cleared it");
     app.hold_move(500, 500);
-    assert!(app.outbox.is_empty(), "no cancel, no ReleaseHold");
+    app.on_cmd(Cmd::HoldEnd);
+    assert!(
+        app.outbox.is_empty(),
+        "no second cancel, no second ReleaseHold"
+    );
+    // A phrase change with no hold running releases nothing, as before.
+    app.reset_phrase_changed(phrase);
+    assert_eq!(app.outbox.iter().collect::<Vec<_>>(), [&Effect::Render]);
+    app.drain();
     // The logic's half names no shell state (the source check
     // `converted_handlers_reach_the_main_window_only_through_effects` reads its text).
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 2026-11-21 (S4 F19, owner decision, spec/04 §2.20, spec/15 §18 item 19): the logic ends a
+/// running hold by replacing S22's state too — `취소` (`ResetPress::Cancel`, which a key can
+/// press while the mouse holds the area) and `지갑 초기화…` again on S22 (`ResetPress::Open`) —
+/// and each sends `Effect::ReleaseHold` first, before the screen change, so the shell clears its
+/// id and lets the pointer go (before F19: no `ReleaseHold`, the id stayed, the main window kept
+/// the pointer capture). A matching phrase typed again (`초기화` → ` 초기화 `) changes nothing and
+/// the hold runs on; the hold's own end (the 2 s, `hold_cancel` inside the tick) still releases
+/// it once, and the reset's start and end replace S22's state with no hold running, so they
+/// send no second `ReleaseHold`. Headless: no capture is taken or released.
+#[test]
+fn a_reset_hold_the_logic_ends_releases_the_pointer() {
+    use crate::ui::screens_reset::ids as reset_ids;
+    use yw_engine::cmd::{Cmd, ResetPress};
+    use yw_engine::effect::Effect;
+    use yw_win::ui::Rect;
+    let releases = |app: &App| {
+        app.outbox
+            .iter()
+            .filter(|effect| **effect == Effect::ReleaseHold)
+            .count()
+    };
+    let (mut app, dir) = unlocked_app("reset-hold-ends", false);
+    let area = Rect {
+        x: 10,
+        y: 20,
+        w: 100,
+        h: 40,
+    };
+    let phrase = crate::app_reset::RESET_PHRASE.get(app.settings.language);
+    let held = |app: &mut App, now: u64| {
+        app.open_reset();
+        app.reset_phrase_changed(phrase);
+        app.drain();
+        app.placed.holds = vec![(reset_ids::RESET_HOLD, area, true)];
+        app.hold_down(15, 25, now);
+        app.drain();
+        assert_eq!(app.reset_hold, Some(reset_ids::RESET_HOLD));
+        assert!(app.reset.gate.active());
+    };
+    // `취소` while held: the release comes first, then the screen goes back.
+    held(&mut app, 1_000);
+    app.on_reset(ResetPress::Cancel);
+    assert_eq!(app.outbox.front(), Some(&Effect::ReleaseHold), "first");
+    assert_eq!(releases(&app), 1);
+    assert!(!app.reset.gate.active());
+    app.drain();
+    assert_eq!(app.reset_hold, None, "Effect::ReleaseHold cleared it");
+    assert_ne!(app.screen, Screen::Reset);
+    app.on_cmd(Cmd::HoldEnd);
+    assert!(app.outbox.is_empty(), "nothing left to end");
+    // `지갑 초기화…` again on S22 while held: S22 starts over, the hold ends with the old state.
+    held(&mut app, 2_000);
+    app.on_reset(ResetPress::Open);
+    assert_eq!(app.outbox.front(), Some(&Effect::ReleaseHold), "first");
+    assert_eq!(releases(&app), 1);
+    assert!(!app.reset.gate.active());
+    app.drain();
+    assert_eq!(app.reset_hold, None);
+    assert_eq!(app.screen, Screen::Reset);
+    // The same phrase typed again: no change, the hold runs on and nothing is released.
+    app.reset_phrase_changed(phrase);
+    app.drain();
+    app.hold_down(15, 25, 3_000);
+    app.drain();
+    app.reset_phrase_changed(&format!(" {phrase} "));
+    assert!(app.outbox.is_empty(), "no change, no repaint, no release");
+    assert!(app.reset.gate.active());
+    // The hold's own end: the 2 s complete, one release (`hold_cancel`), and the reset's start
+    // replaces S22's state with no hold left (no second release).
+    app.reset_hold_tick(5_000);
+    assert_eq!(releases(&app), 1, "the tick's hold_cancel only");
+    assert!(app.reset.running);
+    app.drain();
+    assert_eq!(app.reset_hold, None);
+    // The reset's end replaces S22's state with no hold running: nothing to release.
+    app.on_wallet_reset(Err(crate::store::reset::ResetError::Folder(
+        yw_core::error::StorageError::NotFound,
+    )));
+    assert_eq!(releases(&app), 0);
+    app.drain();
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -7215,10 +7320,13 @@ fn scroll_effects_carry_what_they_read() {
 
 /// 2026-11-21 (S4 W1): the wallet half of the S22 hold, checked with the converted handlers below
 /// (the shell keeps the area and the pointer: `App::hold_down`/`hold_move` in `app.rs`).
-const RESET_HOLD_LOGIC: [&str; 3] = [
+/// 2026-11-21 (S4 F19): also `replace_reset`, which ends a running hold through
+/// `Effect::ReleaseHold` when it replaces S22's state (the pointer is the shell's to let go).
+const RESET_HOLD_LOGIC: [&str; 4] = [
     "    pub(crate) fn reset_hold_begin(&mut self, now: u64) {",
     "    pub(crate) fn reset_hold_tick(&mut self, now: u64) {",
     "    pub(crate) fn reset_phrase_changed(&mut self, text: &str) {",
+    "    fn replace_reset(&mut self, state: ResetUi) {",
 ];
 
 /// 2026-11-21 (S4 W3a, spec/04 §5.3): `lock` is the shell's composition of the lock's two wallet

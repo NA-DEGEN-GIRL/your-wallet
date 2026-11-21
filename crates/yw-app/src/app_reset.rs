@@ -267,10 +267,10 @@ impl App {
         } else {
             Some(self.screen.clone())
         };
-        self.reset = ResetUi {
+        self.replace_reset(ResetUi {
             back,
             ..ResetUi::default()
-        };
+        });
         self.reset_list_files();
         logging::info("app", "reset.opened", &[]);
         self.set_screen(Screen::Reset);
@@ -279,7 +279,7 @@ impl App {
     /// `취소` on S22.
     pub(crate) fn cancel_reset(&mut self) {
         let back = self.reset.back.take();
-        self.reset = ResetUi::default();
+        self.replace_reset(ResetUi::default());
         let fallback = match self.mode {
             AppMode::NoVault => Screen::FirstRun,
             AppMode::BackupPending => Screen::BackupPending,
@@ -290,13 +290,34 @@ impl App {
         self.set_screen(back.unwrap_or(fallback));
     }
 
-    /// The confirmation field changed.
+    /// The confirmation field changed. 2026-11-21 (S4 F19, owner decision, spec/04 §2.20,
+    /// spec/15 §18 item 19): a hold still running when the phrase's match changes ends with
+    /// `Effect::ReleaseHold` before the repaint, so the shell lets the pointer go; before, only
+    /// the gate was cancelled and the main window kept the pointer capture (the later
+    /// `Cmd::HoldEnd` found no running gate).
     pub(crate) fn reset_phrase_changed(&mut self, text: &str) {
         let ok = phrase_matches(self.settings.language, text);
         if ok != self.reset.phrase_ok {
             self.reset.phrase_ok = ok;
+            let held = self.reset.gate.active();
             self.reset.gate.cancel();
+            if held {
+                self.emit(yw_engine::effect::Effect::ReleaseHold);
+            }
             self.refresh();
+        }
+    }
+
+    /// Replaces S22's state (open, cancel, the reset's start and end). 2026-11-21 (S4 F19, owner
+    /// decision, spec/04 §2.20, spec/15 §18 item 19): a hold still running ends with it through
+    /// `Effect::ReleaseHold`, emitted before anything the caller does next; before, the gate went
+    /// with the old state and the main window kept the pointer capture. With no hold running it
+    /// emits nothing, as before.
+    fn replace_reset(&mut self, state: ResetUi) {
+        let held = self.reset.gate.active();
+        self.reset = state;
+        if held {
+            self.emit(yw_engine::effect::Effect::ReleaseHold);
         }
     }
 
@@ -338,12 +359,13 @@ impl App {
         // worker is restarted for the next wallet at its first unlock; spec/13 §8).
         self.wc_shutdown();
         self.wc = crate::app_walletconnect::WcUi::default();
-        self.reset = ResetUi {
+        // The lock above ended the hold (`hold_cancel`), so this emits nothing (F19).
+        self.replace_reset(ResetUi {
             include_settings,
             running: true,
             warned_in_flight: in_flight,
             ..ResetUi::default()
-        };
+        });
         self.set_screen(Screen::Processing(text::MOVING.get(self.settings.language)));
         self.key(KeyJob::ResetWallet {
             stamp: crate::store::reset::stamp(self.clock.now_unix_ms()),
@@ -355,7 +377,7 @@ impl App {
     /// `KeyOutcome::WalletReset`.
     pub(crate) fn on_wallet_reset(&mut self, result: Result<ResetReport, ResetError>) {
         let in_flight = self.reset.warned_in_flight;
-        self.reset = ResetUi::default();
+        self.replace_reset(ResetUi::default());
         // Nothing of the old wallet's recovery-phrase flows (held words, preview, list) stays.
         self.mn = crate::app_mnemonics::MnUi::default();
         // `vault.ywv` moves first: once it moved, the next wallet is another one, and the old

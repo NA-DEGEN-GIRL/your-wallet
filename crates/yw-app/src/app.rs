@@ -966,7 +966,9 @@ pub struct App {
     /// The shell (2026-11-21, S4 W1): the control id of the S22 hold area the pointer pressed
     /// (`Placed::holds`), for the pointer's move test. The wallet holds only the hold's gate
     /// (`ResetUi::gate`) and hears of the hold through `Cmd::HoldBegin`/`Cmd::HoldEnd`; it ends a
-    /// hold itself with `Effect::ReleaseHold`, which clears this. Before W1, `ResetUi.holding`.
+    /// hold itself with `Effect::ReleaseHold`, which clears this (since F19, 2026-11-21, also a
+    /// hold it ends by a phrase change or by replacing S22's state). Before W1,
+    /// `ResetUi.holding`.
     pub(crate) reset_hold: Option<u16>,
     /// The shell's open secret window (window and form; S4 P7a1).
     secret: Option<SecretWin>,
@@ -2085,8 +2087,11 @@ impl App {
     /// S22's hold area: the pointer moved; leaving the held area ends the hold (`Cmd::HoldEnd`).
     /// 2026-11-21 (S4 W1): the shell half of the old `App::hold_move` (`app_reset`). The held
     /// area counts only while the logic's gate runs: the logic also ends a hold by replacing
-    /// S22's state (phrase change, reset, open, cancel) without telling the shell, as the area's
-    /// id `ResetUi.holding` was cleared then before W1.
+    /// S22's state (phrase change, reset, open, cancel), as the area's id `ResetUi.holding` was
+    /// cleared then before W1. 2026-11-21 (S4 F19, spec/15 §18 item 19): the logic tells the
+    /// shell then too (`Effect::ReleaseHold`, which clears the id when it is applied); until
+    /// then the gate decides, as before (before F19 the shell was never told and kept the
+    /// pointer capture).
     fn hold_move(&mut self, x: i32, y: i32) {
         let Some(id) = self.reset_hold.filter(|_| self.reset.gate.active()) else {
             return;
