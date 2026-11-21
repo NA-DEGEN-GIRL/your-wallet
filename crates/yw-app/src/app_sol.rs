@@ -784,9 +784,10 @@ impl App {
     pub fn sol_select_tab(&mut self, tab: Tab) {
         // The new tab opens at its top (2026-11-10). 2026-11-20 (S4 P4): the shell's scroll
         // memory, `Effect::TabTop` at the same point (before, `tab_top` was called here).
-        self.emit(yw_engine::effect::Effect::TabTop {
-            left: self.remembered_place(&self.screen),
-        });
+        // (2026-11-21, S4 W3: the place is read first, as before the call; `emit` is the
+        // wallet's now and is reached through `App`'s `DerefMut`.)
+        let left = self.remembered_place(&self.screen);
+        self.emit(yw_engine::effect::Effect::TabTop { left });
         if let Some(meta) = self.meta.as_mut()
             && meta.prefs.tab != tab
         {

@@ -211,9 +211,11 @@ impl App {
                     // 2026-11-18 (S3 C8): the write is `Effect::SetField`, applied at once inside
                     // this borrow (before, `controls.set_text`), so the edit's `EN_CHANGE` is
                     // still not seen; the form state reads the edit back.
+                    // (2026-11-21, S4 W3: the text is read first, as before the call.)
+                    let text = self.sol.send.to_text.clone();
                     self.emit(Effect::SetField {
                         field: EditField::SolSendTo,
-                        text: self.sol.send.to_text.clone(),
+                        text,
                     });
                     self.sol_validate_send();
                 }

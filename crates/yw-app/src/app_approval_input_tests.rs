@@ -2297,7 +2297,8 @@ fn the_approval_flow_names_no_window() {
     // feeds back (2026-11-20, S4 P10b: the outbox; before, `emit` applied it at once and called
     // `on_cmd` with the answer itself). 2026-11-21 (S4 W2): every effect but a display window's
     // open goes to the executor (`effect => self.apply(effect)`; before, `let answer =
-    // self.apply(effect);` for all of them).
+    // self.apply(effect);` for all of them). 2026-11-21 (S4 W3, plan §3.4): the queue is the
+    // wallet's, taken one effect at a time (before, `self.outbox.pop_front()` on `App`'s).
     let effects = folded(&code_only(include_str!("app_effects.rs")));
     assert!(
         effects.contains("Effect::Approval(effect) => self.apply_approval_effect(effect),"),
@@ -2307,7 +2308,7 @@ fn the_approval_flow_names_no_window() {
         &effects,
         &[
             "pub fn drain(&mut self) {",
-            "while let Some(effect) = self.outbox.pop_front() {",
+            "while let Some(effect) = self.wallet.next_effect() {",
             "let answer = match effect {",
             "effect => self.apply(effect), };",
             "if let Some(answer) = answer { self.on_cmd(answer); }",

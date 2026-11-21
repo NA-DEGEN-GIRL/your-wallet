@@ -1756,9 +1756,11 @@ impl App {
                 // 2026-11-18 (S3 C10): `Effect::SetField` (before, `controls.set_text`), applied
                 // at once inside this borrow, so the edit's `EN_CHANGE` is still not seen; the
                 // form state reads the edit back.
+                // (2026-11-21, S4 W3: the text is read first, as before the call.)
+                let text = self.evm.send.amount_text.clone();
                 self.emit(Effect::SetField {
                     field: yw_engine::form::EditField::EvmSendAmount,
-                    text: self.evm.send.amount_text.clone(),
+                    text,
                 });
                 self.validate_send(true);
             }

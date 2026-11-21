@@ -1712,11 +1712,47 @@ fn effects_are_never_posted() {
         "emit only queues: {}",
         emit[0]
     );
+    // 2026-11-21 (S4 W3, plan §3.4): the queue is the wallet's — `emit` and `next_effect` are
+    // `impl Wallet` fns, and the drain takes one effect at a time through `next_effect` (before,
+    // `while let Some(effect) = self.outbox.pop_front()` on `App`'s queue).
+    let next = fn_bodies(effects, "next_effect");
+    assert_eq!(next.len(), 1, "one next_effect");
+    let next_flat: String = next[0].split_whitespace().collect();
+    assert!(
+        next_flat.ends_with("{self.outbox.pop_front()}"),
+        "next_effect takes the oldest effect: {}",
+        next[0]
+    );
+    let wallet_impl = effects.code.find("impl Wallet {");
+    let app_impl = effects.code.find("impl App {");
+    assert!(
+        wallet_impl.is_some() && app_impl.is_some(),
+        "an impl Wallet and an impl App"
+    );
+    let (wallet_at, app_at) = (
+        wallet_impl.unwrap_or_default(),
+        app_impl.unwrap_or_default(),
+    );
+    let wallet_end = close_of(effects.code.as_bytes(), wallet_at + "impl Wallet ".len());
+    for (name, body) in [("emit", emit[0]), ("next_effect", next[0])] {
+        let at = effects.code.find(body).unwrap_or_default();
+        assert!(
+            wallet_at < at && at < wallet_end,
+            "{name} is an impl Wallet fn"
+        );
+    }
     let drain = fn_bodies(effects, "drain");
     assert_eq!(drain.len(), 1, "one drain");
+    let drain_at = effects.code.find(drain[0]).unwrap_or_default();
     assert!(
-        drain[0].contains("while let Some(effect) = self.outbox.pop_front()"),
-        "drain empties the queue in order: {}",
+        app_at < drain_at && !(wallet_at < drain_at && drain_at < wallet_end),
+        "drain is the shell's (impl App)"
+    );
+    assert!(
+        drain[0].contains("while let Some(effect) = self.wallet.next_effect()")
+            && !drain[0].contains("outbox.pop_front()")
+            && !drain[0].contains("outbox.drain("),
+        "drain empties the queue in order, one effect at a time: {}",
         drain[0]
     );
 }
@@ -2247,6 +2283,15 @@ fn executor_findings(
 /// The fns of `impl App` blocks in `files` (the type named plain or by path), by name: each
 /// body with whether it takes `&mut self`.
 fn app_fns(files: &[Src]) -> BTreeMap<String, Vec<(String, String, bool)>> {
+    impl_fns(files, "App")
+}
+
+/// The fns of the `impl <ty>` blocks in `files` (`App` or `Wallet`, named plain or by its
+/// `crate::app::` path), by name: each body with whether it takes `&mut self` (2026-11-21, S4
+/// W3: was `app_fns` alone).
+fn impl_fns(files: &[Src], ty: &str) -> BTreeMap<String, Vec<(String, String, bool)>> {
+    let plain = format!("impl {ty}");
+    let pathed = format!("impl crate::app::{ty}");
     let mut fns: BTreeMap<String, Vec<(String, String, bool)>> = BTreeMap::new();
     for src in files {
         let impls: Vec<(usize, usize)> = src
@@ -2257,7 +2302,7 @@ fn app_fns(files: &[Src]) -> BTreeMap<String, Vec<(String, String, bool)>> {
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ");
-                block_head == "impl App" || block_head == "impl crate::app::App"
+                block_head == plain || block_head == pathed
             })
             .map(|block| (block.open, block.close))
             .collect();
@@ -2357,17 +2402,27 @@ fn the_executor_writes_no_wallet_state() {
     ] {
         assert!(fields.contains(field), "wallet field {field} found");
     }
-    for shell in [
-        "controls",
-        "main",
-        "approval_win",
-        "secret",
-        "outbox",
-        "launcher",
-    ] {
+    // 2026-11-21 (S4 W3, plan §3.4): the outbox is the wallet's (before, the shell's).
+    assert!(fields.contains("outbox"), "wallet field outbox found");
+    for shell in ["controls", "main", "approval_win", "secret", "launcher"] {
         assert!(!fields.contains(shell), "{shell} is the shell's");
     }
     let fns = app_fns(&files);
+    // 2026-11-21 (S4 W3): the wallet's own fns (`impl Wallet`: `emit`, `next_effect`, …) that take
+    // `&mut self` are never called by the executor (`main_hidden` and other `&self` reads may be).
+    let wallet_fns = impl_fns(&files, "Wallet");
+    for name in ["emit", "next_effect", "main_hidden"] {
+        assert!(
+            wallet_fns.contains_key(name),
+            "fn {name} of impl Wallet found"
+        );
+    }
+    let wallet_writers: BTreeSet<String> = wallet_fns
+        .iter()
+        .filter(|(_, bodies)| bodies.iter().any(|(_, _, takes_mut)| *takes_mut))
+        .map(|(name, _)| name.clone())
+        .collect();
+    assert!(wallet_writers.contains("emit") && !wallet_writers.contains("main_hidden"));
     let mut reached = BTreeSet::new();
     let mut cells = 0;
     let mut todo = vec![
@@ -2388,6 +2443,12 @@ fn the_executor_writes_no_wallet_state() {
                 "{file}: the executor's fn {name} changes wallet state: {findings:?}"
             );
             cells += listed;
+            for call in self_calls(body) {
+                assert!(
+                    !wallet_writers.contains(&call),
+                    "{file}: the executor's fn {name} calls the wallet's fn {call}"
+                );
+            }
             // 2026-11-21 (S4 W2 review): every `impl App` fn called, `&self` ones too (before,
             // only `&mut self` ones, so the render builders' cell writes went unseen).
             for call in self_calls(body) {
@@ -2580,4 +2641,414 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
         .map(|(src, name, _)| format!("{}:{name}", src.file))
         .collect::<Vec<_>>();
     assert_eq!(callers, ["yw-app/src/app_effects.rs:drain"]);
+}
+
+// ---- The wallet fns' source check (2026-11-21, S4 W3; preflight §3.0, critique B-2) ------------
+
+/// The fns that are wallet code but still `impl App` (preflight §3.0: the prep form; W14c makes
+/// them `impl Wallet` in place), each with the S4c row that names it. A row's commit removes
+/// the last shell reach of its fns and adds them here; [`wallet_fns_name_no_shell`] keeps them
+/// that way until the flip. W3 (2026-11-21): the core services and the helpers the families call
+/// (critique B-2; preflight §3 W3, incl. `after_settings_saved`, `bind_llm_key_to` and
+/// `reconcile_settings`, which `save_settings`, `save_apikeys` and `verify_settings` call).
+const WALLET_FNS: [(&str, &str); 45] = [
+    ("W3", "key"),
+    ("W3", "set_mode"),
+    ("W3", "passphrase_unverified"),
+    ("W3", "set_screen"),
+    ("W3", "return_to"),
+    ("W3", "remembered_place"),
+    ("W3", "enter_screen"),
+    ("W3", "refresh"),
+    ("W3", "banner"),
+    ("W3", "notice"),
+    ("W3", "error_banner"),
+    ("W3", "clock"),
+    ("W3", "secret_purpose"),
+    ("W3", "secret_form"),
+    ("W3", "secret_open"),
+    ("W3", "recovered_text"),
+    ("W3", "recovery_failure"),
+    ("W3", "password_failure"),
+    ("W3", "save_meta"),
+    ("W3", "save_settings"),
+    ("W3", "after_settings_saved"),
+    ("W3", "save_apikeys"),
+    ("W3", "bind_llm_key_to"),
+    ("W3", "verify_settings"),
+    ("W3", "reconcile_settings"),
+    ("W3", "url_networks"),
+    ("W3", "network_name"),
+    ("W3", "account_rows"),
+    ("W3", "form_text"),
+    ("W3", "form_text_wiping"),
+    ("W3", "take_cred"),
+    ("W3", "read_cred"),
+    ("W3", "template_key"),
+    ("W3", "template_stored"),
+    ("W3", "template_addresses"),
+    ("W3", "generation_plan"),
+    ("W3", "fill_template_gaps"),
+    ("W3", "set_rpc_message"),
+    ("W3", "queue_rpc_tests"),
+    ("W3", "next_rpc_test"),
+    ("W3", "rpc"),
+    ("W3", "request_meta"),
+    ("W3", "vault_view"),
+    ("W3", "wallet_view"),
+    ("W3", "sync_browser"),
+];
+
+/// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
+/// drain, a `Cmd`'s dispatch, the executor, the main-window mirror's sync and answer, and the
+/// debug comparisons with the window. The other shell fns are found by what they name
+/// ([`shell_namers`]).
+const SHELL_FNS: [&str; 7] = [
+    "drain",
+    "dispatch",
+    "apply",
+    "sync_main_hidden",
+    "main_hidden_answer",
+    "check_form_in_step",
+    "cred_check",
+];
+
+/// The shell's fields: the names declared in `pub struct App { … }` of `app.rs` but `wallet`.
+fn shell_fields(app: &Src) -> BTreeSet<String> {
+    let start = app.code.find("pub struct App {");
+    assert!(start.is_some(), "pub struct App found");
+    let open = start.unwrap_or_default() + "pub struct App ".len();
+    let body = &app.code[open + 1..close_of(app.code.as_bytes(), open)];
+    let mut fields = BTreeSet::new();
+    for line in body.lines() {
+        let line = line.trim();
+        let line = line.strip_prefix("pub(crate) ").unwrap_or(line);
+        if let Some((name, _)) = line.split_once(':')
+            && !name.is_empty()
+            && name.bytes().all(is_ident)
+            && name != "wallet"
+        {
+            fields.insert(name.to_owned());
+        }
+    }
+    fields
+}
+
+/// The `self.` field names `body` reads or writes: the first segment of each `self.` chain that
+/// is not a call (`self.wallet.` counted as `self.`).
+fn self_fields(body: &str) -> BTreeSet<String> {
+    let text = normalized(body);
+    let bytes = text.as_bytes();
+    let mut found = BTreeSet::new();
+    for (at, _) in text.match_indices("self.") {
+        if at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'.') {
+            continue;
+        }
+        let start = at + "self.".len();
+        let mut stop = start;
+        while stop < bytes.len() && is_ident(bytes[stop]) {
+            stop += 1;
+        }
+        if stop > start && !text[stop..].trim_start().starts_with('(') {
+            found.insert(text[start..stop].to_owned());
+        }
+    }
+    found
+}
+
+/// The `impl App` fns whose own body names a shell field (`shell`) or `yw_win`: the shell's fns
+/// by what they touch (one level; a wallet fn still in `impl App` that reaches the shell is among
+/// them until its row removes that reach).
+fn shell_namers(
+    fns: &BTreeMap<String, Vec<(String, String, bool)>>,
+    shell: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    fns.iter()
+        .filter(|(_, bodies)| {
+            bodies.iter().any(|(_, body, _)| {
+                body.contains("yw_win") || self_fields(body).iter().any(|f| shell.contains(f))
+            })
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// What in `body` (a wallet fn's) reaches the shell: a shell field, `yw_win`, or a call of a
+/// shell fn (`shell_fns`).
+fn shell_reach(body: &str, shell: &BTreeSet<String>, shell_fns: &BTreeSet<String>) -> Vec<String> {
+    let mut found: Vec<String> = self_fields(body)
+        .into_iter()
+        .filter(|field| shell.contains(field))
+        .map(|field| format!("names self.{field}"))
+        .collect();
+    if body.contains("yw_win") {
+        found.push("names yw_win".to_owned());
+    }
+    found.extend(
+        self_calls(body)
+            .into_iter()
+            .filter(|call| shell_fns.contains(call))
+            .map(|call| format!("calls self.{call}")),
+    );
+    found
+}
+
+/// `wallet_fns_name_no_shell` (2026-11-21, S4 W3; preflight §3.0 prep rows, critique B-2, B-11,
+/// A-20): every fn of [`WALLET_FNS`] — wallet code that stays `impl App` until W14c flips it in
+/// place — names no shell field (`pub struct App`'s fields but `wallet`), no `yw_win`, and calls
+/// no shell fn ([`SHELL_FNS`] and every `impl App` fn that names a shell field or `yw_win`
+/// itself, [`shell_namers`]). So the flip can make them `impl Wallet` without a body change, and
+/// a later row cannot give one of them shell reach again unseen. The check finds every listed fn
+/// (it cannot pass on nothing), and its scanners are tried on made-up code
+/// ([`shell_reach_on_made_up_code`]).
+#[test]
+fn wallet_fns_name_no_shell() {
+    let files: Vec<Src> = production_code()
+        .into_iter()
+        .filter(|src| src.file.starts_with("yw-app/"))
+        .collect();
+    let app = src_of(&files, "yw-app/src/app.rs");
+    let shell = shell_fields(app);
+    for field in [
+        "main",
+        "controls",
+        "placed",
+        "approval_win",
+        "secret",
+        "cred_shadow",
+    ] {
+        assert!(shell.contains(field), "shell field {field} found");
+    }
+    for field in ["outbox", "form", "evm", "main_hidden"] {
+        assert!(!shell.contains(field), "{field} is the wallet's");
+    }
+    let fns = app_fns(&files);
+    let mut shell_fns = shell_namers(&fns, &shell);
+    for name in ["render_main", "paint_main", "show_main", "on_main_msg"] {
+        assert!(shell_fns.contains(name), "shell fn {name} found");
+    }
+    shell_fns.extend(SHELL_FNS.iter().map(|&name| name.to_owned()));
+    let mut errors = Vec::new();
+    for (row, name) in WALLET_FNS {
+        let Some(bodies) = fns.get(name) else {
+            errors.push(format!("{row} {name}: no fn of impl App"));
+            continue;
+        };
+        for (file, body, _) in bodies {
+            let reach = shell_reach(body, &shell, &shell_fns);
+            if !reach.is_empty() {
+                errors.push(format!("{file}: {row} fn {name}: {reach:?}"));
+            }
+        }
+    }
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    let names: BTreeSet<&str> = WALLET_FNS.iter().map(|&(_, name)| name).collect();
+    assert_eq!(names.len(), WALLET_FNS.len(), "a fn listed twice");
+}
+
+/// The scanners of [`wallet_fns_name_no_shell`] on made-up code: they can fail.
+#[test]
+fn shell_reach_on_made_up_code() {
+    let shell: BTreeSet<String> = ["main", "controls"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let shell_fns: BTreeSet<String> = ["drain"].into_iter().map(str::to_owned).collect();
+    assert_eq!(
+        shell_reach(
+            "{ let t = self.form.text(f); self.wallet.controls.text(1); self.drain(); \
+             let w = yw_win::ui::x(); self.refresh(); if self.main.is_some() {} }",
+            &shell,
+            &shell_fns,
+        ),
+        [
+            "names self.controls",
+            "names self.main",
+            "names yw_win",
+            "calls self.drain"
+        ]
+    );
+    assert!(
+        shell_reach(
+            "{ self.form.set(a, b); self.refresh(); self.main_hidden(); }",
+            &shell,
+            &shell_fns
+        )
+        .is_empty()
+    );
+    let one = |body: &str| -> BTreeMap<String, Vec<(String, String, bool)>> {
+        [(
+            "f".to_owned(),
+            vec![("x.rs".to_owned(), body.to_owned(), true)],
+        )]
+        .into_iter()
+        .collect()
+    };
+    assert_eq!(
+        shell_namers(&one("{ self.main.as_ref(); }"), &shell),
+        ["f".to_owned()].into_iter().collect::<BTreeSet<_>>()
+    );
+    assert!(shell_namers(&one("{ self.main_hidden(); self.form.x(); }"), &shell).is_empty());
+}
+
+// ---- The main-window mirror (2026-11-21, S4 W3; critique B-10, preflight critic C7) ------------
+
+/// The fns of `src` whose body holds `pattern`, with their bodies (the mirror check).
+fn fns_naming<'a>(src: &'a Src, pattern: &str) -> Vec<(String, &'a str)> {
+    fn_blocks(src)
+        .into_iter()
+        .filter(|(_, body)| body.contains(pattern))
+        .collect()
+}
+
+/// B-10 `the_main_hidden_mirror_changes_where_the_window_does` (2026-11-21, S4 W3): the wallet's
+/// `main_hidden` is a mirror (`Cmd::MainHidden`), and the shell sends it at every place the
+/// main window's hidden-or-minimized state can change, so the periodic reads pause exactly as
+/// when they read the window (before W3, `App::main_hidden` read it at each call):
+/// - only the shell's `main_hidden_now` reads the window's state (`is_hidden_or_minimized`);
+/// - `App::main` is set only in `create_main_window` and taken only in `shutdown`, and each then
+///   syncs the mirror; the window is shown only in `show_main_window`, whose callers are
+///   `show_main` (which syncs right after) and the executor's `raise_main`; `App::drain`
+///   brings the mirror up to date after every effect it applied (`main_hidden_answer`: a
+///   `RaiseMain`, or a secret or approval window's close that asks for the main window's
+///   foreground, which can show a hidden one); every main window message syncs first
+///   (`on_main_msg`: a minimize or restore by the user is a `WM_SIZE`);
+/// - the four polling readers read the wallet's `main_hidden()`, an `impl Wallet` fn that
+///   returns the field, which only the `Cmd::MainHidden` arm writes.
+///
+/// Headless (no window is never hidden), the mirror follows `Cmd::MainHidden` and the sync puts
+/// it back to the window's value. A hidden window's case is the winui lifecycle golden
+/// `polling_while_hidden`; a shown window's, `ui::tour_forms`; debug builds check the mirror
+/// against the window at the end of every drain (`assert_main_hidden_in_step`).
+#[test]
+fn the_main_hidden_mirror_changes_where_the_window_does() {
+    let files: Vec<Src> = production_code()
+        .into_iter()
+        .filter(|src| src.file.starts_with("yw-app/"))
+        .collect();
+    let app = src_of(&files, "yw-app/src/app.rs");
+    let named = |src: &Src, pattern: &str| -> Vec<String> {
+        fns_naming(src, pattern)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    };
+    let mut readers = Vec::new();
+    for src in &files {
+        readers.extend(named(src, "is_hidden_or_minimized"));
+    }
+    assert_eq!(readers, ["main_hidden_now"], "who reads the window's state");
+    let flat = |body: &str| body.split_whitespace().collect::<String>();
+    let body_of = |name: &str| -> String {
+        let bodies = fn_bodies(app, name);
+        assert_eq!(bodies.len(), 1, "one fn {name}");
+        flat(bodies[0])
+    };
+    // The window comes and goes; each time the mirror follows in the same fn.
+    assert_eq!(named(app, "state.main = "), ["create_main_window"]);
+    assert!(
+        body_of("create_main_window")
+            .ends_with("state.main=Some(window);state.sync_main_hidden();Ok(())}")
+    );
+    assert_eq!(named(app, ".main.take()"), ["shutdown"]);
+    let shutdown = body_of("shutdown");
+    assert!(
+        shutdown.ends_with("yw_win::ui::quit(0);self.sync_main_hidden();}"),
+        "{shutdown}"
+    );
+    for src in &files {
+        if src.file != "yw-app/src/app.rs" {
+            for pattern in [".main = ", "main.take()", "main.replace("] {
+                assert!(named(src, pattern).is_empty(), "{}: {pattern}", src.file);
+            }
+        }
+    }
+    // Shown: only `show_main_window` shows it; its callers sync or answer.
+    let mut shows = Vec::new();
+    for src in &files {
+        for pattern in ["main.show()", "main.show_maximized()"] {
+            shows.extend(named(src, pattern));
+        }
+    }
+    shows.dedup();
+    assert_eq!(shows, ["show_main_window"]);
+    let mut callers = Vec::new();
+    for src in &files {
+        callers.extend(named(src, "self.show_main_window()"));
+    }
+    callers.sort_unstable();
+    assert_eq!(callers, ["raise_main", "show_main"]);
+    assert!(
+        body_of("show_main")
+            .starts_with("fnshow_main(&mutself){self.show_main_window();self.sync_main_hidden();")
+    );
+    // Every applied effect (`RaiseMain`, a close that asks for the main window's foreground, …)
+    // is followed by the mirror's answer in the drain, before the effect's own answer.
+    let effects = src_of(&files, "yw-app/src/app_effects.rs");
+    let drain = flat(fn_bodies(effects, "drain")[0]);
+    let mirror = concat!(
+        "ifletSome(hidden)=self.main_hidden_answer(){self.on_cmd(hidden);}",
+        "ifletSome(answer)=answer{self.on_cmd(answer);}"
+    );
+    assert!(drain.contains(mirror), "{drain}");
+    // Every main window message syncs first.
+    assert!(body_of("on_main_msg").starts_with(
+        "fnon_main_msg(&mutself,window:&Window,msg:&Msg)->Reply{self.sync_main_hidden();"
+    ));
+    assert!(body_of("sync_main_hidden").contains("self.dispatch(cmd);"));
+    // The wallet's side: the readers, the accessor and its one writer.
+    let mut users = Vec::new();
+    for src in &files {
+        users.extend(named(src, "self.main_hidden()"));
+    }
+    users.sort_unstable();
+    assert_eq!(
+        users,
+        [
+            "evm_balance_tick",
+            "hc_tick",
+            "received_tick",
+            "sol_balance_tick"
+        ]
+    );
+    let accessor = impl_fns(&files, "Wallet");
+    let accessor = accessor.get("main_hidden").expect("Wallet::main_hidden");
+    assert_eq!(accessor.len(), 1);
+    assert!(flat(&accessor[0].1).ends_with("{self.main_hidden}"));
+    let mut writers = Vec::new();
+    for src in &files {
+        writers.extend(named(src, "self.main_hidden ="));
+    }
+    assert_eq!(writers, ["on_cmd"]);
+    assert!(
+        body_of("on_cmd").contains("Cmd::MainHidden(hidden)=>self.main_hidden=hidden,"),
+        "the Cmd's arm"
+    );
+}
+
+/// The mirror headless (2026-11-21, S4 W3, critique B-10): with no main window the shell's
+/// answer is "not hidden"; `Cmd::MainHidden` sets the wallet's mirror, which the polling reads
+/// see, and the shell's sync puts it back to the window's value in an entry of its own.
+#[test]
+fn the_main_hidden_mirror_follows_its_cmd_and_the_sync() {
+    use yw_engine::cmd::Cmd;
+    let (mut app, dir) = super::unlocked_app("main-hidden-mirror", false);
+    assert!(app.main.is_none() && !app.main_hidden());
+    assert!(
+        app.main_hidden_answer().is_none(),
+        "no window: nothing to send"
+    );
+    app.sync_main_hidden();
+    assert!(!app.main_hidden());
+    app.on_cmd(Cmd::MainHidden(true));
+    assert!(app.main_hidden(), "the Cmd sets the mirror");
+    assert!(
+        matches!(app.main_hidden_answer(), Some(Cmd::MainHidden(false))),
+        "the window (none) is not hidden"
+    );
+    app.sync_main_hidden();
+    assert!(!app.main_hidden(), "the sync follows the window");
+    assert!(app.outbox.is_empty());
+    drop(app);
+    let _ = std::fs::remove_dir_all(dir);
 }

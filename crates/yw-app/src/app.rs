@@ -828,6 +828,23 @@ pub struct Wallet {
     startup_load: bool,
     /// When [`App::reads_due`] last started a balance read ahead of the timer.
     reads_due_ms: u64,
+    /// The effects the logic emitted and the shell has not applied yet (2026-11-20, S4 P10b,
+    /// spec/15 §11.4 S4, plan §3.4): [`Wallet::emit`] queues, `App::drain` takes them one at a
+    /// time ([`Wallet::next_effect`]) and applies them in order, never coalesced, inside the same
+    /// borrow before the entry that emitted them returns (an answer `Cmd` goes back to the logic
+    /// in the same drain). Empty between entries. Before P10 `emit` applied each effect at once;
+    /// from P10b until 2026-11-21 (S4 W3, plan §3.4) the queue and `emit` were `App`'s.
+    pub(crate) outbox: VecDeque<Effect>,
+    /// The main window is hidden or minimized, as the shell last reported it
+    /// (`Cmd::MainHidden`; 2026-11-21, S4 W3, critique B-10): the periodic balance, `HyperCore`
+    /// and received-history reads pause while it is set. No main window (tests) is not hidden.
+    /// Before W3, `App::main_hidden` read the window itself at each call.
+    main_hidden: bool,
+    /// Debug builds (2026-11-21, S4 W3, critique B-11): the credential fields the press being
+    /// handled took ([`App::take_cred`]), names only, for the shell's comparison when the next
+    /// drain starts (`App::cred_check`); before W3, `take_cred` read the edit itself.
+    #[cfg(debug_assertions)]
+    cred_taken: Vec<CredField>,
 }
 
 impl core::fmt::Debug for Wallet {
@@ -836,6 +853,24 @@ impl core::fmt::Debug for Wallet {
             .debug_struct("Wallet")
             .field("mode", &self.mode)
             .finish_non_exhaustive()
+    }
+}
+
+impl Wallet {
+    /// The main window is hidden or minimized: periodic balance reads pause (2026-11-11);
+    /// showing it again reads at the next tick. No window (tests) is not hidden. 2026-11-21
+    /// (S4 W3, critique B-10): the wallet's mirror (`Cmd::MainHidden`, kept equal to the window
+    /// by the shell's `App::sync_main_hidden`); before, `App::main_hidden` read the window here.
+    #[must_use]
+    pub const fn main_hidden(&self) -> bool {
+        self.main_hidden
+    }
+
+    /// Debug builds (2026-11-21, S4 W3, critique B-11): the credential fields taken since the
+    /// last call, names only (the shell's comparison when a drain starts, `App::cred_check`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn take_cred_log(&mut self) -> Vec<CredField> {
+        core::mem::take(&mut self.cred_taken)
     }
 }
 
@@ -883,12 +918,11 @@ pub struct App {
     /// field) (2026-11-20, S4 P6: `cmd_table::id_of(last_press)`; before, `self.command`).
     #[cfg(all(test, debug_assertions))]
     pub(crate) cred_reads: Vec<(u16, CredField)>,
-    /// The effects the logic emitted and the shell has not applied yet (2026-11-20, S4 P10b,
-    /// spec/15 §11.4 S4, plan §3.4): `App::emit` queues, `App::drain` applies them in order,
-    /// never coalesced, inside the same borrow before the entry that emitted them returns (an
-    /// answer `Cmd` goes back to the logic in the same drain). Empty between entries. Before
-    /// P10 `emit` applied each effect at once.
-    pub(crate) outbox: VecDeque<Effect>,
+    /// Debug builds (2026-11-21, S4 W3, critique B-11): the shell's own read of the masked edits
+    /// the press being handled captured (wiped when dropped), compared with the fields the
+    /// handler took when the next drain starts (`App::cred_check`), then dropped.
+    #[cfg(debug_assertions)]
+    cred_shadow: Vec<(CredField, Option<yw_win::mem::WipeBuf<u16>>)>,
     pub(crate) placed: Placed,
     /// The approval window's shell state (2026-11-19, S4 B4b, spec/15 §11.4 S4): shown exactly
     /// while `evm.approval` is (was part of `EvmUi.window`).
@@ -1360,6 +1394,10 @@ impl App {
                 idle: IdleTracker::new(now),
                 startup_load: true,
                 reads_due_ms: 0,
+                outbox: VecDeque::new(),
+                main_hidden: false,
+                #[cfg(debug_assertions)]
+                cred_taken: Vec::new(),
             },
             paths,
             main: None,
@@ -1376,7 +1414,8 @@ impl App {
             cred_misses: 0,
             #[cfg(all(test, debug_assertions))]
             cred_reads: Vec::new(),
-            outbox: VecDeque::new(),
+            #[cfg(debug_assertions)]
+            cred_shadow: Vec::new(),
             placed: Placed::default(),
             approval_win: None,
             ext: crate::app_extension::ExtensionUi::default(),
@@ -1468,6 +1507,8 @@ impl App {
         state.self_ref = Rc::downgrade(app);
         window.set_timer(MAIN_TIMER_ID, crate::shell_msg::MAIN_TIMER_MS)?;
         state.main = Some(window);
+        // Made hidden: the wallet's mirror follows (2026-11-21, S4 W3, critique B-10).
+        state.sync_main_hidden();
         Ok(())
     }
 
@@ -1539,6 +1580,9 @@ impl App {
     /// Shows the main window (not in `--background`).
     pub fn show_main(&mut self) {
         self.show_main_window();
+        // Its `WM_SIZE` came inside this borrow and was dropped: the wallet's mirror follows
+        // here (2026-11-21, S4 W3, critique B-10).
+        self.sync_main_hidden();
         if let Some(main) = self.main.as_ref()
             && !main.set_foreground()
         {
@@ -1549,6 +1593,8 @@ impl App {
 
     /// `Effect::RaiseMain` (2026-11-20, S4 P4; was the start of [`Self::activate`]): the main
     /// window is shown and asked for the foreground (no flash when refused, as before).
+    /// 2026-11-21 (S4 W3, critique B-10): `App::drain` then brings the wallet's main-window
+    /// mirror up to date ([`Self::main_hidden_answer`]).
     pub(crate) fn raise_main(&mut self) {
         self.show_main_window();
         if let Some(main) = self.main.as_ref() {
@@ -1818,6 +1864,10 @@ impl App {
     }
 
     fn on_main_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
+        // 2026-11-21 (S4 W3, critique B-10): a minimize or restore by the user (`WM_SIZE`, or
+        // any change a dropped re-entrant message carried) reaches the wallet's mirror before
+        // the message is handled.
+        self.sync_main_hidden();
         if let Some(action) = system_action(msg) {
             return self.on_system(action);
         }
@@ -1950,9 +2000,12 @@ impl App {
         reply
     }
 
-    /// The arms of [`Self::on_main_msg`] that [`Self::test_on_main_windowless`] runs.
+    /// The arms of [`Self::on_main_msg`] that [`Self::test_on_main_windowless`] runs. 2026-11-21
+    /// (S4 W3): the mirror's sync first, as in `on_main_msg` (with no window it never differs,
+    /// so it sends nothing).
     #[cfg(test)]
     fn windowless_msg(&mut self, msg: &Msg) -> Reply {
+        self.sync_main_hidden();
         if let Some(action) = system_action(msg) {
             return self.on_system(action);
         }
@@ -2253,13 +2306,56 @@ impl App {
         }
     }
 
-    /// The main window exists and is hidden or minimized: periodic balance reads pause
-    /// (2026-11-11); showing it again reads at the next tick. No window (tests) is not hidden.
-    #[must_use]
-    pub fn main_hidden(&self) -> bool {
+    /// The shell's half of the wallet's main-window mirror (2026-11-21, S4 W3, critique B-10,
+    /// spec/04 §2.6): whether the main window exists and is hidden or minimized now, sent to the
+    /// wallet as `Cmd::MainHidden` (through [`Self::dispatch`], an entry of its own) when it
+    /// differs from what the wallet holds. Called where the live value can change: when the
+    /// window is made (hidden, [`Self::create_main_window`]), shown ([`Self::show_main`]; an
+    /// effect that changes it — `RaiseMain`, a secret or approval window's close that asks for
+    /// the main window's foreground — is followed in `App::drain` by [`Self::main_hidden_answer`]
+    /// instead, as the executor writes no wallet state) and dropped
+    /// ([`Self::shutdown`]), and at every main window message before its handling
+    /// ([`Self::on_main_msg`]: a minimize or restore by the user arrives as `WM_SIZE`, outside any
+    /// borrow; one the shell's own show causes inside the borrow is dropped by the `Forward` and
+    /// covered by the call after the show). Before W3 the wallet's readers (`evm_balance_tick`,
+    /// `sol_balance_tick`, `hc_tick`, `received_tick`) read the window at each call
+    /// (`App::main_hidden`); the mirror equals that read at every one of them (debug builds
+    /// check it at the end of every drain, [`Self::assert_main_hidden_in_step`]).
+    pub(crate) fn sync_main_hidden(&mut self) {
+        if let Some(cmd) = self.main_hidden_answer() {
+            self.dispatch(cmd);
+        }
+    }
+
+    /// `Cmd::MainHidden` with the window's hidden state when it differs from the wallet's mirror
+    /// (2026-11-21, S4 W3, critique B-10): [`Self::sync_main_hidden`]'s, and `App::drain`'s after
+    /// each effect it applied (the executor writes no wallet state, D-4).
+    pub(crate) fn main_hidden_answer(&self) -> Option<Cmd> {
+        let hidden = self.main_hidden_now();
+        (hidden != self.wallet.main_hidden()).then_some(Cmd::MainHidden(hidden))
+    }
+
+    /// The live value the mirror follows: the main window exists and is hidden or minimized
+    /// (a destroyed window counts as hidden). No window (tests) is not hidden (2026-11-11).
+    fn main_hidden_now(&self) -> bool {
         self.main
             .as_ref()
             .is_some_and(Window::is_hidden_or_minimized)
+    }
+
+    /// Debug builds: the wallet's main-window mirror equals the window (2026-11-21, S4 W3,
+    /// critique B-10), checked at the end of every drain.
+    ///
+    /// # Panics
+    ///
+    /// Debug builds: when the mirror differs from the window.
+    #[cfg(debug_assertions)]
+    pub(crate) fn assert_main_hidden_in_step(&self) {
+        debug_assert_eq!(
+            self.wallet.main_hidden(),
+            self.main_hidden_now(),
+            "the main-window mirror follows the window"
+        );
     }
 
     /// The main timer. 2026-11-20 (S4 P10b): each of its calls into the logic is an entry of its
@@ -2583,9 +2679,10 @@ impl App {
         // short while now). 2026-11-20 (S4 P7b, spec/04 §5.3 step 4): the shell's clear through
         // `SecretEffect::ClearClip` at this point; before, this fn called `clear_secret_clip`
         // (with the clock read here) or `clear_secret_clip_at_exit` itself.
-        self.emit(Effect::Secret(SecretEffect::ClearClip {
-            at_exit: self.mode == AppMode::ShuttingDown,
-        }));
+        // (2026-11-21, S4 W3: the mode is read first, as before the call; `emit` is the
+        // wallet's now and is reached through `App`'s `DerefMut`.)
+        let at_exit = self.mode == AppMode::ShuttingDown;
+        self.emit(Effect::Secret(SecretEffect::ClearClip { at_exit }));
         self.evm_lock();
         self.book = crate::app_book::BookUi::default();
         self.sol_lock();
@@ -2712,6 +2809,9 @@ impl App {
         logging::info("app", "app.stop", &[]);
         logging::flush();
         yw_win::ui::quit(0);
+        // No main window is not hidden (2026-11-21, S4 W3, critique B-10: the wallet's mirror,
+        // the last step; before, the wallet's readers saw `None` as not hidden too).
+        self.sync_main_hidden();
     }
 
     // ----- events ------------------------------------------------------------------------
@@ -4827,6 +4927,13 @@ impl App {
         self.dispatch(Cmd::Form(self.controls.form_snapshot()));
         let input = cmd_table::capture(id, &self.controls, self.main.as_ref(), &self.wc.file_text);
         if let Some(press) = cmd_table::press_of(id, &self.controls) {
+            // Debug builds (2026-11-21, S4 W3, critique B-11): the shell's own read of the masked
+            // edits the press captures, compared with the edits the handler took when the drain
+            // starts, before any effect of the press is applied (`cred_check`).
+            #[cfg(debug_assertions)]
+            {
+                self.cred_shadow = self.cred_shadow_of(id);
+            }
             self.dispatch(Cmd::Press { press, input });
             match press {
                 Press::Enter => self.enter_key(),
@@ -4903,6 +5010,9 @@ impl App {
             // area and the pointer, the logic the gate).
             Cmd::HoldBegin { now_ms } => self.reset_hold_begin(now_ms),
             Cmd::HoldEnd => self.hold_cancel(),
+            // The main window was hidden, minimized, shown or restored (2026-11-21, S4 W3,
+            // critique B-10): the wallet's mirror, read by the polling ticks.
+            Cmd::MainHidden(hidden) => self.main_hidden = hidden,
         }
     }
 
@@ -4995,6 +5105,12 @@ impl App {
         };
         self.dispatch(Cmd::Form(self.controls.form_snapshot()));
         let input = cmd_table::capture(id, &self.controls, self.main.as_ref(), &self.wc.file_text);
+        // 2026-11-21 (S4 W3, critique B-11): the shell's own read of the captured edits, as
+        // `on_command` keeps it, for the comparison when the drain below starts.
+        #[cfg(debug_assertions)]
+        {
+            self.cred_shadow = self.cred_shadow_of(id);
+        }
         let outer = core::mem::replace(&mut self.input, input);
         let claimed = run(self, press);
         let used = core::mem::replace(&mut self.input, outer);
@@ -5752,8 +5868,10 @@ impl App {
     }
 
     /// The text of plain edit `field` for a handler (S3 B5, plan §3.2a): the form state, which
-    /// equals `controls.text(id, field.cap())`; debug builds read the edit too and count a
-    /// difference. The C commits move the handlers' edit reads here.
+    /// equals `controls.text(id, field.cap())`. The C commits move the handlers' edit reads here.
+    /// 2026-11-21 (S4 W3, critique B-11): the form state only; the shell compares the whole form
+    /// state with the edits after every drain (`App::check_form_in_step`, debug builds). Before,
+    /// debug builds read the edit here too and counted a difference.
     ///
     /// The returned text is a plain `String` (2026-11-18, S3 C1–C3 review): the `WalletConnect`
     /// pairing link (`WcUri`, it carries the symKey) is `Zeroizing` in `FormState` and
@@ -5764,38 +5882,18 @@ impl App {
     /// this note said "S4: return `Zeroizing<String>` here, or add a `WcUri` reader".
     #[must_use]
     pub(crate) fn form_text(&self, field: EditField) -> Option<String> {
-        let text = self.form.text(field).map(str::to_owned);
-        #[cfg(debug_assertions)]
-        if self
-            .controls
-            .text(cmd_table::edit_id_of(field), field.cap())
-            != text
-        {
-            self.note_form_mismatch(field);
-        }
-        text
+        self.form.text(field).map(str::to_owned)
     }
 
     /// [`App::form_text`] as a wiped string (2026-11-20, S4 P5, critique B-12(c)): for the
     /// `WalletConnect` pairing link (`EditField::WcUri`, it holds the pairing `symKey`). The same
-    /// form-state read and the same debug comparison with the edit (its read wiped too).
+    /// form-state read (2026-11-21, S4 W3, critique B-11: only that; before, debug builds compared
+    /// it with a wiped read of the edit here).
     #[must_use]
     pub(crate) fn form_text_wiping(&self, field: EditField) -> Option<Zeroizing<String>> {
-        let text = self
-            .form
+        self.form
             .text(field)
-            .map(|text| Zeroizing::new(text.to_owned()));
-        #[cfg(debug_assertions)]
-        if self
-            .controls
-            .text(cmd_table::edit_id_of(field), field.cap())
-            .map(Zeroizing::new)
-            .as_deref()
-            != text.as_deref()
-        {
-            self.note_form_mismatch(field);
-        }
-        text
+            .map(|text| Zeroizing::new(text.to_owned()))
     }
 
     /// Debug builds: one form-state difference (tests: its field name in the shell-call log,
@@ -5810,43 +5908,92 @@ impl App {
         let _ = field;
     }
 
-    /// Debug builds: one credential read of the press being handled, `captured` the press
-    /// input's units and `read` the edit's (tests: the read is recorded, a difference is
-    /// counted and logged by field name, never by text).
+    /// Debug builds, the shell (2026-11-21, S4 W3, critique B-11): the wallet's form state equals
+    /// what the plain edits show (`controls.text(id, field.cap())`, the read `Cmd::Form` makes) for
+    /// every field; each difference is counted ([`Self::note_form_mismatch`]). Run at the end of
+    /// every drain, when no field write is queued. Before W3 this comparison ran in the wallet's
+    /// `form_text`/`form_text_wiping`, for the field read, at each read.
     #[cfg(debug_assertions)]
-    fn cred_compare(&mut self, field: CredField, captured: &[u16], read: Option<&[u16]>) {
-        #[cfg(not(test))]
-        let _ = field;
-        #[cfg(test)]
-        self.cred_reads
-            .push((cmd_table::id_of(self.last_press), field));
-        if captured != read.unwrap_or_default() {
-            self.form_mismatch
-                .set(self.form_mismatch.get().saturating_add(1));
+    pub(crate) fn check_form_in_step(&self) {
+        for field in EditField::ALL {
+            let shown = self
+                .controls
+                .text(cmd_table::edit_id_of(field), field.cap())
+                .map(Zeroizing::new);
+            if shown.as_deref().map(String::as_str) != self.form.text(field) {
+                self.note_form_mismatch(field);
+            }
+        }
+    }
+
+    /// Debug builds, the shell (2026-11-21, S4 W3, critique B-11): the masked edits `id`'s press
+    /// captures, read again as `cmd_table::capture` reads them (wiped when dropped), kept in
+    /// `cred_shadow` for [`Self::cred_check`] until the next drain starts.
+    #[cfg(debug_assertions)]
+    fn cred_shadow_of(&self, id: u16) -> Vec<(CredField, Option<yw_win::mem::WipeBuf<u16>>)> {
+        cmd_table::creds_for(id)
+            .iter()
+            .map(|&field| {
+                (
+                    field,
+                    self.controls
+                        .text_wiping(cmd_table::cred_id_of(field), field.cap()),
+                )
+            })
+            .collect()
+    }
+
+    /// Debug builds, the shell (2026-11-21, S4 W3, critique B-11): when a drain starts, each
+    /// credential field the logic took since the last one ([`Wallet::take_cred_log`]: a press's
+    /// handler) is compared with the edit as read now, against `cred_shadow`, the read made with
+    /// the press (none outside a press: empty units, as the press input gives then); the shadow
+    /// is dropped (wiped) either way. A difference is counted in `form_mismatch` and logged by
+    /// field name (tests), never by text, and tests record the read as (the press's id, field) in
+    /// `cred_reads`. No effect has been applied since the take, so the edit reads as it did when
+    /// the handler took the units. Before W3, `take_cred` read the edit itself at the take and
+    /// compared it with the units the press captured (`cred_compare`); a field the press did not
+    /// capture is still a miss (`PressInput::take`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn cred_check(&mut self) {
+        let shadow = core::mem::take(&mut self.cred_shadow);
+        for field in self.wallet.take_cred_log() {
             #[cfg(test)]
-            self.controls.record(format!("cred.mismatch {field:?}"));
+            self.cred_reads
+                .push((cmd_table::id_of(self.last_press), field));
+            let read = self
+                .controls
+                .text_wiping(cmd_table::cred_id_of(field), field.cap());
+            let captured = shadow
+                .iter()
+                .find(|(known, _)| *known == field)
+                .and_then(|(_, units)| units.as_ref())
+                .map(yw_win::mem::WipeBuf::as_slice)
+                .unwrap_or_default();
+            if captured
+                != read
+                    .as_ref()
+                    .map(yw_win::mem::WipeBuf::as_slice)
+                    .unwrap_or_default()
+            {
+                self.form_mismatch
+                    .set(self.form_mismatch.get().saturating_add(1));
+                #[cfg(test)]
+                self.controls.record(format!("cred.mismatch {field:?}"));
+            }
         }
     }
 
     /// The units of credential edit `field` the shell read with the press being handled
     /// (2026-11-18, S3 C3, plan §3.4 and D-l): moved out of the press input, wiped when dropped;
     /// empty when the edit did not exist, exactly as a read of a missing edit. A field the press
-    /// did not capture is a credential miss (`PressInput::take`, debug builds). Debug builds
-    /// also read the edit itself and compare (the shadow read of plan §3.2a).
+    /// did not capture is a credential miss (`PressInput::take`, debug builds). 2026-11-21 (S4 W3,
+    /// critique B-11): debug builds note the field (names only) for the shell's comparison when
+    /// the next drain starts (`App::cred_check`); before, they read the edit itself here and compared (the
+    /// shadow read of S3 plan §3.2a).
     pub(crate) fn take_cred(&mut self, field: CredField) -> Zeroizing<Vec<u16>> {
-        let units = self.input.take(field);
         #[cfg(debug_assertions)]
-        {
-            let read = self
-                .controls
-                .text_wiping(cmd_table::cred_id_of(field), field.cap());
-            self.cred_compare(
-                field,
-                units.as_slice(),
-                read.as_ref().map(yw_win::mem::WipeBuf::as_slice),
-            );
-        }
-        units
+        self.cred_taken.push(field);
+        self.input.take(field)
     }
 
     /// Debug builds: credential reads of a field no press captured (tests assert 0).

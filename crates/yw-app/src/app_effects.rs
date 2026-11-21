@@ -83,6 +83,12 @@
 //! (the secret, after the shell verified the window's capture exclusion; before, the
 //! `apply_secret_effect` arm's `open_display_window` moved it). The plan's
 //! `Shell::apply(effect, &Wallet)` waits for the render builders to leave `impl App` (S5).
+//!
+//! 2026-11-21 (S4 W3, plan §3.4): the outbox is the wallet's. `Wallet::emit` queues (the same
+//! body, the form state written first for a field write) and `Wallet::next_effect` hands the
+//! drain one effect at a time; `App::drain` (the composition) stays here and applies each one as
+//! before. Before W3 the queue and `emit` were `App`'s (`App::emit`, `self.outbox.pop_front()`
+//! in the drain).
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Cmd;
@@ -90,7 +96,7 @@ use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 use yw_engine::secret::SecretEffect;
 use yw_win::clipboard;
 
-use crate::app::App;
+use crate::app::{App, Wallet};
 use crate::logging::{self, Field};
 use crate::ui::cmd_table::{self, cred_id_of, edit_id_of};
 
@@ -164,6 +170,41 @@ impl Drop for Entry<'_> {
     }
 }
 
+impl Wallet {
+    /// Queues `effect` for `App::drain` (2026-11-20, S4 P10b; see the module doc). A field
+    /// write (`SetField`) puts its text, cut to the field's cap as the edit holds it, into the
+    /// form state now, so the logic reads what it wrote before the shell applies it (owner
+    /// decision O-10; the shell reads the edit back when it applies the write, as before).
+    /// Before P10 this fn applied the effect at once. 2026-11-21 (S4 W3, plan §3.4): the
+    /// wallet's (was `App::emit`, the same body); `impl App` code reaches it through `App`.
+    pub(crate) fn emit(&mut self, effect: Effect) {
+        // Tests (2026-11-20, S4 P10a): held for `hold_effects`.
+        #[cfg(test)]
+        let Some(effect) = TEST_HELD_EFFECTS.with(|held| match held.borrow_mut().as_mut() {
+            Some(kept) => {
+                kept.push(effect);
+                None
+            }
+            None => Some(effect),
+        }) else {
+            return;
+        };
+        if let Effect::SetField { field, text } = &effect {
+            let field = *field;
+            self.form.set(field, Some(field.clamp(text)));
+        }
+        self.outbox.push_back(effect);
+    }
+
+    /// The oldest queued effect, taken out of the queue (2026-11-21, S4 W3, plan §3.4: the
+    /// drain's one read of the outbox; Android's `next()`, spec/15 §3.2). `None` when the queue is
+    /// empty.
+    #[must_use]
+    pub(crate) fn next_effect(&mut self) -> Option<Effect> {
+        self.outbox.pop_front()
+    }
+}
+
 /// The main window's timer id for `timer`, and its name in the tests' shell-call log.
 const fn timer_of(timer: TimerId) -> (usize, &'static str) {
     match timer {
@@ -196,40 +237,26 @@ impl App {
         None
     }
 
-    /// Queues `effect` for [`Self::drain`] (2026-11-20, S4 P10b; see the module doc). A field
-    /// write (`SetField`) puts its text, cut to the field's cap as the edit holds it, into the
-    /// form state now, so the logic reads what it wrote before the shell applies it (owner
-    /// decision O-10; the shell reads the edit back when it applies the write, as before).
-    /// Before P10 this fn applied the effect at once.
-    pub(crate) fn emit(&mut self, effect: Effect) {
-        // Tests (2026-11-20, S4 P10a): held for `hold_effects`.
-        #[cfg(test)]
-        let Some(effect) = TEST_HELD_EFFECTS.with(|held| match held.borrow_mut().as_mut() {
-            Some(kept) => {
-                kept.push(effect);
-                None
-            }
-            None => Some(effect),
-        }) else {
-            return;
-        };
-        if let Effect::SetField { field, text } = &effect {
-            let field = *field;
-            self.form.set(field, Some(field.clamp(text)));
-        }
-        self.outbox.push_back(effect);
-    }
-
     /// Applies every queued effect in order, each answer going back to the logic at once
     /// (`on_cmd`; what it emits joins the end of the queue), until the queue is empty
     /// (2026-11-20, S4 P10b). Called by every shell entry before it returns (module doc), also by
-    /// `main.rs` after each of its start steps.
+    /// `main.rs` after each of its start steps. 2026-11-21 (S4 W3, plan §3.4): the queue is the
+    /// wallet's; each effect is taken from it on its own ([`Wallet::next_effect`]), so the
+    /// wallet is free again before the effect is applied and its answer handled (an answer's
+    /// effects join the same queue; before W3, `self.outbox.pop_front()` on `App`'s queue).
+    /// Debug builds then check that the wallet's form state and main-window mirror equal the
+    /// window (2026-11-21, S4 W3, critique B-10/B-11).
     ///
     /// # Panics
     ///
-    /// Debug builds only, never: the loop ends with the queue empty.
+    /// Debug builds only: never for the queue (the loop ends with it empty); when the wallet's
+    /// main-window mirror differs from the window ([`App::assert_main_hidden_in_step`]).
     pub fn drain(&mut self) {
-        while let Some(effect) = self.outbox.pop_front() {
+        // Debug builds (2026-11-21, S4 W3, critique B-11): the credential edits the logic took
+        // since the last drain, before any effect is applied.
+        #[cfg(debug_assertions)]
+        self.cred_check();
+        while let Some(effect) = self.wallet.next_effect() {
             // 2026-11-21 (S4 W2, plan §3.4, D-4): the composition. A display window's open is the
             // one effect that moves a value from the wallet into the shell (the secret), so it
             // is not the executor's: `open_display_composed` has the shell make and verify the
@@ -250,6 +277,14 @@ impl App {
             // Tests: the logic's steps logged behind this effect are logged now.
             #[cfg(test)]
             crate::app::secret_seam::applied();
+            // 2026-11-21 (S4 W3, critique B-10): an effect that changed the main window's
+            // hidden state (`RaiseMain` shows it; a secret or approval window's close asks for
+            // its foreground, which can show a hidden one) — the wallet's mirror follows at once,
+            // before the effect's answer; the window's own `WM_SIZE` came inside this borrow and
+            // was dropped. Before W3 the wallet read the window when it needed to.
+            if let Some(hidden) = self.main_hidden_answer() {
+                self.on_cmd(hidden);
+            }
             if let Some(answer) = answer {
                 self.on_cmd(answer);
             }
@@ -260,6 +295,15 @@ impl App {
         // where the flow changes skip while its `Approval(Open)`/`Approval(Close)` is queued).
         #[cfg(test)]
         self.assert_flow_and_window_in_step();
+        // Debug builds (2026-11-21, S4 W3, critique B-10/B-11): with the queue empty the wallet
+        // is in step with the window again — its form state equals the plain edits (the shadow
+        // read of `App::form_text` before W3, now the shell's) and its main-window mirror equals
+        // the window.
+        #[cfg(debug_assertions)]
+        {
+            self.check_form_in_step();
+            self.assert_main_hidden_in_step();
+        }
     }
 
     /// One input from the shell, then the effects it emitted (2026-11-20, S4 P10b, plan §3.4:

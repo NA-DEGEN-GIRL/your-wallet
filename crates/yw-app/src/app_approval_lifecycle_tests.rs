@@ -1693,6 +1693,13 @@ fn rpc_import_on_temp_data() -> Vec<String> {
 /// the real window, and these tests never show a window (A6 review). A W3 `main_hidden` mirror
 /// that got the visible-window case wrong (e.g. hidden by default once `main` is `Some`) would
 /// not change these lines; that case stays an open item for W3 (its own check there).
+///
+/// 2026-11-21 (S4 W3, critique B-10, preflight critic C7): `main_hidden()` is the wallet's
+/// mirror (`Cmd::MainHidden`). The test puts the stand-in window in (or takes it out) itself, as
+/// no message does, so it then runs the shell's own sync (`App::sync_main_hidden`, which reads
+/// the window as `main_hidden` did before W3) inside the same entry; the lines are unchanged.
+/// The visible-window case is checked where a main window is shown: `ui::tour_forms` (after
+/// `show_main`) and the end-of-drain debug check (`App::assert_main_hidden_in_step`).
 fn polling_while_hidden() -> Vec<String> {
     let fx = fixture("polling");
     let timer = spare_window();
@@ -1706,7 +1713,11 @@ fn polling_while_hidden() -> Vec<String> {
     }
     let mut rec = Rec::new("polling_while_hidden", &fx, None);
     for hidden in [false, true] {
-        fx.app().main = hidden.then(spare_window);
+        {
+            let mut app = fx.app();
+            app.main = hidden.then(spare_window);
+            app.sync_main_hidden();
+        }
         rec.fact(
             if hidden { "hidden" } else { "shown" },
             &format!("main hidden={}", fx.app.borrow().main_hidden()),
@@ -1733,7 +1744,11 @@ fn polling_while_hidden() -> Vec<String> {
             });
         }
     }
-    fx.app().main = None;
+    {
+        let mut app = fx.app();
+        app.main = None;
+        app.sync_main_hidden();
+    }
     rec.lines
 }
 

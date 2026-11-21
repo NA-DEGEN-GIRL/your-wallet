@@ -2924,8 +2924,9 @@ const LEFT_OUT: [(&str, &str); 9] = [
     ),
     (
         "polling_while_hidden",
-        "the main window's hidden state is a real window's (critique B-10; the wallet's mirror \
-         comes with S4 W3)",
+        "the main window's hidden state is a real window's (critique B-10; since S4 W3, \
+         2026-11-21, the wallet's mirror follows that window through the shell's sync, and with \
+         no window it is never hidden)",
     ),
 ];
 
@@ -3286,8 +3287,10 @@ fn the_windowless_main_entry_mirrors_on_main() {
     let on_main = body("    fn on_main_msg(&mut self, window: &Window, msg: &Msg) -> Reply {");
     let mirror = body("    fn windowless_msg(&mut self, msg: &Msg) -> Reply {");
 
-    let system =
-        "if let Some(action) = system_action(msg) { return self.on_system(action); } match msg {";
+    // 2026-11-21 (S4 W3, critique B-10): the wallet's main-window mirror is synced first (with
+    // no window the windowless mirror never sends anything).
+    let system = "self.sync_main_hidden(); if let Some(action) = system_action(msg) { \
+                  return self.on_system(action); } match msg {";
     let timer = "Msg::Timer(MAIN_TIMER_ID) => { self.tick(); Reply::Handled(0) }";
     let window_arms = [
         " WM_YW_ACTIVATE => self.activate(),",

@@ -4094,9 +4094,10 @@ impl crate::app::App {
     /// Selects the Bitcoin tab (refresh on open, spec/08 §4.7). 2026-11-20 (S4 P4): the scroll
     /// memory's part is `Effect::TabTop`, at the same point (before, `tab_top` was called here).
     pub fn btc_select_tab(&mut self) {
-        self.emit(yw_engine::effect::Effect::TabTop {
-            left: self.remembered_place(&self.screen),
-        });
+        // (2026-11-21, S4 W3: the place is read first, as before the call; `emit` is the
+        // wallet's now and is reached through `App`'s `DerefMut`.)
+        let left = self.remembered_place(&self.screen);
+        self.emit(yw_engine::effect::Effect::TabTop { left });
         if let Some(meta) = self.meta.as_mut()
             && meta.prefs.tab != crate::meta::Tab::Btc
         {

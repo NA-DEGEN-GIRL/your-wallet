@@ -76,6 +76,11 @@
 //! 2026-11-21 (S4 W1): [`Cmd::HoldBegin`] and [`Cmd::HoldEnd`], S22's 2 s hold area (spec/04
 //! §2.20): the shell finds the pressed area, keeps it and takes the pointer; the logic keeps only
 //! the hold's gate. The area is no [`Press`] (S3 D3: no control sends it).
+//!
+//! 2026-11-21 (S4 W3, critique B-10): [`Cmd::MainHidden`], the main window's hidden-or-minimized
+//! state for the wallet's mirror (the periodic reads pause while it is set). Windows sends it when
+//! the window changes (made hidden, shown, minimized or restored, dropped); before, the logic read
+//! the window itself.
 
 use core::fmt;
 
@@ -219,6 +224,11 @@ pub enum Cmd {
     /// pressed. The logic cancels a running hold (and releases the pointer through
     /// `Effect::ReleaseHold`); with none running it does nothing.
     HoldEnd,
+    /// The main window became hidden or minimized (`true`), or shown or restored (`false`)
+    /// (S4 W3, critique B-10): the wallet's mirror, which pauses the periodic balance,
+    /// `HyperCore` and received-history reads. Sent only when the value changed; no main window
+    /// is not hidden.
+    MainHidden(bool),
 }
 
 /// Variant, field names and lengths only (D28): never a field's text or a credential unit.
@@ -274,6 +284,7 @@ impl fmt::Debug for Cmd {
                 .field("now_ms", now_ms)
                 .finish(),
             Self::HoldEnd => formatter.write_str("HoldEnd"),
+            Self::MainHidden(hidden) => formatter.debug_tuple("MainHidden").field(hidden).finish(),
         }
     }
 }
@@ -489,6 +500,13 @@ mod tests {
             "HoldBegin { now_ms: 1234 }"
         );
         assert_eq!(format!("{:?}", Cmd::HoldEnd), "HoldEnd");
+    }
+
+    /// 2026-11-21 (S4 W3, critique B-10): the main window's mirror command prints its value.
+    #[test]
+    fn main_hidden_prints_its_value() {
+        assert_eq!(format!("{:?}", Cmd::MainHidden(true)), "MainHidden(true)");
+        assert_eq!(format!("{:?}", Cmd::MainHidden(false)), "MainHidden(false)");
     }
 
     /// 2026-11-20 (S4 P6): a copy mark's band prints as the step's name (the words are the
