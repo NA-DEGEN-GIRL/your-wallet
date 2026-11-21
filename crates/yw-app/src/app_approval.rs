@@ -1914,8 +1914,12 @@ impl App {
                 }
                 logging::info("app", "approval.open", &[]);
                 self.rebuild_view();
-                #[cfg(test)]
-                self.assert_flow_and_window_in_step();
+                // 2026-11-22 (S4 W14a, preflight critic C5): the test builds' pairing check of the
+                // flow and its window (`assert_flow_and_window_in_step`, the shell's) is no longer
+                // made here; `App::drain` makes it once the queue is empty. Here it never asserted
+                // (but the headless host's "no window", which the drain's check asserts too):
+                // `rebuild_view` always queues an effect while the flow exists (`Rebuilt`, or the
+                // rejection's `Close`), and the check returns while an effect is queued.
                 // 2026-11-20 (S4 P10a): after the answer of an open the view's failure asked for
                 // (`AfterOpen::StartPrepare`; before, called here directly).
                 self.after_pending_open(AfterOpen::StartPrepare);
@@ -2339,8 +2343,11 @@ impl App {
                 shown: flow.shown(),
             }));
         }
-        #[cfg(test)]
-        self.assert_flow_and_window_in_step();
+        // 2026-11-22 (S4 W14a, preflight critic C5): the test builds' pairing check
+        // (`assert_flow_and_window_in_step`, the shell's) is no longer made here but only by
+        // `App::drain` once the queue is empty. Here it asserted only when no flow was shown (a
+        // flow's end queues its `Close` first, and the check returns while an effect is queued),
+        // and then the window it checks was last changed by the drain that already checked it.
     }
 
     /// The approval window shown now, by its `ShownId` (`None`: none). An input of another window
@@ -3399,6 +3406,10 @@ impl App {
                 self.approval_redraw(shown);
                 None
             }
+            ApprovalEffect::RepaintAi { shown, body_only } => {
+                self.approval_repaint_ai(shown, body_only);
+                None
+            }
         }
     }
 
@@ -3579,6 +3590,21 @@ impl App {
         }
     }
 
+    /// `Effect::Approval(RepaintAi)`: the AI body (when the window has one), then, unless
+    /// `body_only`, the window, are invalidated. Nothing for a window that is not open under
+    /// `shown`. (2026-11-22, S4 W14a: was inline in `ai_after` — the AI body then A01 of the
+    /// window open then — and in `ai_tick` — the AI body alone; both now emit it.)
+    fn approval_repaint_ai(&self, shown: ShownId, body_only: bool) {
+        if let Some(win) = self.approval_win.as_ref().filter(|win| win.shown == shown) {
+            if let Some(ai) = win.ai.as_ref() {
+                ai.body.invalidate();
+            }
+            if !body_only {
+                win.window.invalidate();
+            }
+        }
+    }
+
     /// The flow (`EvmUi.approval`) and the window's shell state (`App.approval_win`) are set and
     /// taken together (2026-11-19, S4 B4 review). Test builds check it where they change and
     /// where a window event reaches the flow, so a flow left without its window (or a window
@@ -3592,6 +3618,9 @@ impl App {
     /// `Approval(Close)`). 2026-11-20 (S4 P10b review): so `App::drain` also checks it when the
     /// queue is empty; before, the checks after an open's answer and after a close (both right
     /// after an `emit`) were skipped and nothing checked the pairing after those transitions.
+    /// 2026-11-22 (S4 W14a, preflight critic C5): the flow's fns `on_approval_opened` and
+    /// `close_approval_window` no longer call it (wallet code names no shell fn, so W14c can
+    /// make them `impl Wallet`); `App::drain` checks those transitions.
     #[cfg(test)]
     pub(crate) fn assert_flow_and_window_in_step(&self) {
         if headless_host::installed() {
@@ -4805,7 +4834,10 @@ impl App {
             .is_none_or(crate::explain::ExplainService::busy)
     }
 
-    /// Logs an ended request and hands a new one to the worker.
+    /// Logs an ended request and hands a new one to the worker, then asks for the AI body and
+    /// the window to be repainted (`Effect::Approval(RepaintAi)`; 2026-11-22, S4 W14a: before,
+    /// this fn invalidated the AI body and A01 of the window open then, here, at the end; the
+    /// effect is applied when the entry drains, before the next message can paint).
     fn ai_after(
         &mut self,
         ended: Option<Ended>,
@@ -4813,12 +4845,12 @@ impl App {
         stats: Option<&RequestStats>,
     ) {
         let now = self.clock.now_ms();
-        let Self {
-            wallet: crate::app::Wallet { evm, llm, .. },
-            approval_win,
-            ..
-        } = self;
-        let Some(ai) = evm.approval.as_mut().and_then(ApprovalFlow::ai_mut) else {
+        let crate::app::Wallet { evm, llm, .. } = &mut self.wallet;
+        let Some(flow) = evm.approval.as_mut() else {
+            return;
+        };
+        let shown = flow.shown();
+        let Some(ai) = flow.ai_mut() else {
             return;
         };
         if let Some(ended) = ended {
@@ -4840,12 +4872,10 @@ impl App {
                 log_request(&ai.host, ai.kind, &ended, None);
             }
         }
-        if let Some(win) = approval_win.as_ref() {
-            if let Some(ai_child) = win.ai.as_ref() {
-                ai_child.body.invalidate();
-            }
-            win.window.invalidate();
-        }
+        self.emit(Effect::Approval(ApprovalEffect::RepaintAi {
+            shown,
+            body_only: false,
+        }));
     }
 
     fn ai_ready(&mut self, ready: AiReady) {
@@ -4968,10 +4998,18 @@ impl App {
         self.ai_ready(ready);
     }
 
-    /// The 50 ms tick: deadline and a request waiting for the worker (spec/06 §3.2).
+    /// The 50 ms tick: deadline and a request waiting for the worker (spec/06 §3.2). While a
+    /// request waits, the AI body is repainted once a second for its elapsed time
+    /// (`Effect::Approval(RepaintAi { body_only: true })`; 2026-11-22, S4 W14a: before, this fn
+    /// invalidated the AI body of the window open then itself; the timer's tail drains right
+    /// after this call, so it is applied at the same point).
     fn ai_tick(&mut self, now: u64) {
         let busy = self.llm_busy();
-        let Some(ai) = self.evm.approval.as_mut().and_then(ApprovalFlow::ai_mut) else {
+        let Some(flow) = self.evm.approval.as_mut() else {
+            return;
+        };
+        let shown = flow.shown();
+        let Some(ai) = flow.ai_mut() else {
             return;
         };
         let requesting = matches!(
@@ -4981,11 +5019,11 @@ impl App {
         let (ended, dispatch) = ai.panel.tick(now, busy);
         if ended.is_some() || dispatch.is_some() {
             self.ai_after(ended, dispatch, None);
-        } else if requesting
-            && now % 1_000 < 50
-            && let Some(ai_child) = self.approval_win.as_ref().and_then(|win| win.ai.as_ref())
-        {
-            ai_child.body.invalidate();
+        } else if requesting && now % 1_000 < 50 {
+            self.emit(Effect::Approval(ApprovalEffect::RepaintAi {
+                shown,
+                body_only: true,
+            }));
         }
     }
 

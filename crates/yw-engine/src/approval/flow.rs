@@ -127,6 +127,16 @@ pub enum ApprovalEffect {
         /// The window.
         shown: ShownId,
     },
+    /// The AI explanation's state changed: repaint the AI body and, unless `body_only`, the
+    /// window (2026-11-22, S4 W14a: before, the AI flow invalidated them itself). `body_only` is
+    /// the once-a-second redraw of a request's elapsed time; any other change of the AI panel
+    /// (a request handed to the worker, its result, a skip, a retry) repaints both.
+    RepaintAi {
+        /// The window.
+        shown: ShownId,
+        /// Only the AI body (the elapsed time while a request waits).
+        body_only: bool,
+    },
 }
 
 /// The outcome of opening a window the logic asked for.

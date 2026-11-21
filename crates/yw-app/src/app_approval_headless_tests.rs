@@ -21,8 +21,9 @@
 //!
 //! A line is the windowed line without its shell column (`focus=`) plus the approval effects the
 //! flow emitted since the last line (`effects`: `open#<id>` / `open-connect#<id>`, `close#<id>`,
-//! `rebuilt#<id>`, `same#<id>` (a rebuild that changed nothing), `bar#<id>`, `redraw#<id>`; a run of
-//! one effect is `x<count>`; `ShownId` serials of the fixture's App). A fact line is the windowed
+//! `rebuilt#<id>`, `same#<id>` (a rebuild that changed nothing), `bar#<id>`, `redraw#<id>`, and
+//! since S4 W14a (2026-11-22) `ai#<id>`/`ai-body#<id>`, which no scenario here emits (none has an
+//! explanation worker); a run of one effect is `x<count>`; `ShownId` serials of the fixture's App). A fact line is the windowed
 //! fact without its shell part: the `windows=` counts are not there, and the facts that are only
 //! the shell's (the close box's reply, mouse replies, window counts and Win32 calls) are not
 //! recorded. `win open` is the shown flow (with windows: the flow and its window together).
@@ -628,6 +629,13 @@ fn effect_names(effects: &[ApprovalEffect]) -> String {
             ApprovalEffect::Rebuilt { shown, .. } => format!("same#{}", shown.0),
             ApprovalEffect::RepaintBar { shown } => format!("bar#{}", shown.0),
             ApprovalEffect::Redraw { shown } => format!("redraw#{}", shown.0),
+            // 2026-11-22 (S4 W14a): no scenario here has an AI panel (no explanation worker),
+            // so no golden line names it.
+            ApprovalEffect::RepaintAi {
+                shown,
+                body_only: false,
+            } => format!("ai#{}", shown.0),
+            ApprovalEffect::RepaintAi { shown, .. } => format!("ai-body#{}", shown.0),
         })
         .collect();
     let mut out: Vec<String> = Vec::new();

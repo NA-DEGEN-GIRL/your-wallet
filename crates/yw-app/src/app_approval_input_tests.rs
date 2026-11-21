@@ -2110,6 +2110,94 @@ fn ai_never_touches_the_gate() {
     assert!(flow.contains("self.session.set_foreground("));
 }
 
+/// The AI panel's repaints are effects (2026-11-22, S4 W14a; spec/04 §3.8, spec/06 §3.2): a
+/// site `personal_sign` with the explanation panel, on the A3 fixture with the headless approval
+/// host (no window) and the explanation worker on its in-process transport (no socket, no answer
+/// fed back). When the request is ready its AI input goes to the worker and `ai_after` emits one
+/// `RepaintAi { body_only: false }` (the AI body and A01; before W14a it invalidated both
+/// itself); while that request waits, `ai_tick` emits `RepaintAi { body_only: true }` (the AI
+/// body alone) in the first 50 ms of each second and nothing later in that second; the shell
+/// applies them for the window of that `ShownId` only (`approval_repaint_ai`). Not in the gate's
+/// goldens: no golden scenario has an explanation worker, and a repaint has no answer.
+#[test]
+fn the_ai_panel_repaints_through_an_effect() {
+    use super::headless_host::{self, OpenAnswer};
+    use crate::approval_flow::ApprovalFlow;
+    use crate::explain::AiPanelState;
+    use yw_engine::approval::flow::ApprovalEffect;
+
+    fn repaints() -> Vec<ApprovalEffect> {
+        headless_host::take_effects()
+            .into_iter()
+            .filter(|effect| matches!(effect, ApprovalEffect::RepaintAi { .. }))
+            .collect()
+    }
+
+    let fx = Fixture::new("ai-repaint", HostMode::Hidden);
+    headless_host::install(OpenAnswer::Shown);
+    fx.app().llm = Some(no_network_llm());
+    let outlet = dapp(&fx, false, true);
+    personal_sign(&fx, &outlet, 1, 600_000);
+    let shown = fx
+        .app
+        .borrow()
+        .evm
+        .approval
+        .as_ref()
+        .map(ApprovalFlow::shown)
+        .expect("the personal_sign is shown");
+    assert_eq!(
+        repaints(),
+        [ApprovalEffect::RepaintAi {
+            shown,
+            body_only: false
+        }],
+        "the input handed to the worker repaints the AI body and the window"
+    );
+    let requesting = matches!(
+        fx.app
+            .borrow()
+            .evm
+            .approval
+            .as_ref()
+            .and_then(ApprovalFlow::ai)
+            .map(|ai| ai.panel.state()),
+        Some(AiPanelState::Requesting { .. })
+    );
+    assert!(requesting, "the request waits for the worker");
+    let second = (fx.clock.peek() / 1_000 + 1) * 1_000;
+    for (now, expected) in [
+        (
+            second + 10,
+            vec![ApprovalEffect::RepaintAi {
+                shown,
+                body_only: true,
+            }],
+        ),
+        (second + 60, Vec::new()),
+        (
+            second + 1_049,
+            vec![ApprovalEffect::RepaintAi {
+                shown,
+                body_only: true,
+            }],
+        ),
+    ] {
+        {
+            let mut app = fx.app();
+            app.ai_tick(now);
+            app.drain();
+        }
+        assert_eq!(repaints(), expected, "the tick at +{}", now - second);
+    }
+    {
+        let mut app = fx.app();
+        app.close_approval_window();
+        app.drain();
+    }
+    headless_host::remove();
+}
+
 /// S6 (S4 B5, plan §4.4; spec/15 §11.4 S4): the approval flow names no window. The functions of
 /// `app_approval.rs` from `show_next_approval` up to `interaction()` (queue, open, prepare,
 /// results, close, finish, approve, re-simulation, consume, tick) and the view rebuild name no

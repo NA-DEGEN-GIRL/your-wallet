@@ -2935,7 +2935,31 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// (`approval_finished` in `app_evm.rs`, `approval_lang` in `app_approval.rs`) is W14a's. None
 /// of the files had other shell reach left, so the row lists its fns; no W13 fn is self-less
 /// or takes an `App` in a closure.
-static WALLET_FNS: [(&str, &str); 886] = [
+/// W14a (2026-11-22, preflight §3 W14a, critic C5; owner's second batch: the approval code
+/// stays in `app_approval.rs`, no `wallet_approval.rs`): the approval queue, prepare and results
+/// (`app_approval.rs`: the queue entry `show_next_approval*` and the steps kept for an open
+/// `run_after_open` … `approval_open_answered`, the connect state, the open `open_approval` and
+/// its answer `on_approval_opened`, `approval_open_failed`, the preparation `start_prepare`,
+/// `prepare_transaction`, `prepare_site`, the message chain and language helpers, the results
+/// `on_typed_facts`, `on_simulating`, `on_prepared`, `on_resimulated`, the drafts
+/// `show_ready_draft*`, the failure `show_failure`, the end `close_approval_window`/
+/// `finish_approval`, `shown_now`, the main-timer part `tick_approval` and the view
+/// `rebuild_view*`; `app_evm.rs`: the app send's queue entry `enqueue_app` and
+/// `approval_finished`) and the AI explanation's flow, which the preflight left unplaced
+/// (`llm_busy`, `ai_after`, `ai_ready*`, `ai_tick`, `ai_retry`, `on_llm_done`). Their last shell
+/// reach is removed here: `ai_after` invalidated the AI body and A01 and `ai_tick` the AI body
+/// (`approval_win`); both now emit `Effect::Approval(ApprovalEffect::RepaintAi)` (standing
+/// decision, spec/15 §18 23). The test builds' pairing check `assert_flow_and_window_in_step`
+/// (the shell's) is no longer called by `on_approval_opened` and `close_approval_window` (critic
+/// C5; `App::drain` checks it; [`wallet_fns_name_no_shell_in_test_builds`]). The shell's fns of
+/// the file stay out: the executor arm `apply_approval_effect` and its window fns, the window
+/// procedures, `run_steps`/`run_step`, the paint fns, `ai_scroll_by` and the tests' entries. The
+/// approval entry's W14b half (`approved`, `start_resimulation`, `consume_and_sign`,
+/// `dispatch_evm_sign`, `on_approval_input`, `approval_event`, `retry_action`) is W14b's.
+/// `prepare_transaction`, `prepare_site` and `on_typed_facts` call W10's self-less
+/// `new_approval_id` as `Self::new_approval_id()` (W14c-2 rewrites those paths, critic C10); no
+/// W14a fn takes an `App` in a closure.
+static WALLET_FNS: [(&str, &str); 932] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -3822,6 +3846,52 @@ static WALLET_FNS: [(&str, &str); 886] = [
     ("W13", "on_rpc_json_read"),
     ("W13", "finish_rpc_import"),
     ("W13", "push_rejected"),
+    ("W14a", "show_next_approval"),
+    ("W14a", "show_next_approval_then"),
+    ("W14a", "show_next_approval_with"),
+    ("W14a", "run_after_open"),
+    ("W14a", "close_if_shown"),
+    ("W14a", "btc_receive_shown"),
+    ("W14a", "esplora_field_shows"),
+    ("W14a", "after_pending_open"),
+    ("W14a", "approval_open_answered"),
+    ("W14a", "connect_state"),
+    ("W14a", "connect_origin_chain"),
+    ("W14a", "evm_chain_label"),
+    ("W14a", "refresh_connect_chain"),
+    ("W14a", "open_approval"),
+    ("W14a", "on_approval_opened"),
+    ("W14a", "approval_open_failed"),
+    ("W14a", "start_prepare"),
+    ("W14a", "prepare_transaction"),
+    ("W14a", "prepare_site"),
+    ("W14a", "message_chain_failure"),
+    ("W14a", "approval_lang"),
+    ("W14a", "message_chain"),
+    ("W14a", "on_typed_facts"),
+    ("W14a", "show_failure"),
+    ("W14a", "close_approval_window"),
+    ("W14a", "shown_now"),
+    ("W14a", "finish_approval"),
+    ("W14a", "on_simulating"),
+    ("W14a", "on_prepared"),
+    ("W14a", "show_ready_draft"),
+    ("W14a", "show_ready_draft_at"),
+    ("W14a", "on_resimulated"),
+    ("W14a", "tick_approval"),
+    ("W14a", "rebuild_view"),
+    ("W14a", "rebuild_view_with"),
+    ("W14a", "enqueue_app"),
+    ("W14a", "approval_finished"),
+    ("W14a", "llm_busy"),
+    ("W14a", "ai_after"),
+    ("W14a", "ai_ready"),
+    ("W14a", "ai_ready_tx"),
+    ("W14a", "ai_ready_message"),
+    ("W14a", "ai_ready_typed"),
+    ("W14a", "ai_tick"),
+    ("W14a", "ai_retry"),
+    ("W14a", "on_llm_done"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
@@ -4230,6 +4300,81 @@ fn wallet_fns_name_no_shell() {
     assert!(errors.is_empty(), "{}", errors.join("\n"));
     let names: BTreeSet<&str> = WALLET_FNS.iter().map(|&(_, name)| name).collect();
     assert_eq!(names.len(), WALLET_FNS.len(), "a fn listed twice");
+}
+
+/// The yw-app production sources as test builds compile them (2026-11-22, S4 W14a): as
+/// [`production_code`] leaves them, but with their `#[cfg(test)]` items kept.
+fn test_build_code() -> Vec<Src> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    let mut stack = vec![src.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let rel = path
+                    .strip_prefix(&src)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if !is_test_file(false, &rel) {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    found.push(Src::new(format!("yw-app/src/{rel}"), code_only(&text)));
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| a.file.cmp(&b.file));
+    found
+}
+
+/// `wallet_fns_name_no_shell_in_test_builds` (2026-11-22, S4 W14a, preflight critic C5):
+/// [`wallet_fns_name_no_shell`] reads the code release builds compile, so a `#[cfg(test)]`
+/// statement of a listed fn that calls a shell fn went unseen — the flow's calls of
+/// `assert_flow_and_window_in_step` (a `#[cfg(test)]` fn of the shell that reads
+/// `approval_win`) in `on_approval_opened`, `close_approval_window` and `on_approval_input`
+/// were such statements, and W14c, which makes the listed fns `impl Wallet`, would not compile
+/// in test builds. Here the same scan runs over the yw-app sources with their `#[cfg(test)]`
+/// items kept ([`test_build_code`]): no listed fn calls an `impl App` fn of the test build's
+/// shell closure ([`shell_namers`] plus [`SHELL_FNS`], at any depth, [`shell_closure`]) that
+/// the release build's scan does not already reject, i.e. a test-only shell fn. It finds
+/// `assert_flow_and_window_in_step` among them (A-20).
+#[test]
+fn wallet_fns_name_no_shell_in_test_builds() {
+    let files = test_build_code();
+    let app = src_of(&files, "yw-app/src/app.rs");
+    let shell = shell_fields(app);
+    let fns = app_fns(&files);
+    let mut seed = shell_namers(&fns, &shell);
+    seed.extend(SHELL_FNS.iter().map(|&name| name.to_owned()));
+    let release: BTreeSet<String> = app_fns(&production_code()).into_keys().collect();
+    let test_only: BTreeSet<String> = shell_closure(&fns, seed)
+        .into_iter()
+        .filter(|name| !release.contains(name))
+        .collect();
+    assert!(
+        test_only.contains("assert_flow_and_window_in_step"),
+        "the test builds' pairing check is a test-only shell fn: {test_only:?}"
+    );
+    let mut errors = Vec::new();
+    for &(row, name) in &WALLET_FNS {
+        let Some(bodies) = fns.get(name) else {
+            errors.push(format!("{row} {name}: no fn of impl App"));
+            continue;
+        };
+        for (file, body, _) in bodies {
+            let calls: Vec<String> = app_calls(body)
+                .into_iter()
+                .filter(|call| test_only.contains(call))
+                .collect();
+            if !calls.is_empty() {
+                errors.push(format!("{file}: {row} fn {name} calls {calls:?}"));
+            }
+        }
+    }
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
 
 /// The secret form's actions split at `on_secret_action` (2026-11-22, S4c W12, preflight critic
