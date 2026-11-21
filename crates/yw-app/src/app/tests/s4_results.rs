@@ -4406,12 +4406,24 @@ fn wallet_fns_name_no_shell_in_test_builds() {
 /// flow's issued request, and that fn is wallet code ([`WALLET_FNS`], W14b), so no shell fn
 /// consumes and W14c makes it `impl Wallet`. Before W14b nothing checked the count; the store's
 /// own tests (`x14_one_shot_consumption`) pin that only `consume` makes an `Approved`.
+///
+/// 2026-11-22 (S4 W14ab review): the check found only the method-call text `.consume(`, so a
+/// path call (`ApprovalStore::consume(&mut self.evm.store, …)`, `<_>::consume(`) or the method
+/// named as a value (`.map(ApprovalStore::consume)`) got past it. It now counts every
+/// `consume` identifier token of the production code (whole word, a `fn consume` too), so the
+/// one site is the only mention of the name at all.
 #[test]
 fn the_only_consume_is_wallet_code() {
     let files = production_code();
     let mut sites = Vec::new();
     for src in &files {
-        for (at, _) in src.code.match_indices(".consume(") {
+        let bytes = src.code.as_bytes();
+        for (at, word) in src.code.match_indices("consume") {
+            let before = at.checked_sub(1).and_then(|i| bytes.get(i).copied());
+            let after = bytes.get(at + word.len()).copied();
+            if before.is_some_and(is_ident) || after.is_some_and(is_ident) {
+                continue;
+            }
             let func = fn_at(&src.code, &src.blocks, at).unwrap_or_default();
             sites.push(format!("{}:{func}", src.file));
         }

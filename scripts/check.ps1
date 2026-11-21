@@ -187,7 +187,8 @@ $env:YW_FUZZ_RUNS = $null                                             # 직접 -
 # 2026-11-20(S4 B7 검토): 최소 수는 실제 수다 — flow_tests 80은 창 있는 시험 79(단계 A의 66에 F1 검토·F2·B5 검토·B6이 더한
 # 13)와 창 없는 print_headless 하나. 그 전에는 단계 A 끝의 66이라 창 있는 시험 14개가 빠져도 31이 나지 않았다. 시험을 더하거나
 # 빼는 커밋이 이 수를 함께 고친다.
-$WinuiMinimum = [ordered]@{ "app_approval::flow_support" = 3; "app_approval::flow_tests" = 80; "app_approval::input_tests" = 9 }
+# 2026-11-22(S4 W14ab 검토): input_tests 9 → 10 — RepaintAi 실행 팔을 실제(숨긴) 창에서 보는 the_ai_repaint_reaches_only_its_window를 더했다.
+$WinuiMinimum = [ordered]@{ "app_approval::flow_support" = 3; "app_approval::flow_tests" = 80; "app_approval::input_tests" = 10 }
 $winuiArgs = @("test", "-p", "yw-app", "--lib") + $net + $config + @("--", "--ignored")
 if ($Step -in "all", "winui") {
     Write-Host "check: winui (list)"

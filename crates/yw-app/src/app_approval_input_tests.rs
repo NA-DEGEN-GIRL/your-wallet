@@ -2198,6 +2198,118 @@ fn the_ai_panel_repaints_through_an_effect() {
     headless_host::remove();
 }
 
+/// The shell applies the AI panel's repaints to the window of their `ShownId` only (2026-11-22,
+/// S4 W14ab review; spec/04 §3.8, spec/06 §3.2): `approval_repaint_ai`, the executor arm of
+/// `Effect::Approval(RepaintAi)`, on real hidden windows. A hidden window gets no update region,
+/// so the arm's invalidations are read from its `cfg(test)` record (`TEST_AI_REPAINTS`). On the
+/// AI window (a site `personal_sign` with the explanation panel, the A3 fixture, the worker on
+/// its in-process transport, no answer fed back): the input handed to the worker at the open
+/// invalidates the AI body, then A01; `ai_tick` in the first 50 ms of a second the AI body
+/// alone, later in that second nothing; a `RepaintAi` of another `ShownId` nothing, either
+/// width. On the Standard window (no AI body): `body_only: false` invalidates A01 alone and
+/// `body_only: true` nothing. Before this test only the effect's emission was checked
+/// (`the_ai_panel_repaints_through_an_effect`, headless), so an arm that never repainted the
+/// AI body passed the gate.
+#[test]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
+fn the_ai_repaint_reaches_only_its_window() {
+    use super::TEST_AI_REPAINTS;
+    use crate::approval_flow::ApprovalFlow;
+    use yw_engine::approval::flow::{ApprovalEffect, ShownId};
+    use yw_engine::effect::Effect;
+
+    /// Stops the record when the test ends, also on a failed assertion.
+    struct Recording;
+    impl Drop for Recording {
+        fn drop(&mut self) {
+            TEST_AI_REPAINTS.with(|log| *log.borrow_mut() = None);
+        }
+    }
+    fn take() -> Vec<&'static str> {
+        TEST_AI_REPAINTS
+            .with(|log| log.borrow_mut().as_mut().map(std::mem::take))
+            .unwrap_or_default()
+    }
+    fn shown_of(opened: &Opened) -> ShownId {
+        opened
+            .fx
+            .app
+            .borrow()
+            .evm
+            .approval
+            .as_ref()
+            .map(ApprovalFlow::shown)
+            .expect("the window's flow")
+    }
+    fn repaint(opened: &Opened, shown: ShownId, body_only: bool) -> Vec<&'static str> {
+        {
+            let mut app = opened.fx.app();
+            app.emit(Effect::Approval(ApprovalEffect::RepaintAi {
+                shown,
+                body_only,
+            }));
+            app.drain();
+        }
+        take()
+    }
+
+    let _recording = Recording;
+    TEST_AI_REPAINTS.with(|log| *log.borrow_mut() = Some(Vec::new()));
+    let ai = open(Kind::Ai, BG_UP, "ai-repaint-win", false);
+    assert!(
+        ai.fx
+            .app
+            .borrow()
+            .approval_win
+            .as_ref()
+            .is_some_and(|win| win.ai.is_some()),
+        "the AI window has its AI body"
+    );
+    assert_eq!(
+        take(),
+        ["ai-body", "a01"],
+        "the input handed to the worker at the open"
+    );
+    let shown = shown_of(&ai);
+    let second = (ai.fx.clock.peek() / 1_000 + 1) * 1_000;
+    for (now, expected) in [(second + 10, vec!["ai-body"]), (second + 60, Vec::new())] {
+        {
+            let mut app = ai.fx.app();
+            app.ai_tick(now);
+            app.drain();
+        }
+        assert_eq!(take(), expected, "the tick at +{}", now - second);
+    }
+    let stale = ShownId(shown.0.wrapping_add(1));
+    assert_eq!(
+        repaint(&ai, stale, false),
+        Vec::<&str>::new(),
+        "stale, A01 too"
+    );
+    assert_eq!(
+        repaint(&ai, stale, true),
+        Vec::<&str>::new(),
+        "stale, body only"
+    );
+    assert_eq!(
+        repaint(&ai, shown, false),
+        ["ai-body", "a01"],
+        "shown, A01 too"
+    );
+    assert_eq!(repaint(&ai, shown, true), ["ai-body"], "shown, body only");
+    drop(ai);
+
+    let std = open(Kind::Std, BG_UP, "ai-repaint-std", false);
+    let _ = take();
+    let shown = shown_of(&std);
+    assert_eq!(repaint(&std, shown, false), ["a01"], "no AI body, A01 too");
+    assert_eq!(
+        repaint(&std, shown, true),
+        Vec::<&str>::new(),
+        "no AI body, body only"
+    );
+}
+
 /// S6 (S4 B5, plan §4.4; spec/15 §11.4 S4): the approval flow names no window. The functions of
 /// `app_approval.rs` from `show_next_approval` up to `interaction()` (queue, open, prepare,
 /// results, close, finish, approve, re-simulation, consume, tick) and the view rebuild name no

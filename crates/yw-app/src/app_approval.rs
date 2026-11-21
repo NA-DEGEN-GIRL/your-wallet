@@ -971,6 +971,20 @@ thread_local! {
     /// usually may not take the foreground.
     pub(crate) static TEST_FORCE_FOREGROUND: core::cell::Cell<bool> =
         const { core::cell::Cell::new(false) };
+    /// The surfaces `approval_repaint_ai` invalidated, in order (`"ai-body"`, `"a01"`), while a
+    /// test records them (`Some`); `None`: not recording (2026-11-22, S4 W14ab review).
+    pub(crate) static TEST_AI_REPAINTS: core::cell::RefCell<Option<Vec<&'static str>>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+/// Records one invalidation of `approval_repaint_ai` while a test records them.
+#[cfg(test)]
+fn trace_ai_repaint(surface: &'static str) {
+    TEST_AI_REPAINTS.with(|log| {
+        if let Some(log) = log.borrow_mut().as_mut() {
+            log.push(surface);
+        }
+    });
 }
 
 // The Win32 side effects of A01 (spec/04 §3.4) go through the small functions below, each a
@@ -3596,13 +3610,20 @@ impl App {
     /// `body_only`, the window, are invalidated. Nothing for a window that is not open under
     /// `shown`. (2026-11-22, S4 W14a: was inline in `ai_after` — the AI body then A01 of the
     /// window open then — and in `ai_tick` — the AI body alone; both now emit it.)
+    /// 2026-11-22 (S4 W14ab review): test builds record each invalidation in
+    /// [`TEST_AI_REPAINTS`] (a hidden window gets no update region, so Win32 cannot show it);
+    /// the winui test `input_tests::the_ai_repaint_reaches_only_its_window` reads it.
     fn approval_repaint_ai(&self, shown: ShownId, body_only: bool) {
         if let Some(win) = self.approval_win.as_ref().filter(|win| win.shown == shown) {
             if let Some(ai) = win.ai.as_ref() {
                 ai.body.invalidate();
+                #[cfg(test)]
+                trace_ai_repaint("ai-body");
             }
             if !body_only {
                 win.window.invalidate();
+                #[cfg(test)]
+                trace_ai_repaint("a01");
             }
         }
     }
