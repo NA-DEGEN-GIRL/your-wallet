@@ -1986,6 +1986,154 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
     assert!(app.approval_win.is_none(), "no window was made");
 }
 
+/// Grants `origin` the Solana account (`sol`) or a Bitcoin payment address in the dispatcher.
+fn chain_grant(
+    core: &crate::browser::BrowserCore,
+    origin: &yw_core::policy::BrowserOrigin,
+    sol: bool,
+) -> bool {
+    use yw_core::btc::{BtcNetwork, BtcPubKey, ScriptType};
+    use yw_core::policy::{BtcGrant, BtcGrantAddress, BtcPurpose, SolGrant};
+
+    if sol {
+        return core.upsert_sol_grant(SolGrant {
+            origin: origin.clone(),
+            public: yw_core::codec::base58::base58_decode_32(SOL_KEY).unwrap(),
+            granted_at_unix_ms: 1,
+        });
+    }
+    // BIP84 test vector address (public test mnemonic), as in the chain-sites tests.
+    core.upsert_btc_grant(BtcGrant {
+        origin: origin.clone(),
+        network: BtcNetwork::Mainnet,
+        addresses: vec![BtcGrantAddress {
+            purpose: BtcPurpose::Payment,
+            address: "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu".to_owned(),
+            pubkey: BtcPubKey::Compressed([2; 33]),
+            script_type: ScriptType::P2wpkh,
+        }],
+        granted_at_unix_ms: 1,
+    })
+}
+
+/// How many Solana (`sol`) or Bitcoin sites the meta document holds.
+fn saved_chain_sites(meta: &crate::meta::Meta, sol: bool) -> usize {
+    if sol {
+        meta.chain_sites.sol.len()
+    } else {
+        meta.chain_sites.btc.len()
+    }
+}
+
+/// 2026-11-21 (S4 F16 review, spec/05 §4.5, spec/15 §18 item 16): the Solana and Bitcoin revokes
+/// (`GrantChange::SolRevoked`, `GrantChange::BtcRevoked`, the dApp's `sol_disconnect` and
+/// `btc_disconnect`) are noted as waiting writes too, and a lock before the open's answer writes
+/// them. The deferred-answer shape of [`a_lock_keeps_a_revoke_whose_write_waits_for_an_open`],
+/// one fixture per family, checked on the last saved meta document's `chain_sites.sol`/`btc`
+/// (the review's mutation that noted `GrantChange::Revoked` only left the yw-app lib green).
+/// Headless, no window; files only below each fixture's temp folder.
+#[test]
+fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
+    use yw_core::policy::BrowserOrigin;
+    use yw_engine::effect::Effect;
+
+    use crate::app_approval::AfterOpen;
+    use crate::browser::{DappEvent, GrantChange};
+
+    for (tag, change) in [
+        ("revoke-lock-deferred-sol", GrantChange::SolRevoked),
+        ("revoke-lock-deferred-btc", GrantChange::BtcRevoked),
+    ] {
+        let sol = matches!(change, GrantChange::SolRevoked);
+        let sites = |meta: &crate::meta::Meta| saved_chain_sites(meta, sol);
+        let fx = fixture(tag);
+        let outlet = dapp(&fx, false, true);
+        let core = Arc::clone(&fx.app.borrow().browser.as_ref().unwrap().core);
+        let other = BrowserOrigin::parse(OTHER).unwrap();
+        assert!(chain_grant(&core, &other, sol), "{tag}: granted");
+        fx.app().write_grants();
+        assert_eq!(
+            last_saved_meta(fx.key_jobs()).as_ref().map(sites),
+            Some(1),
+            "{tag}: the site is saved"
+        );
+        personal_sign_frame_only(&fx, &outlet, &core);
+        let _ = headless_host::take_effects();
+        // Entry 1: the open is asked for; the revoke's write is kept for its answer.
+        let held: Vec<Effect> = {
+            let mut app = fx.app();
+            for event in outlet.events.drain() {
+                if let UiEvent::Dapp(event) = event {
+                    app.on_dapp_event(event);
+                }
+            }
+            assert!(
+                app.evm.open_unanswered.is_some(),
+                "{tag}: the open is queued"
+            );
+            let removed = if sol {
+                core.remove_sol_grant(&other)
+            } else {
+                core.remove_btc_grant(&other)
+            };
+            assert!(removed, "{tag}: the dispatcher's revoke");
+            app.on_dapp_event(DappEvent::GrantChanged {
+                origin: other.clone(),
+                change,
+            });
+            assert!(
+                app.evm
+                    .after_open
+                    .iter()
+                    .any(|(_, after)| matches!(after, AfterOpen::WriteGrantsThenRefresh)),
+                "{tag}: the revoke's write waits for the open's answer"
+            );
+            assert!(
+                app.browser
+                    .as_ref()
+                    .is_some_and(|browser| browser.grant_write.revoke),
+                "{tag}: and is noted as waiting"
+            );
+            app.outbox.drain(..).collect()
+        };
+        assert!(
+            last_saved_meta(fx.key_jobs()).is_none(),
+            "{tag}: nothing written yet"
+        );
+        // Entry 2: a lock writes the waiting revoke before it drops the kept step.
+        {
+            let mut app = fx.app();
+            app.lock(LockReason::Manual);
+            assert!(
+                app.evm.after_open.is_empty(),
+                "{tag}: the lock dropped the step"
+            );
+            assert!(
+                app.browser
+                    .as_ref()
+                    .is_some_and(|browser| !browser.grant_write.revoke),
+                "{tag}: the lock took the noted write"
+            );
+        }
+        assert_eq!(
+            last_saved_meta(fx.key_jobs()).as_ref().map(sites),
+            Some(0),
+            "{tag}: the lock saved the revoke"
+        );
+        // Entry 3: the shell applies the held effects; the stale open is answered.
+        {
+            let mut app = fx.app();
+            for effect in held {
+                app.emit(effect);
+            }
+        }
+        assert_eq!(dapp_answers(&outlet), "4001 User rejected the request.");
+        let app = fx.app.borrow();
+        assert!(app.evm.after_open.is_empty());
+        assert!(app.approval_win.is_none(), "{tag}: no window was made");
+    }
+}
+
 /// The store state of request `id` (shown before a revoke or cancel), without the windowed
 /// fact's window count.
 fn store_fact(fx: &Fixture, id: Option<ApprovalId>) -> String {

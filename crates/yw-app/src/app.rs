@@ -2734,6 +2734,8 @@ impl App {
         // (`AfterOpen::WriteGrantsThenRefresh`) was done above by `browser_lock_begin`'s
         // `flush_grant_writes`, while meta and the dispatcher's grants were still there; only
         // its repaint is dropped here (the lock repaints). Before F16 the write was dropped too.
+        // Not at shutdown (F16 review): the mode is already `ShuttingDown`, so the flush wrote
+        // nothing (spec/15 §18 item 21, open).
         self.evm.after_open.clear();
         self.evm.open_unanswered = None;
         let before = self.lock_signal.count();
