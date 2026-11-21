@@ -246,17 +246,34 @@ impl Provider {
     }
 }
 
-/// One accepted network (`HttpsUrl`'s `Debug` shows only `https://[redacted]`).
-#[derive(Debug)]
+/// One accepted network.
 pub struct ImportEntry {
     /// Network.
     pub network: NetworkId,
-    /// The URL (secret).
-    pub url: HttpsUrl,
+    /// The URL (secret): the normalized text of the `HttpsUrl` the check parsed
+    /// (`HttpsUrl::expose`, which parses back to the same `HttpsUrl`), wiped on drop
+    /// (2026-11-22, S4c W13 review, critique B-5: before, an `HttpsUrl`, whose strings are not
+    /// wiped). The `HttpsUrl`s made from it for a moment (the check, the template comparison,
+    /// [`apply_plan`]) are not wiped: yw-platform has no wipe, and every RPC URL the app uses is
+    /// such an `HttpsUrl` (`ApiKeys::rpc_url`).
+    pub url: Zeroizing<String>,
     /// Provider.
     pub provider: Provider,
     /// The detected `QuickNode` template produces exactly this URL.
     pub fits_template: bool,
+}
+
+/// The URL is redacted, as `HttpsUrl`'s `Debug` was (`Zeroizing`'s own `Debug` would print it).
+impl fmt::Debug for ImportEntry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ImportEntry")
+            .field("network", &self.network)
+            .field("url", &format_args!("https://[redacted]"))
+            .field("provider", &self.provider)
+            .field("fits_template", &self.fits_template)
+            .finish()
+    }
 }
 
 /// What the file offers (kept until `가져오기` / `취소`): the plan critique B-5 calls
@@ -272,9 +289,10 @@ pub struct ImportPlan {
     /// Keys that are not a network of the URL list.
     pub ignored: usize,
     /// One `QuickNode` endpoint name + token behind every URL, both wiped on drop (2026-11-22,
-    /// S4c W13, critique B-5: before, the name was a plain `String`). The URLs are
-    /// `HttpsUrl`s, the type `ApiKeys` stores them in (yw-platform has no wipe; `Debug` and
-    /// `Display` redact them), as before.
+    /// S4c W13, critique B-5: before, the name was a plain `String`). Since the W13 review
+    /// (2026-11-22) the entries' URLs, which hold the same name and token, are wiped too
+    /// ([`ImportEntry::url`]); the W13 note here said they stayed `HttpsUrl`s "the type
+    /// `ApiKeys` stores them in", which was wrong: `ApiKeys` keeps wiped strings.
     pub quicknode: Option<(Zeroizing<String>, Zeroizing<String>)>,
 }
 
@@ -333,7 +351,7 @@ pub fn plan_from_bytes(
         match item.as_str().and_then(check_url) {
             Some((url, provider)) => plan.entries.push(ImportEntry {
                 network,
-                url,
+                url: Zeroizing::new(url.expose().to_owned()),
                 provider,
                 fits_template: false,
             }),
@@ -341,24 +359,31 @@ pub fn plan_from_bytes(
         }
     }
     drop(value);
-    let mut credentials = plan
-        .entries
-        .iter()
-        .map(|entry| parse_quicknode_url(entry.url.expose()));
+    // Every endpoint name is wiped as soon as it is parsed (2026-11-22, S4c W13 review; before,
+    // the names `parse_quicknode_url` returns were dropped as plain `String`s).
+    let mut credentials = plan.entries.iter().map(|entry| {
+        parse_quicknode_url(&entry.url).map(|(name, token)| (Zeroizing::new(name), token))
+    });
     let first = credentials.next().flatten();
     if let Some(first) = first
         && credentials.all(|other| other.as_ref() == Some(&first))
     {
         let cred = TemplateCred::QuickNode {
-            name: first.0.clone(),
+            name: (*first.0).clone(),
             token: first.1.clone(),
         };
         for entry in &mut plan.entries {
             let wanted = template_entry(RpcTemplate::QuickNode, entry.network, settings);
+            // The same comparison as `HttpsUrl`'s before: both texts are normalized, and an
+            // `HttpsUrl` is a function of its normalized text.
             entry.fits_template = template_url(RpcTemplate::QuickNode, &cred, wanted.as_ref())
-                .is_some_and(|url| url == entry.url);
+                .is_some_and(|url| url.expose() == entry.url.as_str());
         }
-        plan.quicknode = Some((Zeroizing::new(first.0), first.1));
+        // yw-engine's `TemplateCred` keeps the name as a plain `String`: wiped here.
+        if let TemplateCred::QuickNode { name, .. } = cred {
+            drop(Zeroizing::new(name));
+        }
+        plan.quicknode = Some(first);
     }
     Ok(plan)
 }
@@ -399,7 +424,12 @@ pub fn apply_plan(keys: &mut ApiKeys, plan: &ImportPlan, overwrite: bool) -> App
             applied.kept.push(entry.network);
             continue;
         }
-        keys.set_rpc(entry.network, &entry.url);
+        // The entry holds `HttpsUrl::expose` text, which parses back to the same `HttpsUrl`
+        // (2026-11-22, S4c W13 review), so this never skips one.
+        let Ok(url) = HttpsUrl::parse(&entry.url) else {
+            continue;
+        };
+        keys.set_rpc(entry.network, &url);
         applied.written.push(entry.network);
     }
     if let Some((name, token)) = &plan.quicknode
@@ -826,7 +856,16 @@ mod tests {
         let applied = apply_plan(&mut keys, &plan, true);
         assert_eq!(applied.written.len(), 7);
         assert!(applied.template);
-        assert!(keys.rpc_url(NetworkId::Eip155(1)) == Some(plan.entries[0].url.clone()));
+        assert!(
+            keys.rpc_url(NetworkId::Eip155(1))
+                .is_some_and(|url| url.expose() == plan.entries[0].url.as_str())
+        );
+        // 2026-11-22 (S4c W13 review): an entry keeps the normalized text, which parses back
+        // to itself, so `apply_plan` writes every entry it does not keep.
+        for entry in &plan.entries {
+            let url = yw_platform::http::HttpsUrl::parse(&entry.url).unwrap();
+            assert_eq!(url.expose(), entry.url.as_str());
+        }
 
         // Duplicate keys and non-objects are format errors; a bad value is a rejected network.
         let duplicate = br#"{"eip155:1":"a","eip155:1":"b"}"#;
@@ -859,6 +898,13 @@ mod tests {
             text,
             "ImportPlan { entries: 7, rejected: 0, ignored: 1, quicknode: true }"
         );
+        // 2026-11-22 (S4c W13 review): an entry's URL is a wiped string now, and its `Debug`
+        // still redacts it (`Zeroizing`'s own would print it).
+        let entry_text = format!("{:?}", plan.entries[0]);
+        assert!(entry_text.contains("https://[redacted]"), "{entry_text}");
+        for secret in [NAME, TOKEN, "quiknode"] {
+            assert!(!entry_text.contains(secret), "{entry_text}");
+        }
         let state = super::RpcImportUi {
             plan: Some(plan),
             ..super::RpcImportUi::default()

@@ -4441,7 +4441,11 @@ const RPC_IMPORT_WALLET_FNS: [&str; 6] = [
 /// source names the plan's types: a plan holds RPC URLs and an endpoint token, so it never
 /// travels in a `Cmd` or an `Effect` (§7.1). Before W13, the press handler's arms and
 /// `begin_rpc_import`/`delete_rpc_json` wrote the import state, the band and the confirmation
-/// themselves. It finds every fn and source it names (A-20).
+/// themselves. It finds every fn and source it names (A-20). Since the W13 review
+/// (2026-11-22) also: no wallet half calls one of the shell's three fns, those are called only
+/// from the press path (`on_family` → `on_rpc_import` → the read or the delete), and
+/// `finish_rpc_import` keeps B-5's order (apply → `save_apikeys` → `save_settings` →
+/// `fill_template_gaps` → `queue_rpc_tests`), which the lifecycle scenario pins only in part.
 #[test]
 fn the_rpc_import_plan_enters_the_wallet_typed() {
     let files = production_code();
@@ -4485,7 +4489,14 @@ fn the_rpc_import_plan_enters_the_wallet_typed() {
         ] {
             assert!(!text.contains(file_step), "{wallet_fn} names {file_step}");
         }
+        // 2026-11-22 (S4c W13 review): nor through the shell's fns, which do the file work
+        // (a call of `on_rpc_import(…DeleteConfirm)` from a wallet half passed before).
+        let calls = app_calls(bodies[0]);
+        for (shell_fn, _) in RPC_IMPORT_SHELL_CALLS {
+            assert!(!calls.contains(shell_fn), "{wallet_fn} calls {shell_fn}");
+        }
     }
+    finish_rpc_import_keeps_its_order(import);
     let callers_of = |wanted: &str| {
         files
             .iter()
@@ -4506,6 +4517,17 @@ fn the_rpc_import_plan_enters_the_wallet_typed() {
         callers_of("on_rpc_json_deleted"),
         ["yw-app/src/app_rpc_import.rs:delete_rpc_json"]
     );
+    // The shell's fns are reached from the press path only (2026-11-22, S4c W13 review): the
+    // family router, then the press handler. No wallet fn reaches the file work through them,
+    // directly or through a helper.
+    assert_eq!(callers_of("on_rpc_import"), ["yw-app/src/app.rs:on_family"]);
+    for shell_step in ["begin_rpc_import", "delete_rpc_json"] {
+        assert_eq!(
+            callers_of(shell_step),
+            ["yw-app/src/app_rpc_import.rs:on_rpc_import"],
+            "{shell_step}'s callers"
+        );
+    }
     let carriers: Vec<&Src> = files
         .iter()
         .filter(|src| {
@@ -4522,6 +4544,38 @@ fn the_rpc_import_plan_enters_the_wallet_typed() {
         for name in ["ImportPlan", "ImportEntry", "RpcImportPlan", "HttpsUrl"] {
             assert!(!src.code.contains(name), "{} names {name}", src.file);
         }
+    }
+}
+
+/// The confirmation's order (2026-11-22, S4c W13 review; critique B-5: "in today's order"),
+/// part of [`the_rpc_import_plan_enters_the_wallet_typed`]: apply, save the keys, save the
+/// settings, fill the template's gaps, queue the tests. The lifecycle scenario
+/// `rpc_import_on_temp_data` does not see the settings save move past the gap filling, so the
+/// order is read from the source.
+fn finish_rpc_import_keeps_its_order(import: &Src) {
+    let finish = fn_bodies(import, "finish_rpc_import");
+    assert_eq!(finish.len(), 1, "one finish_rpc_import");
+    let finish = normalized(finish[0]);
+    let steps = [
+        "apply_plan(",
+        "self.save_apikeys(",
+        "self.save_settings(",
+        "self.fill_template_gaps(",
+        "self.queue_rpc_tests(",
+    ];
+    for pair in steps.windows(2) {
+        let last = finish
+            .rfind(pair[0])
+            .expect("finish_rpc_import calls the step");
+        let next = finish
+            .find(pair[1])
+            .expect("finish_rpc_import calls the step");
+        assert!(
+            last < next,
+            "finish_rpc_import: {} after {}",
+            pair[0],
+            pair[1]
+        );
     }
 }
 
