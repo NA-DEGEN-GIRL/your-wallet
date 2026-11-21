@@ -2834,7 +2834,40 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// `picker_entries` flip at W14c (preflight §3.0). Neither file had shell reach left, so the row
 /// only lists its fns. `on_send_timer`'s closure `|app: &Self|` reads a wallet field only (no
 /// call); no other W10 fn takes an `App` in a closure or calls through an `App::`/`Self::` path.
-const WALLET_FNS: [(&str, &str); 507] = [
+/// W11 (2026-11-22, preflight §3 W11, critique B-4): the dApp sites, the browser core, the
+/// grants, the waiters and the card step (`app_chain_sites.rs`: the Solana and Bitcoin sites'
+/// rows, connect choices, preflight, sign drafts, the waiter `chain_waiter`, the grant re-checks
+/// `sol_grant_holds`/`btc_grant_holds`/`chain_grant_holds` and the answer
+/// `browser_chain_message_signed`, the removals and `disconnect_chain_site`; `app_browser.rs`:
+/// the grant writes `write_grants`/`flush_grant_writes`, the main-timer part `browser_tick`, the
+/// unlock parts, the dApp event `on_dapp_event` and its answer `respond`, the grants, the
+/// refusals, the site request and its unlock window `open_unlock_for_dapp` (the secret seam, W3a's
+/// `open_input*`), cancel, preflight, revoke and disconnect, the account, key and chain
+/// removals, the connect result, the sign waiters and their grant re-checks `evm_grant_holds`/
+/// `waiter_grant_holds` before the answers `browser_tx_signed`, `browser_message_signed`,
+/// `browser_sign_cancelled` and `browser_broadcast` (spec/05 §4.5), `network_url_changed`,
+/// `reset_read_chain` and `waiting_origins`; `vault_view`, `wallet_view` and `sync_browser` are
+/// W3's, `browser_lock_begin` W3a's; the pipe server is the shell's `PipeHost` since W1;
+/// `app_card.rs`: the card names, enrolment, the card step `card_begin` with its gates, PIN window
+/// `card_open_pin`, submit, cancel, `card_site_gone`/`card_site_check`, the step's form lines and
+/// notices, its release and outcome filter and the main-timer part `card_tick`; `card_lock` is
+/// W3a's; `ui/screens_sites.rs`: the S13 handler `on_sites`). The render builders stay out (D-21;
+/// S4d E0c): `card_pin_banner` (its callers are the screens' render code) and S13's
+/// `sites_page`, `sites_screen`, `chain_site_cards` and `unlock_pending_text`; `Page::button`
+/// (B-4's `button`) is no `impl App` fn, and the test adapters `browser_view_current` and
+/// `on_sites_command` are test code. The approval entry they call (`show_next_approval`,
+/// `show_next_approval_then`, `after_pending_open`, `approval_lang`, `close_approval_window` in
+/// `app_approval.rs`, `approval_finished` in `app_evm.rs`) is W14a's, the phrase and `YubiKey` fns
+/// (`btc_source_unconfirmed`, `evm_account_unconfirmed`, `sol_source_unconfirmed`,
+/// `refuse_unconfirmed`, `mn_connect_tag`, `mnemonic_named`, `yk_enrolled`) W12's and the
+/// `WalletConnect` fns (`origin_display`, `site_origin_text`, `wc_after_unlock`,
+/// `wc_disconnect_all`, `wc_grants_changed`) W13's. None of the four files had shell reach left,
+/// so the row only lists its fns. The self-less `chain_waiter`, `passphrase_refusal`,
+/// `card_role`, `card_outcome_ticket` and `card_outcome_matches` are called as `Self::<fn>(`
+/// (W14c-2 rewrites those paths, critic C10); no W11 fn takes an `App` in a closure.
+/// 2026-11-22 (S4 W11): a `static`, not a `const` (before, `const`): at 617 entries the table
+/// passes clippy's `large_const_arrays` size (16 KiB), and a `static` is one copy, not one per use.
+static WALLET_FNS: [(&str, &str); 617] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -3342,6 +3375,116 @@ const WALLET_FNS: [(&str, &str); 507] = [
     ("W10", "choose_send_asset"),
     ("W10", "on_evm_indexed"),
     ("W10", "record_hash"),
+    ("W11", "btc_network_now"),
+    ("W11", "sol_dapp_rows"),
+    ("W11", "btc_dapp_rows"),
+    ("W11", "chain_unlocked_refusal"),
+    ("W11", "sol_connect_waits_for_account"),
+    ("W11", "chain_connect_choices"),
+    ("W11", "sol_connect_choices"),
+    ("W11", "btc_connect_choices"),
+    ("W11", "chain_choices_current"),
+    ("W11", "chain_connect_approved"),
+    ("W11", "btc_grant_covering"),
+    ("W11", "chain_site_preflight"),
+    ("W11", "chain_sign_draft"),
+    ("W11", "chain_waiter"),
+    ("W11", "sol_grant_holds"),
+    ("W11", "btc_grant_holds"),
+    ("W11", "chain_grant_holds"),
+    ("W11", "browser_chain_message_signed"),
+    ("W11", "sol_account_removed_from_sites"),
+    ("W11", "btc_addresses_removed_from_sites"),
+    ("W11", "chain_grants_removed"),
+    ("W11", "disconnect_chain_site"),
+    ("W11", "write_grants"),
+    ("W11", "flush_grant_writes"),
+    ("W11", "browser_tick"),
+    ("W11", "browser_vault_loaded"),
+    ("W11", "after_browser_unlock"),
+    ("W11", "on_dapp_event"),
+    ("W11", "respond"),
+    ("W11", "browser_grants"),
+    ("W11", "chain_grants"),
+    ("W11", "grant_of"),
+    ("W11", "slot_held"),
+    ("W11", "unlocked_refusal"),
+    ("W11", "refuse_site"),
+    ("W11", "connect_refused_notice"),
+    ("W11", "on_site_request"),
+    ("W11", "open_unlock_for_dapp"),
+    ("W11", "dapp_unlock_dismissed"),
+    ("W11", "cancel_site"),
+    ("W11", "site_finished"),
+    ("W11", "passphrase_refusal"),
+    ("W11", "site_preflight"),
+    ("W11", "persist_grant_change"),
+    ("W11", "revoke_waiting"),
+    ("W11", "disconnect_site"),
+    ("W11", "disconnect_all_sites"),
+    ("W11", "account_removed_from_sites"),
+    ("W11", "evm_key_removed_from_sites"),
+    ("W11", "hardware_site_accounts"),
+    ("W11", "hardware_accounts_reloaded"),
+    ("W11", "chain_removed_from_sites"),
+    ("W11", "connect_approved"),
+    ("W11", "push_sign_waiter"),
+    ("W11", "take_sign_waiter"),
+    ("W11", "evm_grant_holds"),
+    ("W11", "waiter_grant_holds"),
+    ("W11", "browser_tx_signed"),
+    ("W11", "browser_message_signed"),
+    ("W11", "browser_sign_cancelled"),
+    ("W11", "browser_broadcast"),
+    ("W11", "network_url_changed"),
+    ("W11", "reset_read_chain"),
+    ("W11", "waiting_origins"),
+    ("W11", "card_names"),
+    ("W11", "card_name"),
+    ("W11", "card_name_list"),
+    ("W11", "pin_context"),
+    ("W11", "enrol_yubikey"),
+    ("W11", "on_yubikey_enrolled"),
+    ("W11", "card_after_meta"),
+    ("W11", "on_hardware_keys"),
+    ("W11", "card_role"),
+    ("W11", "card_begin"),
+    ("W11", "card_on_defaults"),
+    ("W11", "evm_card_gate"),
+    ("W11", "evm_selected_card_gate"),
+    ("W11", "evm_account_card_gate"),
+    ("W11", "sol_card_gate"),
+    ("W11", "btc_source_card_gate"),
+    ("W11", "btc_selected_card_gate"),
+    ("W11", "zec_card_gate"),
+    ("W11", "card_connect_tag"),
+    ("W11", "refuse_card_defaults"),
+    ("W11", "card_counters"),
+    ("W11", "card_step_card"),
+    ("W11", "card_details"),
+    ("W11", "card_open_pin"),
+    ("W11", "card_waiting"),
+    ("W11", "card_waiting_id"),
+    ("W11", "card_submit"),
+    ("W11", "card_cancel"),
+    ("W11", "card_site_gone"),
+    ("W11", "card_site_check"),
+    ("W11", "card_form"),
+    ("W11", "card_form_shown"),
+    ("W11", "card_form_line"),
+    ("W11", "card_notice_set"),
+    ("W11", "card_notice_clear"),
+    ("W11", "card_resolve_cancelled"),
+    ("W11", "card_resolve_failed"),
+    ("W11", "card_release"),
+    ("W11", "card_unused"),
+    ("W11", "card_outcome_ticket"),
+    ("W11", "card_outcome_matches"),
+    ("W11", "card_filter"),
+    ("W11", "card_tick"),
+    ("W11", "card_abandon_sol"),
+    ("W11", "card_abandon_dapp"),
+    ("W11", "on_sites"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
@@ -3735,7 +3878,7 @@ fn wallet_fns_name_no_shell() {
     // 2026-11-21 (S4 W3 review): every level, not only the fns that name the shell themselves.
     let shell_fns = shell_closure(&fns, seed);
     let mut errors = Vec::new();
-    for (row, name) in WALLET_FNS {
+    for &(row, name) in &WALLET_FNS {
         let Some(bodies) = fns.get(name) else {
             errors.push(format!("{row} {name}: no fn of impl App"));
             continue;
