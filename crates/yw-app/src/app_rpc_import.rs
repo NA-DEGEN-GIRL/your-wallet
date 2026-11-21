@@ -259,7 +259,10 @@ pub struct ImportEntry {
     pub fits_template: bool,
 }
 
-/// What the file offers (kept until `가져오기` / `취소`).
+/// What the file offers (kept until `가져오기` / `취소`): the plan critique B-5 calls
+/// `RpcImportPlan`. The shell parses it from the file and it enters the wallet only through the
+/// typed in-process entry `App::on_rpc_json_read` (2026-11-22, S4c W13), never in a `Cmd`,
+/// an `Effect`, a log line or a golden (plan §7).
 #[derive(Default)]
 pub struct ImportPlan {
     /// Accepted networks, in URL-list order.
@@ -268,21 +271,21 @@ pub struct ImportPlan {
     pub rejected: Vec<NetworkId>,
     /// Keys that are not a network of the URL list.
     pub ignored: usize,
-    /// One `QuickNode` endpoint name + token behind every URL.
-    pub quicknode: Option<(String, Zeroizing<String>)>,
+    /// One `QuickNode` endpoint name + token behind every URL, both wiped on drop (2026-11-22,
+    /// S4c W13, critique B-5: before, the name was a plain `String`). The URLs are
+    /// `HttpsUrl`s, the type `ApiKeys` stores them in (yw-platform has no wipe; `Debug` and
+    /// `Display` redact them), as before.
+    pub quicknode: Option<(Zeroizing<String>, Zeroizing<String>)>,
 }
 
+/// Counts only (2026-11-22, S4c W13, critique B-5): before, it also listed the accepted
+/// networks and the rejected ones by id.
 impl fmt::Debug for ImportPlan {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let networks: Vec<String> = self
-            .entries
-            .iter()
-            .map(|entry| entry.network.to_string())
-            .collect();
         formatter
             .debug_struct("ImportPlan")
-            .field("networks", &networks)
-            .field("rejected", &self.rejected)
+            .field("entries", &self.entries.len())
+            .field("rejected", &self.rejected.len())
             .field("ignored", &self.ignored)
             .field("quicknode", &self.quicknode.is_some())
             .finish()
@@ -355,7 +358,7 @@ pub fn plan_from_bytes(
             entry.fits_template = template_url(RpcTemplate::QuickNode, &cred, wanted.as_ref())
                 .is_some_and(|url| url == entry.url);
         }
-        plan.quicknode = Some(first);
+        plan.quicknode = Some((Zeroizing::new(first.0), first.1));
     }
     Ok(plan)
 }
@@ -432,6 +435,15 @@ impl App {
     /// control id). The file is found by [`rpc_json_path`] in the shell (2026-11-20, S4 P1:
     /// owner decision O-13 keeps `rpc.json` Windows-only with no platform trait; it was
     /// "S4: a platform trait").
+    ///
+    /// 2026-11-22 (S4c W13, critique B-5): this is the shell's press handler. It finds, reads
+    /// and deletes the file (`begin_rpc_import`, `delete_rpc_json`) and hands everything else to
+    /// the wallet's typed in-process entries: the parsed plan or the read error to
+    /// `on_rpc_json_read`, the delete's result to `on_rpc_json_deleted`, the
+    /// confirmation to [`Self::finish_rpc_import`], the cancel and the delete question to
+    /// `rpc_import_cancel` and `rpc_json_delete_asked`. Before, the arms wrote
+    /// the import state themselves and one fn read the file and wrote the wallet. Same steps,
+    /// same order (the two moves are under `begin_rpc_import` and `delete_rpc_json`).
     pub(crate) fn on_rpc_import(&mut self, press: RpcImportPress) {
         match press {
             RpcImportPress::Import => {
@@ -441,13 +453,9 @@ impl App {
             }
             RpcImportPress::Overwrite => self.finish_rpc_import(true),
             RpcImportPress::Fill => self.finish_rpc_import(false),
-            RpcImportPress::Cancel => {
-                self.rpc_import = RpcImportUi::default();
-                self.refresh();
-            }
+            RpcImportPress::Cancel => self.rpc_import_cancel(),
             RpcImportPress::Delete | RpcImportPress::DeleteCancel => {
-                self.rpc_import.confirm_delete = press == RpcImportPress::Delete;
-                self.refresh();
+                self.rpc_json_delete_asked(press == RpcImportPress::Delete);
             }
             RpcImportPress::DeleteConfirm => {
                 if let Some(path) = rpc_json_path() {
@@ -455,6 +463,18 @@ impl App {
                 }
             }
         }
+    }
+
+    /// `취소` of the confirmation list: the plan is dropped (its credentials wiped).
+    fn rpc_import_cancel(&mut self) {
+        self.rpc_import = RpcImportUi::default();
+        self.refresh();
+    }
+
+    /// `rpc.json 지우기…` (`ask`) or its `취소`: whether the delete waits for its confirmation.
+    fn rpc_json_delete_asked(&mut self, ask: bool) {
+        self.rpc_import.confirm_delete = ask;
+        self.refresh();
     }
 
     /// Test adapter (S3 C5, plan §3.2): presses an import-card control `id` directly, as the
@@ -475,9 +495,19 @@ impl App {
     }
 
     /// `rpc.json 지우기` confirmed: deletes the file (never a link) and says what happened.
+    /// 2026-11-22 (S4c W13, critique B-5): the shell's half, the delete; the wallet's half,
+    /// `on_rpc_json_deleted`, takes its result. Before, this fn did both and cleared the
+    /// confirmation before the delete (now right after it: nothing reads it in between).
     pub(crate) fn delete_rpc_json(&mut self, path: &Path) {
+        let deleted = delete_file(path);
+        self.on_rpc_json_deleted(deleted);
+    }
+
+    /// The wallet's half of `rpc.json 지우기` (2026-11-22, S4c W13, critique B-5): the shell
+    /// deleted the file, `deleted` is the result; the band says what happened.
+    fn on_rpc_json_deleted(&mut self, deleted: Result<(), DeleteError>) {
         self.rpc_import.confirm_delete = false;
-        let message = match delete_file(path) {
+        let message = match deleted {
             Ok(()) => {
                 logging::info("app", "rpc.import_file_deleted", &[]);
                 self.rpc_import.imported = false;
@@ -496,9 +526,23 @@ impl App {
     }
 
     /// Reads `path` and shows the confirmation list (or a fixed error text).
+    /// 2026-11-22 (S4c W13, critique B-5): the shell's half, the read; the plan (or the read
+    /// error) enters the wallet through `on_rpc_json_read`. Before, this fn did both and
+    /// reset the import state before the read (now right after it: the read takes the networks
+    /// and settings only, never that state).
     pub(crate) fn begin_rpc_import(&mut self, path: &Path) {
+        let read = read_plan(path, &self.url_networks(), &self.settings);
+        self.on_rpc_json_read(read);
+    }
+
+    /// The typed in-process entry of critique B-5 (2026-11-22, S4c W13): the plan the shell
+    /// parsed from `rpc.json` (or why it gave none) enters the wallet here and waits in the
+    /// import state for `가져오기`/`덮어쓰기`/`비어 있는 네트워크만` ([`Self::finish_rpc_import`],
+    /// which applies it, saves, fills the template's gaps and queues the tests in that order)
+    /// or `취소`. Never a `Cmd` or an `Effect`; the log line carries counts only.
+    fn on_rpc_json_read(&mut self, read: Result<ImportPlan, ImportError>) {
         self.rpc_import = RpcImportUi::default();
-        match read_plan(path, &self.url_networks(), &self.settings) {
+        match read {
             Ok(plan) => {
                 logging::info(
                     "app",
@@ -528,7 +572,11 @@ impl App {
         self.refresh();
     }
 
-    /// `덮어쓰기` / `가져오기` (`overwrite`) or `비어 있는 네트워크만`.
+    /// `덮어쓰기` / `가져오기` (`overwrite`) or `비어 있는 네트워크만`. 2026-11-22 (S4c W13,
+    /// critique B-5): wallet code, the confirmation of the plan that entered through
+    /// `on_rpc_json_read` and waits in the wallet's import state (B-5 keeps the plan there, so
+    /// it enters once, at the read, not again with `overwrite`): `apply_plan`, `save_apikeys`,
+    /// `save_settings`, `fill_template_gaps`, `queue_rpc_tests` in today's order, unchanged.
     pub(crate) fn finish_rpc_import(&mut self, overwrite: bool) {
         let Some(plan) = self.rpc_import.plan.take() else {
             return;
@@ -797,6 +845,32 @@ mod tests {
         let plan = plan_from_bytes(mixed.as_bytes(), &networks(), &settings).unwrap();
         assert_eq!(plan.rejected, [NetworkId::Solana(SolCluster::Devnet)]);
         assert_eq!(plan.entries.len(), 1);
+    }
+
+    /// 2026-11-22 (S4c W13, critique B-5): the plan, and the import state that holds it, print
+    /// counts only: no network, URL, endpoint name or token (before, the plan's `Debug` listed
+    /// the networks by id).
+    #[test]
+    fn the_plan_prints_counts_only() {
+        let plan =
+            plan_from_bytes(fake_file().as_bytes(), &networks(), &Settings::default()).unwrap();
+        let text = format!("{plan:?}");
+        assert_eq!(
+            text,
+            "ImportPlan { entries: 7, rejected: 0, ignored: 1, quicknode: true }"
+        );
+        let state = super::RpcImportUi {
+            plan: Some(plan),
+            ..super::RpcImportUi::default()
+        };
+        let state_text = format!("{state:?}");
+        for text in [text, state_text] {
+            for secret in [
+                NAME, TOKEN, "quiknode", "https", "eip155", "solana", "bitcoin",
+            ] {
+                assert!(!text.contains(secret), "{text}");
+            }
+        }
     }
 
     /// The app path: fake `rpc.json` in a temp dir → confirmation → `apikeys.dpapi` written and

@@ -1030,6 +1030,9 @@ struct Kind {
     /// 2026-11-22 (S4c W12, preflight critic C12): the copy and launch floors name
     /// `on_secret_action` instead of `apply_form_action`: the time-out notice (`self.info`) moved
     /// with the wallet's half of the secret form's actions.
+    /// 2026-11-22 (S4c W13, critique B-5): they name `on_rpc_json_read` and
+    /// `on_rpc_json_deleted` instead of `begin_rpc_import` and `delete_rpc_json`: the import
+    /// band (`self.info`) moved with the wallet's halves of the `rpc.json` read and delete.
     readers_floor: &'static [&'static str],
 }
 
@@ -1099,14 +1102,14 @@ const KINDS: [Kind; 4] = [
         min_sites: 50,
         readers_floor: &[
             "begin_generate",
-            "begin_rpc_import",
+            "on_rpc_json_read",
             "card_notice_clear",
             "card_notice_set",
             "confirm_yes",
             "copied_tick",
             "copy_done",
             "copy_line",
-            "delete_rpc_json",
+            "on_rpc_json_deleted",
             "discard_first_run",
             "due",
             "enter_screen",
@@ -1160,13 +1163,13 @@ const KINDS: [Kind; 4] = [
         min_sites: 27,
         readers_floor: &[
             "begin_generate",
-            "begin_rpc_import",
+            "on_rpc_json_read",
             "card_notice_clear",
             "card_notice_set",
             "confirm_yes",
             "copy_done",
             "copy_explorer_tx",
-            "delete_rpc_json",
+            "on_rpc_json_deleted",
             "discard_first_run",
             "apply",
             "enter_screen",
@@ -2907,7 +2910,32 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// W3). The approval entry they call (`show_next_approval`, `after_pending_open`, …) is W14a's
 /// and the reset and `WalletConnect` fns (`on_wallet_reset`, `reset_absorbs_load`,
 /// `wc_disconnect_all`, …) W13's.
-static WALLET_FNS: [(&str, &str); 835] = [
+/// W13 (2026-11-22, preflight §3 W13, critique B-4, B-5): the reset and `WalletConnect`
+/// (`app_reset.rs`'s `impl App` block: the timed waits `needs_accounts`, `wait_tick`,
+/// `wait_retry`, `sends_in_flight`, S22's open, cancel, phrase and state replacement, the reset
+/// `reset_execute` (the lock first, the file moves on the key worker) and its result
+/// `on_wallet_reset`, `reset_absorbs_load`, the hold's wallet halves `reset_hold_begin` and
+/// `reset_hold_tick`, the handlers `on_reset`/`on_reset_edit` and their helpers; `request_meta`
+/// is W3's, `hold_cancel` W3a's, the hold area's hit test and capture the shell's since W1;
+/// `app_walletconnect.rs`'s two `impl App` blocks: the session origins and the approval
+/// window's decoration `wc_peer_of` … `wc_connect_patch`, the worker's lifetime through
+/// `Services` (`wc_start` … `wc_shutdown`), its events `on_wc_event`, the session store, the
+/// grant pruning, pairing and the QR inputs the shell read with the press, the project id and
+/// the disconnects; `ui/screens_walletconnect.rs`: the panel's handlers `on_wc` and
+/// `on_wc_edit`, B-4) and the wallet's halves of the `rpc.json` import (critique B-5: the
+/// shell's press handler `on_rpc_import` and `begin_rpc_import`/`delete_rpc_json` find, read
+/// and delete the file, O-13; the parsed plan enters through the typed in-process entry
+/// `on_rpc_json_read`, never a `Cmd`, and waits in the wallet for `finish_rpc_import`, which
+/// applies it, saves, fills the template's gaps and queues the tests; `rpc_import_cancel`,
+/// `rpc_json_delete_asked`, `on_rpc_json_deleted` and the band helper `push_rejected`; before
+/// W13 those writes were in the shell's fns, [`the_rpc_import_plan_enters_the_wallet_typed`]).
+/// The render builders stay out (D-21; S4d E0c): the panel's `wc_panel`, `wc_setup_card`,
+/// `wc_project_row`, `wc_session_cards` and the import card `rpc_import_section`; the test
+/// adapter `on_rpc_import_command` is test code. The approval entry they call
+/// (`approval_finished` in `app_evm.rs`, `approval_lang` in `app_approval.rs`) is W14a's. None
+/// of the files had other shell reach left, so the row lists its fns; no W13 fn is self-less
+/// or takes an `App` in a closure.
+static WALLET_FNS: [(&str, &str); 886] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -3743,6 +3771,57 @@ static WALLET_FNS: [(&str, &str); 835] = [
     ("W3b", "done_connect_with"),
     ("W3b", "close_overlay_in_place"),
     ("W3b", "confirm_yes"),
+    ("W13", "needs_accounts"),
+    ("W13", "wait_tick"),
+    ("W13", "wait_retry"),
+    ("W13", "sends_in_flight"),
+    ("W13", "open_reset"),
+    ("W13", "cancel_reset"),
+    ("W13", "reset_phrase_changed"),
+    ("W13", "replace_reset"),
+    ("W13", "reset_execute"),
+    ("W13", "on_wallet_reset"),
+    ("W13", "reset_absorbs_load"),
+    ("W13", "reset_hold_begin"),
+    ("W13", "reset_hold_tick"),
+    ("W13", "on_reset"),
+    ("W13", "on_reset_edit"),
+    ("W13", "reset_list_files"),
+    ("W13", "forget_vault_state"),
+    ("W13", "wc_peer_of"),
+    ("W13", "site_approval_origin"),
+    ("W13", "origin_display"),
+    ("W13", "site_origin_text"),
+    ("W13", "wc_decorate_draft"),
+    ("W13", "wc_connect_patch"),
+    ("W13", "wc_start"),
+    ("W13", "wc_send"),
+    ("W13", "wc_grants_changed"),
+    ("W13", "wc_store"),
+    ("W13", "wc_after_unlock"),
+    ("W13", "wc_shutdown"),
+    ("W13", "on_wc_event"),
+    ("W13", "wc_proposal_end_text"),
+    ("W13", "wc_store_is_current"),
+    ("W13", "wc_persist"),
+    ("W13", "wc_prune_grants"),
+    ("W13", "wc_pair"),
+    ("W13", "wc_notice"),
+    ("W13", "wc_pair_pixels"),
+    ("W13", "wc_clipboard_qr"),
+    ("W13", "wc_file_qr"),
+    ("W13", "wc_save_project"),
+    ("W13", "wc_disconnect"),
+    ("W13", "wc_clipboard_connect"),
+    ("W13", "wc_disconnect_all"),
+    ("W13", "on_wc"),
+    ("W13", "on_wc_edit"),
+    ("W13", "rpc_import_cancel"),
+    ("W13", "rpc_json_delete_asked"),
+    ("W13", "on_rpc_json_deleted"),
+    ("W13", "on_rpc_json_read"),
+    ("W13", "finish_rpc_import"),
+    ("W13", "push_rejected"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
@@ -4318,6 +4397,133 @@ const SECRET_FORM_SHELL_WALLET_CALLS: [(&str, &str, &str); 2] = [
     ),
     ("copy_secret", "refresh", "the repaint of that band"),
 ];
+
+/// The shell's fns of the `rpc.json` import and the `App` fns each may call (2026-11-22, S4c
+/// W13, critique B-5): `(shell fn, its App calls)`. The press handler finds the file
+/// (`rpc_json_path`, a free fn) and hands each press on; the read and the delete do the file
+/// work (`read_plan`, `delete_file`) and hand the result to the wallet's half. The networks a
+/// plan is built for (`url_networks`) are read from the wallet.
+const RPC_IMPORT_SHELL_CALLS: [(&str, &[&str]); 3] = [
+    (
+        "on_rpc_import",
+        &[
+            "begin_rpc_import",
+            "delete_rpc_json",
+            "finish_rpc_import",
+            "rpc_import_cancel",
+            "rpc_json_delete_asked",
+        ],
+    ),
+    ("begin_rpc_import", &["on_rpc_json_read", "url_networks"]),
+    ("delete_rpc_json", &["on_rpc_json_deleted"]),
+];
+
+/// The wallet's halves of the `rpc.json` import (2026-11-22, S4c W13, critique B-5), all W13
+/// lines of [`WALLET_FNS`].
+const RPC_IMPORT_WALLET_FNS: [&str; 6] = [
+    "on_rpc_json_read",
+    "finish_rpc_import",
+    "rpc_import_cancel",
+    "rpc_json_delete_asked",
+    "on_rpc_json_deleted",
+    "push_rejected",
+];
+
+/// The `rpc.json` import splits at typed wallet entries (2026-11-22, S4c W13, critique B-5; plan
+/// §7, owner decision O-13 keeps the file Windows-only in the shell): the shell's fns of
+/// `app_rpc_import.rs` ([`RPC_IMPORT_SHELL_CALLS`]: the press handler and the read and delete
+/// of the file) write no wallet field and call no `App` fn but their listed ones; the wallet's
+/// halves ([`RPC_IMPORT_WALLET_FNS`], in [`WALLET_FNS`] so free of the shell) touch no file:
+/// they call none of the file fns (`rpc_json_path`, `read_plan`, `plan_from_bytes`,
+/// `delete_file`) and name no `std::fs` or path. The parsed plan enters the wallet only through
+/// `on_rpc_json_read`, called by `begin_rpc_import` alone (the delete's result only through
+/// `on_rpc_json_deleted`, called by `delete_rpc_json` alone), and no yw-engine `Effect` or `Cmd`
+/// source names the plan's types: a plan holds RPC URLs and an endpoint token, so it never
+/// travels in a `Cmd` or an `Effect` (§7.1). Before W13, the press handler's arms and
+/// `begin_rpc_import`/`delete_rpc_json` wrote the import state, the band and the confirmation
+/// themselves. It finds every fn and source it names (A-20).
+#[test]
+fn the_rpc_import_plan_enters_the_wallet_typed() {
+    let files = production_code();
+    let app = src_of(&files, "yw-app/src/app.rs");
+    let import = src_of(&files, "yw-app/src/app_rpc_import.rs");
+    let wallet_state = wallet_fields(app);
+    assert!(
+        wallet_state.contains("rpc_import"),
+        "the import state is the wallet's"
+    );
+    for (shell_fn, calls) in RPC_IMPORT_SHELL_CALLS {
+        let bodies = fn_bodies(import, shell_fn);
+        assert_eq!(bodies.len(), 1, "one {shell_fn}");
+        assert!(
+            !WALLET_FNS.iter().any(|&(_, name)| name == shell_fn),
+            "{shell_fn} is the shell's"
+        );
+        let expected: BTreeSet<String> = calls.iter().map(|&call| call.to_owned()).collect();
+        assert_eq!(app_calls(bodies[0]), expected, "{shell_fn}'s App calls");
+        let writes = wallet_writes(bodies[0], &wallet_state);
+        assert!(
+            writes.is_empty(),
+            "{shell_fn} writes wallet state: {writes:?}"
+        );
+    }
+    for wallet_fn in RPC_IMPORT_WALLET_FNS {
+        assert!(
+            WALLET_FNS.contains(&("W13", wallet_fn)),
+            "{wallet_fn} is W13 wallet code"
+        );
+        let bodies = fn_bodies(import, wallet_fn);
+        assert_eq!(bodies.len(), 1, "one {wallet_fn}");
+        let text = normalized(bodies[0]);
+        for file_step in [
+            "rpc_json_path(",
+            "read_plan(",
+            "plan_from_bytes(",
+            "delete_file(",
+            "std::fs",
+            "Path",
+        ] {
+            assert!(!text.contains(file_step), "{wallet_fn} names {file_step}");
+        }
+    }
+    let callers_of = |wanted: &str| {
+        files
+            .iter()
+            .flat_map(|src| {
+                fn_blocks(src)
+                    .into_iter()
+                    .map(move |(name, body)| (src, name, body))
+            })
+            .filter(|(_, _, body)| app_calls(body).contains(wanted))
+            .map(|(src, name, _)| format!("{}:{name}", src.file))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        callers_of("on_rpc_json_read"),
+        ["yw-app/src/app_rpc_import.rs:begin_rpc_import"]
+    );
+    assert_eq!(
+        callers_of("on_rpc_json_deleted"),
+        ["yw-app/src/app_rpc_import.rs:delete_rpc_json"]
+    );
+    let carriers: Vec<&Src> = files
+        .iter()
+        .filter(|src| {
+            src.file == "yw-engine/src/effect.rs" || src.file.starts_with("yw-engine/src/cmd/")
+        })
+        .collect();
+    for file in ["yw-engine/src/effect.rs", "yw-engine/src/cmd/mod.rs"] {
+        assert!(
+            carriers.iter().any(|src| src.file == file),
+            "{file} scanned"
+        );
+    }
+    for src in carriers {
+        for name in ["ImportPlan", "ImportEntry", "RpcImportPlan", "HttpsUrl"] {
+            assert!(!src.code.contains(name), "{} names {name}", src.file);
+        }
+    }
+}
 
 /// The scanners of [`wallet_fns_name_no_shell`] on made-up code: they can fail.
 #[test]
