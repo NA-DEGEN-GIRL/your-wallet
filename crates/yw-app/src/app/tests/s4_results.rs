@@ -2662,7 +2662,13 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// (`app_tokens.rs`), the Bitcoin account view (`app_btc_view.rs`, incl. the self-less
 /// `btc_source`) and the drop-down handlers of `ui/screens_links.rs` (`close_pickers`,
 /// `on_links`; P6 left them there). `ui/screens_book.rs` holds no handler (B-4).
-const WALLET_FNS: [(&str, &str); 121] = [
+/// W5 (2026-11-21, preflight §3 W5): the AI explanation's settings (`app_llm.rs`: the worker's
+/// lifecycle through `Services`, the S15 `AI 설명` handler `on_llm` and its edits, the key, the
+/// connection test and its answer `on_llm_test`) and the explorer links (`app_explorer.rs`: the
+/// templates, the URL helpers, the S15 card's form, the account cards' and send results' links and
+/// the `Cmd::Opened` answer `on_opened`); `Launcher` is the shell's since W1. Neither file had
+/// shell reach left (S4b P2 and P3 removed it), so the row only lists its fns.
+const WALLET_FNS: [(&str, &str); 165] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -2784,6 +2790,50 @@ const WALLET_FNS: [(&str, &str); 121] = [
     ("W4", "btc_hide_selected"),
     ("W4", "close_pickers"),
     ("W4", "on_links"),
+    ("W5", "llm_reconfigure"),
+    ("W5", "llm_shutdown"),
+    ("W5", "open_llm_settings"),
+    ("W5", "on_llm_edit"),
+    ("W5", "llm_message"),
+    ("W5", "llm_delete_key"),
+    ("W5", "llm_preset"),
+    ("W5", "llm_set_effort"),
+    ("W5", "on_llm"),
+    ("W5", "llm_toggle"),
+    ("W5", "llm_key_withheld"),
+    ("W5", "llm_confirm_on"),
+    ("W5", "llm_save"),
+    ("W5", "llm_save_key"),
+    ("W5", "llm_store_key"),
+    ("W5", "llm_test"),
+    ("W5", "on_llm_test"),
+    ("W5", "events_queue"),
+    ("W5", "llm_running"),
+    ("W5", "user_chain_explorer"),
+    ("W5", "explorer_default_templates"),
+    ("W5", "explorer_override"),
+    ("W5", "explorer_templates"),
+    ("W5", "explorer_url"),
+    ("W5", "explorer_tx_url"),
+    ("W5", "explorer_address_url"),
+    ("W5", "open_explorer_tx"),
+    ("W5", "open_explorer_address"),
+    ("W5", "copy_explorer_tx"),
+    ("W5", "open_explorer"),
+    ("W5", "on_opened"),
+    ("W5", "explorer_networks"),
+    ("W5", "explorer_net_name"),
+    ("W5", "on_explorer_edit"),
+    ("W5", "explorer_start_edit"),
+    ("W5", "explorer_cancel_edit"),
+    ("W5", "explorer_store"),
+    ("W5", "explorer_save_edit"),
+    ("W5", "explorer_reset"),
+    ("W5", "explorer_card"),
+    ("W5", "explorer_result"),
+    ("W5", "explorer_activity"),
+    ("W5", "on_explorer"),
+    ("W5", "explorer_activity_link"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
