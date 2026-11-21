@@ -1465,7 +1465,9 @@ impl Window {
 
     /// Minimizes the window as its caption's minimize box does (2026-11-21: for the windowed form
     /// test of yw-app, which checks the main-window mirror on a real minimized window; [`Self::show`]
-    /// restores it).
+    /// restores it). 2026-11-21 (S4c part 1 checkpoint review): `#[doc(hidden)]`, for the windowed
+    /// tests only; production code never calls it, so the spec/01 §7 API list leaves it out.
+    #[doc(hidden)]
     pub fn minimize(&self) {
         let Some(hwnd) = self.live() else { return };
         // SAFETY: Minimizes our live window handle.
