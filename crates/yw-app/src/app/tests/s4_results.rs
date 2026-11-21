@@ -3403,6 +3403,14 @@ const RENDER_LOCAL_TIME: [&str; 2] = ["activity_rows", "meta_activity_row"];
 /// `impl App` fn that calls one (a seed of [`shell_closure`]) but [`RENDER_LOCAL_TIME`]; before,
 /// only `self.<fn>(` calls were followed, so a wallet fn that called `local_time` passed and
 /// D-30's "no wallet fn calls `local_time`" (spec/04 §1.3 W6) was not checked.
+/// 2026-11-21 (S4 W8 review): two forms stay unchecked until W14c, where the compiler checks
+/// the `impl Wallet` bodies instead: `self` reborrowed or rebound and the shell fn called on the
+/// new name (`let me = &mut *self; me.drain();`), and an `App::<fn>`/`Self::<fn>` path taken as a
+/// value with no call (`let f: fn(&mut App) = App::drain; f(self);`). The review's mutation
+/// probes of both in W8 fns were not caught, nor were their callers reported. A grep of the three
+/// Solana files for a `&mut *self` or `= self;` rebind, a bare `self` passed on and an
+/// `App::`/`Self::` path not followed by a call found neither form in an `impl App` body at W8
+/// (only doc comments name such paths).
 #[test]
 fn wallet_fns_name_no_shell() {
     let files: Vec<Src> = production_code()
