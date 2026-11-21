@@ -410,7 +410,8 @@ pub struct EvmUi {
     /// (2026-11-20, S4 P9: `App::show_next_approval_then`, `App::after_approval_opened`; since
     /// P10a also `App::after_pending_open`, and the answer takes them in
     /// `App::approval_open_answered`). 2026-11-21 (S4 F14, owner decision, spec/04 §5.3, spec/15
-    /// §18 item 14): cleared by a lock (`App::lock`, at the `lock_epoch` bump), so no kept step
+    /// §18 item 14): cleared by a lock (`App::lock_steps`, at the `lock_epoch` bump; `App::lock`
+    /// until S4 W3a), so no kept step
     /// runs after a lock. Before F14 a lock left them and a late answer still ran them; with the
     /// outbox (2026-11-20, S4 P10b review) that late answer was the stale answer of an open
     /// queued in the entry that then locked, so its steps ran after the lock.

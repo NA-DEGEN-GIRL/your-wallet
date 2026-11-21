@@ -18,7 +18,7 @@ use yw_core::vault::FileKind;
 use crate::app::{App, AppMode, Screen};
 use crate::errors::ErrorCode;
 use crate::events::KeyJob;
-use crate::lock::LockReason;
+use crate::lock::WalletLock;
 use crate::logging::{self, Field};
 use crate::store::reset::{ResetError, ResetReport};
 use crate::ui::secret::{BACKUP_ACK_HOLD_MS, HoldGate};
@@ -323,7 +323,7 @@ impl App {
         );
         // The lock procedure first: secret and approval windows close, queued dApp items end,
         // buffers are wiped, queued key jobs are cancelled.
-        self.lock(LockReason::Manual);
+        self.lock_wallet(WalletLock::Manual);
         // Unlike a lock, nothing waits for the next session: the approvals queued behind the
         // shown one (sends of any chain, dApp requests) end now, so none of the old wallet's
         // reappears for the next wallet.

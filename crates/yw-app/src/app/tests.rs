@@ -7221,6 +7221,14 @@ const RESET_HOLD_LOGIC: [&str; 3] = [
     "    pub(crate) fn reset_phrase_changed(&mut self, text: &str) {",
 ];
 
+/// 2026-11-21 (S4 W3a, spec/04 §5.3): `lock` is the shell's composition of the lock's two wallet
+/// halves, and the wallet's own lock composes them too; checked with the converted handlers below.
+const LOCK_HALVES: [&str; 3] = [
+    "    fn lock_steps(&mut self, reason: LockReason) -> bool {",
+    "    fn lock_after_wait(&mut self, vault_present: bool) {",
+    "    pub(crate) fn lock_wallet(&mut self, reason: WalletLock) {",
+];
+
 /// 2026-11-20 (S4 P4): the handlers P4 converted reach the main window only through effects —
 /// no scroll offset or memory, focus, pointer capture, foreground or reveal of their own — and
 /// the logic's press dispatch (`on_press`) resolves no key and reads no focus. Only the effect
@@ -7286,7 +7294,8 @@ fn converted_handlers_reach_the_main_window_only_through_effects() {
         ("app_zec.rs", "    pub fn zec_select_tab(&mut self) {"),
     ];
     let hold = RESET_HOLD_LOGIC.map(|head| ("app_reset.rs", head));
-    for (file, head) in converted.into_iter().chain(hold) {
+    let lock = LOCK_HALVES.map(|head| ("app.rs", head));
+    for (file, head) in converted.into_iter().chain(hold).chain(lock) {
         let code = body(file, head);
         for shell in shell_names {
             assert!(!code.contains(shell), "{file}: {head} names {shell}");

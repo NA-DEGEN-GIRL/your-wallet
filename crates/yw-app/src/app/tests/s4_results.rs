@@ -1278,8 +1278,9 @@ const ENDS_ON_ITS_PATH: [&str; 3] = [
     // 2026-11-20 (S4 P10a; was a `PENDING_P10` line): `browser_lock_begin` sets
     // `browser.locking` before its `sync_browser` (and returns before it without a browser), so
     // `vault_view` is never `Unlocked` or `PassphraseUnverified` there and the unlock arm
-    // (`after_browser_unlock`, the only open in `sync_browser`) never runs.
-    "approval app.rs lock browser_lock_begin 1",
+    // (`after_browser_unlock`, the only open in `sync_browser`) never runs. (2026-11-21, S4 W3a:
+    // in the lock's first half `lock_steps`; before, in `lock`.)
+    "approval app.rs lock_steps browser_lock_begin 1",
     // 2026-11-20 (S4 P10a; was a `PENDING_P10` line): `btc_url_changed`'s controller call
     // (`BtcUi::url_changed`) returns one `BtcAction::Rpc` (the session reset), which `btc_apply`
     // sends; only `BtcAction::Enqueue` and `SetMeta`'s grant removal open an approval window.
@@ -2651,7 +2652,11 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// that way until the flip. W3 (2026-11-21): the core services and the helpers the families call
 /// (critique B-2; preflight §3 W3, incl. `after_settings_saved`, `bind_llm_key_to` and
 /// `reconcile_settings`, which `save_settings`, `save_apikeys` and `verify_settings` call).
-const WALLET_FNS: [(&str, &str); 45] = [
+/// W3a (2026-11-21, critique B-1, preflight §3 W3a): the lock's two wallet halves and the
+/// wallet's own lock (`lock` itself is the shell's composition: it drains for `Suspend`), every
+/// per-family lock step they call (`sol_dapp_lock` through `sol_lock`) and the secret session's
+/// fns (`lock` closes it; W11 opens it).
+const WALLET_FNS: [(&str, &str); 69] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -2697,6 +2702,30 @@ const WALLET_FNS: [(&str, &str); 45] = [
     ("W3", "vault_view"),
     ("W3", "wallet_view"),
     ("W3", "sync_browser"),
+    ("W3a", "lock_steps"),
+    ("W3a", "lock_after_wait"),
+    ("W3a", "lock_wallet"),
+    ("W3a", "browser_lock_begin"),
+    ("W3a", "card_lock"),
+    ("W3a", "close_secret"),
+    ("W3a", "evm_lock"),
+    ("W3a", "sol_lock"),
+    ("W3a", "sol_dapp_lock"),
+    ("W3a", "btc_lock"),
+    ("W3a", "zec_lock"),
+    ("W3a", "received_lock"),
+    ("W3a", "hold_cancel"),
+    ("W3a", "yk_words_dropped"),
+    ("W3a", "begin_secret"),
+    ("W3a", "open_input"),
+    ("W3a", "open_input_then"),
+    ("W3a", "open_input_with"),
+    ("W3a", "on_secret_opened"),
+    ("W3a", "open_display"),
+    ("W3a", "open_display_then"),
+    ("W3a", "open_display_with"),
+    ("W3a", "take_display_secret"),
+    ("W3a", "drop_display_secret"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
@@ -2951,6 +2980,86 @@ fn shell_reach_on_made_up_code() {
         ["calls self.deeper"]
     );
     assert!(shell_reach("{ self.refresh(); }", &shell, &closed).is_empty());
+}
+
+// ---- The lock's composition (2026-11-21, S4 W3a; critique B-1, A-2, preflight critic C11) ------
+
+/// `the_lock_composition_drains_only_for_suspend` (2026-11-21, S4 W3a, spec/04 §5.3): the shell's
+/// `App::lock` is exactly the wallet's first half, the drain for `Suspend` (which applies
+/// `Effect::AwaitKeyLock`, the wait for the key worker, before the second half), then the second
+/// half; the first half emits `AwaitKeyLock` only for `Suspend` and as its last step; the
+/// wallet's own lock (`lock_wallet`, a `WalletLock` with no `Suspend`) composes the halves with
+/// no drain; and only the shell's entries (`on_system`, `lock_shortcut`, `shutdown`) call `lock`,
+/// so no wallet fn can lock for `Suspend` and send `KeyJob::Load` before the wait (the P10b
+/// regression `1fb17c1` fixed). Finds every fn it checks (A-20).
+#[test]
+fn the_lock_composition_drains_only_for_suspend() {
+    let files: Vec<Src> = production_code()
+        .into_iter()
+        .filter(|src| src.file.starts_with("yw-app/"))
+        .collect();
+    let app = src_of(&files, "yw-app/src/app.rs");
+    let one = |name: &str| -> String {
+        let bodies = fn_bodies(app, name);
+        assert_eq!(bodies.len(), 1, "one fn {name} in app.rs");
+        bodies[0].split_whitespace().collect()
+    };
+    assert_eq!(
+        one("lock"),
+        "fnlock(&mutself,reason:LockReason){letvault_present=self.lock_steps(reason);\
+         ifreason==LockReason::Suspend{self.drain();}self.lock_after_wait(vault_present);}"
+    );
+    assert_eq!(
+        one("lock_wallet"),
+        "fnlock_wallet(&mutself,reason:WalletLock){letvault_present=\
+         self.lock_steps(reason.into());self.lock_after_wait(vault_present);}"
+    );
+    let steps = one("lock_steps");
+    assert_eq!(
+        steps.matches("AwaitKeyLock").count(),
+        1,
+        "one wait: {steps}"
+    );
+    assert!(
+        steps.ends_with(
+            "ifreason==LockReason::Suspend{self.emit(Effect::AwaitKeyLock{before,ms:1_500});}\
+             vault_present}"
+        ),
+        "the wait is the first half's last effect, for Suspend only: {steps}"
+    );
+    let after = one("lock_after_wait");
+    assert!(!after.contains("emit("), "the second half emits nothing");
+    assert!(after.ends_with("self.key(KeyJob::Load);}"), "{after}");
+    // Who calls the composition: the shell's entries only.
+    let mut callers: Vec<String> = files
+        .iter()
+        .flat_map(|src| {
+            fn_blocks(src)
+                .into_iter()
+                // `BtcUi::lock()` (the Bitcoin controller's, no argument) is another fn.
+                .filter(|(_, body)| {
+                    normalized(body)
+                        .replace("self.lock()", "")
+                        .contains("self.lock(")
+                })
+                .map(|(name, _)| name)
+        })
+        .collect();
+    callers.sort_unstable();
+    assert_eq!(callers, ["lock_shortcut", "on_system", "shutdown"]);
+    let wallet: Vec<String> = files
+        .iter()
+        .flat_map(|src| {
+            fn_blocks(src)
+                .into_iter()
+                .filter(|(_, body)| normalized(body).contains("self.lock_wallet("))
+                .map(|(name, _)| name)
+        })
+        .collect();
+    assert!(
+        wallet.len() >= 5,
+        "the wallet's own lock has its callers: {wallet:?}"
+    );
 }
 
 // ---- The main-window mirror (2026-11-21, S4 W3; critique B-10, preflight critic C7) ------------

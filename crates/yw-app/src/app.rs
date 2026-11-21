@@ -35,7 +35,7 @@ use crate::events::{
     KeyJob, KeyOutcome, KeyQueue, KeyResult, LockSignal, MetaLoaded, RevealWhat, RpcEvent, UiEvent,
     accept_result,
 };
-use crate::lock::{IdleTracker, LockReason};
+use crate::lock::{IdleTracker, LockReason, WalletLock};
 use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, Meta, RawAccount};
 use crate::network::NetworkId;
@@ -2477,7 +2477,7 @@ impl App {
             return;
         }
         if self.mode.holds_secrets() && self.mode != AppMode::Unlocking {
-            self.lock(LockReason::Idle);
+            self.lock_wallet(WalletLock::Idle);
         } else if self.mode == AppMode::NoVault && self.first_run_pending() {
             self.discard_first_run(now);
         }
@@ -2676,8 +2676,39 @@ impl App {
 
     // ----- lock and shutdown -------------------------------------------------------------
 
-    /// The lock procedure (spec/04 §5.3).
+    /// The lock procedure (spec/04 §5.3), the shell's composition of the wallet's two halves
+    /// (2026-11-21, S4 W3a, critique B-1, preflight §3 W3a): [`Self::lock_steps`]; for `Suspend`
+    /// the drain of what they emitted (the secret close, the clip clear, the approval close and,
+    /// last, `Effect::AwaitKeyLock`: the 1.5 s wait for the key worker's lock, so it ends before
+    /// the mode and screen change and before `KeyJob::Load`); then [`Self::lock_after_wait`].
+    /// Called by the shell's entries (`on_system`, `lock_shortcut`, `shutdown`); wallet code locks
+    /// with [`Self::lock_wallet`], which cannot take `Suspend`. Before W3a this one fn held both
+    /// halves and drained itself between them for `Suspend`, at the same point.
     pub fn lock(&mut self, reason: LockReason) {
+        let vault_present = self.lock_steps(reason);
+        if reason == LockReason::Suspend {
+            self.drain();
+        }
+        self.lock_after_wait(vault_present);
+    }
+
+    /// The wallet's own lock (2026-11-21, S4 W3a, preflight critic C11): `잠금`, a cancelled
+    /// passphrase, the vault's own lock, a reset and the idle lock. [`Self::lock_steps`] then
+    /// [`Self::lock_after_wait`] with no drain between: the composition [`Self::lock`] drains only
+    /// for `Suspend`, which [`WalletLock`] cannot name, so this is exactly what `lock` did for
+    /// these reasons. Before W3a the callers called `lock` itself.
+    pub(crate) fn lock_wallet(&mut self, reason: WalletLock) {
+        let vault_present = self.lock_steps(reason.into());
+        self.lock_after_wait(vault_present);
+    }
+
+    /// The lock's first half (2026-11-21, S4 W3a; wallet code, preflight §3.0): every step up to
+    /// the lock's log line and, for `Suspend`, `Effect::AwaitKeyLock` as its last effect. The
+    /// shell steps are effects at their places (the secret close, `SecretEffect::ClearClip`, the
+    /// approval close inside `evm_lock`, `Effect::ReleaseHold` inside `hold_cancel`,
+    /// `Effect::ScrollMemoryClear`, `Effect::AwaitKeyLock`). Returns whether a vault is present
+    /// (read before the lock changes anything), for [`Self::lock_after_wait`].
+    fn lock_steps(&mut self, reason: LockReason) -> bool {
         // The dispatcher stops answering with accounts now, not after the suspend wait.
         self.browser_lock_begin();
         let vault_present = !matches!(
@@ -2750,10 +2781,18 @@ impl App {
         // mode and screen change and before `Load` is sent below, as before P10b (when `emit`
         // applied each effect at once). From P10b until this fix, `Load` was queued behind
         // `Lock` and the mode and screen changed before the wait, which the entry's drain ran.
+        // (2026-11-21, S4 W3a: the drain is the composition `lock`'s, right after this fn
+        // returns; before, it was the next line here.)
         if reason == LockReason::Suspend {
             self.emit(Effect::AwaitKeyLock { before, ms: 1_500 });
-            self.drain();
         }
+        vault_present
+    }
+
+    /// The lock's second half (2026-11-21, S4 W3a; wallet code): after the `Suspend` wait (the
+    /// composition [`Self::lock`] drained it), the mode, the screen and `KeyJob::Load`; nothing
+    /// more while shutting down. `vault_present` is [`Self::lock_steps`]'s answer.
+    fn lock_after_wait(&mut self, vault_present: bool) {
         if self.mode == AppMode::ShuttingDown {
             return;
         }
@@ -3217,7 +3256,7 @@ impl App {
                     "password.changed",
                     &[("prev", Field::Word("unconfirmed"))],
                 );
-                self.lock(LockReason::Manual);
+                self.lock_wallet(WalletLock::Manual);
                 self.info = Some(
                     password_changed_text(self.settings.language, PasswordChange::Unconfirmed)
                         .to_owned(),
@@ -4625,7 +4664,7 @@ impl App {
                 self.key_start_cancel();
                 self.set_screen(Screen::FirstRun);
             }
-            Purpose::EnterPassphrase => self.lock(LockReason::Manual),
+            Purpose::EnterPassphrase => self.lock_wallet(WalletLock::Manual),
             Purpose::Unlock => {
                 if self.mode == AppMode::Unlocking {
                     self.set_mode(AppMode::Locked);
@@ -5291,7 +5330,7 @@ impl App {
                 Purpose::ConfirmPassword(PasswordAction::RevealMnemonic { then_backup: true }),
                 false,
             ),
-            CorePress::Lock => self.lock(LockReason::Manual),
+            CorePress::Lock => self.lock_wallet(WalletLock::Manual),
             CorePress::DoneContinue | CorePress::BackMain | CorePress::SwitchAccount => {
                 self.info = None;
                 self.clear_done();

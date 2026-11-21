@@ -459,7 +459,8 @@ impl App {
         }
     }
 
-    /// The lock procedure starts (minimal hook at the top of `App::lock`): the dispatcher is
+    /// The lock procedure starts (minimal hook at the top of the lock's first half
+    /// `App::lock_steps`; 2026-11-21, S4 W3a: before, of `App::lock`): the dispatcher is
     /// locked right away — grants dropped, `accountsChanged([])` sent — instead of after the
     /// suspend wait, so no reader thread answers `eth_accounts` with accounts meanwhile. The
     /// flag holds the locked view until the mode leaves `Unlocked`.

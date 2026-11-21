@@ -37,6 +37,30 @@ impl LockReason {
     }
 }
 
+/// The reasons wallet code locks for itself (2026-11-21, S4 W3a, spec/04 §5.3, preflight critic
+/// C11): `잠금` (the button, a cancelled passphrase, the vault's own lock after an unconfirmed
+/// password change, a reset's lock) and the idle lock, through `App::lock_wallet`. Never
+/// `Suspend`: that lock waits for the key worker between its two halves, which only the shell's
+/// composition `App::lock` does (it drains there), so wallet code cannot ask for it and send
+/// `KeyJob::Load` before the wait. The session, power and shutdown reasons come from the shell's
+/// entries (`App::lock` from `on_system`, `lock_shortcut` and `shutdown`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WalletLock {
+    /// `잠금` button, a cancelled passphrase, the vault's own lock, a reset.
+    Manual,
+    /// No app input for `autoLockMinutes`.
+    Idle,
+}
+
+impl From<WalletLock> for LockReason {
+    fn from(reason: WalletLock) -> Self {
+        match reason {
+            WalletLock::Manual => Self::Manual,
+            WalletLock::Idle => Self::Idle,
+        }
+    }
+}
+
 /// Idle check period.
 pub const IDLE_CHECK_MS: u64 = 1_000;
 
