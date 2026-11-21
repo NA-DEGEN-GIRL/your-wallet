@@ -2959,7 +2959,21 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// `prepare_transaction`, `prepare_site` and `on_typed_facts` call W10's self-less
 /// `new_approval_id` as `Self::new_approval_id()` (W14c-2 rewrites those paths, critic C10); no
 /// W14a fn takes an `App` in a closure.
-static WALLET_FNS: [(&str, &str); 932] = [
+/// W14b (2026-11-22, preflight §3 W14b, critic C5; in place, no `wallet_approval.rs`): approve,
+/// re-simulation and consume (`app_approval.rs`: `approved` — the L4(c) chain check, then the
+/// fresh-simulation decision —, `start_resimulation`, `consume_and_sign`, the only production
+/// `.consume(` ([`the_only_consume_is_wallet_code`]), `dispatch_evm_sign`, the flow's input
+/// handler `on_approval_input` and `approval_event`, and `retry_action`, which the preflight
+/// left unplaced). Their last shell reach is removed here: `on_approval_input` called the test
+/// builds' pairing check `assert_flow_and_window_in_step` first (critic C5); the shell's senders
+/// `window_event`/`window_signal` make it right before they send the input. The window's
+/// sampling, mapping and sending stay the shell's (`window_event`, `window_signal`, `run_step`).
+/// The card, waiter and grant fns they call (`card_begin`, `push_sign_waiter`, …) are W11's, the
+/// consumed handlers (`sol_consumed`, `btc_consumed`, `zec_consumed`, `hc_consumed`,
+/// `sol_dapp_consumed`) W7's–W9's and the AI flow (`ai_retry`) W14a's. `consume_and_sign` calls
+/// W11's self-less `chain_waiter` as `Self::chain_waiter(` (W14c-2, critic C10); no W14b fn
+/// takes an `App` in a closure.
+static WALLET_FNS: [(&str, &str); 939] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -3892,6 +3906,13 @@ static WALLET_FNS: [(&str, &str); 932] = [
     ("W14a", "ai_tick"),
     ("W14a", "ai_retry"),
     ("W14a", "on_llm_done"),
+    ("W14b", "approved"),
+    ("W14b", "start_resimulation"),
+    ("W14b", "consume_and_sign"),
+    ("W14b", "dispatch_evm_sign"),
+    ("W14b", "on_approval_input"),
+    ("W14b", "approval_event"),
+    ("W14b", "retry_action"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
@@ -4375,6 +4396,43 @@ fn wallet_fns_name_no_shell_in_test_builds() {
         }
     }
     assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+/// `the_only_consume_is_wallet_code` (2026-11-22, S4 W14b; plan W14b row "the only `.consume(`
+/// is in `wallet_approval.rs`", in place since the owner's second batch keeps the approval code
+/// in `app_approval.rs`; AGENTS.md §6 "Single use", plan §6 "only `consume` creates
+/// `Approved`"): the production code of yw-app and yw-engine (test items blanked) holds exactly
+/// one `.consume(` call, the approval store's in `consume_and_sign` of `app_approval.rs`, on the
+/// flow's issued request, and that fn is wallet code ([`WALLET_FNS`], W14b), so no shell fn
+/// consumes and W14c makes it `impl Wallet`. Before W14b nothing checked the count; the store's
+/// own tests (`x14_one_shot_consumption`) pin that only `consume` makes an `Approved`.
+#[test]
+fn the_only_consume_is_wallet_code() {
+    let files = production_code();
+    let mut sites = Vec::new();
+    for src in &files {
+        for (at, _) in src.code.match_indices(".consume(") {
+            let func = fn_at(&src.code, &src.blocks, at).unwrap_or_default();
+            sites.push(format!("{}:{func}", src.file));
+        }
+    }
+    assert_eq!(sites, ["yw-app/src/app_approval.rs:consume_and_sign"]);
+    assert!(
+        WALLET_FNS.contains(&("W14b", "consume_and_sign")),
+        "consume_and_sign is wallet code"
+    );
+    let body = fn_bodies(
+        src_of(&files, "yw-app/src/app_approval.rs"),
+        "consume_and_sign",
+    );
+    assert_eq!(body.len(), 1, "one consume_and_sign");
+    let body = normalized(body[0]);
+    for step in [
+        "let Some(request) = flow.issued().cloned() else { return; };",
+        "match self.evm.store.consume(request.id, request.digest, now) {",
+    ] {
+        assert!(body.contains(step), "consume_and_sign lost {step}");
+    }
 }
 
 /// The secret form's actions split at `on_secret_action` (2026-11-22, S4c W12, preflight critic

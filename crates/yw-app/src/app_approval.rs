@@ -3012,8 +3012,10 @@ impl App {
     /// With a test clock that steps on every read, a skipped read moves every later timestamp;
     /// no scenario reaches these paths today.
     pub(crate) fn on_approval_input(&mut self, input: ApprovalInput) {
-        #[cfg(test)]
-        self.assert_flow_and_window_in_step();
+        // 2026-11-22 (S4 W14b, preflight critic C5): the test builds' pairing check of the flow
+        // and its window (`assert_flow_and_window_in_step`, the shell's) is made by the shell's
+        // senders `window_event`/`window_signal` right before they send this input, and by
+        // `App::drain` (before, here, first).
         let shown = input.shown;
         if self.shown_now() != Some(shown) {
             return;
@@ -3620,7 +3622,9 @@ impl App {
     /// after an `emit`) were skipped and nothing checked the pairing after those transitions.
     /// 2026-11-22 (S4 W14a, preflight critic C5): the flow's fns `on_approval_opened` and
     /// `close_approval_window` no longer call it (wallet code names no shell fn, so W14c can
-    /// make them `impl Wallet`); `App::drain` checks those transitions.
+    /// make them `impl Wallet`); `App::drain` checks those transitions. 2026-11-22 (S4 W14b):
+    /// nor does `on_approval_input`; the shell's senders of a window's input (`window_event`,
+    /// `window_signal`) check it right before they send it, where that fn checked it first.
     #[cfg(test)]
     pub(crate) fn assert_flow_and_window_in_step(&self) {
         if headless_host::installed() {
@@ -3678,6 +3682,11 @@ impl App {
         });
         if let Some(shown) = shown {
             let foreground = sample.is_some_and(|(foreground, _)| foreground);
+            // Tests: the flow and its window are in step when a window's input reaches the flow
+            // (2026-11-22, S4 W14b, critic C5: was the first step of `on_approval_input`, a flow
+            // fn, which names no shell fn since W14b).
+            #[cfg(test)]
+            self.assert_flow_and_window_in_step();
             // 2026-11-20 (S4 P10b): through `dispatch`, which drains, so the message's next step
             // runs after this input's effects and their answers, as before.
             self.dispatch(Cmd::Approval(window_input(shown, foreground, signal)));
@@ -3689,6 +3698,9 @@ impl App {
     /// (2026-11-20, S4 P10b: through `dispatch`, as `window_event`.)
     fn window_signal(&mut self, shown: Option<ShownId>, signal: ApprovalSignal) {
         if let Some(shown) = shown {
+            // Tests: as in `window_event` (2026-11-22, S4 W14b).
+            #[cfg(test)]
+            self.assert_flow_and_window_in_step();
             self.dispatch(Cmd::Approval(window_input(shown, false, signal)));
         }
     }
