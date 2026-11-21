@@ -2361,6 +2361,36 @@ fn self_calls(body: &str) -> BTreeSet<String> {
     calls
 }
 
+/// The names of the `App` fns `body` calls (2026-11-21, S4 W7 review): `self.<fn>(` (through
+/// `self.wallet.` too, as [`self_calls`]), `Self::<fn>(`, `App::<fn>(` and a closure's or
+/// `Forward`'s `app.<fn>(` (through `app.wallet.` too) — the receivers [`calls`] counts
+/// ([`DOT_RECEIVERS`], [`PATH_RECEIVERS`]). [`shell_closure`] and [`shell_reach`] follow these;
+/// before, they followed `self.<fn>(` only ([`self_calls`]), so a wallet fn that called a shell
+/// fn as `Self::drain(self)`, `App::drain(self)` or `run(|app| app.drain())` passed
+/// [`wallet_fns_name_no_shell`]. A name another type's path or receiver calls
+/// (`Other::drain(`, `self.app.drain(`, `my_app.drain(`) is not counted.
+fn app_calls(body: &str) -> BTreeSet<String> {
+    let text = normalized(body).replace("app.wallet.", "app.");
+    let bytes = text.as_bytes();
+    let mut calls = BTreeSet::new();
+    for receiver in ["self.", "app.", "Self::", "App::"] {
+        for (at, _) in text.match_indices(receiver) {
+            if at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'.') {
+                continue;
+            }
+            let start = at + receiver.len();
+            let mut stop = start;
+            while stop < bytes.len() && is_ident(bytes[stop]) {
+                stop += 1;
+            }
+            if stop > start && text[stop..].trim_start().starts_with('(') {
+                calls.insert(text[start..stop].to_owned());
+            }
+        }
+    }
+    calls
+}
+
 /// D-4 `the_executor_writes_no_wallet_state` (2026-11-21, S4 W2; plan §3.3–§3.4 D-4, preflight
 /// §3 W2, spec/04 §1.3): `App` is the wallet ([`wallet_fields`]: `pub struct Wallet`) plus the
 /// shell's fields, and the effect executor — `App::apply` and every fn of `impl App` it reaches
@@ -2688,7 +2718,10 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// `show_ready_draft_at`, `after_pending_open`, `approval_lang`, `show_failure` in
 /// `app_approval.rs`) is W14a's, and the render helpers `hc_foldable`, `zec_hw_slots` and
 /// `zec_evm_indices` flip at W14c (preflight §3.0). Neither file had shell reach left, so the row
-/// only lists its fns.
+/// only lists its fns. W7 review (2026-11-21): the check follows every call receiver
+/// ([`app_calls`]); before, only `self.<fn>(` calls, so "no transitive shell reach" held for those
+/// only. `prepare_hypercore`'s `Self::new_approval_id()` (W10's, self-less and pure) is the one
+/// `Self::` call of a W7 fn, and no W7 fn calls through a closure's `app.`.
 const WALLET_FNS: [(&str, &str); 264] = [
     ("W3", "key"),
     ("W3", "set_mode"),
@@ -3033,7 +3066,9 @@ fn shell_namers(
 /// The shell's fns as a fixed point (2026-11-21, S4 W3 review: before, only `seed` — the fns that
 /// name a shell field or `yw_win` themselves, [`shell_namers`], and [`SHELL_FNS`] — so a wallet fn
 /// that reached the shell through an `impl App` helper went unseen): `seed` plus every `impl App`
-/// fn that calls (`self.<fn>(`, [`self_calls`]) a fn already in the set, until it stops growing.
+/// fn that calls ([`app_calls`]: `self.<fn>(`, `Self::<fn>(`, `App::<fn>(`, a closure's
+/// `app.<fn>(`; 2026-11-21, S4 W7 review: before, `self.<fn>(` only) a fn already in the set,
+/// until it stops growing.
 fn shell_closure(
     fns: &BTreeMap<String, Vec<(String, String, bool)>>,
     seed: BTreeSet<String>,
@@ -3046,7 +3081,7 @@ fn shell_closure(
             .filter(|(_, bodies)| {
                 bodies
                     .iter()
-                    .any(|(_, body, _)| self_calls(body).iter().any(|c| shell_fns.contains(c)))
+                    .any(|(_, body, _)| app_calls(body).iter().any(|c| shell_fns.contains(c)))
             })
             .map(|(name, _)| name.clone())
             .collect();
@@ -3205,7 +3240,8 @@ fn shell_free_fns(
 }
 
 /// What in `body` (a wallet fn's) reaches the shell: a shell field, `yw_win`, a call of a
-/// shell fn (`shell_fns`, the fixed point of [`shell_closure`]) or, since the W6 review
+/// shell fn (`shell_fns`, the fixed point of [`shell_closure`]; any receiver [`app_calls`] counts
+/// since the W7 review, 2026-11-21, before `self.<fn>(` only) or, since the W6 review
 /// (2026-11-21), a call of a shell free fn (`shell_free`, [`shell_free_fns`]: before, a wallet fn
 /// that called `local_time` passed).
 fn shell_reach(
@@ -3224,10 +3260,10 @@ fn shell_reach(
         found.push("names yw_win".to_owned());
     }
     found.extend(
-        self_calls(body)
+        app_calls(body)
             .into_iter()
             .filter(|call| shell_fns.contains(call))
-            .map(|call| format!("calls self.{call}")),
+            .map(|call| format!("calls App::{call}")),
     );
     found.extend(
         free_calls(body, caller, shell_free)
@@ -3254,10 +3290,12 @@ const RENDER_LOCAL_TIME: [&str; 2] = ["activity_rows", "meta_activity_row"];
 /// [`shell_namers`], and every `impl App` fn that calls one of those, at any depth,
 /// [`shell_closure`]). So the flip can make them `impl Wallet` without a body change, and a later
 /// row cannot give one of them shell reach again unseen, directly or through `impl App` helpers
-/// (calls written `self.<fn>(`; 2026-11-21, S4 W3 review: before, one level only, so a wallet fn
-/// that called a helper which called `render_main` passed). The check finds every listed fn (it
-/// cannot pass on nothing), and its scanners are tried on made-up code
-/// ([`shell_reach_on_made_up_code`]). 2026-11-21 (S4 W6 review): the shell's free fns too
+/// (calls written `self.<fn>(`, `Self::<fn>(`, `App::<fn>(` or a closure's `app.<fn>(`,
+/// [`app_calls`]; 2026-11-21, S4 W3 review: before, one level only, so a wallet fn that called a
+/// helper which called `render_main` passed; 2026-11-21, S4 W7 review: before, only calls written
+/// `self.<fn>(` were followed, so `Self::drain(self)` in a W7 fn passed). The check finds every
+/// listed fn (it cannot pass on nothing), and its scanners are tried on made-up code
+/// ([`shell_reach_on_made_up_code`], [`app_calls_on_made_up_code`]). 2026-11-21 (S4 W6 review): the shell's free fns too
 /// ([`shell_free_fns`]: yw-app module-level fns that name `yw_win`, at any depth): a listed fn
 /// that calls one (`local_time`, plan D-30's local time) reaches the shell, and so does an
 /// `impl App` fn that calls one (a seed of [`shell_closure`]) but [`RENDER_LOCAL_TIME`]; before,
@@ -3367,7 +3405,7 @@ fn shell_reach_on_made_up_code() {
             "names self.controls",
             "names self.main",
             "names yw_win",
-            "calls self.drain"
+            "calls App::drain"
         ]
     );
     assert!(
@@ -3426,9 +3464,72 @@ fn shell_reach_on_made_up_code() {
             &closed,
             &none
         ),
-        ["calls self.deeper"]
+        ["calls App::deeper"]
     );
     assert!(shell_reach("{ self.refresh(); }", &nowhere, &shell, &closed, &none).is_empty());
+}
+
+/// [`app_calls`] in [`shell_reach`] and [`shell_closure`] on made-up code (2026-11-21, S4 W7
+/// review): `Self::`, `App::` (also after a path) and a closure's `app.` (through `app.wallet.`
+/// too) are calls of an `App` fn, in a wallet fn and in the fixed point; another type's path or
+/// another receiver is not. Before, only `self.<fn>(` was followed.
+#[test]
+fn app_calls_on_made_up_code() {
+    let shell: BTreeSet<String> = ["main", "controls"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let shell_fns: BTreeSet<String> = ["drain"].into_iter().map(str::to_owned).collect();
+    let none = BTreeSet::new();
+    let nowhere = Src::new("yw-app/src/y.rs".to_owned(), String::new());
+    for body in [
+        "{ Self::drain(self); }",
+        "{ crate::app::App::drain(self); }",
+        "{ self.after(|app| app.drain()); }",
+        "{ self.after(|app| app.wallet.drain()); }",
+    ] {
+        assert_eq!(
+            shell_reach(body, &nowhere, &shell, &shell_fns, &none),
+            ["calls App::drain"],
+            "{body}"
+        );
+    }
+    assert!(
+        shell_reach(
+            "{ Other::drain(self); self.app.drain(); my_app.drain(); MyApp::drain(); \
+             let f = Self::drain; }",
+            &nowhere,
+            &shell,
+            &shell_fns,
+            &none
+        )
+        .is_empty()
+    );
+    let fns: BTreeMap<String, Vec<(String, String, bool)>> = [
+        ("render_main", "{ self.controls.clear(); }"),
+        ("by_path", "{ Self::render_main(self); }"),
+        ("by_app", "{ let x = App::by_path(self); }"),
+        (
+            "by_closure",
+            "{ self.later(Box::new(|app| app.by_app())); }",
+        ),
+        ("plain", "{ Other::render_main(); self.app.by_app(); }"),
+    ]
+    .into_iter()
+    .map(|(name, body)| {
+        (
+            name.to_owned(),
+            vec![("x.rs".to_owned(), body.to_owned(), true)],
+        )
+    })
+    .collect();
+    assert_eq!(
+        shell_closure(&fns, shell_namers(&fns, &shell)),
+        ["by_app", "by_closure", "by_path", "render_main"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>()
+    );
 }
 
 /// The free-fn scanners of [`wallet_fns_name_no_shell`] on made-up code (2026-11-21, S4 W6
