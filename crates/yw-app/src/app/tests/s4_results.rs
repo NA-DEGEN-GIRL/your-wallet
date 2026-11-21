@@ -2811,10 +2811,13 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// W10 (2026-11-22, preflight §3 W10): EVM (`app_evm.rs`'s `impl App` block: the active chain
 /// and its job, the account choice and the own accounts, the known addresses and token lists,
 /// the unlock part `evm_after_unlock`, the key worker's outcomes with the signing result
-/// `on_signed` — the dApp answer through `browser_tx_signed` (W11's grant re-check), then the
-/// broadcast — and the signing slots, the RPC worker's events, the balances, the chain check,
-/// the tracking and the broadcast result `on_broadcast`, the main-timer parts `evm_tick`,
-/// `evm_tick_rest` and `evm_balance_tick`, which reads the wallet's main-window mirror
+/// `on_signed` — the result to `browser_tx_signed` (W11's), then the broadcast job; on `Ok` that
+/// call only files the site's waiter under the tx hash, and the grant re-check and the answer
+/// are `browser_broadcast`'s when the broadcast result arrives (2026-11-22 W10 review: the
+/// goldens pin that `on_signed` still makes the call, not its order within the entry, which no
+/// answer can observe) — and the signing slots, the RPC worker's events, the balances, the
+/// chain check, the tracking and the broadcast result `on_broadcast`, the main-timer parts
+/// `evm_tick`, `evm_tick_rest` and `evm_balance_tick`, which reads the wallet's main-window mirror
 /// `main_hidden` since W3, the send timer, the send form, its quote and review, replace, resend
 /// and discard, the copy helpers and their answer `copy_done`, the token lookup, the chain form,
 /// its probe, delete and re-pin, the fee caps, the text helpers and the self-less
