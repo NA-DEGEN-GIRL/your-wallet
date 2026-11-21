@@ -115,6 +115,29 @@ fn pairing_link_parsing_wipes_its_copies() {
     );
 }
 
+/// 2026-11-21 (S4 F17 review): the two wipes the typed binding above cannot see. A
+/// `drop(error)` on the non-UTF-8 path, or a plain `Vec<String>` duplicate-key list filled
+/// with clones, would still compile and parse the same, so the source of `uri.rs` (its code
+/// lines, not its comments) must keep the wiped error bytes and the wiped `seen` list.
+#[test]
+fn pairing_link_parsing_keeps_its_error_and_seen_wipes() {
+    const URI_SOURCE: &str = include_str!("uri.rs");
+    let code: String = URI_SOURCE
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(code.contains("fn percent_decode(text: &str) -> Option<Zeroizing<String>>"));
+    for needle in [
+        "Err(error) => {\n            drop(Zeroizing::new(error.into_bytes()));",
+        "let mut seen: Vec<Zeroizing<String>> = Vec::new();",
+    ] {
+        assert_eq!(code.matches(needle).count(), 1, "{needle}");
+    }
+    assert!(!code.contains("drop(error)"));
+    assert!(!code.contains("Vec<String>"));
+}
+
 /// spec/14: every paste-field message exists in both languages; the Korean one is the `Display`.
 #[test]
 fn uri_messages_in_both_languages() {
