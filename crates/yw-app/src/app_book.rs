@@ -859,7 +859,10 @@ impl App {
                     favorite,
                     ..BookForm::default()
                 };
-                self.scroll = 0;
+                // 2026-11-21 (S4 W4): the form opens at the top of S14 through
+                // `Effect::ScrollTop`, queued before the `refresh`'s `Render` as the write
+                // came before it; before, this fn set the shell's offset (`self.scroll = 0`).
+                self.emit(Effect::ScrollTop);
                 self.refresh();
             }
             BookRowAction::Delete => {

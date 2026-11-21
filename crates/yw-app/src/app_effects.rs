@@ -55,7 +55,9 @@
 //! read the wallet's screen and tab while applied, exactly as that code did. 2026-11-20 (S4
 //! P10a): they no longer do — the effects carry the places the logic worked out when it emitted
 //! them (`left`, `at`), and the arms read only the shell's scroll offset and memory, so applying
-//! one later (an outbox) gives the same result.
+//! one later (an outbox) gives the same result. 2026-11-21 (S4 W4): `ScrollTop` sets the offset
+//! to 0 and nothing else (was `self.scroll = 0` in `App::on_book_row`, the one main-window write
+//! P4 left in a handler); it records no shell-call line either.
 //!
 //! 2026-11-20 (S4 P7a1): `Secret`, a secret window's open (an input window:
 //! `App::open_input_window`, the body of `App::open_input` before) and close
@@ -466,6 +468,12 @@ impl App {
             }
             Effect::ScrollMemoryClear => {
                 self.scroll_memory.clear();
+                None
+            }
+            // 2026-11-21 (S4 W4): the offset only, as `App::on_book_row` set it before (no
+            // glide stop, no memory change); the `Render` the handler queued after it lays out.
+            Effect::ScrollTop => {
+                self.scroll = 0;
                 None
             }
             Effect::ReleaseHold => {

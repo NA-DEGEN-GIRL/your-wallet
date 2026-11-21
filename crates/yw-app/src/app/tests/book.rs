@@ -72,3 +72,52 @@ fn book_saves_compare_with_the_whole_known_set() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// S14's row `편집` opens the form at the top of the screen (2026-11-21, S4 W4): the handler
+/// queues `Effect::ScrollTop` before its `refresh`'s `Render` and writes no shell state; the
+/// offset is 0 once the entry drains. Before W4 `on_book_row` set the shell's offset itself.
+#[test]
+fn a_book_row_edit_opens_the_form_at_the_top_through_an_effect() {
+    use crate::apikeys::ApiKeys;
+    use crate::app::{AppMode, Paths};
+    use crate::meta::Meta;
+    use crate::settings::Settings;
+
+    let dir = std::env::temp_dir().join(format!("yw-app-book-top-{}", std::process::id()));
+    let mut app = App::new(
+        Paths {
+            data: dir.clone(),
+            logs: dir.join("logs"),
+        },
+        true,
+        Settings::default(),
+        ApiKeys::default(),
+    );
+    app.mode = AppMode::Unlocked {
+        alt_passphrase: false,
+    };
+    let mut meta = Meta::default();
+    meta.add_contact(&Contact {
+        chain: BookChain::Evm,
+        address: EVM.to_owned(),
+        label: "친구".to_owned(),
+        verified: false,
+        added_at_unix_ms: 1,
+    })
+    .unwrap();
+    app.meta = Some(meta);
+    app.scroll = 120;
+    app.on_book(BookPress::Row(Row(0), BookRowAction::Edit));
+    assert_eq!(app.book.form.editing.as_deref(), Some(EVM));
+    assert_eq!(app.scroll, 120, "the handler writes no shell state");
+    assert_eq!(app.outbox.front(), Some(&Effect::ScrollTop));
+    assert_eq!(app.outbox.back(), Some(&Effect::Render));
+    app.drain();
+    assert_eq!(app.scroll, 0);
+    // A row the screen does not show queues nothing.
+    app.scroll = 120;
+    app.on_book(BookPress::Row(Row(5), BookRowAction::Edit));
+    assert!(app.outbox.is_empty());
+    assert_eq!(app.scroll, 120);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -57,6 +57,10 @@
 //! outbox and keeps the S3 … P10a text in its dated note (critique B-23). 2026-11-20 (S4 P10b
 //! review): each dated paragraph's "still applied at once" is the state at its date (until P10b),
 //! not today's.
+//!
+//! 2026-11-21 (spec/15 §11.4 S4 W4): [`Effect::ScrollTop`], the main screen's offset back to its
+//! top without a screen entry (the address book's row `편집`). Before, `App::on_book_row` set the
+//! shell's offset itself (`self.scroll = 0`), the one main-window write P4 left in a handler.
 
 use core::fmt;
 
@@ -166,6 +170,11 @@ pub enum Effect {
     },
     /// Forget every remembered scroll offset (S4 P4: a lock; the next session opens at the top).
     ScrollMemoryClear,
+    /// The main screen goes back to its top, the screen staying the same (S4 W4: S14's row
+    /// `편집` fills the form at the top of the screen; the `Render` that follows lays it out).
+    /// Only the offset: the remembered offsets and a running wheel glide are left as they are.
+    /// Before, `App::on_book_row` wrote the shell's offset itself, at the same point.
+    ScrollTop,
     /// A press-and-hold area's hold ended: release its pointer capture (S4 P4; S22).
     ReleaseHold,
     /// A secret window (S4 P7a1): serials, kinds and flags only, never secret text.
@@ -251,6 +260,7 @@ impl fmt::Debug for Effect {
                 .field("left", left)
                 .finish(),
             Self::ScrollMemoryClear => formatter.write_str("ScrollMemoryClear"),
+            Self::ScrollTop => formatter.write_str("ScrollTop"),
             Self::ReleaseHold => formatter.write_str("ReleaseHold"),
             Self::Secret(effect) => formatter.debug_tuple("Secret").field(effect).finish(),
             Self::AwaitKeyLock { before, ms } => formatter
@@ -443,6 +453,7 @@ mod tests {
             (Effect::RaiseMain, "RaiseMain"),
             (Effect::OverlayClosedInPlace, "OverlayClosedInPlace"),
             (Effect::ScrollMemoryClear, "ScrollMemoryClear"),
+            (Effect::ScrollTop, "ScrollTop"),
             (Effect::ReleaseHold, "ReleaseHold"),
         ] {
             assert_eq!(format!("{effect:?}"), name);

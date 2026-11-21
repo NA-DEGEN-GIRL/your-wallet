@@ -2656,7 +2656,13 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// wallet's own lock (`lock` itself is the shell's composition: it drains for `Suspend`), every
 /// per-family lock step they call (`sol_dapp_lock` through `sol_lock`) and the secret session's
 /// fns (`lock` closes it; W11 opens it).
-const WALLET_FNS: [(&str, &str); 69] = [
+/// W4 (2026-11-21, preflight §3 W4, critique B-4): the address book (`app_book.rs`, its handler
+/// `on_book` and its row presses; `on_book_row`'s offset write is `Effect::ScrollTop` since W4),
+/// hidden accounts (`app_hidden.rs` but the render builder `hidden_items`), the token lists
+/// (`app_tokens.rs`), the Bitcoin account view (`app_btc_view.rs`, incl. the self-less
+/// `btc_source`) and the drop-down handlers of `ui/screens_links.rs` (`close_pickers`,
+/// `on_links`; P6 left them there). `ui/screens_book.rs` holds no handler (B-4).
+const WALLET_FNS: [(&str, &str); 121] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -2726,6 +2732,58 @@ const WALLET_FNS: [(&str, &str); 69] = [
     ("W3a", "open_display_with"),
     ("W3a", "take_display_secret"),
     ("W3a", "drop_display_secret"),
+    ("W4", "book_look_alike"),
+    ("W4", "send_look_alike"),
+    ("W4", "book_rows"),
+    ("W4", "target_contacts"),
+    ("W4", "favorite_contacts"),
+    ("W4", "in_book"),
+    ("W4", "send_target"),
+    ("W4", "send_recipient"),
+    ("W4", "result_recipient"),
+    ("W4", "fill_recipient"),
+    ("W4", "open_save_prompt"),
+    ("W4", "save_prompt"),
+    ("W4", "save_book_form"),
+    ("W4", "toggle_favorite"),
+    ("W4", "delete_book_entry"),
+    ("W4", "activity_counterparty"),
+    ("W4", "save_activity_address"),
+    ("W4", "on_book_edit"),
+    ("W4", "on_book"),
+    ("W4", "book_chip"),
+    ("W4", "book_btc_pick"),
+    ("W4", "on_book_row"),
+    ("W4", "book_copy"),
+    ("W4", "btc_picker_entries"),
+    ("W4", "hidden_rows"),
+    ("W4", "on_hidden"),
+    ("W4", "unhide"),
+    ("W4", "evm_token_hidden"),
+    ("W4", "evm_hide_zero"),
+    ("W4", "evm_token_rows"),
+    ("W4", "toggle_evm_token_hidden"),
+    ("W4", "set_evm_hide_zero"),
+    ("W4", "request_delete_token"),
+    ("W4", "token_delete_target"),
+    ("W4", "delete_token"),
+    ("W4", "token_delete_target_of"),
+    ("W4", "sol_token_network"),
+    ("W4", "sol_token_hidden"),
+    ("W4", "toggle_sol_token_hidden"),
+    ("W4", "btc_label_of"),
+    ("W4", "btc_is_hidden"),
+    ("W4", "btc_source"),
+    ("W4", "btc_source_text"),
+    ("W4", "btc_visible_rows"),
+    ("W4", "btc_hidden_balance"),
+    ("W4", "btc_can_hide"),
+    ("W4", "btc_rename_start"),
+    ("W4", "btc_rename_cancel"),
+    ("W4", "btc_save_rename"),
+    ("W4", "btc_hide_selected"),
+    ("W4", "close_pickers"),
+    ("W4", "on_links"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
