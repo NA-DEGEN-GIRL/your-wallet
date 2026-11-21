@@ -586,7 +586,10 @@ impl App {
     /// (`WcCommand::Pair(Zeroizing<String>)`, reserved once at full size). Before, a plain
     /// `String` (`text.trim().to_owned()`). `parse_pairing_uri` below (and again in the worker)
     /// still makes plain copies of the query values, the `symKey` hex included (F15 review;
-    /// spec/13 §6, spec/15 §18 item 17).
+    /// spec/13 §6, spec/15 §18 item 17). 2026-11-21 (S4 F17, spec/15 §18 item 17): no longer:
+    /// its percent-decoded keys and values and its whole-link decode of a `wc%3A` link are
+    /// wiped on drop, in this check and in the worker's `pair` alike (yw-core
+    /// `walletconnect/uri.rs`).
     pub(crate) fn wc_pair(&mut self, text: &str) {
         if self.settings.walletconnect_project.is_empty() {
             self.wc_notice(text::PAIR_NO_PROJECT);
@@ -641,7 +644,8 @@ impl App {
     /// and so (F15 review, older than F15) do yw-core `parse_pairing_uri`'s copies: a plain
     /// `String` per percent-decoded query value, the `symKey` hex included, made twice per pair
     /// (`wc_pair`'s check and the worker's `pair`), and the whole link when it starts `wc%3A`
-    /// (spec/13 §6, spec/15 §18 item 17).
+    /// (spec/13 §6, spec/15 §18 item 17). 2026-11-21 (S4 F17): those parsing copies are wiped
+    /// on drop too; the decoder's inner buffers stay plain.
     pub(crate) fn wc_clipboard_qr(&mut self, clip: ClipInput) {
         match clip {
             ClipInput::WinDib(dib) => match crate::walletconnect::qr_decode::dib_to_bgra(&dib) {

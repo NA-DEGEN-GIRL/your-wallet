@@ -120,9 +120,15 @@ fn hex_value(byte: u8) -> Option<u8> {
 }
 
 /// Percent-decoding (`%XX`; `+` stays `+`). `None` for a bad escape or non-UTF-8 result.
-fn percent_decode(text: &str) -> Option<String> {
+///
+/// 2026-11-21 (S4 F17, spec/13 §6, spec/15 §18 item 17): every result is wiped on drop. The
+/// bytes are built in a wiped buffer reserved once at full size (the output is never longer
+/// than the input, so it never reallocates) and moved into the string without a copy; a bad
+/// escape or a non-UTF-8 result wipes them too. Before, a plain `Vec`/`String`, and
+/// `String::from_utf8`'s error dropped non-UTF-8 bytes unwiped.
+fn percent_decode(text: &str) -> Option<Zeroizing<String>> {
     let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
+    let mut out = Zeroizing::new(Vec::with_capacity(bytes.len()));
     let mut index = 0;
     while let Some(&byte) = bytes.get(index) {
         if byte == b'%' {
@@ -135,7 +141,20 @@ fn percent_decode(text: &str) -> Option<String> {
             index += 1;
         }
     }
-    String::from_utf8(out).ok()
+    match String::from_utf8(core::mem::take(&mut *out)) {
+        Ok(decoded) => Some(Zeroizing::new(decoded)),
+        Err(error) => {
+            drop(Zeroizing::new(error.into_bytes()));
+            None
+        }
+    }
+}
+
+/// [`percent_decode`] for the module's tests: the typed result pins the wiped type
+/// (2026-11-21, S4 F17).
+#[cfg(test)]
+pub(super) fn percent_decode_for_tests(text: &str) -> Option<Zeroizing<String>> {
+    percent_decode(text)
 }
 
 fn hex32(text: &str) -> Option<[u8; 32]> {
@@ -153,6 +172,14 @@ fn hex32(text: &str) -> Option<[u8; 32]> {
 }
 
 /// Parses a pairing URI.
+///
+/// 2026-11-21 (S4 F17, spec/13 §6, spec/15 §18 item 17): the copies it makes of the link are
+/// wiped on drop: the whole-link decode of a `wc%3A` link and every percent-decoded query key
+/// and value ([`percent_decode`]), the `symKey` hex included (only the parsed `sym_key` was
+/// `Zeroizing` before). The values kept in the result (`relay-protocol`, `relay-data`,
+/// `methods`; not secret) are moved out of their wiped buffers without a copy and stay plain
+/// `String`s, as before. `wc_pair`'s check (yw-app) and the `WalletConnect` worker's `pair`
+/// (yw-engine) both call this, so both paths are covered. Results and errors are unchanged.
 ///
 /// # Errors
 ///
@@ -192,19 +219,19 @@ pub fn parse_pairing_uri(text: &str) -> Result<PairingUri, UriError> {
     let mut relay_data = None;
     let mut expiry = None;
     let mut methods = None;
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: Vec<Zeroizing<String>> = Vec::new();
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         let key = percent_decode(key).ok_or(UriError::Malformed)?;
-        let value = percent_decode(value).ok_or(UriError::Malformed)?;
+        let mut value = percent_decode(value).ok_or(UriError::Malformed)?;
         if seen.contains(&key) {
             return Err(UriError::Malformed);
         }
         seen.push(key.clone());
         match key.as_str() {
             "symKey" => sym_key = Some(Zeroizing::new(hex32(&value).ok_or(UriError::BadSymKey)?)),
-            "relay-protocol" => relay_protocol = Some(value),
-            "relay-data" => relay_data = Some(value),
+            "relay-protocol" => relay_protocol = Some(core::mem::take(&mut *value)),
+            "relay-data" => relay_data = Some(core::mem::take(&mut *value)),
             "expiryTimestamp" => {
                 if value.is_empty()
                     || value.len() > 12
@@ -214,7 +241,7 @@ pub fn parse_pairing_uri(text: &str) -> Result<PairingUri, UriError> {
                 }
                 expiry = Some(value.parse::<u64>().map_err(|_| UriError::Malformed)?);
             }
-            "methods" => methods = Some(value),
+            "methods" => methods = Some(core::mem::take(&mut *value)),
             // Later parameters (e.g. `expiryTimestamp` variants) are ignored like the SDK does.
             _ => {}
         }

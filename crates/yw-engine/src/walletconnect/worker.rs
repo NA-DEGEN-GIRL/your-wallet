@@ -721,6 +721,10 @@ impl Worker {
         logging::info("walletconnect", "state.replaced", &[]);
     }
 
+    /// Pairs with the link of a [`WcCommand::Pair`] (a wiped string since S4 F15).
+    /// 2026-11-21 (S4 F17, spec/13 §6, spec/15 §18 item 17): `parse_pairing_uri`'s copies of
+    /// it (the percent-decoded query keys and values, the `symKey` hex included, and the
+    /// whole-link decode of a `wc%3A` link) are wiped on drop too; before, plain `String`s.
     fn pair(&mut self, text: &str) {
         let uri = match yw_core::walletconnect::parse_pairing_uri(text) {
             Ok(uri) => uri,

@@ -68,6 +68,53 @@ fn bad_pairing_uris_are_refused() {
     );
 }
 
+/// 2026-11-21 (S4 F17, spec/13 §6, spec/15 §18 item 17): the pairing link's copies made while
+/// parsing are wiped buffers. The typed binding pins `percent_decode`'s `Zeroizing<String>`, so
+/// going back to a plain `String` no longer compiles; its results and the parsed values are as
+/// before.
+#[test]
+fn pairing_link_parsing_wipes_its_copies() {
+    use zeroize::Zeroizing;
+    let decoded: Option<Zeroizing<String>> = uri::percent_decode_for_tests("wc%3A%40a+b%5B");
+    assert_eq!(decoded.as_deref().map(String::as_str), Some("wc:@a+b["));
+    let plain: Option<Zeroizing<String>> = uri::percent_decode_for_tests("symKey");
+    assert_eq!(plain.as_deref().map(String::as_str), Some("symKey"));
+    // A bad escape and a non-UTF-8 result are refused (their bytes wiped) as before.
+    for refused in ["%", "%4", "%zz", "%ff", "a%C3"] {
+        assert!(
+            uri::percent_decode_for_tests(refused).is_none(),
+            "{refused}"
+        );
+    }
+    assert_eq!(
+        uri::percent_decode_for_tests("%C3%A9")
+            .as_deref()
+            .map(String::as_str),
+        Some("\u{e9}")
+    );
+    // The values kept in the result are moved out of the wiped buffers unchanged.
+    let with_data = format!("{SPEC_URI}&relay-data=%7B%22a%22%3A1%7D");
+    let uri = parse_pairing_uri(&with_data).unwrap();
+    assert_eq!(uri.relay_data.as_deref(), Some("{\"a\":1}"));
+    assert_eq!(uri.relay_protocol, "irn");
+    assert_eq!(
+        uri.methods.as_deref(),
+        Some("[wc_sessionPropose],[wc_authRequest,wc_authBatchRequest]")
+    );
+    assert_eq!(
+        *uri.sym_key,
+        hex32("587d5484ce2a2a6ee3ba1962fdd7e8588e06200c46823bd18fbd67def96ad303")
+    );
+    // The whole-link decode of a `wc%3A` link parses to the same pairing.
+    let encoded = with_data.replacen("wc:", "wc%3A", 1);
+    assert_eq!(parse_pairing_uri(&encoded).unwrap(), uri);
+    // A duplicate key is still refused (the seen keys are wiped copies too).
+    assert_eq!(
+        parse_pairing_uri(&format!("{SPEC_URI}&methods=x")),
+        Err(UriError::Malformed)
+    );
+}
+
 /// spec/14: every paste-field message exists in both languages; the Korean one is the `Display`.
 #[test]
 fn uri_messages_in_both_languages() {

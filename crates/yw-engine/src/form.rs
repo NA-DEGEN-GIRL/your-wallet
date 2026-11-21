@@ -454,7 +454,8 @@ pub enum ClipInput {
     /// review, older than F15) yw-core `parse_pairing_uri`'s copies: a plain `String` per
     /// percent-decoded query value, the `symKey` hex included, made twice per pair (`wc_pair`'s
     /// check and the worker's `pair`), and the whole link when it starts `wc%3A` (spec/15 §18
-    /// item 17).
+    /// item 17). 2026-11-21 (S4 F17): those parsing copies are wiped on drop too; the
+    /// decoder's inner buffers stay plain.
     WinDib(Zeroizing<Vec<u8>>),
     /// The clipboard holds no image.
     NoImage,
