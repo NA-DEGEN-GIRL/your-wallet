@@ -6128,11 +6128,89 @@ const SHELL_MODULES: [&str; 15] = [
     "wc_platform",
 ];
 
-/// The shell names in `code` ([`code_only`] and [`without_test_items`] text): a non-facade
-/// `ui::` path, `ids::`, `Item::`/`Ctl::`, `ControlSet`, `yw_win`, a yw-app shell module or
-/// `browser::server`, and yw-engine's banned calls (`clippy.toml`: `std::fs`, `std::env`,
-/// `SystemTime`, `Path`/`PathBuf`).
+/// The offset of the `}` that closes the `{` at `open` in `bytes`, if any.
+fn group_end(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0_i32;
+    for (at, &byte) in bytes.iter().enumerate().skip(open) {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Pushes the flat paths of one `use` tree (`a::{self, b, c::{d as e}}` → `a`, `a::b`,
+/// `a::c::d as e`) to `out`.
+fn flatten_use_tree(tree: &str, out: &mut Vec<String>) {
+    let Some(open) = tree.find("::{") else {
+        out.push(tree.trim().to_owned());
+        return;
+    };
+    let Some(close) = group_end(tree.as_bytes(), open + 2) else {
+        return;
+    };
+    let prefix = tree[..open].trim();
+    let inner = &tree[open + 3..close];
+    let mut depth = 0_i32;
+    let mut item_start = 0;
+    for (at, byte) in inner.bytes().chain([b',']).enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                let item = inner[item_start..at].trim();
+                item_start = at + 1;
+                if item == "self" {
+                    out.push(prefix.to_owned());
+                } else if !item.is_empty() {
+                    flatten_use_tree(&format!("{prefix}::{item}"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The flat paths of every grouped `use` tree in `code`, one per line, so that
+/// [`shell_names`] finds a grouped import (`use std::{fs as f};`, `use crate::{store};`) as it
+/// finds the full path (2026-11-22, S4d E0b review: before, a grouped import got past S11).
+fn use_tree_paths(code: &str) -> String {
+    let bytes = code.as_bytes();
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(found) = code[from..].find("::{") {
+        let open = from + found;
+        let mut start = open;
+        while start > 0 && (is_ident(bytes[start - 1]) || bytes[start - 1] == b':') {
+            start -= 1;
+        }
+        let Some(close) = group_end(bytes, open + 2) else {
+            break;
+        };
+        flatten_use_tree(&code[start..=close], &mut out);
+        from = close + 1;
+    }
+    out.join(";\n")
+}
+
+/// The shell names in `code` ([`code_only`] and [`without_test_items`] text), as full paths and
+/// in grouped `use` trees ([`use_tree_paths`]): a non-facade `ui::` path, `ids::`,
+/// `Item::`/`Ctl::`, `ControlSet`, `yw_win`, a yw-app shell module or `browser::server`, and
+/// the modules and types of yw-engine's banned calls (`clippy.toml`: `std::fs`, `std::env`,
+/// `std::process`, `std::net`, `SystemTime`, `Path`/`PathBuf`; `std::process` and `std::net`
+/// since 2026-11-22, S4d E0b review). It does not follow a rename of a parent module
+/// (`use std as s;`) or a glob import of one (`use std::*;`); E1's compiler and `clippy.toml`
+/// do.
 fn shell_names(code: &str) -> BTreeSet<String> {
+    let expanded = format!("{code}\n{}", use_tree_paths(code));
+    let code = expanded.as_str();
     let bytes = code.as_bytes();
     let mut found = BTreeSet::new();
     let word_before = |at: usize| at > 0 && is_ident(bytes[at - 1]);
@@ -6141,6 +6219,10 @@ fn shell_names(code: &str) -> BTreeSet<String> {
             continue;
         }
         let rest = &code[at + 4..];
+        if rest.starts_with('{') {
+            // A group: its flat paths are in `expanded`.
+            continue;
+        }
         let name: String = rest
             .bytes()
             .take_while(|&b| is_ident(b))
@@ -6170,7 +6252,13 @@ fn shell_names(code: &str) -> BTreeSet<String> {
             found.insert(word.to_owned());
         }
     }
-    for banned in ["std::fs", "std::env", "browser::server"] {
+    for banned in [
+        "std::fs",
+        "std::env",
+        "std::process",
+        "std::net",
+        "browser::server",
+    ] {
         if has_word(code, banned) {
             found.insert(banned.to_owned());
         }
@@ -6187,8 +6275,11 @@ fn shell_names(code: &str) -> BTreeSet<String> {
 /// preflight §2 E0c and critic C10): the files that move to yw-engine at S4d E1
 /// ([`MOVING_FILES`]) name, outside their test items, no shell name ([`shell_names`]): no
 /// render code (`Item::`/`Ctl::`, `ControlSet`), no control id (`ids::`), no non-facade `ui::`
-/// path, no `yw_win`, no yw-app shell module, and none of the calls yw-engine's `clippy.toml`
-/// bans (`std::fs`, `std::env`, `SystemTime`, `Path`; the plan's E0b, which E0c absorbed: no
+/// path, no `yw_win`, no yw-app shell module, and no module or type of the calls yw-engine's
+/// `clippy.toml` bans (`std::fs`, `std::env`, `std::process`, `std::net`, `SystemTime`, `Path`;
+/// as full paths and in grouped `use` trees, not through a renamed or glob-imported parent
+/// module; `std::process`, `std::net` and the grouped trees since 2026-11-22, S4d E0b review:
+/// before, they got past it, though no moving file named them; the plan's E0b, which E0c absorbed: no
 /// wallet fn used them, and the shell items that did, `Launcher` and the `WalletConnect`
 /// platform, moved to `crate::explorer_launcher` and `crate::wc_platform`). The listed exceptions
 /// ([`MOVING_FILE_EXCEPTIONS`]) must still be there (a stale one fails). The type name `App` and
@@ -6239,7 +6330,7 @@ fn shell_names_on_made_up_code() {
     );
     for name in [
         "ui::main_window",
-        "ui::",
+        "ui::x",
         "Item",
         "Ctl",
         "ids",
@@ -6258,13 +6349,41 @@ fn shell_names_on_made_up_code() {
         assert!(found.contains(name), "{name} found in {found:?}");
     }
     assert!(
-        !found.contains("ui::x"),
-        "a group import is reported as ui::"
+        !found.contains("ui::approval") && !found.contains("ui::"),
+        "a group import is resolved name by name: {found:?}"
     );
+    // 2026-11-22 (S4d E0b review): `std::process`, `std::net` and grouped `use` trees, the
+    // review's probe shapes among them.
+    let grouped = shell_names(
+        "use crate::{store as _probe_store};\nuse std::{fs as _probe_fs};\n\
+         fn _probe() { let _ = std::process::Command::new(x); std::net::TcpStream::connect(a); }\n\
+         use crate::{app_effects, ui::{secret, approval}, browser::{server}};\n\
+         use std::{env::{self}, net::{self as n, UdpSocket}};\n\
+         pub(crate) use yw_engine::{x, y::{z}};\n",
+    );
+    let expected: BTreeSet<String> = [
+        "crate::store",
+        "std::fs",
+        "std::process",
+        "std::net",
+        "crate::app_effects",
+        "ui::secret",
+        "browser::server",
+        "std::env",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(grouped, expected);
     let clean = shell_names(
         "use crate::ui::approval::QueueSource;\nuse crate::ui::approval_view::{Block, Tone};\n\
+         use crate::ui::{approval, badge::{self, Badge}};\nuse std::{collections::BTreeMap, fmt};\n\
+         use crate::{app_book::{self, text}, stores};\n\
          fn f() { yw_engine::screen::Tone::Warn; BtcFeeItem::Fast; my_ids::X; Paths; \
-         crate::stores::x; crate::app_book::text::X; yw_core::bip32::path::AccountIndex; }\n",
+         crate::stores::x; crate::app_book::text::X; yw_core::bip32::path::AccountIndex; \
+         std::network::x; std::processes::y; }\n",
     );
     assert!(clean.is_empty(), "{clean:?}");
+    let pieces = use_tree_paths("use a::{self, b, c::{d as e, f::{}}, };");
+    assert_eq!(pieces, "a;\na::b;\na::c::d as e");
 }
