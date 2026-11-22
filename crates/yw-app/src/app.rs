@@ -663,6 +663,10 @@ struct ImportFlow {
 /// fields of `App` itself. The logic still runs as `impl App` (preflight §3.0: the fns become
 /// `impl Wallet` in place later in S4c) and reaches these fields through `App`'s `Deref`/`DerefMut`;
 /// a field that must be borrowed beside another one is named through `App::wallet`.
+/// 2026-11-22 (S4c W14c/W15; ZC review): that was the state at W2. Since W14c-2 the logic is
+/// `impl Wallet` in place, and since W15 `DerefMut` exists only in test builds; shell code names
+/// the wallet (`self.wallet.<fn>(`) as the source check
+/// `the_shell_writes_wallet_state_only_through_entries` lists.
 ///
 /// Declared here, not in a sibling module, so the private fields (the `Zeroizing` import and
 /// backup-challenge buffers, the secret session and its serial, …) stay private to `app` and its
@@ -1000,9 +1004,11 @@ impl core::ops::Deref for App {
 /// frozen tests (`frozen-tests.txt`, which never changes) and the test fixtures call wallet fns on
 /// an `App`; production code reaches the wallet's state only through its entries — `Cmd`s
 /// (`App::dispatch`, the drain's answers), the typed in-process entries (a worker's result, a
-/// secret window's action, the `rpc.json` plan) and the shell's compositions (lock, shutdown,
-/// the display window's secret), each `self.wallet.<fn>(` listed with its reason in the source
-/// check `the_shell_writes_wallet_state_only_through_entries`. Before W15 every build had it.
+/// secret window's action, the `rpc.json` plan), the shell's compositions (lock, shutdown,
+/// the display window's secret) and the other named wallet steps of shell code that S4d/S5 turns
+/// into `Cmd`s or answers (2026-11-22 ZC review: before, this last way was left out), each
+/// `self.wallet.<fn>(` listed with its reason in the source check
+/// `the_shell_writes_wallet_state_only_through_entries`. Before W15 every build had it.
 #[cfg(test)]
 impl core::ops::DerefMut for App {
     fn deref_mut(&mut self) -> &mut Wallet {
@@ -4597,7 +4603,9 @@ impl App {
     /// review): one wallet write is still reached from here, the copy's clip-notice drop and its
     /// repaint (`copy_secret` → `drop_clip_notice`, `refresh`), a named exception until W15; the
     /// serial check that opens this fn is pinned by the source check
-    /// `the_secret_form_action_splits_at_on_secret_action`.
+    /// `the_secret_form_action_splits_at_on_secret_action`. 2026-11-22 (ZC review): resolved at W15:
+    /// `drop_clip_notice` and `refresh` are wallet code, called on `self.wallet` and listed in
+    /// `SHELL_WALLET_CALLS`; non-test builds have no `DerefMut`.
     fn apply_form_action(&mut self, serial: u64, action: FormAction) {
         if !self.secret_session_is(serial) {
             return;
