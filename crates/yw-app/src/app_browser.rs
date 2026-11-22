@@ -539,9 +539,11 @@ impl Wallet {
     /// an open in a later entry, S4d E2, a waiting revoke) is written at exit; the shutdown's lock
     /// then writes nothing more. Before F21 the shutdown set the mode first and lost both (the F16
     /// review fixed this doc's "lock, shutdown paths", which the shutdown never did). The meta
-    /// save is a key job queued before the lock's `KeyJob::Lock`; the worker keeps it only if it
-    /// took it before that `Lock`, which goes to the front of its queue and cancels what is
-    /// still queued (spec/15 §18 item 26, open).
+    /// save is a key job queued before the lock's `KeyJob::Lock`, which goes to the front of the
+    /// worker's queue; 2026-11-23 (S4d F22, owner decision spec/15 §18 item 26 (가) "저장 후
+    /// 잠금") that `Lock` writes it before its wipe (`KeyQueue::take_saves_before`). From F16
+    /// until F22 the worker kept it only if it had taken it before that `Lock`, which cancelled
+    /// what was still queued.
     pub(crate) fn flush_grant_writes(&mut self) {
         if self
             .browser

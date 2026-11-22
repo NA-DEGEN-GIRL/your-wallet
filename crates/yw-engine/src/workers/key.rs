@@ -2241,6 +2241,32 @@ pub fn step(
             false
         }
         KeyJob::Lock => {
+            // 2026-11-23 (S4d F22, owner decision spec/15 §18 26 (가) "저장 후 잠금"; spec/04
+            // §5.3 step 2, spec/02 §7.2): first the meta saves queued before this `Lock` (the
+            // lock's and the shutdown's own grant writes, `flush_grant_writes`, queue them just
+            // before it; `Lock` jumped ahead of them), each at its own epoch, so the UI drops its
+            // result as one of an older epoch like any result from before the lock. Only
+            // `SaveMeta` (it writes the meta sidecar only; never a signing, derivation, export or
+            // other job) and only what is queued now. A failed or refused save is logged and the
+            // lock goes on: the wipe always follows, and the `LockSignal` (the `Suspend` and
+            // shutdown waits) still comes after it. Before F22 the `Lock` wiped first and
+            // `cancel_pending` cancelled those saves (`KeyOutcome::Cancelled`) unless the worker
+            // had taken them before the `Lock` arrived — a race.
+            for (save_epoch, save) in queue.take_saves_before(epoch) {
+                for outcome in worker.handle(save) {
+                    if let KeyOutcome::MetaSaved(Err(error)) = &outcome {
+                        logging::warn(
+                            "key",
+                            "meta.lock_save_failed",
+                            &[("code", Field::Code(crate::errors::vault_code(*error)))],
+                        );
+                    }
+                    sink(KeyResult {
+                        epoch: save_epoch,
+                        outcome,
+                    });
+                }
+            }
             worker.lock();
             for (cancelled_epoch, cancelled) in queue.cancel_pending(epoch) {
                 sink(KeyResult {
@@ -2332,6 +2358,258 @@ pub(crate) mod tests {
         };
         assert!(!accept_result(&stale, 2));
         assert!(accept_result(&results[1], 7));
+    }
+
+    /// The password of [`unlocked_worker`]'s vault.
+    const LOCK_SAVE_PASSWORD: &str = "lock save password";
+
+    /// A worker on the in-memory `abandon … about` vault, unlocked, with its meta loaded; the
+    /// shared store of its data folder (no file, no reader).
+    fn unlocked_worker(tag: &str) -> (KeyWorker, testing::MemStore, crate::meta::Meta) {
+        use yw_core::secret::Zeroizing;
+
+        let store = testing::MemStore::default();
+        let deps = super::platform::KeyDeps {
+            platform: Box::new(testing::MemPlatform(store.clone())),
+            clock: Box::new(testing::FixedClock),
+            cards: Box::new(crate::yubikey::NoReaders),
+        };
+        let mut worker = KeyWorker::new(&testing::temp_name(tag), deps);
+        // The public `abandon`×11 `about` test mnemonic, built at run time.
+        let about = format!("{} about", ["abandon"; 11].join(" "));
+        let bytes = |text: &str| Zeroizing::new(text.as_bytes().to_vec());
+        worker.handle(KeyJob::Load);
+        worker.handle(KeyJob::PreviewImport {
+            password: Some(bytes(LOCK_SAVE_PASSWORD)),
+            phrase: bytes(&about),
+            passphrase: None,
+        });
+        assert!(matches!(
+            worker.handle(KeyJob::CommitImport).first(),
+            Some(KeyOutcome::Imported(Ok(())))
+        ));
+        let Some(KeyOutcome::Meta(Ok(loaded))) = worker.handle(KeyJob::LoadMeta).pop() else {
+            unreachable!("meta");
+        };
+        (worker, store, *loaded.meta)
+    }
+
+    /// `meta` with one EVM grant of `https://app.example` to account 0 of the `abandon` wallet.
+    fn with_grant(meta: &crate::meta::Meta) -> crate::meta::Meta {
+        let site = yw_core::policy::ConnectedSite::new(
+            yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+            vec![
+                yw_core::evm::address::parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94")
+                    .unwrap(),
+            ],
+            yw_core::evm::chain::SEPOLIA,
+            1,
+        )
+        .unwrap();
+        let mut granted = meta.clone();
+        granted.connected_sites = crate::browser::grants::sites_to_values(&[site]);
+        granted
+    }
+
+    /// The outcomes as `name@epoch` (names only: no outcome's data).
+    fn outcome_names(results: &[KeyResult]) -> Vec<String> {
+        use crate::events::{MessageSignFailure, MessageSigned};
+        results
+            .iter()
+            .map(|result| {
+                let name = match &result.outcome {
+                    KeyOutcome::MetaSaved(Ok(())) => "MetaSaved".to_owned(),
+                    KeyOutcome::MetaSaved(Err(_)) => "MetaSaveFailed".to_owned(),
+                    KeyOutcome::SignedMessage(MessageSigned {
+                        result: Err(MessageSignFailure::Locked),
+                        ..
+                    }) => "SignMessageLocked".to_owned(),
+                    KeyOutcome::Cancelled(name, KeyJobError::Locked) => format!("Cancelled:{name}"),
+                    KeyOutcome::LockDone => "LockDone".to_owned(),
+                    _ => "other".to_owned(),
+                };
+                format!("{name}@{}", result.epoch)
+            })
+            .collect()
+    }
+
+    /// 2026-11-23 (S4d F22, owner decision spec/15 §18 26 (가) "저장 후 잠금", spec/04 §5.3 step
+    /// 2): the race of §18 26 made deterministic. At step time the queue is `[Lock, SaveMeta
+    /// (the revoke), SignMessage, SaveMeta]`: the lock's own grant write (epoch 1) queued its meta
+    /// save and the UI then put `Lock` (epoch 2) in front of it; a consumed signing job waits
+    /// behind, and a save at the lock's epoch stands for one queued after the `Lock`. The `Lock`
+    /// writes the revoke first (`MetaSaved` at its own epoch 1, which the UI drops as an older
+    /// epoch's), then wipes the DEK, then cancels the rest as before — the signing job answers
+    /// `Locked`, the later save is cancelled — then `LockSignal` and `LockDone`. The next unlock
+    /// reads the document without the revoked site. Before F22 the `Lock` cancelled the revoke's
+    /// save (`Cancelled:SaveMeta@1`) and the grant came back at the unlock.
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "one scenario")]
+    fn a_lock_writes_the_meta_saves_queued_before_it_first() {
+        use yw_core::approval::{ApprovalId, ApprovalKind, ApprovalOrigin, ApprovalStore};
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::secret::Zeroizing;
+        use yw_core::vault::{EvmKeySource, VaultStatus};
+
+        use crate::events::SignTicket;
+
+        let (mut worker, _store, meta) = unlocked_worker("lock-save");
+        let granted = with_grant(&meta);
+        assert!(matches!(
+            worker
+                .handle(KeyJob::SaveMeta {
+                    meta: Box::new(granted.clone())
+                })
+                .pop(),
+            Some(KeyOutcome::MetaSaved(Ok(())))
+        ));
+        let mut revoked = granted.clone();
+        revoked.connected_sites.clear();
+        // A consumed `personal_sign` of account 0 (the job is cancelled before it signs).
+        let source = EvmKeySource::Derived(AccountIndex::ZERO);
+        let account = worker.vault.as_ref().unwrap().evm_address(source).unwrap();
+        let chain = yw_core::evm::chain::sepolia();
+        let draft = yw_core::approval::build_personal_request(
+            yw_core::lang::Lang::Ko,
+            ApprovalId::random().unwrap(),
+            ApprovalOrigin::Site(
+                yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+            ),
+            source,
+            account,
+            ApprovalKind::EvmPersonalSign,
+            &chain,
+            &yw_core::evm::eip191::decode_personal_message(b"lock".to_vec()),
+            1_790_000_000_000,
+        )
+        .unwrap();
+        let mut approvals = ApprovalStore::new();
+        let request = approvals.issue(draft, 0, 1_790_000_000_000).unwrap();
+        let approved = approvals.consume(request.id, request.digest, 1).unwrap();
+        let queue = KeyQueue::default();
+        queue.push(
+            1,
+            KeyJob::SaveMeta {
+                meta: Box::new(revoked),
+            },
+        );
+        queue.push(
+            1,
+            KeyJob::SignMessage {
+                ticket: SignTicket(5),
+                approved: Box::new(approved),
+                typed: false,
+            },
+        );
+        queue.push(2, KeyJob::Lock);
+        queue.push(
+            2,
+            KeyJob::SaveMeta {
+                meta: Box::new(granted.clone()),
+            },
+        );
+        let results: Mutex<Vec<KeyResult>> = Mutex::new(Vec::new());
+        let signal = LockSignal::default();
+        let before = signal.count();
+        let entry = queue.pop().unwrap();
+        assert!(
+            matches!(entry, (2, KeyJob::Lock)),
+            "the lock is at the front"
+        );
+        assert!(super::step(
+            &mut worker,
+            &queue,
+            entry,
+            &|result| results.lock().unwrap().push(result),
+            &signal,
+        ));
+        let results = results.into_inner().unwrap();
+        assert_eq!(
+            outcome_names(&results),
+            [
+                "MetaSaved@1",
+                "SignMessageLocked@1",
+                "Cancelled:SaveMeta@2",
+                "LockDone@2"
+            ]
+        );
+        assert!(queue.is_empty());
+        assert_eq!(
+            signal.count(),
+            before + 1,
+            "one lock signal, after the wipe"
+        );
+        assert!(
+            matches!(
+                worker.vault.as_ref().map(yw_core::vault::Vault::status),
+                Some(VaultStatus::Locked)
+            ),
+            "the DEK is wiped"
+        );
+        // The save above ran before the wipe: a save now (locked) cannot be written.
+        assert!(matches!(
+            worker
+                .handle(KeyJob::SaveMeta {
+                    meta: Box::new(granted)
+                })
+                .pop(),
+            Some(KeyOutcome::MetaSaved(Err(_)))
+        ));
+        // The UI drops the save's result (epoch 1) once it is at the lock's epoch 2.
+        assert!(!accept_result(&results[0], 2));
+        // The next unlock reads the document the lock wrote: the revoked site is gone.
+        let _ = worker.handle(KeyJob::Unlock {
+            password: Zeroizing::new(LOCK_SAVE_PASSWORD.as_bytes().to_vec()),
+        });
+        let Some(KeyOutcome::Meta(Ok(loaded))) = worker.handle(KeyJob::LoadMeta).pop() else {
+            unreachable!("meta after the unlock");
+        };
+        assert!(
+            loaded.meta.connected_sites.is_empty(),
+            "the revoke was written before the lock"
+        );
+    }
+
+    /// 2026-11-23 (S4d F22, spec/15 §18 26 (가)): a meta save the `Lock` runs first and that
+    /// fails (here the meta file left the data folder, so the vault's generation check refuses
+    /// the write) is answered `MetaSaved(Err)` at its own epoch and logged
+    /// (`meta.lock_save_failed`); the lock still wipes the DEK, signals and reports `LockDone`.
+    #[test]
+    fn a_failing_save_before_a_lock_still_locks() {
+        use yw_core::vault::{FileKind, VaultStatus, VaultStorage};
+
+        let (mut worker, store, meta) = unlocked_worker("lock-save-fails");
+        let mut files = store.clone();
+        files.quarantine(FileKind::Meta, 1).unwrap();
+        let queue = KeyQueue::default();
+        queue.push(
+            1,
+            KeyJob::SaveMeta {
+                meta: Box::new(with_grant(&meta)),
+            },
+        );
+        queue.push(2, KeyJob::Lock);
+        let results: Mutex<Vec<KeyResult>> = Mutex::new(Vec::new());
+        let signal = LockSignal::default();
+        let before = signal.count();
+        let entry = queue.pop().unwrap();
+        assert!(super::step(
+            &mut worker,
+            &queue,
+            entry,
+            &|result| results.lock().unwrap().push(result),
+            &signal,
+        ));
+        assert_eq!(
+            outcome_names(&results.into_inner().unwrap()),
+            ["MetaSaveFailed@1", "LockDone@2"]
+        );
+        assert!(queue.is_empty());
+        assert_eq!(signal.count(), before + 1);
+        assert!(matches!(
+            worker.vault.as_ref().map(yw_core::vault::Vault::status),
+            Some(VaultStatus::Locked)
+        ));
     }
 
     /// spec/10 §13 minimal EVM end to end on the key worker, with the APDU emulator as the card:

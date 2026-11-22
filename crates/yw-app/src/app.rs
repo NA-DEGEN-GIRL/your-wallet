@@ -2870,6 +2870,10 @@ impl Wallet {
         // At shutdown the flush here writes nothing (the mode is already `ShuttingDown`): since
         // 2026-11-22 (S4d F21, spec/15 §18 21) `shutdown_begin` wrote the waiting grants before it
         // set that mode; from the F16 review until F21 the shutdown did not write them at all.
+        // 2026-11-23 (S4d F22, owner decision spec/15 §18 26 (가) "저장 후 잠금"): the meta save
+        // that flush queued is written by the key worker's `KeyJob::Lock` below before its wipe;
+        // before F22 that `Lock` (at the front of the queue) cancelled it unless the worker had
+        // taken it first.
         self.evm.after_open.clear();
         self.evm.open_unanswered = None;
         let before = self.lock_signal.count();
@@ -3046,10 +3050,12 @@ impl Wallet {
         // `browser_lock_begin` does: the meta save is queued before the shutdown's `KeyJob::Lock`
         // and `wc_grants_changed` goes before `wc_shutdown`. Before F21 the mode was set first,
         // so `flush_grant_writes` (which writes only while unlocked) wrote nothing at shutdown. A
-        // locked shutdown is unchanged (nothing is waiting, and the flush needs `Unlocked`). The
-        // key worker keeps that save only if it took it before the `Lock`, which goes to the
-        // front of its queue and cancels what is still queued (spec/15 §18 26, open; the lock's
-        // own flush is the same).
+        // locked shutdown is unchanged (nothing is waiting, and the flush needs `Unlocked`).
+        // 2026-11-23 (S4d F22, owner decision spec/15 §18 26 (가) "저장 후 잠금"): the key
+        // worker's `Lock`, which goes to the front of its queue, writes that save before its wipe
+        // (`KeyQueue::take_saves_before`; the lock's own flush is the same). From F21 until F22
+        // the worker kept it only if it had taken it before the `Lock`, which cancelled what was
+        // still queued.
         self.flush_grant_writes();
         self.set_mode(AppMode::ShuttingDown);
         for (item, outcome) in self.evm.queue.shutdown() {

@@ -15,7 +15,9 @@
 //! (A01's focus is shell state: reset to `거부` when a window opens, moved by `MoveFocus` and Tab
 //! as `run_step` moves it), an approving event built by `Trusted::deliver` from the oracle. The
 //! main window's entries go through `App::test_on_main_windowless` (the arms of `on_main` that read
-//! no window). Nothing here makes a window, touches the network, a card reader, a process, the
+//! no window). (2026-11-23, S4d F22) Three grant-write tests outside the golden (the lock's and
+//! the shutdown's flush) run the captured key queue on a key worker of their own (`DiskWorker`, a
+//! vault below the fixture's temp folder), so the meta save is written, not only queued. Nothing here makes a window, touches the network, a card reader, a process, the
 //! clipboard or the registry; files are written only below the fixtures' own temp folders (and by
 //! `print_headless`, into `YW_S4_FLOW_OUT` when it is set).
 //!
@@ -1875,6 +1877,126 @@ fn unlock_with_meta(fx: &Fixture, meta: crate::meta::Meta) {
     });
 }
 
+/// The password of [`DiskWorker`]'s vault.
+const DISK_PASSWORD: &str = "disk worker password";
+
+/// 2026-11-23 (S4d F22, owner decision spec/15 §18 26 (가) "저장 후 잠금"): a key worker on its
+/// own `abandon … about` vault in a folder below the fixture's temp folder (real files on
+/// `store::WinKeyPlatform`, no card readers), unlocked, that runs the App's queued key jobs as
+/// the worker thread does (`yw_engine::workers::key::step`, in queue order, until a `Shutdown`),
+/// so a grant-write test ends with the meta save written to disk, not only queued.
+struct DiskWorker {
+    worker: yw_engine::workers::key::KeyWorker,
+    signal: yw_engine::events::LockSignal,
+}
+
+impl DiskWorker {
+    fn new(fx: &Fixture) -> Self {
+        use yw_core::secret::Zeroizing;
+
+        let dir = fx.dir().join("key-worker");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut worker = yw_engine::workers::key::KeyWorker::new(
+            &dir,
+            crate::store::WinKeyPlatform::deps_with_cards(Box::new(yw_engine::yubikey::NoReaders)),
+        );
+        // The public `abandon`×11 `about` test mnemonic, built at run time.
+        let about = format!("{} about", ["abandon"; 11].join(" "));
+        let bytes = |text: &str| Zeroizing::new(text.as_bytes().to_vec());
+        worker.handle(KeyJob::Load);
+        worker.handle(KeyJob::PreviewImport {
+            password: Some(bytes(DISK_PASSWORD)),
+            phrase: bytes(&about),
+            passphrase: None,
+        });
+        assert!(matches!(
+            worker.handle(KeyJob::CommitImport).first(),
+            Some(KeyOutcome::Imported(Ok(())))
+        ));
+        Self {
+            worker,
+            signal: yw_engine::events::LockSignal::default(),
+        }
+    }
+
+    /// Runs the jobs queued in the App's key queue; their outcomes as `name@epoch` (names only).
+    fn run(&mut self, fx: &Fixture) -> Vec<String> {
+        let queue = Arc::clone(&fx.app.borrow().key_queue);
+        let results = std::cell::RefCell::new(Vec::new());
+        while !queue.is_empty() {
+            let Some(entry) = queue.pop() else {
+                break;
+            };
+            let more = yw_engine::workers::key::step(
+                &mut self.worker,
+                &queue,
+                entry,
+                &|result: KeyResult| {
+                    let name = match &result.outcome {
+                        KeyOutcome::MetaSaved(Ok(())) => "MetaSaved".to_owned(),
+                        KeyOutcome::MetaSaved(Err(_)) => "MetaSaveFailed".to_owned(),
+                        KeyOutcome::Cancelled(name, _) => format!("Cancelled:{name}"),
+                        KeyOutcome::LockDone => "LockDone".to_owned(),
+                        KeyOutcome::Loaded { .. } | KeyOutcome::Status(_) => "Loaded".to_owned(),
+                        _ => "other".to_owned(),
+                    };
+                    results
+                        .borrow_mut()
+                        .push(format!("{name}@{}", result.epoch));
+                },
+                &self.signal,
+            );
+            if !more {
+                break;
+            }
+        }
+        results.into_inner()
+    }
+
+    /// The meta document on disk: a meta load (after an unlock when the worker is locked).
+    fn saved(&mut self) -> crate::meta::Meta {
+        if let Some(KeyOutcome::Meta(Ok(loaded))) = self.worker.handle(KeyJob::LoadMeta).pop() {
+            return *loaded.meta;
+        }
+        let _ = self.worker.handle(KeyJob::Unlock {
+            password: yw_core::secret::Zeroizing::new(DISK_PASSWORD.as_bytes().to_vec()),
+        });
+        match self.worker.handle(KeyJob::LoadMeta).pop() {
+            Some(KeyOutcome::Meta(Ok(loaded))) => *loaded.meta,
+            _ => unreachable!("meta after the unlock"),
+        }
+    }
+}
+
+/// The App's queued key jobs as `name@epoch`, left queued (popped and pushed back in the same
+/// order: `KeyQueue::push` puts a `Lock` at the front again, where it was).
+fn queued(fx: &Fixture) -> Vec<String> {
+    let queue = Arc::clone(&fx.app.borrow().key_queue);
+    let mut entries = Vec::new();
+    while !queue.is_empty() {
+        let Some(entry) = queue.pop() else {
+            break;
+        };
+        entries.push(entry);
+    }
+    let names = entries
+        .iter()
+        .map(|(epoch, job)| format!("{}@{epoch}", key_name(job)))
+        .collect();
+    for (epoch, job) in entries {
+        queue.push(epoch, job);
+    }
+    names
+}
+
+/// The EVM grant origins of a meta document.
+fn saved_origins(meta: &crate::meta::Meta) -> Vec<String> {
+    crate::browser::grants::sites_from_values(&meta.connected_sites)
+        .iter()
+        .map(|site| site.origin.as_str().to_owned())
+        .collect()
+}
+
 /// 2026-11-21 (S4 F16, owner decision, spec/04 §5.3, spec/05 §4.5, spec/15 §18 item 16): a lock
 /// keeps a dApp revoke. The deferred-answer shape of
 /// [`a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry`]: in entry 1 a request of
@@ -1888,8 +2010,14 @@ fn unlock_with_meta(fx: &Fixture, meta: crate::meta::Meta) {
 /// saved document still held `other.example`, and its grant came back at the unlock. No
 /// production entry takes this path on Windows (every entry drains, so the answer comes in the
 /// revoke's own entry); it is the shape of a shell that answers in a later entry (S4d E2).
+/// (2026-11-23, S4d F22, spec/15 §18 26 (가)) The key queue now runs on a [`DiskWorker`]: the
+/// lock's `KeyJob::Lock` (at the front) writes the waiting revoke's meta save first
+/// (`MetaSaved` at the epoch before the lock, then `LockDone`), and the next unlock reads that
+/// document back from disk. Before F22 the worker's `Lock` cancelled that save unless it had
+/// taken it first, and the test only looked at the queued document.
 /// Headless, no window; files only below the fixture's temp folder.
 #[test]
+#[expect(clippy::too_many_lines, reason = "one scenario in three entries")]
 fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
     use yw_engine::effect::Effect;
 
@@ -1901,12 +2029,14 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
     let fx = fixture("revoke-lock-deferred");
     let outlet = dapp(&fx, false, true);
     grant(&fx, OTHER, ACCOUNT_B);
+    let mut disk = DiskWorker::new(&fx);
     // Both grants are in meta (the document a later unlock reads).
     fx.app().write_grants();
-    let mut saved = last_saved_meta(fx.key_jobs());
+    let epoch = fx.app.borrow().lock_epoch;
+    assert_eq!(disk.run(&fx), [format!("MetaSaved@{epoch}")]);
     assert_eq!(
-        saved.as_ref().map(|meta| meta.connected_sites.len()),
-        Some(2),
+        saved_origins(&disk.saved()).len(),
+        2,
         "both sites are saved"
     );
     let core = fx
@@ -1949,14 +2079,14 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
         );
         app.outbox.drain(..).collect()
     };
-    if let Some(meta) = last_saved_meta(fx.key_jobs()) {
-        saved = Some(meta);
-    }
-    assert_eq!(
-        saved.as_ref().map(|meta| meta.connected_sites.len()),
-        Some(2),
+    assert!(
+        !disk
+            .run(&fx)
+            .iter()
+            .any(|name| name.starts_with("MetaSaved")),
         "nothing written yet"
     );
+    assert_eq!(saved_origins(&disk.saved()).len(), 2, "nothing written yet");
     // Entry 2: a lock.
     {
         let mut app = fx.app();
@@ -1970,9 +2100,33 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
         );
     }
     assert_eq!(fx.app.borrow().screen, Screen::Locked);
-    if let Some(meta) = last_saved_meta(fx.key_jobs()) {
-        saved = Some(meta);
-    }
+    // The worker's `Lock` (at the front) writes the revoke's save first, then wipes; the
+    // lock's `Load` follows.
+    let lock_epoch = fx.app.borrow().lock_epoch;
+    assert_eq!(lock_epoch, epoch + 1, "one lock");
+    assert_eq!(
+        queued(&fx),
+        [
+            format!("Lock@{lock_epoch}"),
+            format!("SaveMeta@{epoch}"),
+            format!("Load@{lock_epoch}")
+        ]
+    );
+    assert_eq!(
+        disk.run(&fx),
+        [
+            format!("MetaSaved@{epoch}"),
+            format!("LockDone@{lock_epoch}"),
+            format!("Loaded@{lock_epoch}")
+        ],
+        "the meta save is written before the lock"
+    );
+    let saved = disk.saved();
+    assert_eq!(
+        saved_origins(&saved),
+        vec!["https://app.example".to_owned()],
+        "the revoke is on disk"
+    );
     // Entry 3: the shell applies the held effects; the stale open is answered after the lock.
     {
         let mut app = fx.app();
@@ -1983,7 +2137,7 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
     assert_eq!(dapp_answers(&outlet), "4001 User rejected the request.");
     assert!(granted_origins(&fx).is_empty(), "locked: no grants");
     // The next unlock reads the last saved document.
-    unlock_with_meta(&fx, saved.expect("a saved meta document"));
+    unlock_with_meta(&fx, saved);
     assert_eq!(
         granted_origins(&fx),
         vec!["https://app.example".to_owned()],
@@ -2156,10 +2310,14 @@ fn saved_chain(meta: &crate::meta::Meta, site: &str) -> Option<u64> {
 /// A grant write was just made, so the dispatcher's switch of `app.example` to Ethereum is only
 /// noted (`GrantWrite::dirty`); the shutdown then queues one meta save that holds the switch, at
 /// the epoch before the lock. Before F21 the mode came first, the flush wrote nothing and the
-/// switch was lost at exit. The queue also pins today's key-worker order (spec/15 §18 26, open):
-/// the shutdown's `KeyJob::Lock` went to the front, before that save, and the worker's `Lock`
-/// would cancel it (`KeyQueue::cancel_pending`) unless the worker took it first — the lock's own
-/// flush is the same. Headless, no window; files only below the fixture's temp folder.
+/// switch was lost at exit. The queue is `[Lock, SaveMeta, Shutdown]`: the shutdown's
+/// `KeyJob::Lock` went to the front, before that save. (2026-11-23, S4d F22, owner decision
+/// spec/15 §18 26 (가) "저장 후 잠금") The queue then runs on a [`DiskWorker`]: the `Lock` writes
+/// the save first (`MetaSaved` at the epoch before the lock, then `LockDone`), and the document on
+/// disk holds the switch. From F21 until F22 the test pinned the race instead: the worker's
+/// `Lock` would cancel that save (`KeyQueue::cancel_pending`) unless it had taken it first — the
+/// lock's own flush was the same. Headless, no window; files only below the fixture's temp
+/// folder.
 #[test]
 fn a_shutdown_writes_a_coalesced_chain_switch_first() {
     use yw_core::evm::address::parse_address;
@@ -2171,13 +2329,13 @@ fn a_shutdown_writes_a_coalesced_chain_switch_first() {
 
     let fx = fixture("shutdown-chain-switch");
     let _outlet = dapp(&fx, false, true);
+    let mut disk = DiskWorker::new(&fx);
     // A grant write now: the switch below falls inside the coalescing interval.
     fx.app().write_grants();
-    let saved = last_saved_meta(fx.key_jobs());
+    let before = fx.app.borrow().lock_epoch;
+    assert_eq!(disk.run(&fx), [format!("MetaSaved@{before}")]);
     assert_eq!(
-        saved
-            .as_ref()
-            .and_then(|meta| saved_chain(meta, "https://app.example")),
+        saved_chain(&disk.saved(), "https://app.example"),
         Some(SEPOLIA),
         "the grant is saved on Sepolia"
     );
@@ -2207,41 +2365,52 @@ fn a_shutdown_writes_a_coalesced_chain_switch_first() {
         );
     }
     assert!(
-        last_saved_meta(fx.key_jobs()).is_none(),
+        !disk
+            .run(&fx)
+            .iter()
+            .any(|name| name.starts_with("MetaSaved")),
         "coalesced: nothing written yet"
     );
-    let before = fx.app.borrow().lock_epoch;
     {
         let _ack = LockAck::start(&fx);
         fx.app().shutdown();
     }
-    let app = fx.app.borrow();
-    assert_eq!(app.mode, AppMode::ShuttingDown);
-    assert!(
-        app.browser
-            .as_ref()
-            .is_some_and(|browser| !browser.grant_write.pending()),
-        "the shutdown took the waiting write"
-    );
-    let lock_epoch = app.lock_epoch;
+    let lock_epoch = {
+        let app = fx.app.borrow();
+        assert_eq!(app.mode, AppMode::ShuttingDown);
+        assert!(
+            app.browser
+                .as_ref()
+                .is_some_and(|browser| !browser.grant_write.pending()),
+            "the shutdown took the waiting write"
+        );
+        app.lock_epoch
+    };
     assert_eq!(lock_epoch, before + 1, "one lock");
-    // What the worker's `Lock` of this shutdown cancels if it comes first: the meta save, at the
-    // epoch before the lock, holding the switch.
-    let cancelled = app.key_queue.cancel_pending(lock_epoch);
-    let names: Vec<String> = cancelled.iter().map(|(_, job)| key_name(job)).collect();
-    assert_eq!(names, ["SaveMeta"], "the shutdown queued one meta save");
-    assert_eq!(cancelled[0].0, before, "queued before the lock");
-    let switched = last_saved_meta(cancelled.into_iter().map(|(_, job)| job).collect());
+    // The lock is first in the queue, then the shutdown's one meta save (queued before the
+    // lock), then `Shutdown`.
     assert_eq!(
-        switched
-            .as_ref()
-            .and_then(|meta| saved_chain(meta, "https://app.example")),
-        Some(ETHEREUM_MAINNET),
-        "the meta save holds the switch"
+        queued(&fx),
+        [
+            format!("Lock@{lock_epoch}"),
+            format!("SaveMeta@{before}"),
+            format!("Shutdown@{lock_epoch}")
+        ]
     );
-    drop(app);
-    let rest: Vec<String> = fx.key_jobs().iter().map(key_name).collect();
-    assert_eq!(rest, ["Lock", "Shutdown"], "the lock is first in the queue");
+    // The worker's `Lock` writes that save before its wipe; `Shutdown` ends the run.
+    assert_eq!(
+        disk.run(&fx),
+        [
+            format!("MetaSaved@{before}"),
+            format!("LockDone@{lock_epoch}")
+        ],
+        "the meta save is written before the lock"
+    );
+    assert_eq!(
+        saved_chain(&disk.saved(), "https://app.example"),
+        Some(ETHEREUM_MAINNET),
+        "the switch is on disk"
+    );
 }
 
 /// 2026-11-22 (S4d F21, owner decision, spec/04 §1.5, §5.3, spec/05 §4.5, spec/15 §18 21): a
@@ -2256,9 +2425,11 @@ fn a_shutdown_writes_a_coalesced_chain_switch_first() {
 /// the mode first, its lock's flush wrote nothing and dropped the step, so no meta was saved and
 /// the revoked grant came back at the next start. No production entry takes this path on Windows
 /// (every entry drains, so the answer comes in the revoke's own entry); it is the shape of a
-/// shell that answers in a later entry (S4d E2). The save's survival of the shutdown's
-/// `KeyJob::Lock` is spec/15 §18 26 (open). Headless, no window; files only below the fixture's
-/// temp folder.
+/// shell that answers in a later entry (S4d E2). (2026-11-23, S4d F22, owner decision spec/15
+/// §18 26 (가) "저장 후 잠금") The key queue runs on a [`DiskWorker`]: the shutdown's
+/// `KeyJob::Lock` writes the save first, and the document on disk lacks the revoked site. From
+/// F21 until F22 the save's survival of that `Lock` was the open §18 26 and the test looked only
+/// at the queued document. Headless, no window; files only below the fixture's temp folder.
 #[test]
 fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
     use yw_core::policy::BrowserOrigin;
@@ -2271,12 +2442,13 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
     let fx = fixture("revoke-shutdown-deferred");
     let outlet = dapp(&fx, false, true);
     grant(&fx, OTHER, ACCOUNT_B);
+    let mut disk = DiskWorker::new(&fx);
     fx.app().write_grants();
+    let before = fx.app.borrow().lock_epoch;
+    assert_eq!(disk.run(&fx), [format!("MetaSaved@{before}")]);
     assert_eq!(
-        last_saved_meta(fx.key_jobs())
-            .as_ref()
-            .map(|meta| meta.connected_sites.len()),
-        Some(2),
+        saved_origins(&disk.saved()).len(),
+        2,
         "both sites are saved"
     );
     let core = Arc::clone(&fx.app.borrow().browser.as_ref().unwrap().core);
@@ -2314,7 +2486,10 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
         app.outbox.drain(..).collect()
     };
     assert!(
-        last_saved_meta(fx.key_jobs()).is_none(),
+        !disk
+            .run(&fx)
+            .iter()
+            .any(|name| name.starts_with("MetaSaved")),
         "nothing written yet"
     );
     // Entry 2: the shutdown.
@@ -2331,15 +2506,21 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
             "the shutdown wrote the revoke"
         );
     }
-    let saved = last_saved_meta(fx.key_jobs()).expect("the shutdown saved meta");
-    let origins: Vec<String> = crate::browser::grants::sites_from_values(&saved.connected_sites)
-        .iter()
-        .map(|site| site.origin.as_str().to_owned())
-        .collect();
+    let lock_epoch = fx.app.borrow().lock_epoch;
+    assert_eq!(lock_epoch, before + 1, "one lock");
+    // The worker's `Lock` (at the front) writes the shutdown's meta save before its wipe.
     assert_eq!(
-        origins,
+        disk.run(&fx),
+        [
+            format!("MetaSaved@{before}"),
+            format!("LockDone@{lock_epoch}")
+        ],
+        "the meta save is written before the lock"
+    );
+    assert_eq!(
+        saved_origins(&disk.saved()),
         vec!["https://app.example".to_owned()],
-        "the revoked site is not in the saved document"
+        "the revoked site is not in the document on disk"
     );
     assert_eq!(dapp_answers(&outlet), "4900 Wallet connection closed.");
     // Entry 3: the shell applies the held effects; the stale open is answered after the shutdown.

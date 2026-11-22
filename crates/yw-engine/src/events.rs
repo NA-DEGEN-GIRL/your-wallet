@@ -1014,6 +1014,30 @@ impl KeyQueue {
         }
     }
 
+    /// Removes and returns, in queue order, the meta saves (`KeyJob::SaveMeta`) queued before the
+    /// `Lock` of `lock_epoch` (an epoch below it: the UI raises its epoch when it queues that
+    /// `Lock`), which the worker runs before that lock's wipe; every other job stays queued
+    /// (2026-11-23, S4d F22, owner decision spec/15 §18 26 (가) "저장 후 잠금", spec/04 §5.3
+    /// step 2). Only the jobs queued when it is called: a save queued later, or one at the lock's
+    /// epoch, is left for [`Self::cancel_pending`] as before. Before F22 the `Lock` (at the front)
+    /// cancelled those saves unless the worker had taken them first.
+    pub fn take_saves_before(&self, lock_epoch: u64) -> Vec<(u64, KeyJob)> {
+        let Ok(mut queue) = self.queue.lock() else {
+            return Vec::new();
+        };
+        let mut saves = Vec::new();
+        let mut kept = VecDeque::new();
+        while let Some(entry) = queue.pop_front() {
+            if entry.0 < lock_epoch && matches!(entry.1, KeyJob::SaveMeta { .. }) {
+                saves.push(entry);
+            } else {
+                kept.push_back(entry);
+            }
+        }
+        *queue = kept;
+        saves
+    }
+
     /// Removes and returns every queued non-control job (processing the `Lock` of
     /// `lock_epoch`); `Lock`, `Load`, `ResetWallet` and `Shutdown` stay queued, and so do an
     /// `Unlock` or `.prev` recovery queued after that lock (epoch `lock_epoch` or later): the

@@ -706,7 +706,7 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 - `lock`: 슬롯 전체를 `zeroize`하고 슬롯을 해제(yw-win이 VirtualUnlock·VirtualFree)하며, 백업 challenge와 보관 중인 vault 바이트를 버린다. 진행 중 승인·비밀 창 취소는 [04](04-app-ui.md) §5.3·[05](05-browser.md) §4.4.
 - `Vault`의 `Drop`은 `lock`을 부른다(작업자 종료, `Load`로 교체될 때 등). 슬롯 소거 계약: `Vault`는 슬롯을 놓기 전에 언제나 전체를 0으로 쓴다(`lock`, 슬롯을 받은 작업의 실패, 새 세션이 이전 슬롯을 대체할 때, `Vault` drop). `LockedSlot` 구현은 자체 drop에서 지우지 않아도 된다(yw-app `LockedBox`는 그래도 지운다).
 - 잠금 계기(D12, yw-app이 `lock()` 호출): 유휴 10분(설정 1–60분), `WM_WTSSESSION_CHANGE`/`WTS_SESSION_LOCK`, `WM_POWERBROADCAST`/`PBT_APMSUSPEND`(최대 절전 이미지에 DEK가 남지 않게 절전 전에 소거), 수동 잠금, 앱 종료. 코어에는 타이머가 없다.
-- `Vault`는 `Send`이며 `Sync`가 아니다. yw-app은 코어 작업 스레드 하나에서만 호출하고, Argon2가 드는 호출(`create_wallet`, `import_mnemonic`, `unlock`, `reveal_*`, `change_password`, `remove_evm_raw_key`, `recover_from_prev`)을 UI 스레드에서 실행하지 않는다. `lock` 요청은 큐 맨 앞에 넣는다.
+- `Vault`는 `Send`이며 `Sync`가 아니다. yw-app은 코어 작업 스레드 하나에서만 호출하고, Argon2가 드는 호출(`create_wallet`, `import_mnemonic`, `unlock`, `reveal_*`, `change_password`, `remove_evm_raw_key`, `recover_from_prev`)을 UI 스레드에서 실행하지 않는다. `lock` 요청은 큐 맨 앞에 넣는다. (2026-11-23, [15] §18 26, 주인 결정(2026-11-23): (가) 저장 후 잠금) 작업자는 그 `lock` 전에, 그보다 앞서 큐에 든 meta 저장(`SaveMeta`)만 먼저 쓰고 나머지는 전처럼 취소한다([04] §5.3 2단계); 전에는 그 저장도 취소했다.
 
 ### 7.3 메모리 규칙 (D10)
 
