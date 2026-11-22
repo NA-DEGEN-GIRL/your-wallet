@@ -348,6 +348,17 @@ fn next_step(source: &BarSource<'_>, held: bool, now: u64) -> Option<Text> {
     Some(step)
 }
 
+/// Whether `event` lets go of a hold (pointer or Space release): a High-risk hold released before
+/// 2 s marks the status line (`early_release`). 2026-11-22 (spec/15 §11.4 S4d E0a): was yw-app
+/// `ui::approval_input::is_release`; the flow calls it, the window's map does not.
+#[must_use]
+pub const fn is_release(event: InteractionEvent) -> bool {
+    matches!(
+        event,
+        InteractionEvent::PointerReleased { .. } | InteractionEvent::SpaceReleased { .. }
+    )
+}
+
 /// Whether a status message says a simulation is under way or just changed the content.
 fn simulating_status(lang: Lang, status: &str) -> bool {
     status.starts_with(text::SIMULATING_BUTTON.get(lang).trim_end_matches('…'))

@@ -16,14 +16,14 @@ use crate::events::KeyJob;
 use crate::logging;
 use crate::meta::{Account, EvmAccountPref};
 use crate::text::is_valid_label;
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_mnemonics::ids;
-use crate::ui::secret::DisplaySecret;
 use crate::workers::key::mnemonics::{MnJob, MnOutcome};
 use yw_engine::cmd::{MnPress, Row};
 use yw_engine::form::EditField;
 use yw_engine::screen::SettingsSection;
-use yw_engine::secret::{SecretFormOp, SecretKind};
+use yw_engine::screen::Tone;
+use yw_engine::secret::{DisplaySecret, SecretFormOp, SecretKind};
 
 use crate::secret_session::AfterShown;
 
@@ -1243,7 +1243,7 @@ impl Wallet {
                     let lang = self.settings.language;
                     self.secret_form(SecretFormOp::ResetBackup {
                         positions: challenge.positions,
-                        message: Some(crate::ui::screens::backup_retry_text(
+                        message: Some(yw_engine::secret::backup_retry_text(
                             lang,
                             challenge.positions,
                             true,

@@ -36,10 +36,10 @@
 
 use core::fmt;
 
-use yw_engine::secret::{SecretFormOp, SecretKind};
+use yw_engine::secret::{DisplaySecret, SecretFormOp, SecretKind};
 
 use crate::app::Purpose;
-use crate::ui::secret::{DisplaySecret, Submission};
+use crate::ui::secret::Submission;
 
 /// What the open session's window ends or asks for that is the wallet's to handle: the typed,
 /// in-process entry `Wallet::on_secret_action` (2026-11-22, S4c W12, preflight critic C12; plan

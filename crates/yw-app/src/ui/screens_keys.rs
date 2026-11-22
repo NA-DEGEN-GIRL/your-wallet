@@ -12,8 +12,9 @@ use yw_core::lang::{Lang, Text};
 use crate::app::App;
 use crate::app_btc::BtcCtx;
 use crate::app_keys::{KEY_START_STEPS, KeyStartView};
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens::steps;
+use yw_engine::screen::Tone;
 
 /// Command ids (block 13,000–13,199, `ui::command_ids`).
 pub mod ids {
@@ -338,7 +339,7 @@ impl App {
                 |_| view.address.clone(),
                 |parsed| yw_core::evm::display::format_address(&parsed),
             ),
-            _ => crate::ui::screens_btc::grouped(&view.address),
+            _ => yw_engine::text::grouped(&view.address),
         }));
         items.push(Item::CardEnd);
         items.push(Item::Banner(t(text::KEY_START_BACKUP), Tone::Warn));

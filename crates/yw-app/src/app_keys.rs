@@ -610,7 +610,7 @@ impl Wallet {
     /// The imported key of `Confirm::RemoveImported` as the "지워지는 계정" block shows it
     /// (2026-11-10): its chain, full address and last-read balance; lost for good with the key.
     #[must_use]
-    pub fn imported_removed(&self) -> Option<crate::ui::removed::RemovedAccount> {
+    pub fn imported_removed(&self) -> Option<yw_engine::screen::RemovedAccount> {
         let meta = self.meta.as_ref()?;
         let id = *self.keys.target?.as_bytes();
         if let Some(raw) = meta.evm_raw_accounts.iter().find(|raw| raw.record_id == id) {

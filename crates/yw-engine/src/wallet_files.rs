@@ -4,6 +4,9 @@
 //! (2026-11-17, spec/15 §11.4 S2: moved unchanged out of `store` and `store::reset`, which
 //! re-export them and keep the Windows file operations, so the key worker and the events name
 //! only these.)
+//!
+//! (2026-11-22, spec/15 §11.4 S4d E0a: [`stamp`], the reset folder's time stamp, moved here from
+//! `store::reset` unchanged, so the wallet's reset names no yw-app module for it.)
 
 use std::path::{Path, PathBuf};
 
@@ -43,6 +46,23 @@ pub fn is_set_aside(kind: FileKind, name: &str) -> bool {
         .strip_prefix(".corrupt-")
         .or_else(|| rest.strip_prefix(".prev.corrupt-"));
     digits.is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `20261105T091530Z` from Unix milliseconds (UTC): the reset folder's name stamp. 2026-11-22
+/// (spec/15 §11.4 S4d E0a): was yw-app `store::reset::stamp` (the wallet's reset names it).
+#[must_use]
+pub fn stamp(unix_ms: u64) -> String {
+    // `YYYY-MM-DDTHH:MM:SS.mmmZ` → `YYYYMMDDTHHMMSSZ`.
+    let full = crate::logging::format_utc(unix_ms);
+    let mut out: String = full
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect();
+    out.push('Z');
+    out
 }
 
 /// What a reset moved.

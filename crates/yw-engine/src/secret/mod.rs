@@ -20,11 +20,18 @@
 //! the open window's form themselves before, yw-app `App::with_form`) and
 //! [`SecretEffect::ClearClip`] (the lock's and the exit's clear of a pending secret copy, at the
 //! lock's step 4, spec/04 §5.3).
+//!
+//! 2026-11-22 (spec/15 §11.4 S4d E0a): [`HoldGate`] with [`BACKUP_ACK_HOLD_MS`] (W08's and S22's
+//! 2 s hold), [`DisplaySecret`] (the W08/W09 secret's container; it holds a secret, so it is never
+//! in an effect, and its `Debug` prints `[REDACTED]`) and [`backup_retry_text`] (T-BACKUP-FAIL)
+//! moved from yw-app `ui::secret` and `ui::screens` unchanged, so the wallet code names no shell
+//! module for them. The window's form (`SecretForm`) and the submission stay in yw-app.
 
 use core::fmt;
 
 use yw_core::keyimport::ImportChain;
 use yw_core::lang::Lang;
+use yw_core::secret::SecretString;
 
 use crate::yubikey::PinTarget;
 
@@ -419,6 +426,86 @@ impl fmt::Debug for SecretEffect {
                 .finish(),
         }
     }
+}
+
+/// W08 `다 적었습니다` hold (archive `ACKNOWLEDGEMENT_HOLD_MS`).
+pub const BACKUP_ACK_HOLD_MS: u64 = 2_000;
+/// The 2 s hold of W08's acknowledgement (archive `HoldGate`, pointer only).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HoldGate {
+    started: Option<u64>,
+}
+
+impl HoldGate {
+    /// Starts a hold (ignored while one is active).
+    pub const fn begin(&mut self, now_ms: u64) {
+        if self.started.is_none() {
+            self.started = Some(now_ms);
+        }
+    }
+
+    /// Cancels the hold (pointer left, released early, focus lost).
+    pub const fn cancel(&mut self) {
+        self.started = None;
+    }
+
+    /// Whether a hold is in progress.
+    #[must_use]
+    pub const fn active(self) -> bool {
+        self.started.is_some()
+    }
+
+    /// Whether one continuous hold lasted 2 s.
+    #[must_use]
+    pub const fn complete(self, now_ms: u64) -> bool {
+        match self.started {
+            Some(started) => now_ms.saturating_sub(started) >= BACKUP_ACK_HOLD_MS,
+            None => false,
+        }
+    }
+
+    /// Milliseconds still needed.
+    #[must_use]
+    pub const fn remaining_ms(self, now_ms: u64) -> u64 {
+        match self.started {
+            Some(started) => BACKUP_ACK_HOLD_MS.saturating_sub(now_ms.saturating_sub(started)),
+            None => BACKUP_ACK_HOLD_MS,
+        }
+    }
+}
+
+/// The secret shown by W08/W09.
+pub struct DisplaySecret {
+    /// Words joined by single spaces (W08) or 64 hex (W09).
+    pub text: SecretString,
+    /// EIP-55 account-0 address (W08).
+    pub address: Option<String>,
+    /// The wallet uses a BIP39 passphrase (W08 reveal note).
+    pub passphrase_note: bool,
+    /// `allowSecretCopy`.
+    pub copy_allowed: bool,
+}
+
+impl core::fmt::Debug for DisplaySecret {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("DisplaySecret([REDACTED])")
+    }
+}
+
+/// T-BACKUP-FAIL (W10 after a wrong answer, spec/04 §2.3): the same four positions are asked
+/// again, and the paper may be what is wrong. `words_again`: closing W10 leads back to the words
+/// (S04 or the recovery-phrase list); the new `YubiKey` wallet's W10 has no way back to them.
+/// 2026-11-22 (S4d E0a): was yw-app `ui::screens::backup_retry_text`, its texts in
+/// `ui::screens::text`.
+#[must_use]
+pub fn backup_retry_text(lang: Lang, positions: [u8; 4], words_again: bool) -> String {
+    let [a, b, c, d] = positions.map(|position| position.to_string());
+    let next = if words_again {
+        text::BACKUP_RETRY_WORDS_AGAIN
+    } else {
+        text::BACKUP_RETRY_NO_WORDS
+    };
+    text::BACKUP_RETRY.fill(lang, [&a, &b, &c, &d, next.get(lang)])
 }
 
 #[cfg(test)]

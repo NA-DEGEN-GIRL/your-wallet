@@ -1,7 +1,9 @@
 //! Windows shell messages (spec/04 §1.3): the `WM_APP` message numbers the message loop posts to
 //! the main window, the keyboard shortcuts the loop observer recognizes ([`Shortcut`],
 //! [`NavKey`], [`chain_tab_key`]) and the main window timer. 2026-11-17 (spec/15 §11.4 S2): moved
-//! out of `events`, which keeps only the platform-neutral queues and events.
+//! out of `events`, which keeps only the platform-neutral queues and events. 2026-11-22 (S4d E0a):
+//! the timer period `MAIN_TIMER_MS` moved to `yw_engine::screen` (the wallet's read cadence counts
+//! in it); the shell sets the timer with it from there.
 //!
 //! 2026-11-21 (S4 W1, spec/15 §11.4 S4, plan §3.3): also what the main window does with the
 //! Windows session, power and shutdown messages ([`system_action`], spec/04 §5.1 and LK-3),
@@ -163,9 +165,6 @@ pub const fn chain_tab_key(vk: u16) -> Option<usize> {
         _ => None,
     }
 }
-
-/// Main window timer.
-pub const MAIN_TIMER_MS: u32 = 250;
 
 /// What a system message asks the main window to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

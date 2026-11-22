@@ -127,6 +127,14 @@ pub const BTC_ACCOUNT_VIEW_KEY: &str = "btc_account_view";
 /// network.
 const MAX_BTC_VIEW: usize = yw_core::btc::meta::MAX_BTC_ACCOUNTS + 2;
 
+/// The banner when the meta remembers a newer `vault.ywv` generation (review L17): {0} the
+/// generation the meta saw, {1} the file's. 2026-11-22 (spec/15 §11.4 S4d E0a): was yw-app
+/// `ui::screens::rollback_text`, its text `ui::screens::text::ROLLBACK`.
+#[must_use]
+pub fn rollback_text(lang: Lang, seen: u64, found: u64) -> String {
+    text::ROLLBACK.fill(lang, [&seen.to_string(), &found.to_string()])
+}
+
 /// The optional top-level key of the recovery phrases (spec/02 §5.3, 2026-11-07 "여러 복구
 /// 단어"): `[{"record_id": Hex16, "label": Label, "evm": Account[]}]`, one entry per vault
 /// `Bip39` record in vault order. The primary (first) mnemonic's accounts stay in
@@ -139,6 +147,8 @@ const MNEMONIC_KEYS: [&str; 3] = ["record_id", "label", "evm"];
 /// The default account and recovery-phrase labels (spec/14, 2026-11-14). Labels are stored
 /// data: a default label is written in the app language of the moment and never translated later
 /// (the user may rename it); when numbering, the default labels of both languages count.
+/// 2026-11-22 (spec/15 §11.4 S4d E0a): also `ROLLBACK`, the banner of [`super::rollback_text`]
+/// (was yw-app `ui::screens::text`; wording unchanged).
 pub mod text {
     yw_core::texts! {
         /// Default label of a recovery phrase: {0} its number.
@@ -154,6 +164,9 @@ pub mod text {
         /// Default label of a Bitcoin account of either network (2026-11-15, `btc_account_view`):
         /// {0} number.
         BTC_ACCOUNT_LABEL(1) = "Bitcoin {0}" / "Bitcoin {0}";
+        /// The banner when the meta remembers a newer `vault.ywv` generation: {0} seen, {1} found.
+        ROLLBACK(2) = "지갑 파일(vault.ywv)이 예전 사본으로 바뀌었을 수 있습니다: 이 지갑은 세대 {0}까지 저장했는데 지금 파일은 세대 {1}입니다. 직접 백업에서 되돌린 것이 아니라면 지운 계정·키가 다시 나타나거나 최근 변경이 사라졌을 수 있으니 확인하세요."
+            / "The wallet file (vault.ywv) may have been replaced by an older copy: this wallet saved up to generation {0}, but the file is now generation {1}. Unless you restored it from a backup yourself, removed accounts or keys may have come back or recent changes may be lost, so check.";
     }
 }
 

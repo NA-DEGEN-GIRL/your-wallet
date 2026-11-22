@@ -11,24 +11,25 @@ use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::display::format_address;
 
 use crate::apikeys::{KeyName, mask_url, template_entry};
-use crate::app::{App, AppMode, Confirm, Screen, TestState};
+use crate::app::{App, AppMode, CREATE_STEPS, Confirm, IMPORT_STEPS, Screen, TestState};
 use crate::errors::ErrorCode;
 use crate::meta::EvmAccountPref;
 use crate::network::NetworkId;
 use crate::settings::{LogLevel, RpcTemplate};
-use crate::ui::main_window::{Ctl, Item, Tone};
-use crate::ui::screens_accounts::{AccountCard, AccountItem, AccountSource, SelectedLine};
+use crate::ui::main_window::{Ctl, Item};
+use crate::ui::screens_accounts::{AccountCard, AccountItem, SelectedLine};
 use crate::ui::theme::AddressKind;
 use yw_core::lang::{Lang, Text};
+use yw_engine::screen::AccountSource;
 use yw_engine::screen::SettingsSection;
+use yw_engine::screen::Tone;
 
 pub mod text;
 
 pub use text::{
     T_ACCOUNTS_BACKUP, T_ACCOUNTS_IMPORTED, T_ACCOUNTS_KEY_ONLY, T_ACCOUNTS_YUBIKEY,
-    T_ACCOUNTS_YUBIKEY_WORDS, T_ACTIVITY_RECEIVED, T_ALT_PASS, T_ALT_PASS_RECEIVE,
-    T_BALANCE_FAILED, T_BALANCE_LOADING, T_DISCARD, T_MAINNET, T_REFRESH_TIP, T_REMOVE_KEY,
-    T_TOKEN_DELETE, T_WER_UNPROTECTED,
+    T_ACCOUNTS_YUBIKEY_WORDS, T_ACTIVITY_RECEIVED, T_ALT_PASS, T_BALANCE_FAILED, T_BALANCE_LOADING,
+    T_DISCARD, T_MAINNET, T_REFRESH_TIP, T_REMOVE_KEY, T_TOKEN_DELETE,
 };
 
 /// Command ids (never 1/2, which `IsDialogMessageW` uses for Enter/Esc).
@@ -554,19 +555,6 @@ pub mod ids {
     }
 }
 
-/// Steps of the create flow (S02 → W01 → W08 → W10, spec/04 §2.3).
-pub const CREATE_STEPS: [Text; 3] = [
-    text::STEP_PASSWORD,
-    text::STEP_WRITE_WORDS,
-    text::STEP_BACKUP_CHECK,
-];
-/// Steps of the import flow (S05 → W01 → W05 → S06, spec/04 §2.4).
-pub const IMPORT_STEPS: [Text; 3] = [
-    text::STEP_PASSWORD,
-    text::STEP_ENTER_WORDS,
-    text::STEP_FIRST_ADDRESS,
-];
-
 /// The step indicator item of a flow.
 #[must_use]
 pub fn steps<const N: usize>(labels: [&str; N], current: usize) -> Item {
@@ -592,20 +580,6 @@ pub const LANGUAGE_KOREAN: &str = "한국어";
 
 /// T-FIRST-1 (S01, three plain sentences).
 pub const T_FIRST: [Text; 3] = [text::T_FIRST_1, text::T_FIRST_2, text::T_FIRST_3];
-
-/// T-BACKUP-FAIL (W10 after a wrong answer, spec/04 §2.3): the same four positions are asked
-/// again, and the paper may be what is wrong. `words_again`: closing W10 leads back to the words
-/// (S04 or the recovery-phrase list); the new `YubiKey` wallet's W10 has no way back to them.
-#[must_use]
-pub fn backup_retry_text(lang: Lang, positions: [u8; 4], words_again: bool) -> String {
-    let [a, b, c, d] = positions.map(|position| position.to_string());
-    let next = if words_again {
-        text::BACKUP_RETRY_WORDS_AGAIN
-    } else {
-        text::BACKUP_RETRY_NO_WORDS
-    };
-    text::BACKUP_RETRY.fill(lang, [&a, &b, &c, &d, next.get(lang)])
-}
 
 /// The selected-account card of a network without an RPC address (spec/04 §2.6, 2026-11-08):
 /// why there is no balance, in place of "RPC 연결을 확인하고 새로고침하세요".
@@ -756,12 +730,6 @@ pub fn vault_file_text(lang: Lang, generation: u64, written_unix_ms: u64) -> Str
         format!("{short} UTC")
     };
     text::VAULT_FILE.fill(lang, [&generation.to_string(), &when])
-}
-
-/// The banner when the meta remembers a newer `vault.ywv` generation (review L17).
-#[must_use]
-pub fn rollback_text(lang: Lang, seen: u64, found: u64) -> String {
-    text::ROLLBACK.fill(lang, [&seen.to_string(), &found.to_string()])
 }
 
 fn header(app: &App, items: &mut Vec<Item>) {
@@ -1336,7 +1304,9 @@ impl App {
     }
 
     fn import_address(lang: Lang, address: &str, items: &mut Vec<Item>) {
-        items.push(Item::Title(text::STEP_FIRST_ADDRESS.get(lang).to_owned()));
+        items.push(Item::Title(
+            crate::app::text::STEP_FIRST_ADDRESS.get(lang).to_owned(),
+        ));
         items.push(steps(IMPORT_STEPS.map(|step| step.get(lang)), 3));
         items.push(Item::CardStart(None));
         items.push(Item::Text(text::IMPORT_ADDRESS_TEXT.get(lang).to_owned()));
@@ -1954,7 +1924,7 @@ impl App {
             let source = match pref {
                 EvmAccountPref::Record(_) => AccountSource::Imported,
                 EvmAccountPref::Hardware(index) => {
-                    AccountSource::Card(crate::ui::screens_accounts::evm_card_role(index))
+                    AccountSource::Card(yw_engine::screen::evm_card_role(index))
                 }
                 EvmAccountPref::Index(_) => AccountSource::Words(None),
                 EvmAccountPref::Mnemonic(id, _) => AccountSource::Words(Some(id)),
@@ -2212,7 +2182,7 @@ impl App {
             items.push(Item::Text(vault_file_text(lang, generation, written)));
         }
         items.push(Item::Help(if self.guard.wer_unprotected {
-            T_WER_UNPROTECTED.get(lang).to_owned()
+            crate::app::text::T_WER_UNPROTECTED.get(lang).to_owned()
         } else {
             text::WER_PROTECTED.get(lang).to_owned()
         }));
@@ -2897,7 +2867,7 @@ impl App {
     /// The EVM imported key about to be removed (`Confirm::RemoveKey`) as the "지워지는 계정"
     /// block shows it (2026-11-10, was `remove_key_balance`): the selected EVM network's native
     /// balance as last read; other networks and tokens are not checked.
-    fn remove_key_account(&self) -> Option<crate::ui::removed::RemovedAccount> {
+    fn remove_key_account(&self) -> Option<yw_engine::screen::RemovedAccount> {
         let (label, address) = self.pending_remove.and_then(|id| {
             self.meta.as_ref()?.evm_raw_accounts.iter().find_map(|raw| {
                 (raw.record_id == *id.as_bytes())

@@ -27,9 +27,10 @@ use crate::explain::{
     explain_once,
 };
 use crate::logging::{self, Field};
-use crate::ui::screens_llm::{DraftNotes, ids, preset_url};
+use crate::ui::screens_llm::{ids, preset_url};
 use yw_engine::cmd::LlmPress;
 use yw_engine::effect::Effect;
+use yw_engine::explain::config::DraftNotes;
 use yw_engine::form::{CredField, EditField};
 use yw_engine::screen::SettingsSection;
 

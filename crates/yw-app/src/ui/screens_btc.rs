@@ -23,7 +23,9 @@ use crate::errors::ErrorCode;
 use crate::meta::BookChain;
 use crate::settings::BtcIndexer;
 use crate::ui::badge::Badge;
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
+use yw_engine::screen::Tone;
+use yw_engine::text::grouped;
 
 pub mod text;
 
@@ -513,20 +515,6 @@ const FEE_CHOICES: [BtcFeeChoice; 4] = [
     BtcFeeChoice::Manual,
 ];
 
-/// The whole address in 4-character groups separated by one space (spec/04 §3.3; drawing only,
-/// the copied text never has spaces).
-#[must_use]
-pub fn grouped(address: &str) -> String {
-    let mut out = String::with_capacity(address.len().saturating_add(address.len() / 4));
-    for (index, character) in address.chars().enumerate() {
-        if index != 0 && index % 4 == 0 {
-            out.push(' ');
-        }
-        out.push(character);
-    }
-    out
-}
-
 /// The fee radio ids of the send form (`bump = false`) or the fee-bump form, in
 /// [`FEE_CHOICES`] order.
 #[must_use]
@@ -867,10 +855,9 @@ impl App {
         let mut chosen = None;
         for (index, row) in rows.iter().take(usize::from(ids::ACCOUNT_SPAN)).enumerate() {
             let account = ctx.accounts().into_iter().find(|meta| meta.id() == row.id);
-            let source = account.map_or(
-                crate::ui::screens_accounts::AccountSource::Card(None),
-                |meta| Wallet::btc_source(meta.account(), net),
-            );
+            let source = account.map_or(yw_engine::screen::AccountSource::Card(None), |meta| {
+                Wallet::btc_source(meta.account(), net)
+            });
             if row.selected {
                 chosen = Some((row.id, row.name.clone()));
             }
@@ -2294,10 +2281,11 @@ mod tests {
     use crate::meta::{Meta, Tab};
     use crate::network::{BtcNet, NetworkId};
     use crate::settings::Settings;
-    use crate::ui::main_window::{Ctl, Item, Tone};
+    use crate::ui::main_window::{Ctl, Item};
     use crate::ui::theme::address_spans;
     use yw_core::lang::Lang;
     use yw_engine::screen::SettingsSection;
+    use yw_engine::screen::Tone;
 
     /// A compressed account public key (the `meta.rs` test value; never derived from here).
     const TESTNET_ACCOUNT: &str =

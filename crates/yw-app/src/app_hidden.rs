@@ -8,9 +8,10 @@
 use crate::app::{App, Wallet};
 use crate::app_sol::SolAccountId;
 use crate::meta::EvmAccountPref;
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
 use yw_core::lang::Lang;
 use yw_engine::cmd::{HiddenPress, Row};
+use yw_engine::screen::Tone;
 
 /// The fixed texts of the hidden-account rows (spec/14).
 pub mod text {
@@ -146,7 +147,6 @@ pub fn hidden_note(lang: Lang, label: &str) -> String {
 impl Wallet {
     /// The hidden accounts of `family`, in the order of the visible rows' sources.
     #[must_use]
-    #[expect(clippy::too_many_lines, reason = "one block per kind of account")]
     pub fn hidden_rows(&self, family: Family) -> Vec<HiddenRow> {
         let Some(meta) = self.meta.as_ref() else {
             return Vec::new();
@@ -181,8 +181,7 @@ impl Wallet {
                         label: account.label.clone(),
                         address: account.address.clone(),
                         // The holder cards as on the drop-down (2026-11-15; `YubiKey` before).
-                        source: self
-                            .card_source(crate::ui::screens_accounts::evm_card_role(account.index)),
+                        source: self.card_source(yw_engine::screen::evm_card_role(account.index)),
                     });
                 }
             }
@@ -244,8 +243,7 @@ impl Wallet {
                         id: HiddenId::Sol(SolAccountId::Hardware(account.index)),
                         label: account.label.clone(),
                         address: account.address.clone(),
-                        source: self
-                            .card_source(crate::ui::screens_accounts::sol_card_role(account.index)),
+                        source: self.card_source(yw_engine::screen::sol_card_role(account.index)),
                     });
                 }
             }
@@ -295,7 +293,7 @@ impl App {
                     self.balance_text(&hidden.address),
                 ),
                 Family::Sol => (
-                    crate::ui::screens_btc::grouped(&hidden.address),
+                    yw_engine::text::grouped(&hidden.address),
                     yw_core::sol::SolAddress::parse(&hidden.address)
                         .ok()
                         .and_then(|address| self.sol_balance(&address))
@@ -304,7 +302,7 @@ impl App {
                 // The whole address, grouped like the tab's (spec/04 §3.3), and the available
                 // balance the account's last refresh left in meta.
                 Family::Btc => (
-                    crate::ui::screens_btc::grouped(&hidden.address),
+                    yw_engine::text::grouped(&hidden.address),
                     self.btc_hidden_balance(hidden.id),
                 ),
             };

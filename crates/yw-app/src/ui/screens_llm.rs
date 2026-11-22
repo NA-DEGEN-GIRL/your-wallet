@@ -5,11 +5,11 @@
 
 use crate::apikeys::KeyName;
 use crate::app::App;
-use crate::explain::config::{
-    Endpoint, effectively_enabled, endpoint_path_hint, host_phrase, parse_endpoint, privacy_notice,
-};
+use crate::explain::config::{effectively_enabled, host_phrase, parse_endpoint, privacy_notice};
 use crate::explain::{ReasoningEffort, ResponseFormatMode};
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
+use yw_engine::explain::config::DraftNotes;
+use yw_engine::screen::Tone;
 
 /// Command ids of the AI section (10,000–10,099; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -241,31 +241,6 @@ pub fn preset_url(id: u16) -> Option<&'static str> {
         .iter()
         .find(|(preset, ..)| *preset == id)
         .map(|(_, _, url)| *url)
-}
-
-/// What the provider card says about the endpoint draft (2026-11-11). The card is drawn again
-/// when this changes while typing.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DraftNotes {
-    /// Looks like a URL but the path does not end in `/chat/completions` (a hint, not a rule).
-    pub path_hint: bool,
-    /// `api.openai.com`: `max_tokens` is never sent.
-    pub openai: bool,
-    /// `api.anthropic.com`: `json_schema` only, `reasoning_effort` ignored.
-    pub anthropic: bool,
-}
-
-impl DraftNotes {
-    /// The notes of an endpoint draft.
-    #[must_use]
-    pub fn of(text: &str) -> Self {
-        let endpoint = parse_endpoint(text.trim());
-        Self {
-            path_hint: endpoint_path_hint(text),
-            openai: endpoint.as_ref().is_some_and(Endpoint::is_openai),
-            anthropic: endpoint.as_ref().is_some_and(Endpoint::is_anthropic),
-        }
-    }
 }
 
 impl App {

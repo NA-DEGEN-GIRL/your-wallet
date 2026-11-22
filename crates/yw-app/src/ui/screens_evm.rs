@@ -22,16 +22,13 @@ use crate::meta::{ActivityEntry, BookChain};
 use crate::network::NetworkId;
 use crate::token_view::RowPlace;
 use crate::ui::badge::Badge;
-use crate::ui::main_window::{Ctl, Item, Tone};
-use crate::ui::qr::{EvmQrKind, RECEIVE_SHARED_ADDRESS_NOTE};
+use crate::ui::main_window::{Ctl, Item};
+use crate::ui::qr::RECEIVE_SHARED_ADDRESS_NOTE;
+use yw_engine::badge::custom_chain_badge;
+use yw_engine::screen::Tone;
+use yw_engine::screen::{ActivityRowView, EvmQrKind};
 
 pub mod text;
-
-/// T-CUSTOM-CHAIN (spec/04 §2.16): the user-chain badge of S10, S15 and the A01 header.
-#[must_use]
-pub fn custom_chain_badge(lang: yw_core::lang::Lang, chain_id: u64) -> String {
-    crate::ui::approval_text::BADGE_CUSTOM_CHAIN.fill(lang, [&chain_id.to_string()])
-}
 
 /// The S15 `EVM 체인` add note and button (spec/04 §2.11): any other L1/L2 is a user chain.
 fn chain_add_row(lang: Lang, items: &mut Vec<Item>) {
@@ -99,9 +96,9 @@ pub mod ids {
     pub const SEND_PICK_SPAN: u16 = 40;
     /// 주소 복사.
     pub const COPY_ADDRESS: u16 = 1_000;
-    /// Receive QR: EIP-681 (`ui::qr::EvmQrKind::Eip681`).
+    /// Receive QR: EIP-681 (`yw_engine::screen::EvmQrKind::Eip681`).
     pub const QR_EIP681: u16 = 1_001;
-    /// Receive QR: the bare address (`ui::qr::EvmQrKind::PlainAddress`).
+    /// Receive QR: the bare address (`yw_engine::screen::EvmQrKind::PlainAddress`).
     pub const QR_PLAIN: u16 = 1_002;
     /// Token card `주소 복사` of the contract (one per row, indexed like [`TOKEN_ROW_BASE`];
     /// 2026-11-11).
@@ -442,23 +439,6 @@ fn activity_status(lang: Lang, word: &str) -> &'static str {
         _ => text::STATUS_STOPPED,
     }
     .get(lang)
-}
-
-/// One activity row of the S10 list.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ActivityRowView {
-    /// Time, account label, title.
-    pub head: String,
-    /// Status.
-    pub status: String,
-    /// Hash text.
-    pub hash: String,
-    /// Group key when it is an open journal group (speed-up/cancel/resend/discard).
-    pub open: Option<yw_core::journal::evm::GroupKey>,
-    /// Manual resend/discard offered.
-    pub manual: bool,
-    /// The recipient (decoded token recipient for ERC-20 transfers) for `이 주소 저장`.
-    pub counterparty: Option<Address>,
 }
 
 impl App {
@@ -1688,7 +1668,7 @@ impl App {
                 text::PLAIN_QR.fill(lang, [&self.network_name(NetworkId::Eip155(chain_id))]),
             ));
         }
-        items.push(Item::Qr(crate::ui::qr::evm_receive_payload(
+        items.push(Item::Qr(yw_engine::screen::evm_receive_payload(
             &address, chain_id, kind,
         )));
         items.push(Item::Help(

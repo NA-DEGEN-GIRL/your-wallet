@@ -395,7 +395,7 @@ fn grouped_form(address: &str, kind: AddressKind) -> String {
 
 /// `text` as one whole address and its family: the address itself ([`address_kind`]) or that
 /// address in exactly the 4-character groups of [`grouped_form`] (the approval display model's
-/// EVM addresses, `yw_core::sol::address::grouped`, `ui::screens_btc::grouped`), so only an
+/// EVM addresses, `yw_core::sol::address::grouped`, `yw_engine::text::grouped`), so only an
 /// address line is redrawn, never other text with spaces.
 #[must_use]
 pub fn whole_address(text: &str) -> Option<(String, AddressKind)> {

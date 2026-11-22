@@ -47,10 +47,10 @@ use crate::shell_msg::{
 };
 use crate::system_clock::SystemClock;
 use crate::text::is_valid_label;
-use crate::ui::main_window::{ControlSet, Placed, Tone, layout, paint};
+use crate::ui::main_window::{ControlSet, Placed, layout, paint};
 use crate::ui::secret::{
-    CaptureDecision, DisplaySecret, FormAction, PASTE_MAX_UTF16_UNITS, SECRET_TIMER_ID,
-    SECRET_TIMER_MS, SecretForm, Submission, capture_decision, window_size,
+    CaptureDecision, FormAction, PASTE_MAX_UTF16_UNITS, SECRET_TIMER_ID, SECRET_TIMER_MS,
+    SecretForm, Submission, capture_decision, window_size,
 };
 // `IDOK`/`IDCANCEL`: the ids `IsDialogMessageW` sends for Enter and Esc (2026-11-18, S3 B2: they
 // were constants of this file).
@@ -70,8 +70,8 @@ use yw_engine::form::{CredField, EditField, FormState, PressInput};
 // to `yw_engine::screen` (the scroll effects carry them). P10a re-exported them as
 // `crate::app::SettingsSection` and `crate::app_scroll::ScrollPlace`; 2026-11-21 (S4b final
 // review, AGENTS.md §4 "no new re-exports"): the callers name `yw_engine::screen` directly.
-use yw_engine::screen::{EnteredAt, ScrollPlace, SettingsSection};
-use yw_engine::secret::{SecretEffect, SecretFormOp, SecretKind, SecretStep};
+use yw_engine::screen::{EnteredAt, ScrollPlace, SettingsSection, Tone};
+use yw_engine::secret::{DisplaySecret, SecretEffect, SecretFormOp, SecretKind, SecretStep};
 use yw_engine::services::Services;
 
 /// Main window class.
@@ -491,7 +491,7 @@ pub struct Banner {
     pub text: String,
     /// Look: `Tone::Danger` for errors and warnings (the default), lighter for a notice
     /// (review 2026-11-07 F5: a success notice in a red error band read as a failure).
-    pub tone: crate::ui::main_window::Tone,
+    pub tone: yw_engine::screen::Tone,
 }
 
 /// A secret copy still to be cleared from the clipboard (spec/04 §4.8).
@@ -1066,6 +1066,21 @@ fn secret_modifier(vk: u16) -> bool {
     is_down(vk)
 }
 
+/// Steps of the create flow (S02 → W01 → W08 → W10, spec/04 §2.3). 2026-11-22 (spec/15 §11.4
+/// S4d E0a): with [`IMPORT_STEPS`] and their step texts moved here from `ui::screens` (the secret
+/// windows' step bar, `flow_step`, reads them; S02–S06 draw them from here).
+pub const CREATE_STEPS: [Text; 3] = [
+    text::STEP_PASSWORD,
+    text::STEP_WRITE_WORDS,
+    text::STEP_BACKUP_CHECK,
+];
+/// Steps of the import flow (S05 → W01 → W05 → S06, spec/04 §2.4).
+pub const IMPORT_STEPS: [Text; 3] = [
+    text::STEP_PASSWORD,
+    text::STEP_ENTER_WORDS,
+    text::STEP_FIRST_ADDRESS,
+];
+
 /// The step indicator of the create and import flows shown in their secret windows
 /// (spec/04 §2.3–§2.4).
 /// The labels of `steps` in `lang`, as a constant (the secret window keeps `&'static` labels).
@@ -1081,10 +1096,9 @@ const fn step_labels<const N: usize>(steps: [Text; N], lang: Lang) -> [&'static 
 
 /// The step labels of the flows shown in secret windows, per language.
 mod flow_labels {
-    use super::step_labels;
+    use super::{CREATE_STEPS, IMPORT_STEPS, step_labels};
     use crate::app_keys::KEY_START_STEPS;
-    use crate::ui::screens::{CREATE_STEPS, IMPORT_STEPS};
-    use crate::ui::screens_yubikey::YK_WALLET_STEPS;
+    use crate::app_yubikey::YK_WALLET_STEPS;
     use yw_core::lang::Lang;
 
     pub const CREATE_KO: [&str; CREATE_STEPS.len()] = step_labels(CREATE_STEPS, Lang::Ko);
@@ -1527,7 +1541,7 @@ impl Wallet {
     /// `App::note_wer_unprotected` before).
     fn wer_unprotected_noted(&mut self) {
         self.guard.wer_unprotected = true;
-        let text = crate::ui::screens::T_WER_UNPROTECTED
+        let text = crate::app::text::T_WER_UNPROTECTED
             .get(self.settings.language)
             .to_owned();
         self.banner(None, text);
@@ -1548,13 +1562,13 @@ impl Wallet {
         self.banners.push(Banner {
             code,
             text,
-            tone: crate::ui::main_window::Tone::Danger,
+            tone: yw_engine::screen::Tone::Danger,
         });
     }
 
     /// Adds a codeless notice banner with its own tone (info, warning); dismissed like the
     /// others with `알림 닫기`.
-    pub fn notice(&mut self, text: String, tone: crate::ui::main_window::Tone) {
+    pub fn notice(&mut self, text: String, tone: yw_engine::screen::Tone) {
         self.banners.push(Banner {
             code: None,
             text,
@@ -1611,7 +1625,7 @@ impl App {
         let window = create_window(&spec, handler)?;
         let mut state = app.borrow_mut();
         state.self_ref = Rc::downgrade(app);
-        window.set_timer(MAIN_TIMER_ID, crate::shell_msg::MAIN_TIMER_MS)?;
+        window.set_timer(MAIN_TIMER_ID, yw_engine::screen::MAIN_TIMER_MS)?;
         state.main = Some(window);
         // Made hidden: the wallet's mirror follows (2026-11-21, S4 W3, critique B-10).
         state.sync_main_hidden();
@@ -1791,7 +1805,7 @@ impl Wallet {
             )
         {
             self.info = Some(
-                crate::ui::screens::T_ALT_PASS_RECEIVE
+                crate::app::text::T_ALT_PASS_RECEIVE
                     .get(self.settings.language)
                     .to_owned(),
             );
@@ -2558,7 +2572,7 @@ impl Wallet {
     /// timer period — a held key (Ctrl+2 repeating) marks them due at the repeat rate, and
     /// the RPC worker runs jobs one after another; the tick starts what this leaves.
     pub(crate) fn reads_due(&mut self, now: u64) {
-        if now.saturating_sub(self.reads_due_ms) < u64::from(crate::shell_msg::MAIN_TIMER_MS) {
+        if now.saturating_sub(self.reads_due_ms) < u64::from(yw_engine::screen::MAIN_TIMER_MS) {
             return;
         }
         let evm = self.evm_balance_tick(now);
@@ -3397,7 +3411,7 @@ impl Wallet {
             KeyOutcome::Challenge(Ok(challenge)) => {
                 self.challenge = Some(challenge);
                 if self.secret_purpose() == Some(Purpose::Backup) {
-                    let retry = crate::ui::screens::backup_retry_text(
+                    let retry = yw_engine::secret::backup_retry_text(
                         self.settings.language,
                         challenge.positions,
                         true,
@@ -5221,7 +5235,7 @@ impl Wallet {
                 self.guard.rollback = Some((seen, found));
                 self.banner(
                     None,
-                    crate::ui::screens::rollback_text(self.settings.language, seen, found),
+                    yw_engine::meta::rollback_text(self.settings.language, seen, found),
                 );
                 logging::warn(
                     "app",
@@ -5505,7 +5519,7 @@ impl Wallet {
     /// before any chain handler runs (BTC would derive and store a new address).
     fn refuse_receive(&mut self) {
         self.info = Some(
-            crate::ui::screens::T_ALT_PASS_RECEIVE
+            crate::app::text::T_ALT_PASS_RECEIVE
                 .get(self.settings.language)
                 .to_owned(),
         );

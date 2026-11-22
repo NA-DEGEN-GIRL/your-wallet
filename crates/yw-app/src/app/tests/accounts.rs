@@ -510,7 +510,7 @@ fn bitcoin_rename_hide_and_unhide() {
     app.hidden_open = true;
     let items = app.items();
     assert!(has_text(&items, "카드 A 계정 · YubiKey: 메인 · 숨김"));
-    let grouped = crate::ui::screens_btc::grouped(&card_address);
+    let grouped = yw_engine::text::grouped(&card_address);
     assert!(
         items
             .iter()

@@ -1019,7 +1019,7 @@ impl Wallet {
         if !self.settings.registered_evm().contains(&chain_id) {
             self.notice(
                 text::NO_HYPEREVM.fill(self.settings.language, [&chain_id.to_string()]),
-                crate::ui::main_window::Tone::Warn,
+                yw_engine::screen::Tone::Warn,
             );
             return;
         }

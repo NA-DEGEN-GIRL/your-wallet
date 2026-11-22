@@ -65,22 +65,6 @@ pub fn is_moved(name: &str, include_settings: bool) -> bool {
         || (include_settings && SETTINGS_BASES.iter().any(|base| in_family(name, base)))
 }
 
-/// `20261105T091530Z` from Unix milliseconds (UTC).
-#[must_use]
-pub fn stamp(unix_ms: u64) -> String {
-    // `YYYY-MM-DDTHH:MM:SS.mmmZ` → `YYYYMMDDTHHMMSSZ`.
-    let full = crate::logging::format_utc(unix_ms);
-    let mut out: String = full
-        .split('.')
-        .next()
-        .unwrap_or_default()
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .collect();
-    out.push('Z');
-    out
-}
-
 /// The files a reset would move now, `vault.ywv` first, then by name (S22 lists them).
 ///
 /// # Errors
@@ -208,9 +192,10 @@ pub fn move_wallet_files(
 
 #[cfg(test)]
 mod tests {
-    use super::{README_NAME, is_moved, move_wallet_files, stamp};
+    use super::{README_NAME, is_moved, move_wallet_files};
     use crate::store::FileStorage;
     use yw_core::vault::FileKind;
+    use yw_engine::wallet_files::stamp;
 
     fn temp(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(

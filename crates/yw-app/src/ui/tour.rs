@@ -55,10 +55,9 @@ use crate::flow::evm::{ChainCache, ChainCheck, SharedTransport};
 use crate::meta::{Account, Meta, Tab};
 use crate::network::{BtcNet, NetworkId, SolCluster};
 use crate::settings::Settings;
-use crate::ui::secret::DisplaySecret;
 use crate::workers::rpc::RpcJob;
 use yw_engine::screen::SettingsSection;
-use yw_engine::secret::{SecretFormOp, SecretKind};
+use yw_engine::secret::{DisplaySecret, SecretFormOp, SecretKind};
 
 const TIMER_CLASS: &str = "YourWalletV3TourTimer";
 /// A made-up user token contract (shot 31, hidden like an unwanted airdrop).

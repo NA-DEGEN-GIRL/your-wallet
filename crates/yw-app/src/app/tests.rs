@@ -12,6 +12,7 @@ use yw_core::secret::Zeroizing;
 
 use super::{App, AppMode, Confirm, PasswordAction, Paths, Purpose, Screen};
 use crate::apikeys::ApiKeys;
+use crate::app::text::T_ALT_PASS_RECEIVE;
 use crate::app_evm::{AppApproval, BalanceState, QueuedItem};
 use crate::events::{BalanceSnapshot, KeyOutcome, KeyResult};
 use crate::flow::evm::prepare::SendIntent;
@@ -19,12 +20,11 @@ use crate::lock::{IdleTracker, LockReason};
 use crate::meta::{EvmAccountPref, Meta, RawAccount, Tab};
 use crate::settings::Settings;
 use crate::ui::approval::{QueueOutcome, QueueSource};
-use crate::ui::main_window::{Ctl, Item, Tone};
-use crate::ui::screens::{
-    RECEIVE_IDS, T_ACCOUNTS_BACKUP, T_ALT_PASS, T_ALT_PASS_RECEIVE, T_DISCARD, T_MAINNET, ids,
-};
+use crate::ui::main_window::{Ctl, Item};
+use crate::ui::screens::{RECEIVE_IDS, T_ACCOUNTS_BACKUP, T_ALT_PASS, T_DISCARD, T_MAINNET, ids};
 use crate::ui::secret::Submission;
 use crate::workers::key::{KeyWorker, step};
+use yw_engine::screen::Tone;
 
 const WALLET_PW: &[u8] = b"app-state-test password";
 const WRONG: &[u8] = b"not the wallet password";
@@ -1165,8 +1165,9 @@ fn prune_dormant_entries_after_confirmation() {
 /// EIP-681, with the network note; the shared-address note is always shown.
 #[test]
 fn evm_receive_qr_toggles_to_the_plain_address() {
-    use crate::ui::qr::{EvmQrKind, RECEIVE_SHARED_ADDRESS_NOTE};
+    use crate::ui::qr::RECEIVE_SHARED_ADDRESS_NOTE;
     use crate::ui::screens_evm::ids as evm_ids;
+    use yw_engine::screen::EvmQrKind;
     let (mut app, dir) = unlocked_app("receive-qr", false);
     let address = parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
     app.set_screen(Screen::Receive);
@@ -2542,7 +2543,7 @@ fn vault_generation_going_backwards_is_flagged() {
     h.app.set_screen(Screen::Main);
     assert!(has_text(
         &h.app.items(),
-        &crate::ui::screens::rollback_text(yw_core::lang::Lang::Ko, now + 3, now)
+        &yw_engine::meta::rollback_text(yw_core::lang::Lang::Ko, now + 3, now)
     ));
     h.app.guard.vault_file = h.app.store.vault_file_info();
     h.app.set_screen(Screen::Locked);
@@ -2820,7 +2821,7 @@ fn reads_due_starts_a_due_balance_read_without_the_tick() {
     app.evm_tick(now.saturating_add(100));
     assert_eq!(sent(&rx), [other]);
     // A period later the early start is back; never while S10 is not the screen.
-    let later = now.saturating_add(u64::from(crate::shell_msg::MAIN_TIMER_MS));
+    let later = now.saturating_add(u64::from(yw_engine::screen::MAIN_TIMER_MS));
     app.on_command(chip(&app, 1));
     app.screen = Screen::Settings(yw_engine::screen::SettingsSection::Network);
     app.reads_due(later);
@@ -3751,9 +3752,9 @@ fn setup_copies_answer_with_the_band_in_their_mark() {
     // A stand-in folder for `경로 복사` (never read: only its text is copied).
     crate::app_extension::TOUR_EXTENSION_DIR
         .with(|kept| *kept.borrow_mut() = Some(dir.join("extension")));
-    let path = crate::app_extension::text::PATH_COPIED.ko;
-    let url = crate::app_extension::text::URL_COPIED.ko;
-    let reown = crate::ui::screens_walletconnect::text::REOWN_COPIED.ko;
+    let path = crate::app_evm::text::PATH_COPIED.ko;
+    let url = crate::app_evm::text::URL_COPIED.ko;
+    let reown = crate::app_evm::text::REOWN_COPIED.ko;
     let failed = ErrorCode::Sec002.text_in(app.settings.language);
     let copy_path = "copy len=<path> address=false";
     let copy_url = "copy len=19 address=false";
@@ -3850,8 +3851,8 @@ fn a_late_band_result_keeps_a_newer_mark() {
             ..
         }) if Some(anchor) == press_of(COPY_ADDRESS, &app.controls)
     ));
-    let url = crate::app_extension::text::URL_COPIED.ko;
-    let reown = crate::ui::screens_walletconnect::text::REOWN_COPIED.ko;
+    let url = crate::app_evm::text::URL_COPIED.ko;
+    let reown = crate::app_evm::text::REOWN_COPIED.ko;
     let _ = app.controls.take_shell_log();
     app.dispatch(Cmd::CopyDone {
         ok: true,
@@ -3884,12 +3885,13 @@ fn a_late_band_result_keeps_a_newer_mark() {
 /// opened for; a result launches nothing.
 #[test]
 fn links_and_folders_open_through_effects_answered_in_the_same_borrow() {
+    use crate::app::text::T_EXT_MISSING;
     use crate::app_explorer::{Launcher, text};
     use crate::app_extension::TOUR_EXTENSION_DIR;
     use crate::explorer::ExplorerNet;
     use crate::network::NetworkId;
     use crate::ui::screens::ids::{OPEN_DATA_FOLDER, OPEN_LOG_FOLDER};
-    use crate::ui::screens_reset::{T_EXT_MISSING, ids::EXT_OPEN_FOLDER};
+    use crate::ui::screens_reset::ids::EXT_OPEN_FOLDER;
     use yw_engine::cmd::{Cmd, LinkTarget};
     const HASH: &str = "0x7a329aaf9f457ef8516d5a51631fe5a75e3c12d7d71b6a73a38ce42ad352de2d";
     let (mut app, dir) = unlocked_app("open-effects", false);
@@ -5636,7 +5638,7 @@ fn yubikey_backup_copy_removal_and_management_key() {
     h.app.on_command(yk::CARD_NAME_SAVE);
     assert_eq!(
         h.app.info.as_deref(),
-        Some(crate::ui::screens_yubikey::text::CARD_NAME_INVALID.ko)
+        Some(crate::app_yubikey::text::CARD_NAME_INVALID.ko)
     );
     assert!(h.app.meta.as_ref().unwrap().hw_card_names.is_empty());
     h.app.controls.type_text(yk::CARD_NAME_EDIT, " 백업 ");
@@ -7182,8 +7184,8 @@ fn english_core_screens_have_no_korean() {
         crate::ui::screens::balance_read_text(Lang::En, Some(7), Some(0)),
         crate::ui::screens::balance_stale_text(Lang::En, Some(7), None),
         crate::ui::screens::no_endpoint_text(Lang::En, "Base"),
-        crate::ui::screens::backup_retry_text(Lang::En, [1, 2, 3, 4], true),
-        crate::ui::screens::rollback_text(Lang::En, 3, 2),
+        yw_engine::secret::backup_retry_text(Lang::En, [1, 2, 3, 4], true),
+        yw_engine::meta::rollback_text(Lang::En, 3, 2),
         crate::ui::screens::vault_file_text(Lang::En, 3, 0),
     ] {
         assert!(!has_hangul(&text), "{text}");
@@ -7968,7 +7970,7 @@ fn display_secrets_move_only_into_verified_windows() {
     use crate::app_yubikey::{YkPurpose, YkWords};
     use crate::errors::ErrorCode;
     use crate::secret_session::AfterShown;
-    use crate::ui::secret::DisplaySecret;
+    use yw_engine::secret::DisplaySecret;
 
     let dir = temp_dir("secret-display-seam");
     let mut app = app_at(&dir);

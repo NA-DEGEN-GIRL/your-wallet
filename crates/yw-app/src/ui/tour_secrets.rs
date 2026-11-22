@@ -80,11 +80,11 @@ use crate::app_mnemonics::MnPurpose;
 use crate::app_yubikey::YkPurpose;
 use crate::events::{KeyJob, KeyOutcome, KeyResult, RevealWhat};
 use crate::lock::LockReason;
-use crate::ui::secret::{DisplaySecret, SECRET_TIMER_ID};
+use crate::ui::secret::SECRET_TIMER_ID;
 use crate::workers::key::mnemonics::MnOutcome;
 use crate::workers::key::yubikey::YkOutcome;
 use crate::workers::rpc::RpcJob;
-use yw_engine::secret::{CardSecretKind, SecretKind};
+use yw_engine::secret::{CardSecretKind, DisplaySecret, SecretKind};
 
 pub(crate) const SECRET_GOLDEN: &str = include_str!("../app/tests/s4_secret/secret.txt");
 pub(crate) const LOCK_GOLDEN: &str = include_str!("../app/tests/s4_secret/lock.txt");

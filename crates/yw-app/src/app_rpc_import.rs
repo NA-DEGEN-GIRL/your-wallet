@@ -35,8 +35,9 @@ use crate::logging::{self, Field};
 use crate::network::NetworkId;
 use crate::settings::{RpcTemplate, Settings};
 use crate::text::is_dns_label;
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
 use yw_engine::cmd::RpcImportPress;
+use yw_engine::screen::Tone;
 
 /// Largest `rpc.json` (spec/01 §4.6).
 pub const RPC_JSON_MAX: u64 = 65_536;

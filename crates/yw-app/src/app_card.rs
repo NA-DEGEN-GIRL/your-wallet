@@ -926,7 +926,8 @@ impl App {
         serial: Option<u32>,
         items: &mut Vec<crate::ui::main_window::Item>,
     ) {
-        use crate::ui::main_window::{Ctl, Item, Tone};
+        use crate::ui::main_window::{Ctl, Item};
+        use yw_engine::screen::Tone;
         let Some(serial) = serial else {
             return;
         };
@@ -961,7 +962,7 @@ impl Wallet {
             [&self.origin_display(&site.origin), &self.card_name(serial)],
         );
         if !self.banners.iter().any(|banner| banner.text == text) {
-            self.notice(text, crate::ui::main_window::Tone::Warn);
+            self.notice(text, yw_engine::screen::Tone::Warn);
             self.refresh();
         }
         logging::info("browser", "site.sign_card_defaults", &[]);

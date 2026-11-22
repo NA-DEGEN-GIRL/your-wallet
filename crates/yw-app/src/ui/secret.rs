@@ -14,13 +14,21 @@
 //! flow step (`SecretStep`) and the fixed texts (`text`, was `ui::secret_text`) moved to
 //! `yw_engine::secret`; the window size in DIP stayed here ([`window_size`], was
 //! `SecretKind::size`).
+//!
+//! 2026-11-22 (spec/15 §11.4 S4d E0a): the W08 hold (`HoldGate`, `BACKUP_ACK_HOLD_MS`; the reset
+//! gate of S22 uses it too) and the displayed secret's container (`DisplaySecret`, which the
+//! wallet's secret session holds until the shell verified the window's capture exclusion) moved
+//! to `yw_engine::secret` unchanged, its redacted `Debug` included. `Submission` stays here until
+//! the wallet moves (S4d E1): a frozen helper names it by this path.
 
 use yw_core::bip39::{is_word, is_word_prefix};
 use yw_core::keyimport::ImportChain;
 use yw_core::lang::Lang;
 use yw_core::password::VaultPassword;
-use yw_core::secret::{SecretString, Zeroizing};
-use yw_engine::secret::{CardSecretKind, SecretKind, SecretStep, text};
+use yw_core::secret::Zeroizing;
+use yw_engine::secret::{
+    BACKUP_ACK_HOLD_MS, CardSecretKind, DisplaySecret, HoldGate, SecretKind, SecretStep, text,
+};
 use yw_win::ui::{DrawFlags, PaintDc, Rect, scale};
 
 use crate::errors::ErrorCode;
@@ -33,8 +41,6 @@ use crate::yubikey::PinTarget;
 
 /// Inactivity (input windows) or display (W08/W09) lifetime.
 pub const SECRET_WINDOW_TIMEOUT_MS: u64 = 300_000;
-/// W08 `다 적었습니다` hold (archive `ACKNOWLEDGEMENT_HOLD_MS`).
-pub const BACKUP_ACK_HOLD_MS: u64 = 2_000;
 /// E-INP-008 visibility.
 pub const INPUT_ERROR_MS: u64 = 3_000;
 /// Input disabled after a wrong password (spec/02 §7.4).
@@ -122,50 +128,6 @@ pub const fn capture_decision(kind: SecretKind, created: Result<bool, ()>) -> Ca
     }
 }
 
-/// The 2 s hold of W08's acknowledgement (archive `HoldGate`, pointer only).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct HoldGate {
-    started: Option<u64>,
-}
-
-impl HoldGate {
-    /// Starts a hold (ignored while one is active).
-    pub const fn begin(&mut self, now_ms: u64) {
-        if self.started.is_none() {
-            self.started = Some(now_ms);
-        }
-    }
-
-    /// Cancels the hold (pointer left, released early, focus lost).
-    pub const fn cancel(&mut self) {
-        self.started = None;
-    }
-
-    /// Whether a hold is in progress.
-    #[must_use]
-    pub const fn active(self) -> bool {
-        self.started.is_some()
-    }
-
-    /// Whether one continuous hold lasted 2 s.
-    #[must_use]
-    pub const fn complete(self, now_ms: u64) -> bool {
-        match self.started {
-            Some(started) => now_ms.saturating_sub(started) >= BACKUP_ACK_HOLD_MS,
-            None => false,
-        }
-    }
-
-    /// Milliseconds still needed.
-    #[must_use]
-    pub const fn remaining_ms(self, now_ms: u64) -> u64 {
-        match self.started {
-            Some(started) => BACKUP_ACK_HOLD_MS.saturating_sub(now_ms.saturating_sub(started)),
-            None => BACKUP_ACK_HOLD_MS,
-        }
-    }
-}
-
 /// Values handed to the app on submit (moved out of the fields).
 pub struct Submission {
     /// Field values in order.
@@ -205,24 +167,6 @@ pub enum FormAction {
     Close,
     /// Timed out (buffers wiped).
     TimedOut,
-}
-
-/// The secret shown by W08/W09.
-pub struct DisplaySecret {
-    /// Words joined by single spaces (W08) or 64 hex (W09).
-    pub text: SecretString,
-    /// EIP-55 account-0 address (W08).
-    pub address: Option<String>,
-    /// The wallet uses a BIP39 passphrase (W08 reveal note).
-    pub passphrase_note: bool,
-    /// `allowSecretCopy`.
-    pub copy_allowed: bool,
-}
-
-impl core::fmt::Debug for DisplaySecret {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.write_str("DisplaySecret([REDACTED])")
-    }
 }
 
 struct Slot {

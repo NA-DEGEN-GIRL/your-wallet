@@ -115,4 +115,23 @@ yw_core::texts! {
     /// `개인키 보기` on a `YubiKey` account.
     YK_KEY_STAYS = "YubiKey 계정의 개인키는 YubiKey 밖으로 나오지 않습니다. 백업은 등록할 때 쓴 복구 단어입니다."
         / "The private key of a YubiKey account never leaves the YubiKey. Its backup is the recovery words used at enrolment.";
+    /// Create/import flow step (English kept short: the step bar of a 640 px secret window).
+    STEP_PASSWORD = "비밀번호 정하기" / "Password";
+    /// Create flow step.
+    STEP_WRITE_WORDS = "복구 단어 적기" / "Recovery words";
+    /// Create flow step.
+    STEP_BACKUP_CHECK = "백업 확인" / "Backup check";
+    /// Import flow step.
+    STEP_ENTER_WORDS = "복구 단어 입력" / "Enter words";
+    /// Import flow step.
+    STEP_FIRST_ADDRESS = "첫 주소 확인" / "First address";
+    /// Shown when `받기` is pressed in that mode.
+    T_ALT_PASS_RECEIVE = "확인되지 않은 passphrase로 연 지갑에서는 받기를 쓸 수 없습니다. 잠그고 passphrase를 다시 입력하세요."
+        / "Receiving is not available in a wallet opened with an unverified passphrase. Lock and enter the passphrase again.";
+    /// The banner when the crash-report exclusion failed at startup (review L9).
+    T_WER_UNPROTECTED = "Windows 오류 보고(WER) 제외 등록에 실패했습니다. 이 앱이 비정상 종료되면 메모리 덤프가 남을 수 있고, 덤프에는 잠금 해제 중인 지갑 키가 들어 있을 수 있습니다."
+        / "Excluding this app from Windows Error Reporting (WER) failed. If the app crashes, a memory dump may be left, and the dump may contain wallet keys of the unlocked session.";
+    /// T-EXT-MISSING.
+    T_EXT_MISSING = "확장 폴더를 찾지 못했습니다. 설치 프로그램(install.cmd)을 다시 실행하면 앱 폴더 안에 extension 폴더가 만들어집니다."
+        / "The extension folder was not found. Running the installer (install.cmd) again creates the extension folder inside the app folder.";
 }

@@ -1576,7 +1576,7 @@ impl Wallet {
             Some(AfterOpen::HiddenNote(label)) => {
                 self.notice(
                     crate::app_hidden::hidden_note(self.settings.language, &label),
-                    crate::ui::main_window::Tone::Info,
+                    yw_engine::screen::Tone::Info,
                 );
                 self.refresh();
             }
@@ -3151,7 +3151,7 @@ impl Wallet {
                 .iter()
                 .any(|def| def.chain_id == chain_id)
         {
-            badges.push(crate::ui::screens_evm::custom_chain_badge(
+            badges.push(yw_engine::badge::custom_chain_badge(
                 self.evm
                     .approval
                     .as_ref()

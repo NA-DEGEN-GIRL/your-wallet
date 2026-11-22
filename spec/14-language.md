@@ -50,6 +50,8 @@
 
 (2026-11-20, [15] §11.4 S4b 끝 Z-b) S4b에서 이름이 바뀐 카탈로그는 비밀 창(W01–W12) 문구 하나다: `yw_app::ui::secret_text` → `yw_engine::secret::text`(S4 P7a1, 창 종류와 함께 엔진으로 옮겨 엔진 목록 `yw_engine::catalogues`에 등록, 문구 그대로; 표는 엔진 카탈로그 자리로 옮겨졌다). 그 밖의 카탈로그 이름과 문구는 S4b 동안 바뀌지 않았다. 아래 표는 그대로 `print_spec14_tables` 출력이다.
 
+(2026-11-22, [15] §11.4 S4d E0a) 지갑 코드가 셸 파일에서 가져다 쓰던 문구가 그 셸 파일을 떠났다. 문구와 항목 이름은 그대로이고 카탈로그 자리만 바뀌었다. 새 엔진 카탈로그 `yw_engine::screen::text`: 띠 꼬리표 `TONE_*` 7개(전에는 `yw_app::ui::main_window::text`), 받기 QR 선택 `QR_WALLET_APP`·`QR_ADDRESS_ONLY`(전에는 `yw_app::ui::qr::text`), 계정 출처 `SOURCE_WORDS`·`SOURCE_IMPORTED`·`SOURCE_EVM_KEY`(전에는 `yw_app::ui::screens_accounts::text`). `yw_engine::secret::text`에 `BACKUP_RETRY`·`BACKUP_RETRY_WORDS_AGAIN`·`BACKUP_RETRY_NO_WORDS`, `yw_engine::meta::text`에 `ROLLBACK`(둘 다 전에는 `yw_app::ui::screens::text`). 옮겨 갈 지갑 파일의 카탈로그로: `yw_app::app::text`에 단계 이름 `STEP_PASSWORD`·`STEP_WRITE_WORDS`·`STEP_BACKUP_CHECK`·`STEP_ENTER_WORDS`·`STEP_FIRST_ADDRESS`와 `T_ALT_PASS_RECEIVE`·`T_WER_UNPROTECTED`(전에는 `yw_app::ui::screens::text`), `T_EXT_MISSING`(전에는 `yw_app::ui::screens_reset::text`); `yw_app::app_evm::text`에 `REOWN_COPIED`(전에는 `yw_app::ui::screens_walletconnect::text`)와 `PATH_COPIED`·`URL_COPIED`(전에는 `yw_app::app_extension::text`); `yw_app::app_yubikey::text`에 단계 이름 `STEP_PASSWORD`·`STEP_WRITE_WORDS`·`STEP_BACKUP_CHECK`·`STEP_PUT_ON_CARD`·`STEP_SET_PIN`과 `CARD_NAME_INVALID`·`CARD_NAME_TAKEN`(전에는 `yw_app::ui::screens_yubikey::text`). 화면 코드는 그 문구를 새 자리에서 읽는다. 아래 표는 그대로 `print_spec14_tables` 출력이다.
+
 <!-- 아래 표는 print_spec14_tables 출력이다. -->
 
 <!-- catalogue: yw_core::evm::risk (rules) -->
@@ -1574,6 +1576,7 @@
 | EVM_ACCOUNT_LABEL | 계정 {0} | Account {0} |
 | SOL_ACCOUNT_LABEL | Solana {0} | Solana {0} |
 | BTC_ACCOUNT_LABEL | Bitcoin {0} | Bitcoin {0} |
+| ROLLBACK | 지갑 파일(vault.ywv)이 예전 사본으로 바뀌었을 수 있습니다: 이 지갑은 세대 {0}까지 저장했는데 지금 파일은 세대 {1}입니다. 직접 백업에서 되돌린 것이 아니라면 지운 계정·키가 다시 나타나거나 최근 변경이 사라졌을 수 있으니 확인하세요. | The wallet file (vault.ywv) may have been replaced by an older copy: this wallet saved up to generation {0}, but the file is now generation {1}. Unless you restored it from a backup yourself, removed accounts or keys may have come back or recent changes may be lost, so check. |
 
 <!-- catalogue: yw_engine::received::btc::text -->
 
@@ -1616,6 +1619,23 @@
 |---|---|---|
 | RPC_OK | RPC 주소가 작동합니다. ({0}, {1}) | The RPC address works. ({0}, {1}) |
 | GENESIS_MATCH | genesis 일치 | genesis matches |
+
+<!-- catalogue: yw_engine::screen::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| TONE_DANGER | 오류 | Error |
+| TONE_WARN | 주의 | Caution |
+| TONE_INFO | 정보 | Info |
+| TONE_TESTNET | 테스트넷 | Testnet |
+| TONE_HIGH_RISK | 고위험 | High risk |
+| TONE_BLOCKED | 차단 | Blocked |
+| TONE_SUCCESS | 완료 | Done |
+| QR_WALLET_APP | 지갑 앱용 QR (네트워크 포함) | QR for wallet apps (with network) |
+| QR_ADDRESS_ONLY | 주소만 QR (거래소 앱용) | Address-only QR (for exchange apps) |
+| SOURCE_WORDS | 복구 단어 | Recovery words |
+| SOURCE_IMPORTED | 가져온 키 | Imported key |
+| SOURCE_EVM_KEY | EVM 계정 {0} 키 | EVM account {0} key |
 
 <!-- catalogue: yw_engine::secret::text -->
 
@@ -1731,6 +1751,9 @@
 | CANCEL | 취소 | Cancel |
 | CLEAR_ALL | 모두 지우기 | Clear all |
 | COPY | 복사 | Copy |
+| BACKUP_RETRY | 입력한 단어 중 종이와 다른 것이 있습니다. 같은 위치({0}·{1}·{2}·{3}번째)를 다시 묻습니다. {4} | Some of the words you entered differ from your paper. The same positions (words {0}, {1}, {2} and {3}) are asked again. {4} |
+| BACKUP_RETRY_WORDS_AGAIN | 종이에 잘못 적었을 수 있으니, 이 창을 닫고 복구 단어를 다시 보면서 이 네 단어를 종이와 대조해 고치세요. | You may have written them down wrong: close this window, view the recovery words again and correct these four words on your paper. |
+| BACKUP_RETRY_NO_WORDS | 종이의 이 네 단어를 다시 확인하세요. 종이가 틀렸는지 알 수 없다면 이 창을 닫아 만들기를 취소하고(단어는 지워집니다) 처음부터 다시 만드세요. | Check these four words on your paper again. If you cannot tell whether the paper is wrong, close this window to cancel the creation (the words are erased) and start over. |
 
 <!-- catalogue: yw_engine::settings::text -->
 
@@ -1911,6 +1934,14 @@
 | TESTING | 테스트 중… | Testing… |
 | PASTE_ADDRESS | 주소를 붙여넣으세요. | Paste the address. |
 | YK_KEY_STAYS | YubiKey 계정의 개인키는 YubiKey 밖으로 나오지 않습니다. 백업은 등록할 때 쓴 복구 단어입니다. | The private key of a YubiKey account never leaves the YubiKey. Its backup is the recovery words used at enrolment. |
+| STEP_PASSWORD | 비밀번호 정하기 | Password |
+| STEP_WRITE_WORDS | 복구 단어 적기 | Recovery words |
+| STEP_BACKUP_CHECK | 백업 확인 | Backup check |
+| STEP_ENTER_WORDS | 복구 단어 입력 | Enter words |
+| STEP_FIRST_ADDRESS | 첫 주소 확인 | First address |
+| T_ALT_PASS_RECEIVE | 확인되지 않은 passphrase로 연 지갑에서는 받기를 쓸 수 없습니다. 잠그고 passphrase를 다시 입력하세요. | Receiving is not available in a wallet opened with an unverified passphrase. Lock and enter the passphrase again. |
+| T_WER_UNPROTECTED | Windows 오류 보고(WER) 제외 등록에 실패했습니다. 이 앱이 비정상 종료되면 메모리 덤프가 남을 수 있고, 덤프에는 잠금 해제 중인 지갑 키가 들어 있을 수 있습니다. | Excluding this app from Windows Error Reporting (WER) failed. If the app crashes, a memory dump may be left, and the dump may contain wallet keys of the unlocked session. |
+| T_EXT_MISSING | 확장 폴더를 찾지 못했습니다. 설치 프로그램(install.cmd)을 다시 실행하면 앱 폴더 안에 extension 폴더가 만들어집니다. | The extension folder was not found. Running the installer (install.cmd) again creates the extension folder inside the app folder. |
 
 <!-- catalogue: yw_app::app_book::text -->
 
@@ -2090,6 +2121,9 @@
 | CAPS_RANGE | maxFee 상한 1–10,000 gwei, tip 상한 0.01–10,000 gwei(maxFee 상한 이하), 총 상한 0.0001–10 범위로 입력하세요. | Enter a maxFee cap of 1–10,000 gwei, a tip cap of 0.01–10,000 gwei (at most the maxFee cap) and a total cap of 0.0001–10. |
 | ENDPOINT_NONE | 없음 | None |
 | ENDPOINT_SET | 설정됨 {0} | Set {0} |
+| REOWN_COPIED | dashboard.reown.com 주소를 복사했습니다. 브라우저 주소창에 붙여넣으세요. | Copied the dashboard.reown.com address. Paste it into your browser's address bar. |
+| PATH_COPIED | 경로를 복사했습니다. 폴더 선택 창 위쪽 주소 칸에 Ctrl+V 하세요. | Path copied. Press Ctrl+V in the address box at the top of the folder picker. |
+| URL_COPIED | chrome://extensions 주소를 복사했습니다. Chrome 주소창에 붙여넣으세요. | Copied chrome://extensions. Paste it into the Chrome address bar. |
 
 <!-- catalogue: yw_app::app_explorer::text -->
 
@@ -2110,8 +2144,6 @@
 | CONNECTED_BEFORE | 확장이 연결된 적 있음 (연결된 사이트가 있습니다). | The extension has connected before (there are connected sites). |
 | NEVER | 아직 연결되지 않음 — 확장을 설치한 뒤 dApp 사이트에서 '지갑 연결'을 누르면 연결됩니다. | Not connected yet — after installing the extension, press 'Connect wallet' on a dApp site. |
 | UNKNOWN | 지금은 연결되어 있지 않습니다. 연결 기록(연결된 사이트)은 잠금을 해제하면 보입니다. | Not connected now. The connection record (connected sites) shows after you unlock. |
-| PATH_COPIED | 경로를 복사했습니다. 폴더 선택 창 위쪽 주소 칸에 Ctrl+V 하세요. | Path copied. Press Ctrl+V in the address box at the top of the folder picker. |
-| URL_COPIED | chrome://extensions 주소를 복사했습니다. Chrome 주소창에 붙여넣으세요. | Copied chrome://extensions. Paste it into the Chrome address bar. |
 
 <!-- catalogue: yw_app::app_hidden::text -->
 
@@ -2489,6 +2521,13 @@
 | CHECK_NO_RECORD | 이 YubiKey의 기록을 찾지 못했습니다. | No record of this YubiKey was found. |
 | CHECK_ERROR | 확인하지 못했습니다: {0} | Could not check: {0} |
 | PIN_CHANGED | {0}을(를) 바꿨습니다. | {0} changed. |
+| STEP_PASSWORD | 비밀번호 | Password |
+| STEP_WRITE_WORDS | 복구 단어 적기 | Recovery words |
+| STEP_BACKUP_CHECK | 백업 확인 | Backup check |
+| STEP_PUT_ON_CARD | YubiKey에 넣기 | Put on YubiKey |
+| STEP_SET_PIN | PIN 정하기 | Choose PIN |
+| CARD_NAME_INVALID | YubiKey 이름은 1–32자이고 #, 앞뒤 공백, 제어 문자, 보이지 않는 문자를 쓸 수 없습니다. | YubiKey names must be 1–32 characters, without #, leading or trailing spaces, control characters or invisible characters. |
+| CARD_NAME_TAKEN | 다른 YubiKey가 이미 '{0}' 이름을 씁니다. 다른 이름을 고르세요. | Another YubiKey already uses the name '{0}'. Choose another name. |
 
 <!-- catalogue: yw_app::app_zec::text -->
 
@@ -2553,13 +2592,6 @@
 
 | 이름 | 한국어 | English |
 |---|---|---|
-| TONE_DANGER | 오류 | Error |
-| TONE_WARN | 주의 | Caution |
-| TONE_INFO | 정보 | Info |
-| TONE_TESTNET | 테스트넷 | Testnet |
-| TONE_HIGH_RISK | 고위험 | High risk |
-| TONE_BLOCKED | 차단 | Blocked |
-| TONE_SUCCESS | 완료 | Done |
 | T_COPIED | 복사됨 | Copied |
 | T_COPIED_ADDRESS | 복사됨 · 붙여넣은 뒤 전체 확인 | Copied · check it whole after pasting |
 | T_PASTE_CHECK | 붙여넣은 뒤 전체 확인 | Check it whole after pasting |
@@ -2569,8 +2601,6 @@
 
 | 이름 | 한국어 | English |
 |---|---|---|
-| QR_WALLET_APP | 지갑 앱용 QR (네트워크 포함) | QR for wallet apps (with network) |
-| QR_ADDRESS_ONLY | 주소만 QR (거래소 앱용) | Address-only QR (for exchange apps) |
 | RECEIVE_SHARED_ADDRESS_NOTE | 이 주소는 다른 EVM 체인(예: Ethereum·Base·Arbitrum)에서도 같은 주소이지만, 여기에는 선택한 네트워크의 자산만 보입니다. 다른 체인으로 받은 자산은 그 체인을 추가·선택해야 보입니다. | This address is the same on other EVM chains (e.g. Ethereum, Base, Arbitrum), but only the selected network's assets are shown here. Assets received on another chain appear after you add and select that chain. |
 
 <!-- catalogue: yw_app::ui::removed::text -->
@@ -2588,11 +2618,6 @@
 
 | 이름 | 한국어 | English |
 |---|---|---|
-| STEP_PASSWORD | 비밀번호 정하기 | Password |
-| STEP_WRITE_WORDS | 복구 단어 적기 | Recovery words |
-| STEP_BACKUP_CHECK | 백업 확인 | Backup check |
-| STEP_ENTER_WORDS | 복구 단어 입력 | Enter words |
-| STEP_FIRST_ADDRESS | 첫 주소 확인 | First address |
 | BACK_MAIN | ← 메인으로 | ← Back to main |
 | BACK_MAIN_TIP | 메인으로 (Esc) | Back to main (Esc) |
 | T_REFRESH_TIP | 새로고침 (F5) | Refresh (F5) |
@@ -2602,9 +2627,6 @@
 | T_FIRST_1 | Your Wallet은 이 PC에서만 쓰는 개인용 암호화폐 지갑입니다. | Your Wallet is a personal crypto wallet used only on this PC. |
 | T_FIRST_2 | 돈을 보내거나 사이트에 서명할 때는 언제나 이 앱의 확인 창에서 내용을 보고 직접 승인합니다. | Whenever you send money or sign for a site, you check the details in this app's approval window and approve them yourself. |
 | T_FIRST_3 | 지갑을 만들 때 받는 복구 단어 24개가 유일한 백업입니다. 종이에 적어 안전한 곳에 보관하세요. | The 24 recovery words you get when creating the wallet are its only backup. Write them on paper and keep it in a safe place. |
-| BACKUP_RETRY | 입력한 단어 중 종이와 다른 것이 있습니다. 같은 위치({0}·{1}·{2}·{3}번째)를 다시 묻습니다. {4} | Some of the words you entered differ from your paper. The same positions (words {0}, {1}, {2} and {3}) are asked again. {4} |
-| BACKUP_RETRY_WORDS_AGAIN | 종이에 잘못 적었을 수 있으니, 이 창을 닫고 복구 단어를 다시 보면서 이 네 단어를 종이와 대조해 고치세요. | You may have written them down wrong: close this window, view the recovery words again and correct these four words on your paper. |
-| BACKUP_RETRY_NO_WORDS | 종이의 이 네 단어를 다시 확인하세요. 종이가 틀렸는지 알 수 없다면 이 창을 닫아 만들기를 취소하고(단어는 지워집니다) 처음부터 다시 만드세요. | Check these four words on your paper again. If you cannot tell whether the paper is wrong, close this window to cancel the creation (the words are erased) and start over. |
 | NO_ENDPOINT | 이 네트워크({0})의 RPC 주소가 아직 없어 잔액을 읽을 수 없습니다. | This network ({0}) has no RPC address yet, so the balance cannot be read. |
 | T_BALANCE_FAILED | 잔액을 읽지 못했습니다. | The balance could not be read. |
 | T_BALANCE_LOADING | 잔액을 불러오는 중… | Loading the balance… |
@@ -2616,7 +2638,6 @@
 | BALANCE_FAILURE | RPC {0} ({1}) — 잔액을 갱신하지 못했습니다. 'RPC 테스트'로 원인을 확인하세요. | RPC {0} ({1}) — the balance could not be updated. Use 'Test RPC' to find the cause. |
 | T_ACTIVITY_RECEIVED | 받은 입금은 이 목록(보낸 거래)에 나오지 않습니다. 아래 '받은 내역도 보기'를 켜면 최근 받은 내역을 따로 보여 줍니다(기본 꺼짐). | Received deposits do not appear in this list (sent transactions). Turn on 'Also show received' below to see recent deposits separately (off by default). |
 | T_ALT_PASS | passphrase 확인값과 맞지 않는 passphrase로 연 지갑입니다. 오타라면 이 지갑은 원래 지갑이 아닌 다른(빈) 지갑이고, 여기로 받은 자산은 지금 입력한 passphrase와 대소문자·공백까지 정확히 같은 값을 다시 넣어야만 꺼낼 수 있습니다. 그래서 받기와 사이트 연결·서명을 막았습니다. 추가한 계정·계정 이름·주소록·연결 기록도 저장되지 않습니다. 잘못 입력했다면 잠그고 다시 여세요. | This wallet was opened with a passphrase that does not match the passphrase check. If it was a typo, this is a different (empty) wallet, not your original one, and assets received here can only be taken out by entering exactly this passphrase again, including case and spaces. So receiving, site connections and signing are blocked. Added accounts, account names, address book entries and connection records are not saved either. If you mistyped, lock and open the wallet again. |
-| T_ALT_PASS_RECEIVE | 확인되지 않은 passphrase로 연 지갑에서는 받기를 쓸 수 없습니다. 잠그고 passphrase를 다시 입력하세요. | Receiving is not available in a wallet opened with an unverified passphrase. Lock and enter the passphrase again. |
 | T_MAINNET | 메인넷 — 실제 자산 | Mainnet — real assets |
 | T_ACCOUNTS_BACKUP | '가져온 개인키' 계정은 복구 단어로 복구되지 않습니다 — 그 개인키를 따로 백업하세요. | 'Imported private key' accounts are not restored from the recovery words — back up those private keys separately. |
 | T_ACCOUNTS_KEY_ONLY | 이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다. | This wallet started from a private key and has no recovery words. Every account is an 'imported key', and each original private key is its only backup. |
@@ -2627,8 +2648,6 @@
 | T_DISCARD | 폐기는 이 앱에서 추적만 멈추고 '폐기됨'으로 표시합니다. 네트워크에서 거래를 취소하지는 않습니다. 이미 전파된 거래라면 나중에 처리될 수 있고, 그 사이 같은 송금을 다시 보내면 두 거래가 모두 처리되어 두 번 지불될 수 있습니다. 확실히 막으려면 폐기 대신 '취소'(같은 nonce의 취소 거래)를 쓰고, 다시 보내기 전에 탐색기에서 이 거래가 사라졌는지 확인하세요. | Discarding only stops tracking in this app and marks the transaction 'discarded'. It does not cancel the transaction on the network. A transaction already broadcast may still be processed later, and if you send the same transfer again in the meantime, both may be processed and you pay twice. To be sure, use 'Cancel' (a cancel transaction with the same nonce) instead of discarding, and check in the explorer that this transaction is gone before sending again. |
 | T_TOKEN_DELETE | 이 토큰을 이 네트워크의 토큰 목록에서 지웁니다. 토큰이나 잔액은 그대로이며 블록체인에는 아무것도 보내지 않습니다. 같은 컨트랙트 주소로 언제든 다시 추가할 수 있습니다. 지운 뒤 이 토큰의 활동 기록은 원시 단위로 보입니다. | Removes this token from this network's token list. The token and its balance stay as they are, and nothing is sent to the blockchain. You can add it again at any time with the same contract address. After removal, this token's activity is shown in raw units. |
 | VAULT_FILE | 지갑 파일(vault.ywv): 저장 횟수(세대) {0} · 마지막 저장 {1}. 기억하는 것보다 작거나 이전 시각이면 파일이 예전 사본으로 바뀌었을 수 있습니다. | Wallet file (vault.ywv): save count (generation) {0} · last saved {1}. If it is lower or earlier than you remember, the file may have been replaced by an older copy. |
-| ROLLBACK | 지갑 파일(vault.ywv)이 예전 사본으로 바뀌었을 수 있습니다: 이 지갑은 세대 {0}까지 저장했는데 지금 파일은 세대 {1}입니다. 직접 백업에서 되돌린 것이 아니라면 지운 계정·키가 다시 나타나거나 최근 변경이 사라졌을 수 있으니 확인하세요. | The wallet file (vault.ywv) may have been replaced by an older copy: this wallet saved up to generation {0}, but the file is now generation {1}. Unless you restored it from a backup yourself, removed accounts or keys may have come back or recent changes may be lost, so check. |
-| T_WER_UNPROTECTED | Windows 오류 보고(WER) 제외 등록에 실패했습니다. 이 앱이 비정상 종료되면 메모리 덤프가 남을 수 있고, 덤프에는 잠금 해제 중인 지갑 키가 들어 있을 수 있습니다. | Excluding this app from Windows Error Reporting (WER) failed. If the app crashes, a memory dump may be left, and the dump may contain wallet keys of the unlocked session. |
 | SETTINGS_TAMPERED_BANNER | {0}. 지금은 앱에 저장된 값을 씁니다. 직접 바꾼 것이 아니라면 '앱에 저장된 값으로 되돌리기'를 누르세요. | {0}. The values saved in the app are used for now. If you did not change it yourself, press 'Restore the app's saved values'. |
 | SETTINGS_RESTORE | 앱에 저장된 값으로 되돌리기 | Restore the app's saved values |
 | SETTINGS_ACCEPT_FILE | 파일 값 사용… | Use the file's values… |
@@ -2936,11 +2955,8 @@
 
 | 이름 | 한국어 | English |
 |---|---|---|
-| SOURCE_WORDS | 복구 단어 | Recovery words |
-| SOURCE_IMPORTED | 가져온 키 | Imported key |
 | SOURCE_CARDS | YubiKey: {0} | YubiKey: {0} |
 | MORE_CARDS |  +{0} |  +{0} |
-| SOURCE_EVM_KEY | EVM 계정 {0} 키 | EVM account {0} key |
 
 <!-- catalogue: yw_app::ui::screens_book::text -->
 
@@ -3585,7 +3601,6 @@
 | T_EXT_COMPAT | dApp의 지갑 목록에 Your Wallet이 없으면: Chrome 툴바의 Your Wallet 아이콘 → 'MetaMask처럼 보이기'(Solana는 'Phantom처럼 보이기', Bitcoin은 'UniSat처럼'·'Xverse처럼 보이기')를 고르고 dApp 탭을 새로고침하세요. 그때는 실제 MetaMask 등 같은 종류의 확장을 꺼 두세요. | If Your Wallet is not in a dApp's wallet list: choose the Your Wallet icon in the Chrome toolbar → 'Appear as MetaMask' (Solana: 'Appear as Phantom', Bitcoin: 'Appear as UniSat' or 'Appear as Xverse') and refresh the dApp tab. Turn off the real MetaMask or other extensions of the same kind while doing so. |
 | T_EXT_COMPAT_SHORT | 지갑 목록에 Your Wallet이 없는 dApp은 Chrome의 Your Wallet 아이콘에서 'MetaMask처럼 보이기'(Solana는 'Phantom처럼', Bitcoin은 'UniSat'·'Xverse처럼')를 고른 뒤 탭을 새로고침하세요. | For a dApp whose wallet list lacks Your Wallet, choose 'Appear as MetaMask' (Solana: 'as Phantom', Bitcoin: 'as UniSat' or 'as Xverse') from the Your Wallet icon in Chrome, then refresh the tab. |
 | T_EXT_STEP_5 | 5. dApp 사이트를 열고(설치 전에 열어 둔 탭은 새로고침) “지갑 연결”에서 Your Wallet을 고르세요. 이 앱에 연결 창이 뜨면 설치가 끝난 것입니다 — 그 뒤로는 툴바의 Your Wallet 아이콘과 위 “연결 상태”에 연결됨이 보입니다. 그 전에는 아이콘이 “확인 불가”로 보이는 것이 정상입니다. | 5. Open a dApp site (refresh tabs opened before the install) and choose Your Wallet under “Connect wallet”. When the connect window appears in this app, the install is done — from then on the Your Wallet toolbar icon and “Connection status” above show connected. Before that, the icon showing “unknown” is normal. |
-| T_EXT_MISSING | 확장 폴더를 찾지 못했습니다. 설치 프로그램(install.cmd)을 다시 실행하면 앱 폴더 안에 extension 폴더가 만들어집니다. | The extension folder was not found. Running the installer (install.cmd) again creates the extension folder inside the app folder. |
 | ACCOUNTS_FAILED | 계정 목록을 불러오지 못했습니다. 위 안내를 보세요. | The account list could not be loaded. See the notice above. |
 | ACCOUNTS_LOADING | 계정을 불러오는 중… | Loading accounts… |
 | RELOAD | 다시 불러오기 | Reload |
@@ -3820,7 +3835,6 @@
 | EXPIRY | 만료 | Expires |
 | DISCONNECT | 연결 해제 | Disconnect |
 | DISCONNECT_ALL | 모든 WalletConnect 세션 끊기 | Disconnect all WalletConnect sessions |
-| REOWN_COPIED | dashboard.reown.com 주소를 복사했습니다. 브라우저 주소창에 붙여넣으세요. | Copied the dashboard.reown.com address. Paste it into your browser's address bar. |
 
 <!-- catalogue: yw_app::ui::screens_yubikey::text -->
 
@@ -3838,7 +3852,6 @@
 | BTN_SET_PIN_NOW | PIN 설정하기 | Set PIN now |
 | STEP_CONFIRM | 확인 | Confirm |
 | STEP_RESULT | 결과 | Result |
-| STEP_PUT_ON_CARD | YubiKey에 넣기 | Put on YubiKey |
 | CHECKING | 확인 중… | Checking… |
 | FIELD_PATH | 경로 | Path |
 | FIELD_POLICY | 정책 | Policy |
@@ -3888,10 +3901,6 @@
 | YK_ADOPT | YubiKey에 이미 같은 복구 단어의 키가 들어 있을 때 씁니다. 카드에는 아무것도 쓰지 않고, 카드의 공개키가 복구 단어와 맞는지만 확인해 지갑에 연결합니다(재설치·새 PC·지갑 초기화 후). | Use this when the YubiKey already holds keys of the same recovery words. Nothing is written to the card; the wallet only checks that the card's public keys match the recovery words and connects them (after a reinstall, a new PC or a wallet reset). |
 | STEP_PLAN | 키·슬롯 고르기 | Choose keys and slots |
 | STEP_CREDENTIALS | 자격 정보 | Credentials |
-| STEP_PASSWORD | 비밀번호 | Password |
-| STEP_WRITE_WORDS | 복구 단어 적기 | Recovery words |
-| STEP_BACKUP_CHECK | 백업 확인 | Backup check |
-| STEP_SET_PIN | PIN 정하기 | Choose PIN |
 | STEP_CONNECT_READ | YubiKey 읽기·키 고르기 | Read YubiKey and choose keys |
 | STEP_CONNECT_ADDRESSES | 주소 확인 | Check addresses |
 | STEP_RESLOT_CHOOSE | 새 구성 고르기 | Choose new layout |
@@ -3923,8 +3932,6 @@
 | BTN_RENAME_CARD | 이름 바꾸기 | Rename |
 | BTN_CLEAR_CARD_NAME | 이름 지우기 | Clear name |
 | CARD_NAME_HELP | 이 YubiKey를 구별할 이름입니다(예: 메인, 백업). 일련번호는 이름 옆에 늘 함께 보입니다. 비우고 저장하면 이름을 지웁니다. | A name to tell this YubiKey apart (for example Main or Backup). The serial is always shown next to the name. Save it empty to clear the name. |
-| CARD_NAME_INVALID | YubiKey 이름은 1–32자이고 #, 앞뒤 공백, 제어 문자, 보이지 않는 문자를 쓸 수 없습니다. | YubiKey names must be 1–32 characters, without #, leading or trailing spaces, control characters or invisible characters. |
-| CARD_NAME_TAKEN | 다른 YubiKey가 이미 '{0}' 이름을 씁니다. 다른 이름을 고르세요. | Another YubiKey already uses the name '{0}'. Choose another name. |
 | HOLDER_BACKUP | {0} {1}(백업) | {0} {1} (backup) |
 | WIZARD_DONE | YubiKey 등록이 끝났습니다. | YubiKey enrolment has finished. |
 | STEP_4_OF_5 | 4/5단계 · YubiKey에 넣기 | Step 4/5 · Put on YubiKey |

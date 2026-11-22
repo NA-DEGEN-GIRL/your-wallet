@@ -5,8 +5,9 @@ use crate::app::{App, AppMode};
 use crate::app_extension::{CHROME_EXTENSIONS_URL, expected_dir, extension_dir};
 use crate::app_reset::RESET_PHRASE;
 use crate::store::reset::FOLDER_PREFIX;
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
 use yw_core::lang::Lang;
+use yw_engine::screen::Tone;
 
 /// Command ids (block 13,400–13,449, `ui::command_ids`).
 pub mod ids {
@@ -144,9 +145,6 @@ pub mod text {
         /// S23 step 5 (2026-11-10).
         T_EXT_STEP_5 = "5. dApp 사이트를 열고(설치 전에 열어 둔 탭은 새로고침) “지갑 연결”에서 Your Wallet을 고르세요. 이 앱에 연결 창이 뜨면 설치가 끝난 것입니다 — 그 뒤로는 툴바의 Your Wallet 아이콘과 위 “연결 상태”에 연결됨이 보입니다. 그 전에는 아이콘이 “확인 불가”로 보이는 것이 정상입니다."
             / "5. Open a dApp site (refresh tabs opened before the install) and choose Your Wallet under “Connect wallet”. When the connect window appears in this app, the install is done — from then on the Your Wallet toolbar icon and “Connection status” above show connected. Before that, the icon showing “unknown” is normal.";
-        /// T-EXT-MISSING.
-        T_EXT_MISSING = "확장 폴더를 찾지 못했습니다. 설치 프로그램(install.cmd)을 다시 실행하면 앱 폴더 안에 extension 폴더가 만들어집니다."
-            / "The extension folder was not found. Running the installer (install.cmd) again creates the extension folder inside the app folder.";
         /// S12 while the meta failed.
         ACCOUNTS_FAILED = "계정 목록을 불러오지 못했습니다. 위 안내를 보세요."
             / "The account list could not be loaded. See the notice above.";
@@ -242,9 +240,9 @@ pub mod text {
 }
 
 pub use text::{
-    T_EXT_COMPAT, T_EXT_COMPAT_SHORT, T_EXT_MISSING, T_EXT_STEP_5, T_META_FAILED,
-    T_RESET_IN_FLIGHT, T_RESET_INTRO, T_RESET_MOVE, T_RESET_NOUNLOCK, T_RESET_SETTINGS,
-    T_RESET_YUBIKEY, T_WAIT_STALLED,
+    T_EXT_COMPAT, T_EXT_COMPAT_SHORT, T_EXT_STEP_5, T_META_FAILED, T_RESET_IN_FLIGHT,
+    T_RESET_INTRO, T_RESET_MOVE, T_RESET_NOUNLOCK, T_RESET_SETTINGS, T_RESET_YUBIKEY,
+    T_WAIT_STALLED,
 };
 
 impl App {
@@ -465,7 +463,10 @@ impl App {
         if let Some(dir) = &found {
             items.push(Item::Mono(dir.display().to_string()));
         } else {
-            items.push(Item::Banner(T_EXT_MISSING.get(lang).to_owned(), Tone::Warn));
+            items.push(Item::Banner(
+                crate::app::text::T_EXT_MISSING.get(lang).to_owned(),
+                Tone::Warn,
+            ));
             if let Some(expected) = expected_dir() {
                 items.push(Item::Field(
                     text::EXT_EXPECTED.get(lang).to_owned(),

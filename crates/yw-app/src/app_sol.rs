@@ -994,7 +994,7 @@ impl Wallet {
             }
             self.notice(
                 crate::app_hidden::hidden_note(self.settings.language, &label),
-                crate::ui::main_window::Tone::Info,
+                yw_engine::screen::Tone::Info,
             );
             self.refresh();
             return;
@@ -1019,7 +1019,7 @@ impl Wallet {
             }
             self.notice(
                 crate::app_hidden::hidden_note(self.settings.language, &label),
-                crate::ui::main_window::Tone::Info,
+                yw_engine::screen::Tone::Info,
             );
             self.refresh();
             return;
@@ -1049,7 +1049,7 @@ impl Wallet {
         }
         self.notice(
             crate::app_hidden::hidden_note(self.settings.language, &label),
-            crate::ui::main_window::Tone::Info,
+            yw_engine::screen::Tone::Info,
         );
         self.refresh();
     }

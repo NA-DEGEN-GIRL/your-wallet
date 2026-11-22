@@ -12,7 +12,8 @@ use crate::app::App;
 use crate::app_yubikey::connect::text as ct;
 use crate::app_yubikey::connect::{Choice, ConnectForm};
 use crate::app_yubikey::{WizardOrigin, WizardStep, YkWizard};
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
+use yw_engine::screen::Tone;
 
 /// The connect flow's step labels.
 pub const CONNECT_STEPS: [Text; 3] = [

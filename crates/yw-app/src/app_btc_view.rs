@@ -18,9 +18,9 @@ use crate::errors::ErrorCode;
 use crate::events::KeyJob;
 use crate::logging;
 use crate::text::is_valid_label;
-use crate::ui::main_window::Tone;
-use crate::ui::screens_accounts::AccountSource;
 use crate::workers::journal::btc::BtcMetaOp;
+use yw_engine::screen::AccountSource;
+use yw_engine::screen::Tone;
 
 impl Wallet {
     /// The name of a Bitcoin account of the settings network (meta `btc_account_view`, default
@@ -52,7 +52,7 @@ impl Wallet {
             BtcAccountId::Imported { .. } => AccountSource::Imported,
             BtcAccountId::EvmShared { evm_index, .. } => AccountSource::EvmKey(evm_index),
             BtcAccountId::Hardware { .. } => {
-                AccountSource::Card(crate::ui::screens_accounts::btc_card_role(account, network))
+                AccountSource::Card(yw_engine::screen::btc_card_role(account, network))
             }
         }
     }
@@ -61,7 +61,7 @@ impl Wallet {
     /// set's label when there are several, else `복구 단어`.
     #[must_use]
     pub fn btc_source_text(&self, account: &BtcAccountKey, network: BtcNetwork) -> String {
-        use crate::ui::screens_accounts::text;
+        use yw_engine::screen::text;
         let lang = self.settings.language;
         match Self::btc_source(account, network) {
             AccountSource::Words(mnemonic) => self

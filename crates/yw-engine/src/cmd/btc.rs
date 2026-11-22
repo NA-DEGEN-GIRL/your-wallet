@@ -9,8 +9,11 @@ use yw_core::btc::{BtcNetwork, ScriptType};
 use crate::cmd::Row;
 
 /// A Bitcoin press. The row presses name an item by its position in the list as drawn (`Row`);
-/// a row past the list does nothing. The fee radios are one variant per choice and form (the
-/// Windows app's `BtcFeeChoice` stays in yw-app until S4, plan D-d).
+/// a row past the list does nothing. The fee radios are one variant per choice and form (S3: the
+/// Windows app's `BtcFeeChoice` stays in yw-app until S4, plan D-d). 2026-11-22 (spec/15 §11.4
+/// S4d E0a, as plan critique B-12 (e) recommends): the per-value variants stay through S4;
+/// `BtcFeeChoice` moves to yw-engine with the wallet's Bitcoin code (S4d E1), and whether these
+/// variants collapse into it is S5 (it changes `cmd_table` and the census keys).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BtcPress {
     /// Tab `Bitcoin`.

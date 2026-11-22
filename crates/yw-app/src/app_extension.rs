@@ -64,10 +64,6 @@ pub mod text {
             / "Not connected yet — after installing the extension, press 'Connect wallet' on a dApp site.";
         UNKNOWN = "지금은 연결되어 있지 않습니다. 연결 기록(연결된 사이트)은 잠금을 해제하면 보입니다."
             / "Not connected now. The connection record (connected sites) shows after you unlock.";
-        PATH_COPIED = "경로를 복사했습니다. 폴더 선택 창 위쪽 주소 칸에 Ctrl+V 하세요."
-            / "Path copied. Press Ctrl+V in the address box at the top of the folder picker.";
-        URL_COPIED = "chrome://extensions 주소를 복사했습니다. Chrome 주소창에 붙여넣으세요."
-            / "Copied chrome://extensions. Paste it into the Chrome address bar.";
     }
 }
 
@@ -239,7 +235,7 @@ impl Wallet {
     pub(crate) fn on_folder_missing(&mut self) {
         logging::info("app", "extension.folder_missing", &[]);
         self.info = Some(
-            crate::ui::screens_reset::T_EXT_MISSING
+            crate::app::text::T_EXT_MISSING
                 .get(self.settings.language)
                 .to_owned(),
         );

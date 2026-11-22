@@ -5,7 +5,9 @@
 //! they were listed in yw-app `catalogues` as `yw_app::…`; E1 the approval, error and card texts,
 //! E2 the settings, metadata, explain, RPC pipeline and `WalletConnect` engine texts, E3 the
 //! `WalletConnect` worker and key/journal worker texts. 2026-11-20, S4 P7a1: the secret windows'
-//! texts `secret::text`, before `yw_app::ui::secret_text`.)
+//! texts `secret::text`, before `yw_app::ui::secret_text`. 2026-11-22, S4d E0a: `screen::text`, the
+//! banner tags, receive QR choices and source words the wallet code shares with the shell, before
+//! in `yw_app::ui::{main_window, qr, screens_accounts}::text`.)
 
 use yw_core::lang::Entry;
 
@@ -54,6 +56,7 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
         crate::received::zec::text::ALL,
     ),
     ("yw_engine::rpc::text", crate::rpc::text::ALL),
+    ("yw_engine::screen::text", crate::screen::text::ALL),
     ("yw_engine::secret::text", crate::secret::text::ALL),
     ("yw_engine::settings::text", crate::settings::text::ALL),
     (

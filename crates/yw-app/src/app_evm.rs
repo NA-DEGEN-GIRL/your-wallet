@@ -94,6 +94,12 @@ pub mod text {
             / "Enter a maxFee cap of 1–10,000 gwei, a tip cap of 0.01–10,000 gwei (at most the maxFee cap) and a total cap of 0.0001–10.";
         ENDPOINT_NONE = "없음" / "None";
         ENDPOINT_SET(1) = "설정됨 {0}" / "Set {0}";
+        REOWN_COPIED = "dashboard.reown.com 주소를 복사했습니다. 브라우저 주소창에 붙여넣으세요."
+            / "Copied the dashboard.reown.com address. Paste it into your browser's address bar.";
+        PATH_COPIED = "경로를 복사했습니다. 폴더 선택 창 위쪽 주소 칸에 Ctrl+V 하세요."
+            / "Path copied. Press Ctrl+V in the address box at the top of the folder picker.";
+        URL_COPIED = "chrome://extensions 주소를 복사했습니다. Chrome 주소창에 붙여넣으세요."
+            / "Copied chrome://extensions. Paste it into the Chrome address bar.";
     }
 }
 
@@ -429,7 +435,7 @@ pub struct EvmUi {
     /// and a late answer still ran the steps kept for it.
     pub(crate) open_unanswered: Option<yw_engine::approval::flow::ShownId>,
     /// What the S12 receive QR encodes (session only, spec/04 §2.8).
-    pub receive_qr: crate::ui::qr::EvmQrKind,
+    pub receive_qr: yw_engine::screen::EvmQrKind,
     /// The S10 network drop-down is open (2026-11-11; session only, closed by a choice).
     pub network_picker: bool,
 }
@@ -1135,7 +1141,7 @@ impl Wallet {
             let name = self.network_name(NetworkId::Eip155(chain_id));
             self.notice(
                 text::GENESIS_PINNED.fill(self.settings.language, [&name, &hash32_text(&genesis)]),
-                crate::ui::main_window::Tone::Info,
+                yw_engine::screen::Tone::Info,
             );
         }
         if let ChainCheck::Mismatch(kind) = check {
@@ -1975,7 +1981,7 @@ impl Wallet {
         let Some(signer) = self.account_source(&key.account) else {
             self.notice(
                 text::REPLACE_NO_KEY.get(self.settings.language).to_owned(),
-                crate::ui::main_window::Tone::Warn,
+                yw_engine::screen::Tone::Warn,
             );
             self.refresh();
             return;
@@ -2114,11 +2120,9 @@ impl Wallet {
         let failed = ErrorCode::Sec002.text_in(self.settings.language);
         if let (true, Some(band)) = (ok, mark.band) {
             let (text, refresh) = match band {
-                CopyBand::ExtensionPath => (crate::app_extension::text::PATH_COPIED, true),
-                CopyBand::ExtensionsUrl => (crate::app_extension::text::URL_COPIED, true),
-                CopyBand::ReownAddress => {
-                    (crate::ui::screens_walletconnect::text::REOWN_COPIED, false)
-                }
+                CopyBand::ExtensionPath => (text::PATH_COPIED, true),
+                CopyBand::ExtensionsUrl => (text::URL_COPIED, true),
+                CopyBand::ReownAddress => (text::REOWN_COPIED, false),
             };
             self.info = Some(text.get(self.settings.language).to_owned());
             if refresh {

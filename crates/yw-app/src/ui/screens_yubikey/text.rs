@@ -18,7 +18,6 @@ yw_core::texts! {
     BTN_SET_PIN_NOW = "PIN 설정하기" / "Set PIN now";
     STEP_CONFIRM = "확인" / "Confirm";
     STEP_RESULT = "결과" / "Result";
-    STEP_PUT_ON_CARD = "YubiKey에 넣기" / "Put on YubiKey";
     CHECKING = "확인 중…" / "Checking…";
     FIELD_PATH = "경로" / "Path";
     FIELD_POLICY = "정책" / "Policy";
@@ -106,10 +105,6 @@ yw_core::texts! {
     // ----- step labels -------------------------------------------------------------------------
     STEP_PLAN = "키·슬롯 고르기" / "Choose keys and slots";
     STEP_CREDENTIALS = "자격 정보" / "Credentials";
-    STEP_PASSWORD = "비밀번호" / "Password";
-    STEP_WRITE_WORDS = "복구 단어 적기" / "Recovery words";
-    STEP_BACKUP_CHECK = "백업 확인" / "Backup check";
-    STEP_SET_PIN = "PIN 정하기" / "Choose PIN";
     STEP_CONNECT_READ = "YubiKey 읽기·키 고르기" / "Read YubiKey and choose keys";
     STEP_CONNECT_ADDRESSES = "주소 확인" / "Check addresses";
     STEP_RESLOT_CHOOSE = "새 구성 고르기" / "Choose new layout";
@@ -157,11 +152,6 @@ yw_core::texts! {
     BTN_CLEAR_CARD_NAME = "이름 지우기" / "Clear name";
     CARD_NAME_HELP = "이 YubiKey를 구별할 이름입니다(예: 메인, 백업). 일련번호는 이름 옆에 늘 함께 보입니다. 비우고 저장하면 이름을 지웁니다."
         / "A name to tell this YubiKey apart (for example Main or Backup). The serial is always shown next to the name. Save it empty to clear the name.";
-    CARD_NAME_INVALID = "YubiKey 이름은 1–32자이고 #, 앞뒤 공백, 제어 문자, 보이지 않는 문자를 쓸 수 없습니다."
-        / "YubiKey names must be 1–32 characters, without #, leading or trailing spaces, control characters or invisible characters.";
-    /// `{0}` the name another card already has.
-    CARD_NAME_TAKEN(1) = "다른 YubiKey가 이미 '{0}' 이름을 씁니다. 다른 이름을 고르세요."
-        / "Another YubiKey already uses the name '{0}'. Choose another name.";
     /// `{0}` the card (`Wallet::card_name`: `name (#serial)` or `#serial`, 2026-11-15; the same
     /// for every card `{0}` below), `{1}` slot.
     HOLDER_BACKUP(2) = "{0} {1}(백업)" / "{0} {1} (backup)";

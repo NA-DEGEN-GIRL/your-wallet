@@ -9,11 +9,11 @@ use yw_win::ui::{Msg, Rect, Reply};
 use super::{
     APPROVAL_TIMER_ID, BarHits, Facts, Focus, KeyScroll, MA_ACTIVATEANDEAT, Mapped, PanelHit,
     Pressed, SB_ENDSCROLL, ScrollGoal, Step, Surface, Trusted, TrustedSignals, VK_DOWN, VK_END,
-    VK_ESCAPE, VK_HOME, VK_NEXT, VK_PRIOR, VK_RETURN, VK_SPACE, VK_TAB, VK_UP, is_release, map_key,
-    map_msg, panel_click, panel_hit, stray_press, tab_order, tab_target, wheel_delta, window_input,
+    VK_ESCAPE, VK_HOME, VK_NEXT, VK_PRIOR, VK_RETURN, VK_SPACE, VK_TAB, VK_UP, map_key, map_msg,
+    panel_click, panel_hit, stray_press, tab_order, tab_target, wheel_delta, window_input,
 };
 use crate::ui::interaction::InteractionEvent;
-use yw_engine::approval::flow::{ApprovalInput, ApprovalSignal, ShownId};
+use yw_engine::approval::flow::{ApprovalInput, ApprovalSignal, ShownId, is_release};
 
 const OTHER: Step = Step::Event(InteractionEvent::OtherPress);
 const VK_A: u16 = 0x41;

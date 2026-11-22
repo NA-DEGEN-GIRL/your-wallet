@@ -631,7 +631,7 @@ fn a_made_but_unexcluded_display_window_drops_its_secret() {
 
     use crate::app::{AppMode, Purpose, Screen, secret_seam};
     use crate::errors::ErrorCode;
-    use crate::ui::secret::DisplaySecret;
+    use yw_engine::secret::DisplaySecret;
 
     let dir = super::temp_dir("p8-not-excluded");
     let mut app = super::app_at(&dir);

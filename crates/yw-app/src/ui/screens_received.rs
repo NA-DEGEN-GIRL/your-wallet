@@ -19,7 +19,8 @@ use yw_core::sol::SolAddress;
 
 use crate::app::App;
 use crate::received::{Incoming, RecvChain};
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
+use yw_engine::screen::Tone;
 
 /// Command ids of the received history (17,800–18,399; spec/04 §2.6, `ui::command_ids`).
 pub mod ids {
@@ -338,7 +339,7 @@ impl App {
             }
             RecvChain::Sol => SolAddress::parse(from)
                 .map_or_else(|_| from.to_owned(), |a| yw_core::sol::address::grouped(&a)),
-            RecvChain::Btc | RecvChain::Zec => crate::ui::screens_btc::grouped(from),
+            RecvChain::Btc | RecvChain::Zec => yw_engine::text::grouped(from),
         }
     }
 

@@ -486,7 +486,7 @@ impl Wallet {
                 let text =
                     text::REFUSED_WHILE_LOCKED.fill(self.settings.language, [&count.to_string()]);
                 if !self.banners.iter().any(|banner| banner.text == text) {
-                    self.notice(text, crate::ui::main_window::Tone::Info);
+                    self.notice(text, yw_engine::screen::Tone::Info);
                 }
             }
             WcEvent::Sessions(views, store) => {

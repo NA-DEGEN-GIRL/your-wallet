@@ -753,7 +753,7 @@ impl Wallet {
         if self.banners.iter().any(|banner| banner.text == text) {
             return;
         }
-        self.notice(text, crate::ui::main_window::Tone::Warn);
+        self.notice(text, yw_engine::screen::Tone::Warn);
         self.refresh();
     }
 

@@ -367,16 +367,6 @@ pub const fn window_input(
     }
 }
 
-/// Whether `event` lets go of a hold (pointer or Space release): a High-risk hold released before
-/// 2 s marks the status line (`early_release`).
-#[must_use]
-pub const fn is_release(event: InteractionEvent) -> bool {
-    matches!(
-        event,
-        InteractionEvent::PointerReleased { .. } | InteractionEvent::SpaceReleased { .. }
-    )
-}
-
 /// A page, line or end scroll of the panel by key (spec/04 §3.4: page keys and Home/End wherever
 /// the focus is, the arrows on the scroll area only).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

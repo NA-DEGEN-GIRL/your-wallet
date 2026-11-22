@@ -12,48 +12,33 @@
 //!
 //! The source part is app chrome only: approval display notes (`[내 계정: …]`, Solana
 //! `RECIPIENT_OWN_HARDWARE`) carry account labels and never card names (they are digested).
+//!
+//! 2026-11-22 (spec/15 §11.4 S4d E0a): `AccountSource`, the card roles (`evm_card_role`,
+//! `sol_card_role`, `btc_card_role`) and the source words `SOURCE_WORDS`, `SOURCE_IMPORTED`,
+//! `SOURCE_EVM_KEY` moved to `yw_engine::screen` unchanged (the wallet's Bitcoin and hidden-account
+//! code names them); the card is drawn here.
 
 use crate::app::{App, Wallet};
 use crate::app_hidden::Family;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_links::PickerEntry;
 use yw_core::yubikey::plan::KeyRole;
+use yw_engine::screen::AccountSource;
+use yw_engine::screen::text::{SOURCE_EVM_KEY, SOURCE_IMPORTED, SOURCE_WORDS};
 
 /// The fixed texts of the account card (spec/14).
 pub mod text {
     yw_core::texts! {
-        /// The source of an account of the wallet's only recovery words (shown when the list
-        /// mixes kinds of account).
-        SOURCE_WORDS = "복구 단어" / "Recovery words";
-        /// The source of an imported key's account.
-        SOURCE_IMPORTED = "가져온 키" / "Imported key";
         /// The source of a `YubiKey` account: {0} the cards holding its key (names, `#serial`
         /// when unnamed).
         SOURCE_CARDS(1) = "YubiKey: {0}" / "YubiKey: {0}";
         /// After the first two cards: {0} how many more.
         MORE_CARDS(1) = " +{0}" / " +{0}";
-        /// The source of a Bitcoin account on an EVM account's key (2026-11-15; the Bitcoin
-        /// list's `EVM 계정 {i} 키` badge before): {0} the EVM account index.
-        SOURCE_EVM_KEY(1) = "EVM 계정 {0} 키" / "EVM account {0} key";
     }
 }
 
 /// Holder cards named in a source before ` +N`.
 const SHOWN_CARDS: usize = 2;
-
-/// Where an account's key comes from: the source part of its drop-down item.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AccountSource {
-    /// Derived from recovery words: `None` the wallet's first set, `Some(id)` an added set.
-    Words(Option<[u8; 16]>),
-    /// An imported private key.
-    Imported,
-    /// A key on `YubiKey` cards: its slot role (`None`: not known; the source then says
-    /// `YubiKey` alone).
-    Card(Option<KeyRole>),
-    /// The key of EVM account `i` used for a Bitcoin address (spec/08 §3.5).
-    EvmKey(u32),
-}
 
 /// One account of the card's drop-down.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,11 +185,11 @@ impl App {
                 let source = match account.source {
                     AccountSource::Words(mnemonic) => self
                         .mnemonic_tag(mnemonic)
-                        .or_else(|| mixed.then(|| text::SOURCE_WORDS.get(lang).to_owned())),
-                    AccountSource::Imported => Some(text::SOURCE_IMPORTED.get(lang).to_owned()),
+                        .or_else(|| mixed.then(|| SOURCE_WORDS.get(lang).to_owned())),
+                    AccountSource::Imported => Some(SOURCE_IMPORTED.get(lang).to_owned()),
                     AccountSource::Card(role) => Some(self.card_source(role)),
                     AccountSource::EvmKey(index) => {
-                        Some(text::SOURCE_EVM_KEY.fill(lang, [&index.to_string()]))
+                        Some(SOURCE_EVM_KEY.fill(lang, [&index.to_string()]))
                     }
                 };
                 source.map_or_else(
@@ -256,36 +241,5 @@ impl App {
             crate::ui::screens::text::ADD_MANAGE_MNEMONICS.get(self.settings.language),
         )
         .compact()
-    }
-}
-
-/// The card role of the EVM `YubiKey` account `index` (`None` out of range).
-#[must_use]
-pub fn evm_card_role(index: u32) -> Option<KeyRole> {
-    yw_core::bip32::path::AccountIndex::new(index)
-        .ok()
-        .map(|index| KeyRole::Evm { index, btc: None })
-}
-
-/// The card role of the Solana `YubiKey` account `index` (`None` out of range).
-#[must_use]
-pub fn sol_card_role(index: u32) -> Option<KeyRole> {
-    yw_core::bip32::path::AccountIndex::new(index)
-        .ok()
-        .map(|index| KeyRole::Sol { index })
-}
-
-/// The card role of a Bitcoin `YubiKey` account on `network` (`None` for another account or an
-/// unknown role).
-#[must_use]
-pub fn btc_card_role(
-    account: &yw_core::btc::BtcAccountKey,
-    network: yw_core::btc::BtcNetwork,
-) -> Option<KeyRole> {
-    match *account {
-        yw_core::btc::BtcAccountKey::Hardware {
-            key, script_type, ..
-        } => key.role(network, script_type),
-        _ => None,
     }
 }

@@ -4,6 +4,9 @@
 //! rows; no new RPC). A positive balance is a 고위험 band, an unknown one a 주의 band; for a key
 //! that is lost for good the sentence goes inside that removal's own band instead (T-YK-KEY-LOST
 //! or the imported-key band). The confirmation overlays, typed words and holds are unchanged.
+//!
+//! 2026-11-22 (spec/15 §11.4 S4d E0a): the data of the block, `RemovedAccount` and `LastBalance`,
+//! moved to `yw_engine::screen` unchanged (the wallet builds them); the block is drawn here.
 
 use yw_core::evm::address::Address;
 use yw_core::sol::SolAddress;
@@ -13,46 +16,9 @@ use yw_core::yubikey::record::{HwKeyRecord, RecordedSlot};
 use yw_core::lang::Lang;
 
 use crate::app::{App, Wallet};
-use crate::ui::main_window::{Item, Tone};
-
-/// A native balance as last read.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LastBalance {
-    /// More than zero: the amount text and the network.
-    Positive {
-        /// `1.25 SepoliaETH`.
-        text: String,
-        /// The network it was read on.
-        network: String,
-    },
-    /// Zero on `network`.
-    Zero {
-        /// The network it was read on.
-        network: String,
-    },
-    /// Never read on the network shown now.
-    Unknown,
-}
-
-/// One account a removal takes out of the wallet.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RemovedAccount {
-    /// The account's name.
-    pub label: String,
-    /// `EVM`, `Solana`, `Bitcoin`, `Zcash`.
-    pub chain: &'static str,
-    /// Full addresses, grouped (§3.3).
-    pub addresses: Vec<String>,
-    /// The balance as last read.
-    pub balance: LastBalance,
-    /// The key is gone for good with this removal (no recovery words and on no other card; an
-    /// imported key).
-    pub lost: bool,
-    /// What still signs for it, when that is the question ("`YubiKey` #m(으)로 계속 서명").
-    pub note: Option<String>,
-    /// The account stays usable (another card holds the key): its balance is only shown.
-    pub kept: bool,
-}
+use crate::ui::main_window::Item;
+use yw_engine::screen::Tone;
+use yw_engine::screen::{LastBalance, RemovedAccount};
 
 /// The fixed texts of the removal block (spec/14).
 pub mod text {
@@ -268,7 +234,7 @@ impl Wallet {
         RemovedAccount {
             label,
             chain: "Bitcoin",
-            addresses: vec![crate::ui::screens_btc::grouped(address)],
+            addresses: vec![yw_engine::text::grouped(address)],
             balance: self.btc_last_balance(address),
             lost,
             note: None,
@@ -282,7 +248,7 @@ impl Wallet {
         RemovedAccount {
             label,
             chain: "Zcash",
-            addresses: vec![crate::ui::screens_btc::grouped(address)],
+            addresses: vec![yw_engine::text::grouped(address)],
             balance: self.zec_last_balance(address),
             lost,
             note: None,
@@ -323,7 +289,7 @@ impl App {
             .iter()
             .map(|text| {
                 yw_core::evm::address::parse_address(text).map_or_else(
-                    |_| crate::ui::screens_btc::grouped(text),
+                    |_| yw_engine::text::grouped(text),
                     |address| yw_core::evm::display::format_address(&address),
                 )
             })
@@ -353,8 +319,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{LastBalance, RemovedAccount, T_BALANCE_SCOPE, T_BALANCE_UNKNOWN, removed_items};
-    use crate::ui::main_window::{Item, Tone};
+    use crate::ui::main_window::Item;
     use yw_core::lang::{Lang, has_hangul};
+    use yw_engine::screen::Tone;
 
     /// The English block: every text but the (data) label is free of Hangul.
     #[test]

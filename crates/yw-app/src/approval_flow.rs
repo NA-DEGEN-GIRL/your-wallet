@@ -31,7 +31,8 @@ use yw_core::approval::{ApprovalRequest, RiskLevel};
 use yw_core::evm::eip712::DecodedTypedData;
 use yw_core::lang::Lang;
 use yw_engine::approval::flow::{
-    BarFacts, BarSource, ShownId, StatusAction, bar_facts, session_deadline, status_action,
+    BarFacts, BarSource, ShownId, StatusAction, bar_facts, is_release, session_deadline,
+    status_action,
 };
 use yw_engine::approval::interaction::{
     ApprovalGate, ApprovalSession, ConnectView, InteractionError, InteractionEvent,
@@ -46,7 +47,6 @@ use yw_engine::flow::evm::prepare::{Prepared, ResimKind};
 
 use crate::app_approval::ConnectState;
 use crate::app_evm::QueuedItem;
-use crate::ui::approval_input::is_release;
 
 /// The shown approval's flow: today's `ApprovalUi` minus the window, the panel, the AI body and
 /// the paint state (spec/15 §11.4 S4, plan §3.1).

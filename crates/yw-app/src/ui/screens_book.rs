@@ -10,8 +10,9 @@ use crate::app::App;
 use crate::app_book::{BookTarget, PromptPlace, short_address};
 use crate::meta::{BookChain, Contact};
 use crate::ui::badge::Badge;
-use crate::ui::main_window::{Ctl, Item, Tone};
-use crate::ui::screens_btc::grouped;
+use crate::ui::main_window::{Ctl, Item};
+use yw_engine::screen::Tone;
+use yw_engine::text::grouped;
 
 /// Command ids of the address book (14,000–15,699).
 pub mod ids {

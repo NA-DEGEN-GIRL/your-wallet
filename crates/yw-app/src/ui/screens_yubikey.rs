@@ -18,8 +18,9 @@ use crate::app_yubikey::{
     CARD_SCRIPTS, MAX_ACCOUNT_INDEX, PGP_TOUCH, PIV_TOUCH, PgpKind, WizardOrigin, WizardStep,
     YkWizard,
 };
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
 use text as t;
+use yw_engine::screen::Tone;
 
 mod connect;
 mod manage;
@@ -1044,15 +1045,6 @@ pub const WIZARD_STEPS: [Text; 4] = [
     t::STEP_CREDENTIALS,
     t::STEP_RESULT,
 ];
-/// The new `YubiKey` wallet's five steps (S20, its secret windows' head, the wizard's head and
-/// the result's PIN card; 2026-11-10 — it said n/3 and seemed to end at the backup check).
-pub const YK_WALLET_STEPS: [Text; 5] = [
-    t::STEP_PASSWORD,
-    t::STEP_WRITE_WORDS,
-    t::STEP_BACKUP_CHECK,
-    t::STEP_PUT_ON_CARD,
-    t::STEP_SET_PIN,
-];
 /// T-YK-PIN-GUIDE (spec/10 §9.3): what each card secret is for.
 pub const T_YK_PIN_GUIDE: [Text; 5] = [
     t::PIN_GUIDE_PW1,
@@ -1114,7 +1106,7 @@ fn script_label(lang: Lang, script: ScriptType) -> String {
 /// in its checksum groups, a Bitcoin or Solana address as encoded, every character shown.
 fn grouped_address(address: &str) -> String {
     yw_core::evm::address::parse_address(address).map_or_else(
-        |_| crate::ui::screens_btc::grouped(address),
+        |_| yw_engine::text::grouped(address),
         |parsed| yw_core::evm::display::format_address(&parsed),
     )
 }
@@ -1153,7 +1145,7 @@ impl App {
     pub fn yk_wallet_intro(&self, items: &mut Vec<Item>) {
         let lang = self.settings.language;
         items.push(Item::Title(t::TITLE_YK_WALLET.get(lang).to_owned()));
-        items.push(steps_item(lang, &YK_WALLET_STEPS, 0));
+        items.push(steps_item(lang, &crate::app_yubikey::YK_WALLET_STEPS, 0));
         items.push(Item::CardStart(Some(t::BEFORE_START.get(lang).to_owned())));
         for line in [
             t::INTRO_PAPER,
@@ -2233,7 +2225,7 @@ impl App {
         items.push(Item::Subtitle(
             t::REMOVE_ACCOUNTS.fill(lang, [&self.card_name(record.serial)]),
         ));
-        let accounts: Vec<crate::ui::removed::RemovedAccount> = record
+        let accounts: Vec<yw_engine::screen::RemovedAccount> = record
             .slots
             .iter()
             .map(|slot| {

@@ -13,8 +13,9 @@ use crate::flow::evm::form::AddressNote;
 use crate::hypercore::HcBalances;
 use crate::meta::{Account, EvmAccountPref, Meta};
 use crate::settings::Settings;
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_hypercore::ids;
+use yw_engine::screen::Tone;
 
 const OWN: &str = "0x9858effd232b4033e47d90003d41ec34ecaeda94";
 const OTHER: &str = "0x00000000000000000000000000000000000000b2";

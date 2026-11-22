@@ -24,6 +24,14 @@ use yw_core::sol::SolCluster;
 use crate::meta::BookChain;
 use crate::network::NetworkId;
 
+/// T-CUSTOM-CHAIN (spec/04 §2.16): the user-chain badge of S10, S15 and the A01 header.
+/// 2026-11-22 (spec/15 §11.4 S4d E0a): was yw-app `ui::screens_evm::custom_chain_badge` (the
+/// approval view the wallet builds names it).
+#[must_use]
+pub fn custom_chain_badge(lang: yw_core::lang::Lang, chain_id: u64) -> String {
+    crate::approval::text::BADGE_CUSTOM_CHAIN.fill(lang, [&chain_id.to_string()])
+}
+
 /// Badge size next to body text (DIP).
 pub const BADGE_DIP: i32 = 16;
 /// Badge size next to a screen title (DIP).

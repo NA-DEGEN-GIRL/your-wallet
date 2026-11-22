@@ -13,9 +13,10 @@ use yw_core::policy::{BrowserOrigin, Family};
 
 use crate::app::{App, Confirm, Wallet};
 use crate::meta::BookChain;
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_book::shown_address;
 use yw_engine::cmd::{Row, SitesPress};
+use yw_engine::screen::Tone;
 
 /// Control ids (6,700–6,965; the whole map is `ui::command_ids`).
 pub mod ids {

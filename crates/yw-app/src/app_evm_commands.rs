@@ -159,9 +159,9 @@ impl Wallet {
             }
             EvmPress::QrEip681 | EvmPress::QrPlain => {
                 self.evm.receive_qr = if press == EvmPress::QrPlain {
-                    crate::ui::qr::EvmQrKind::PlainAddress
+                    yw_engine::screen::EvmQrKind::PlainAddress
                 } else {
-                    crate::ui::qr::EvmQrKind::Eip681
+                    yw_engine::screen::EvmQrKind::Eip681
                 };
                 self.refresh();
             }

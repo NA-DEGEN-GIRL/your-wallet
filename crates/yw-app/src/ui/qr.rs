@@ -1,14 +1,16 @@
 //! Receive QR (spec/04 §2.8): EIP-681 `ethereum:<EIP-55 address>@<chainId>` (or, by
-//! [`EvmQrKind::PlainAddress`], the bare EIP-55 address for exchange apps) encoded with
+//! `EvmQrKind::PlainAddress`, the bare EIP-55 address for exchange apps) encoded with
 //! `qrcodegen` (ECC Medium) and painted with GDI rectangles, four quiet-zone modules, integer
 //! modules of `max(6, round(8 × dpi / 96))` pixels (down to 6 when the space is short). The matrix
 //! is never cached. Ported from `archive/spec-v2.4:demo/sepolia-wallet/src/receive_qr.rs:1-262`
 //! (layout rules `:51-130`, payload `:132-139` with the chain id as a parameter, egui drawing
 //! `:170-221` replaced by `PaintDc::fill_rect`).
+//!
+//! 2026-11-22 (spec/15 §11.4 S4d E0a): the choice `EvmQrKind`, its labels and the payloads
+//! (`evm_payload`, `evm_receive_payload`) moved to `yw_engine::screen` unchanged (the wallet's
+//! EVM state holds the choice); the encoding and painting stay here.
 
 use qrcodegen::{QrCode, QrCodeEcc};
-use yw_core::evm::address::Address;
-use yw_core::lang::Lang;
 use yw_win::ui::{Color, PaintDc, Rect};
 
 /// Quiet zone in modules.
@@ -20,34 +22,9 @@ pub const QR_DARK: Color = Color(0x0000_0000);
 /// QR light color.
 pub const QR_LIGHT: Color = Color(0x00FF_FFFF);
 
-/// What the EVM receive QR encodes (spec/04 §2.8).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum EvmQrKind {
-    /// EIP-681 `ethereum:<EIP-55 address>@<chainId>` (default; wallets pick the network).
-    #[default]
-    Eip681,
-    /// The bare EIP-55 address, for exchange apps that reject `ethereum:` URIs.
-    PlainAddress,
-}
-
-impl EvmQrKind {
-    /// The choice label for the receive screen.
-    #[must_use]
-    pub const fn label(self, lang: Lang) -> &'static str {
-        match self {
-            Self::Eip681 => text::QR_WALLET_APP.get(lang),
-            Self::PlainAddress => text::QR_ADDRESS_ONLY.get(lang),
-        }
-    }
-}
-
 /// The fixed texts of the receive QR (spec/14).
 pub mod text {
     yw_core::texts! {
-        /// The EIP-681 choice.
-        QR_WALLET_APP = "지갑 앱용 QR (네트워크 포함)" / "QR for wallet apps (with network)";
-        /// The bare-address choice.
-        QR_ADDRESS_ONLY = "주소만 QR (거래소 앱용)" / "Address-only QR (for exchange apps)";
         /// Receive-screen note: one EVM address serves every EVM chain, but the screen shows only
         /// the selected network's assets.
         RECEIVE_SHARED_ADDRESS_NOTE = "이 주소는 다른 EVM 체인(예: Ethereum·Base·Arbitrum)에서도 같은 주소이지만, 여기에는 선택한 네트워크의 자산만 보입니다. 다른 체인으로 받은 자산은 그 체인을 추가·선택해야 보입니다."
@@ -56,21 +33,6 @@ pub mod text {
 }
 
 pub use text::RECEIVE_SHARED_ADDRESS_NOTE;
-
-/// The EVM receive payload (EIP-681).
-#[must_use]
-pub fn evm_payload(address: &Address, chain_id: u64) -> String {
-    format!("ethereum:{}@{chain_id}", address.to_checksum())
-}
-
-/// The EVM receive payload of `kind`: EIP-681 or the bare EIP-55 address.
-#[must_use]
-pub fn evm_receive_payload(address: &Address, chain_id: u64, kind: EvmQrKind) -> String {
-    match kind {
-        EvmQrKind::Eip681 => evm_payload(address, chain_id),
-        EvmQrKind::PlainAddress => address.to_checksum(),
-    }
-}
 
 /// Encodes `payload` (ECC Medium).
 #[must_use]
@@ -148,9 +110,10 @@ pub fn paint(dc: &mut PaintDc<'_>, x: i32, y: i32, code: &QrCode, layout: &QrLay
 
 #[cfg(test)]
 mod tests {
-    use super::{EvmQrKind, encode, evm_payload, evm_receive_payload, layout, preferred_module};
+    use super::{encode, layout, preferred_module};
     use yw_core::evm::address::parse_address;
     use yw_core::lang::Lang;
+    use yw_engine::screen::{EvmQrKind, evm_payload, evm_receive_payload};
 
     #[test]
     fn plain_address_payload_is_the_bare_eip55_address() {

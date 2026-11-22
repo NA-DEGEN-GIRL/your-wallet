@@ -166,6 +166,21 @@ fn ends_in_consonant(word: &str, rieul_is_vowel: bool) -> bool {
     }
 }
 
+/// The whole address in 4-character groups separated by one space (spec/04 §3.3; drawing only,
+/// the copied text never has spaces). 2026-11-22 (spec/15 §11.4 S4d E0a): was yw-app
+/// `ui::screens_btc::grouped` (the wallet's removal and hidden-account rows group their addresses).
+#[must_use]
+pub fn grouped(address: &str) -> String {
+    let mut out = String::with_capacity(address.len().saturating_add(address.len() / 4));
+    for (index, character) in address.chars().enumerate() {
+        if index != 0 && index % 4 == 0 {
+            out.push(' ');
+        }
+        out.push(character);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

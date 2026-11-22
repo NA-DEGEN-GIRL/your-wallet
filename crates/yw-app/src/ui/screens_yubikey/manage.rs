@@ -18,13 +18,14 @@ use crate::app_yubikey::manage::{
     lost_slots,
 };
 use crate::app_yubikey::text as yk;
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
+use yw_engine::screen::Tone;
 
 /// The steps of "슬롯 구성 바꾸기".
 pub const RESLOT_STEPS: [Text; 4] = [
     t::STEP_RESLOT_CHOOSE,
     t::STEP_CONFIRM,
-    t::STEP_PUT_ON_CARD,
+    yk::STEP_PUT_ON_CARD,
     t::STEP_RESULT,
 ];
 
@@ -346,7 +347,7 @@ impl App {
         if !dropped.is_empty() {
             items.push(Item::CardStart(Some(t::CARD_DROPPED.get(lang).to_owned())));
             // The "지워지는 계정" block (2026-11-10): addresses and last-read balances.
-            let accounts: Vec<crate::ui::removed::RemovedAccount> = dropped
+            let accounts: Vec<yw_engine::screen::RemovedAccount> = dropped
                 .iter()
                 .map(|(slot, holders)| {
                     let mut account = self.card_removed(slot, &others, true);
@@ -390,7 +391,7 @@ impl App {
         items.push(Item::Help(mt::YK_RESLOT_BACKUP.get(lang).to_owned()));
         items.push(Item::Help(t::ADMIN_NEXT.get(lang).to_owned()));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::RESLOT_IMPORT, t::STEP_PUT_ON_CARD.get(lang))
+            Ctl::primary(ids::RESLOT_IMPORT, yk::STEP_PUT_ON_CARD.get(lang))
                 .enabled(flow.can_import(&others)),
             Ctl::button(ids::RESLOT_BACK, t::BTN_CHOOSE_AGAIN.get(lang)),
             Ctl::button(ids::MANAGE_CANCEL, t::BTN_CANCEL.get(lang)),
@@ -649,7 +650,7 @@ impl App {
             let others = self.yk_other_records(flow.serial);
             items.push(Item::CardStart(Some(t::CARD_UNUSABLE.get(lang).to_owned())));
             // The "지워지는 계정" block (2026-11-10): addresses and last-read balances.
-            let accounts: Vec<crate::ui::removed::RemovedAccount> = before
+            let accounts: Vec<yw_engine::screen::RemovedAccount> = before
                 .slots
                 .iter()
                 .filter(|slot| plan.clears(slot.slot))

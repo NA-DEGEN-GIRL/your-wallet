@@ -21,9 +21,9 @@ use crate::events::KeyJob;
 use crate::lock::WalletLock;
 use crate::logging::{self, Field};
 use crate::store::reset::{ResetError, ResetReport};
-use crate::ui::secret::{BACKUP_ACK_HOLD_MS, HoldGate};
 use yw_engine::cmd::ResetPress;
 use yw_engine::form::EditField;
+use yw_engine::secret::{BACKUP_ACK_HOLD_MS, HoldGate};
 
 /// A wait longer than this shows T-WAIT-STALLED.
 pub const WAIT_TIMEOUT_MS: u64 = 30_000;
@@ -368,7 +368,7 @@ impl Wallet {
         });
         self.set_screen(Screen::Processing(text::MOVING.get(self.settings.language)));
         self.key(KeyJob::ResetWallet {
-            stamp: crate::store::reset::stamp(self.clock.now_unix_ms()),
+            stamp: yw_engine::wallet_files::stamp(self.clock.now_unix_ms()),
             include_settings,
             lang: self.settings.language,
         });

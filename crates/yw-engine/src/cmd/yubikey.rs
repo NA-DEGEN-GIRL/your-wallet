@@ -6,7 +6,10 @@
 //! The Windows app's own choice enums (`PgpKind`, the re-slot `Chain`, `Preset`, the connect
 //! `Choice`) stay in yw-app until S4 (plan D-d): each of their values is its own variant here;
 //! the yw-core types (`PgpKey`, `ScriptType`, `TouchPolicy`, `ZecNetwork`) are carried as they
-//! are.
+//! are. 2026-11-22 (spec/15 §11.4 S4d E0a, as plan critique B-12 (e) recommends): the
+//! per-value variants stay through S4; the choice enums move to yw-engine with the wallet's
+//! `YubiKey` code (S4d E1), and whether these variants collapse into them is S5 (it changes
+//! `cmd_table` and the census keys).
 //!
 //! 2026-11-18 (S3 C11): created.
 

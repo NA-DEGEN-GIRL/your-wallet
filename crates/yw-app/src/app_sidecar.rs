@@ -29,8 +29,9 @@ use crate::app::{App, AppMode, Confirm, Screen, Wallet};
 use crate::errors::ErrorCode;
 use crate::events::{KeyJob, SidecarMoves, SidecarRefusal};
 use crate::logging::{self, Field};
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
 use yw_engine::cmd::SidecarPress;
+use yw_engine::screen::Tone;
 
 /// Command ids (block 16,600–16,609 of `ui::command_ids`). The overlays' other buttons keep their
 /// ids: meta `SIDECAR_PREV`/`SIDECAR_FRESH`, journal `CONFIRM_YES`/`CONFIRM_NO`, `LOCK`.

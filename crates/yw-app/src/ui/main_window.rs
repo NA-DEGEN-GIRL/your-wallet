@@ -19,71 +19,32 @@ use crate::ui::theme::{self, FontRole, Fonts, wide};
 use yw_core::lang::Lang;
 use yw_core::secret::Zeroizing;
 use yw_engine::form::{EditField, FormSnapshot};
+use yw_engine::screen::Tone;
 
-/// Banner tone. Each tone has one meaning everywhere (spec/04 §1.6 status colors).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tone {
-    /// 오류: an error with a code (the action did not happen or cannot start).
-    Danger,
-    /// 주의: check something before continuing.
-    Warn,
-    /// 정보: neutral information.
-    Info,
-    /// 테스트넷: `TESTNET_BG`.
-    Testnet,
-    /// `BTC_MAINNET_BG` / `BTC_MAINNET_TEXT` (spec/08 §2 `BITCOIN MAINNET`).
-    BtcMainnet,
-    /// `BTC_TESTNET4_BG` / `TEXT` (spec/08 §2 `BITCOIN TESTNET4 — 가치 없음`).
-    BtcTestnet4,
-    /// 고위험: a likely loss of funds (address poisoning, program-owned recipient …).
-    HighRisk,
-    /// 차단: the function is stopped until the cause is fixed.
-    Blocked,
-    /// 완료: an action succeeded.
-    Success,
-}
-
-impl Tone {
-    /// The status word drawn in the banner's tag (`None` for the Bitcoin network banners, whose
-    /// text is the whole message).
-    #[must_use]
-    pub const fn label(self, lang: Lang) -> Option<&'static str> {
-        let text = match self {
-            Self::Danger => text::TONE_DANGER,
-            Self::Warn => text::TONE_WARN,
-            Self::Info => text::TONE_INFO,
-            Self::Testnet => text::TONE_TESTNET,
-            Self::HighRisk => text::TONE_HIGH_RISK,
-            Self::Blocked => text::TONE_BLOCKED,
-            Self::Success => text::TONE_SUCCESS,
-            Self::BtcMainnet | Self::BtcTestnet4 => return None,
-        };
-        Some(text.get(lang))
-    }
-
-    /// `(background, text, tag)` colors.
-    #[must_use]
-    pub const fn colors(self) -> (Color, Color, Color) {
-        match self {
-            Self::Danger | Self::HighRisk => {
-                (theme::DANGER_BG, theme::DANGER_TEXT, theme::DANGER_ACCENT)
-            }
-            Self::Warn => (theme::WARN_BG, theme::WARN_TEXT, theme::WARN_ACCENT),
-            Self::Info => (theme::INFO_BG, theme::INFO_TEXT, theme::INFO_ACCENT),
-            Self::Testnet => (theme::TESTNET_BG, theme::TEXT, theme::TESTNET_ACCENT),
-            Self::BtcMainnet => (
-                theme::BTC_MAINNET_BG,
-                theme::BTC_MAINNET_TEXT,
-                theme::BTC_MAINNET_BG,
-            ),
-            Self::BtcTestnet4 => (theme::BTC_TESTNET4_BG, theme::TEXT, theme::BTC_TESTNET4_BG),
-            Self::Blocked => (theme::BLOCKED_BG, theme::BLOCKED_TEXT, theme::CARD),
-            Self::Success => (
-                theme::SUCCESS_BG,
-                theme::SUCCESS_TEXT,
-                theme::SUCCESS_ACCENT,
-            ),
+/// A banner tone's `(background, text, tag)` colors. 2026-11-22 (spec/15 §11.4 S4d E0a): the
+/// tone moved to `yw_engine::screen::Tone` with its tag words; its colors stay here with the theme
+/// (before, `Tone::colors`).
+#[must_use]
+pub const fn tone_colors(tone: Tone) -> (Color, Color, Color) {
+    match tone {
+        Tone::Danger | Tone::HighRisk => {
+            (theme::DANGER_BG, theme::DANGER_TEXT, theme::DANGER_ACCENT)
         }
+        Tone::Warn => (theme::WARN_BG, theme::WARN_TEXT, theme::WARN_ACCENT),
+        Tone::Info => (theme::INFO_BG, theme::INFO_TEXT, theme::INFO_ACCENT),
+        Tone::Testnet => (theme::TESTNET_BG, theme::TEXT, theme::TESTNET_ACCENT),
+        Tone::BtcMainnet => (
+            theme::BTC_MAINNET_BG,
+            theme::BTC_MAINNET_TEXT,
+            theme::BTC_MAINNET_BG,
+        ),
+        Tone::BtcTestnet4 => (theme::BTC_TESTNET4_BG, theme::TEXT, theme::BTC_TESTNET4_BG),
+        Tone::Blocked => (theme::BLOCKED_BG, theme::BLOCKED_TEXT, theme::CARD),
+        Tone::Success => (
+            theme::SUCCESS_BG,
+            theme::SUCCESS_TEXT,
+            theme::SUCCESS_ACCENT,
+        ),
     }
 }
 
@@ -138,20 +99,6 @@ pub const GLYPH_CHECK: &str = "\u{2713}";
 /// The fixed texts of the main-window renderer (spec/14).
 pub mod text {
     yw_core::texts! {
-        /// Banner tag of [`super::Tone::Danger`].
-        TONE_DANGER = "오류" / "Error";
-        /// Banner tag of [`super::Tone::Warn`].
-        TONE_WARN = "주의" / "Caution";
-        /// Banner tag of [`super::Tone::Info`].
-        TONE_INFO = "정보" / "Info";
-        /// Banner tag of [`super::Tone::Testnet`].
-        TONE_TESTNET = "테스트넷" / "Testnet";
-        /// Banner tag of [`super::Tone::HighRisk`].
-        TONE_HIGH_RISK = "고위험" / "High risk";
-        /// Banner tag of [`super::Tone::Blocked`].
-        TONE_BLOCKED = "차단" / "Blocked";
-        /// Banner tag of [`super::Tone::Success`].
-        TONE_SUCCESS = "완료" / "Done";
         /// What a control says for about 1.5 s after its copy (2026-11-12,
         /// [`super::mark_copied`]).
         T_COPIED = "복사됨" / "Copied";
@@ -855,7 +802,7 @@ impl Layouter<'_> {
     }
 
     fn banner(&mut self, text: &str, tone: Tone) {
-        let (fill, color, accent) = tone.colors();
+        let (fill, color, accent) = tone_colors(tone);
         let pad = self.px(10);
         let tag = tone.label(self.lang);
         let tag_w = tag.map_or(0, |label| {
@@ -1290,7 +1237,7 @@ impl Layouter<'_> {
     /// [`Item::Pill`]: at the end of the row just placed when it fits there, else on its own
     /// line.
     fn pill(&mut self, text: &str, tone: Tone, row_end: Option<(i32, i32, i32)>) {
-        let (fill, color, border) = tone.colors();
+        let (fill, color, border) = tone_colors(tone);
         let w = bold_width((self.label_width)(text)).saturating_add(self.px(20));
         let h = self.px(22);
         let right = self.frame.x.saturating_add(self.frame.w);

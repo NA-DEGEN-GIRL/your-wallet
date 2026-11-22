@@ -9,9 +9,10 @@ use yw_core::lang::Lang;
 use super::{controls, ctl, has_text, unlocked_app};
 use crate::network::NetworkId;
 use crate::received::{Cursor, Fetched, Found, Incoming, ReceivedEvent, ReceivedJob, RecvChain};
-use crate::ui::main_window::{Item, Tone};
+use crate::ui::main_window::Item;
 use crate::ui::screens_received::{dust_line, ids, text as recv_text};
 use crate::workers::rpc::RpcJob;
+use yw_engine::screen::Tone;
 
 fn received(rx: &Receiver<RpcJob>) -> Vec<ReceivedJob> {
     rx.try_iter()

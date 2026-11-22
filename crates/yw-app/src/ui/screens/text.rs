@@ -2,16 +2,6 @@
 
 yw_core::texts! {
     // ----- shared helpers (used by the chain screens too) -----
-    /// Create/import flow step (English kept short: the step bar of a 640 px secret window).
-    STEP_PASSWORD = "비밀번호 정하기" / "Password";
-    /// Create flow step.
-    STEP_WRITE_WORDS = "복구 단어 적기" / "Recovery words";
-    /// Create flow step.
-    STEP_BACKUP_CHECK = "백업 확인" / "Backup check";
-    /// Import flow step.
-    STEP_ENTER_WORDS = "복구 단어 입력" / "Enter words";
-    /// Import flow step.
-    STEP_FIRST_ADDRESS = "첫 주소 확인" / "First address";
     /// The `← 메인으로` link.
     BACK_MAIN = "← 메인으로" / "← Back to main";
     /// Its tooltip.
@@ -36,15 +26,6 @@ yw_core::texts! {
     /// T-FIRST-1, sentence 3.
     T_FIRST_3 = "지갑을 만들 때 받는 복구 단어 24개가 유일한 백업입니다. 종이에 적어 안전한 곳에 보관하세요."
         / "The 24 recovery words you get when creating the wallet are its only backup. Write them on paper and keep it in a safe place.";
-    /// T-BACKUP-FAIL: {0}–{3} the positions, {4} the next step.
-    BACKUP_RETRY(5) = "입력한 단어 중 종이와 다른 것이 있습니다. 같은 위치({0}·{1}·{2}·{3}번째)를 다시 묻습니다. {4}"
-        / "Some of the words you entered differ from your paper. The same positions (words {0}, {1}, {2} and {3}) are asked again. {4}";
-    /// T-BACKUP-FAIL next step when the words can be shown again.
-    BACKUP_RETRY_WORDS_AGAIN = "종이에 잘못 적었을 수 있으니, 이 창을 닫고 복구 단어를 다시 보면서 이 네 단어를 종이와 대조해 고치세요."
-        / "You may have written them down wrong: close this window, view the recovery words again and correct these four words on your paper.";
-    /// T-BACKUP-FAIL next step when the words cannot be shown again.
-    BACKUP_RETRY_NO_WORDS = "종이의 이 네 단어를 다시 확인하세요. 종이가 틀렸는지 알 수 없다면 이 창을 닫아 만들기를 취소하고(단어는 지워집니다) 처음부터 다시 만드세요."
-        / "Check these four words on your paper again. If you cannot tell whether the paper is wrong, close this window to cancel the creation (the words are erased) and start over.";
     /// The selected-account card of a network without an RPC address: {0} the network.
     NO_ENDPOINT(1) = "이 네트워크({0})의 RPC 주소가 아직 없어 잔액을 읽을 수 없습니다."
         / "This network ({0}) has no RPC address yet, so the balance cannot be read.";
@@ -71,9 +52,6 @@ yw_core::texts! {
     /// T-ALT-PASS (every screen while `Wallet::passphrase_unverified`, spec/04 §2.1).
     T_ALT_PASS = "passphrase 확인값과 맞지 않는 passphrase로 연 지갑입니다. 오타라면 이 지갑은 원래 지갑이 아닌 다른(빈) 지갑이고, 여기로 받은 자산은 지금 입력한 passphrase와 대소문자·공백까지 정확히 같은 값을 다시 넣어야만 꺼낼 수 있습니다. 그래서 받기와 사이트 연결·서명을 막았습니다. 추가한 계정·계정 이름·주소록·연결 기록도 저장되지 않습니다. 잘못 입력했다면 잠그고 다시 여세요."
         / "This wallet was opened with a passphrase that does not match the passphrase check. If it was a typo, this is a different (empty) wallet, not your original one, and assets received here can only be taken out by entering exactly this passphrase again, including case and spaces. So receiving, site connections and signing are blocked. Added accounts, account names, address book entries and connection records are not saved either. If you mistyped, lock and open the wallet again.";
-    /// Shown when `받기` is pressed in that mode.
-    T_ALT_PASS_RECEIVE = "확인되지 않은 passphrase로 연 지갑에서는 받기를 쓸 수 없습니다. 잠그고 passphrase를 다시 입력하세요."
-        / "Receiving is not available in a wallet opened with an unverified passphrase. Lock and enter the passphrase again.";
     /// T-MAINNET: the main-screen badge of a network with real assets.
     T_MAINNET = "메인넷 — 실제 자산" / "Mainnet — real assets";
     /// The `내 계정` help of a wallet with recovery words that has an imported key.
@@ -103,12 +81,6 @@ yw_core::texts! {
     /// The `vault.ywv` facts line: {0} generation, {1} last write time.
     VAULT_FILE(2) = "지갑 파일(vault.ywv): 저장 횟수(세대) {0} · 마지막 저장 {1}. 기억하는 것보다 작거나 이전 시각이면 파일이 예전 사본으로 바뀌었을 수 있습니다."
         / "Wallet file (vault.ywv): save count (generation) {0} · last saved {1}. If it is lower or earlier than you remember, the file may have been replaced by an older copy.";
-    /// The banner when the meta remembers a newer `vault.ywv` generation: {0} seen, {1} found.
-    ROLLBACK(2) = "지갑 파일(vault.ywv)이 예전 사본으로 바뀌었을 수 있습니다: 이 지갑은 세대 {0}까지 저장했는데 지금 파일은 세대 {1}입니다. 직접 백업에서 되돌린 것이 아니라면 지운 계정·키가 다시 나타나거나 최근 변경이 사라졌을 수 있으니 확인하세요."
-        / "The wallet file (vault.ywv) may have been replaced by an older copy: this wallet saved up to generation {0}, but the file is now generation {1}. Unless you restored it from a backup yourself, removed accounts or keys may have come back or recent changes may be lost, so check.";
-    /// The banner when the crash-report exclusion failed at startup (review L9).
-    T_WER_UNPROTECTED = "Windows 오류 보고(WER) 제외 등록에 실패했습니다. 이 앱이 비정상 종료되면 메모리 덤프가 남을 수 있고, 덤프에는 잠금 해제 중인 지갑 키가 들어 있을 수 있습니다."
-        / "Excluding this app from Windows Error Reporting (WER) failed. If the app crashes, a memory dump may be left, and the dump may contain wallet keys of the unlocked session.";
     // ----- header, settings-file banner -----
     /// The settings-file banner: {0} the tamper text.
     SETTINGS_TAMPERED_BANNER(1) = "{0}. 지금은 앱에 저장된 값을 씁니다. 직접 바꾼 것이 아니라면 '앱에 저장된 값으로 되돌리기'를 누르세요."

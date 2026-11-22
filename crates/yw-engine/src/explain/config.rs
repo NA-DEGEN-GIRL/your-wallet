@@ -140,6 +140,32 @@ pub fn endpoint_path_hint(text: &str) -> bool {
         && !path.ends_with("/chat/completions")
 }
 
+/// What the provider card says about the endpoint draft (2026-11-11). The card is drawn again
+/// when this changes while typing. 2026-11-22 (spec/15 §11.4 S4d E0a): was yw-app
+/// `ui::screens_llm::DraftNotes` (the wallet's endpoint edit compares them).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DraftNotes {
+    /// Looks like a URL but the path does not end in `/chat/completions` (a hint, not a rule).
+    pub path_hint: bool,
+    /// `api.openai.com`: `max_tokens` is never sent.
+    pub openai: bool,
+    /// `api.anthropic.com`: `json_schema` only, `reasoning_effort` ignored.
+    pub anthropic: bool,
+}
+
+impl DraftNotes {
+    /// The notes of an endpoint draft.
+    #[must_use]
+    pub fn of(text: &str) -> Self {
+        let endpoint = parse_endpoint(text.trim());
+        Self {
+            path_hint: endpoint_path_hint(text),
+            openai: endpoint.as_ref().is_some_and(Endpoint::is_openai),
+            anthropic: endpoint.as_ref().is_some_and(Endpoint::is_anthropic),
+        }
+    }
+}
+
 /// Validates an endpoint string (§2.1, D21): ASCII 1–2048 bytes, `https://<host>[:port]<path>` or
 /// `http://(127.0.0.1|localhost|[::1])[:port]<path>`, the path ending in `/chat/completions`, no
 /// userinfo, query or fragment.

@@ -20,8 +20,10 @@ use crate::app_book::{BookTarget, PromptPlace};
 use crate::app_sol::SolAccountId;
 use crate::meta::{BookChain, Tab};
 use crate::ui::badge::Badge;
-use crate::ui::main_window::{Ctl, Item, Tone};
-use crate::ui::screens_accounts::{AccountCard, AccountItem, AccountSource, SelectedLine};
+use crate::ui::main_window::{Ctl, Item};
+use crate::ui::screens_accounts::{AccountCard, AccountItem, SelectedLine};
+use yw_engine::screen::AccountSource;
+use yw_engine::screen::Tone;
 
 /// Fixed texts of the Solana screens (spec/04 §2.6–§2.11, spec/07 §3.3, §12.3; English spec/14
 /// §5). Recipient notes shared with the approval come from `yw_core::sol::text`.
@@ -815,7 +817,7 @@ impl App {
             let source = match id {
                 SolAccountId::Imported(_) => AccountSource::Imported,
                 SolAccountId::Hardware(index) => {
-                    AccountSource::Card(crate::ui::screens_accounts::sol_card_role(index))
+                    AccountSource::Card(yw_engine::screen::sol_card_role(index))
                 }
                 SolAccountId::Derived(_) | SolAccountId::Mnemonic(..) => {
                     AccountSource::Words(id.mnemonic())

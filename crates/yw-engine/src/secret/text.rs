@@ -199,4 +199,13 @@ yw_core::texts! {
     CANCEL = "취소" / "Cancel";
     CLEAR_ALL = "모두 지우기" / "Clear all";
     COPY = "복사" / "Copy";
+    /// T-BACKUP-FAIL: {0}–{3} the positions, {4} the next step.
+    BACKUP_RETRY(5) = "입력한 단어 중 종이와 다른 것이 있습니다. 같은 위치({0}·{1}·{2}·{3}번째)를 다시 묻습니다. {4}"
+        / "Some of the words you entered differ from your paper. The same positions (words {0}, {1}, {2} and {3}) are asked again. {4}";
+    /// T-BACKUP-FAIL next step when the words can be shown again.
+    BACKUP_RETRY_WORDS_AGAIN = "종이에 잘못 적었을 수 있으니, 이 창을 닫고 복구 단어를 다시 보면서 이 네 단어를 종이와 대조해 고치세요."
+        / "You may have written them down wrong: close this window, view the recovery words again and correct these four words on your paper.";
+    /// T-BACKUP-FAIL next step when the words cannot be shown again.
+    BACKUP_RETRY_NO_WORDS = "종이의 이 네 단어를 다시 확인하세요. 종이가 틀렸는지 알 수 없다면 이 창을 닫아 만들기를 취소하고(단어는 지워집니다) 처음부터 다시 만드세요."
+        / "Check these four words on your paper again. If you cannot tell whether the paper is wrong, close this window to cancel the creation (the words are erased) and start over.";
 }

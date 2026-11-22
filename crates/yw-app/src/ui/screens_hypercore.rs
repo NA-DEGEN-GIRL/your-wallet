@@ -9,7 +9,8 @@ use yw_engine::form::EditField;
 
 use crate::app::{App, Wallet};
 use crate::app_hypercore::{HcAsset, HcFormKind};
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
+use yw_engine::screen::Tone;
 
 /// Command ids (13,450–13,499).
 pub mod ids {

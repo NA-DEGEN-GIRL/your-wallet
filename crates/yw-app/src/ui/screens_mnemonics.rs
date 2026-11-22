@@ -6,7 +6,8 @@ use yw_core::lang::Text;
 
 use crate::app::{App, AppMode};
 use crate::app_mnemonics::text as mn_text;
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
+use yw_engine::screen::Tone;
 
 /// The recovery-phrase screen texts (spec/04 §2.24).
 pub mod text {
@@ -349,7 +350,7 @@ impl App {
     fn mn_removed_accounts(
         &self,
         id: yw_core::vault::RecordId,
-    ) -> Vec<crate::ui::removed::RemovedAccount> {
+    ) -> Vec<yw_engine::screen::RemovedAccount> {
         let mut accounts = Vec::new();
         for (pref, label, address, _) in self.mnemonic_account_rows() {
             if let crate::meta::EvmAccountPref::Mnemonic(record, _) = pref

@@ -23,7 +23,7 @@
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::btc::{BtcNetwork, ScriptType};
-use yw_core::lang::Lang;
+use yw_core::lang::{Lang, Text};
 use yw_core::secret::Zeroizing;
 use yw_core::vault::RecordId;
 use yw_core::yubikey::enrol::{DefaultsSeen, Enrolled};
@@ -40,12 +40,11 @@ use crate::app::{AppMode, Confirm, PasswordAction, Purpose, Screen, Wallet};
 use crate::events::{KeyJob, YubiKeyJobError};
 use crate::logging;
 use crate::secret_session::AfterShown;
-use crate::ui::main_window::Tone;
-use crate::ui::secret::DisplaySecret;
 use crate::workers::key::yubikey::{CounterTarget, YkJob, YkOutcome, YkPreview};
 use crate::yubikey::{CardJobError, PinCounters, PinKind, PinTarget};
 use yw_engine::screen::SettingsSection;
-use yw_engine::secret::{CardSecretKind, SecretFormOp, SecretKind};
+use yw_engine::screen::Tone;
+use yw_engine::secret::{CardSecretKind, DisplaySecret, SecretFormOp, SecretKind};
 
 pub mod connect;
 pub mod manage;
@@ -55,6 +54,19 @@ pub const MAX_PIV_ACCOUNTS: u32 = 20;
 /// Highest index the wizard offers for a key from recovery words: `900..=999` is the band of
 /// keys connected without them (spec/10 §7.6, `plan::UNKNOWN_PATH_FIRST`).
 pub const MAX_ACCOUNT_INDEX: u32 = yw_core::yubikey::plan::UNKNOWN_PATH_FIRST - 1;
+
+/// The new `YubiKey` wallet's five steps (S20, its secret windows' head, the wizard's head and
+/// the result's PIN card; 2026-11-10 — it said n/3 and seemed to end at the backup check).
+/// 2026-11-22 (spec/15 §11.4 S4d E0a): moved here from `ui::screens_yubikey` with its five step
+/// texts (the secret windows' step bar reads it, `app::flow_step`), and the card-name refusals
+/// `CARD_NAME_INVALID`/`CARD_NAME_TAKEN` with it; S20 and S21 draw them from here.
+pub const YK_WALLET_STEPS: [Text; 5] = [
+    text::STEP_PASSWORD,
+    text::STEP_WRITE_WORDS,
+    text::STEP_BACKUP_CHECK,
+    text::STEP_PUT_ON_CARD,
+    text::STEP_SET_PIN,
+];
 
 /// Fixed texts of the enrolment wizard and the card list (spec/10 §7, §9, §15; English
 /// spec/14).
@@ -146,6 +158,16 @@ pub mod text {
         CHECK_NO_RECORD = "이 YubiKey의 기록을 찾지 못했습니다." / "No record of this YubiKey was found.";
         CHECK_ERROR(1) = "확인하지 못했습니다: {0}" / "Could not check: {0}";
         PIN_CHANGED(1) = "{0}을(를) 바꿨습니다." / "{0} changed.";
+        STEP_PASSWORD = "비밀번호" / "Password";
+        STEP_WRITE_WORDS = "복구 단어 적기" / "Recovery words";
+        STEP_BACKUP_CHECK = "백업 확인" / "Backup check";
+        STEP_PUT_ON_CARD = "YubiKey에 넣기" / "Put on YubiKey";
+        STEP_SET_PIN = "PIN 정하기" / "Choose PIN";
+        CARD_NAME_INVALID = "YubiKey 이름은 1–32자이고 #, 앞뒤 공백, 제어 문자, 보이지 않는 문자를 쓸 수 없습니다."
+            / "YubiKey names must be 1–32 characters, without #, leading or trailing spaces, control characters or invisible characters.";
+        /// `{0}` the name another card already has.
+        CARD_NAME_TAKEN(1) = "다른 YubiKey가 이미 '{0}' 이름을 씁니다. 다른 이름을 고르세요."
+            / "Another YubiKey already uses the name '{0}'. Choose another name.";
     }
 }
 
@@ -1853,7 +1875,7 @@ impl Wallet {
             }
             YkOutcome::Challenge(Ok(positions)) => {
                 if self.secret_purpose() == Some(Purpose::YubiKey(YkPurpose::Backup)) {
-                    let retry = crate::ui::screens::backup_retry_text(
+                    let retry = yw_engine::secret::backup_retry_text(
                         self.settings.language,
                         positions,
                         false,
@@ -2205,7 +2227,7 @@ impl Wallet {
     /// field clears the name; otherwise it must be a card name (`meta::is_valid_card_name`) no
     /// other card uses. Stored in meta `hw_card_names` (never logged: names are labels).
     fn yk_save_card_name(&mut self, clear: bool) {
-        use crate::ui::screens_yubikey::text as t;
+        use crate::app_yubikey::text as t;
         let lang = self.settings.language;
         let Some(serial) = self.card.rename.filter(|serial| {
             self.card

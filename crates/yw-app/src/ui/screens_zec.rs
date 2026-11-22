@@ -14,9 +14,11 @@ use crate::app::{App, AppMode, Wallet};
 use crate::app_zec::SourceChoice;
 use crate::settings::ZecIndexer;
 use crate::ui::badge::Badge;
-use crate::ui::main_window::{Ctl, Item, Tone};
-use crate::ui::screens_accounts::{AccountItem, AccountSource};
+use crate::ui::main_window::{Ctl, Item};
+use crate::ui::screens_accounts::AccountItem;
 use crate::zec::rpc::ZecRpcError;
+use yw_engine::screen::AccountSource;
+use yw_engine::screen::Tone;
 
 /// Fixed texts of the S10 Zcash tab (spec/12 §11, spec/04 §2.6; English spec/14 §5).
 pub mod text {

@@ -5,11 +5,12 @@
 //! `연결 해제` and `모든 WalletConnect 세션 끊기`.
 
 use crate::app::{App, Wallet};
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, Item};
 use crate::walletconnect::VerifyStatus;
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::{Row, WcPress};
 use yw_engine::form::EditField;
+use yw_engine::screen::Tone;
 
 /// Control ids (16,000–16,099; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -138,8 +139,6 @@ pub mod text {
         EXPIRY = "만료" / "Expires";
         DISCONNECT = "연결 해제" / "Disconnect";
         DISCONNECT_ALL = "모든 WalletConnect 세션 끊기" / "Disconnect all WalletConnect sessions";
-        REOWN_COPIED = "dashboard.reown.com 주소를 복사했습니다. 브라우저 주소창에 붙여넣으세요."
-            / "Copied the dashboard.reown.com address. Paste it into your browser's address bar.";
     }
 }
 
