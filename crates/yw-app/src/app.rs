@@ -2867,8 +2867,9 @@ impl Wallet {
         // (`AfterOpen::WriteGrantsThenRefresh`) was done above by `browser_lock_begin`'s
         // `flush_grant_writes`, while meta and the dispatcher's grants were still there; only
         // its repaint is dropped here (the lock repaints). Before F16 the write was dropped too.
-        // Not at shutdown (F16 review): the mode is already `ShuttingDown`, so the flush wrote
-        // nothing (spec/15 §18 item 21, open).
+        // At shutdown the flush here writes nothing (the mode is already `ShuttingDown`): since
+        // 2026-11-22 (S4d F21, spec/15 §18 21) `shutdown_begin` wrote the waiting grants before it
+        // set that mode; from the F16 review until F21 the shutdown did not write them at all.
         self.evm.after_open.clear();
         self.evm.open_unanswered = None;
         let before = self.lock_signal.count();
@@ -3030,13 +3031,26 @@ impl App {
 
 impl Wallet {
     /// The shutdown's first wallet half (2026-11-22, S4c W3b; wallet code, preflight §3.0):
-    /// `false` when it has begun already (nothing runs twice); else `AppMode::ShuttingDown`, then
-    /// every queued and shown approval item finishes with `QueueOutcome::Shutdown` (its dApp or
-    /// app answer), before the shell stops its pipe server.
+    /// `false` when it has begun already (nothing runs twice); else the waiting grant writes
+    /// (2026-11-22, S4d F21), `AppMode::ShuttingDown`, then every queued and shown approval item
+    /// finishes with `QueueOutcome::Shutdown` (its dApp or app answer), before the shell stops
+    /// its pipe server.
     fn shutdown_begin(&mut self) -> bool {
         if self.mode == AppMode::ShuttingDown {
             return false;
         }
+        // 2026-11-22 (S4d F21, owner decision, spec/15 §18 21; spec/04 §1.5, §5.3, spec/05 §4.5):
+        // the grant writes still waiting — a chain switch coalesced inside
+        // `GRANT_WRITE_INTERVAL_MS`, a revoke whose write waits for an approval open's answer — are
+        // written first, while the mode is still `Unlocked` and meta is loaded, as the lock's
+        // `browser_lock_begin` does: the meta save is queued before the shutdown's `KeyJob::Lock`
+        // and `wc_grants_changed` goes before `wc_shutdown`. Before F21 the mode was set first,
+        // so `flush_grant_writes` (which writes only while unlocked) wrote nothing at shutdown. A
+        // locked shutdown is unchanged (nothing is waiting, and the flush needs `Unlocked`). The
+        // key worker keeps that save only if it took it before the `Lock`, which goes to the
+        // front of its queue and cancels what is still queued (spec/15 §18 26, open; the lock's
+        // own flush is the same).
+        self.flush_grant_writes();
         self.set_mode(AppMode::ShuttingDown);
         for (item, outcome) in self.evm.queue.shutdown() {
             self.approval_finished(&item.payload, outcome);

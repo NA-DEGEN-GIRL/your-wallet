@@ -2142,6 +2142,218 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
     }
 }
 
+/// The chain the meta document's EVM grant of `site` names, if it has one.
+fn saved_chain(meta: &crate::meta::Meta, site: &str) -> Option<u64> {
+    crate::browser::grants::sites_from_values(&meta.connected_sites)
+        .iter()
+        .find(|saved| saved.origin.as_str() == site)
+        .map(|saved| saved.chain_id)
+}
+
+/// 2026-11-22 (S4d F21, owner decision, spec/04 §1.5, §5.3, spec/05 §4.5, spec/15 §18 21): the
+/// shutdown writes a chain switch still coalesced inside `GRANT_WRITE_INTERVAL_MS` before it sets
+/// `AppMode::ShuttingDown` (`Wallet::shutdown_begin` → `flush_grant_writes`, while meta is loaded).
+/// A grant write was just made, so the dispatcher's switch of `app.example` to Ethereum is only
+/// noted (`GrantWrite::dirty`); the shutdown then queues one meta save that holds the switch, at
+/// the epoch before the lock. Before F21 the mode came first, the flush wrote nothing and the
+/// switch was lost at exit. The queue also pins today's key-worker order (spec/15 §18 26, open):
+/// the shutdown's `KeyJob::Lock` went to the front, before that save, and the worker's `Lock`
+/// would cancel it (`KeyQueue::cancel_pending`) unless the worker took it first — the lock's own
+/// flush is the same. Headless, no window; files only below the fixture's temp folder.
+#[test]
+fn a_shutdown_writes_a_coalesced_chain_switch_first() {
+    use yw_core::evm::address::parse_address;
+    use yw_core::evm::chain::{ETHEREUM_MAINNET, SEPOLIA};
+    use yw_core::policy::ConnectedSite;
+
+    use crate::app::AppMode;
+    use crate::browser::{DappEvent, GrantChange};
+
+    let fx = fixture("shutdown-chain-switch");
+    let _outlet = dapp(&fx, false, true);
+    // A grant write now: the switch below falls inside the coalescing interval.
+    fx.app().write_grants();
+    let saved = last_saved_meta(fx.key_jobs());
+    assert_eq!(
+        saved
+            .as_ref()
+            .and_then(|meta| saved_chain(meta, "https://app.example")),
+        Some(SEPOLIA),
+        "the grant is saved on Sepolia"
+    );
+    let core = Arc::clone(&fx.app.borrow().browser.as_ref().unwrap().core);
+    {
+        let mut app = fx.app();
+        assert!(matches!(app.mode, AppMode::Unlocked { .. }));
+        // The dispatcher's chain switch (`wallet_switchEthereumChain`, answered from memory).
+        core.upsert_grant(
+            ConnectedSite::new(
+                origin(),
+                vec![parse_address(ACCOUNT_A).unwrap()],
+                ETHEREUM_MAINNET,
+                1,
+            )
+            .unwrap(),
+        );
+        app.on_dapp_event(DappEvent::GrantChanged {
+            origin: origin(),
+            change: GrantChange::Chain(ETHEREUM_MAINNET),
+        });
+        assert!(
+            app.browser
+                .as_ref()
+                .is_some_and(|browser| browser.grant_write.dirty),
+            "the switch waits for the interval"
+        );
+    }
+    assert!(
+        last_saved_meta(fx.key_jobs()).is_none(),
+        "coalesced: nothing written yet"
+    );
+    let before = fx.app.borrow().lock_epoch;
+    {
+        let _ack = LockAck::start(&fx);
+        fx.app().shutdown();
+    }
+    let app = fx.app.borrow();
+    assert_eq!(app.mode, AppMode::ShuttingDown);
+    assert!(
+        app.browser
+            .as_ref()
+            .is_some_and(|browser| !browser.grant_write.pending()),
+        "the shutdown took the waiting write"
+    );
+    let lock_epoch = app.lock_epoch;
+    assert_eq!(lock_epoch, before + 1, "one lock");
+    // What the worker's `Lock` of this shutdown cancels if it comes first: the meta save, at the
+    // epoch before the lock, holding the switch.
+    let cancelled = app.key_queue.cancel_pending(lock_epoch);
+    let names: Vec<String> = cancelled.iter().map(|(_, job)| key_name(job)).collect();
+    assert_eq!(names, ["SaveMeta"], "the shutdown queued one meta save");
+    assert_eq!(cancelled[0].0, before, "queued before the lock");
+    let switched = last_saved_meta(cancelled.into_iter().map(|(_, job)| job).collect());
+    assert_eq!(
+        switched
+            .as_ref()
+            .and_then(|meta| saved_chain(meta, "https://app.example")),
+        Some(ETHEREUM_MAINNET),
+        "the meta save holds the switch"
+    );
+    drop(app);
+    let rest: Vec<String> = fx.key_jobs().iter().map(key_name).collect();
+    assert_eq!(rest, ["Lock", "Shutdown"], "the lock is first in the queue");
+}
+
+/// 2026-11-22 (S4d F21, owner decision, spec/04 §1.5, §5.3, spec/05 §4.5, spec/15 §18 21): a
+/// shutdown keeps a dApp revoke whose write waits for an approval open's answer. The shutdown
+/// shape of [`a_lock_keeps_a_revoke_whose_write_waits_for_an_open`]: in entry 1 a request of
+/// `app.example` asks for an approval open and, before its answer, the dispatcher reports the
+/// revoke of `other.example`, whose grant write (`AfterOpen::WriteGrantsThenRefresh`) is kept for
+/// that answer; the shell holds the entry's effects. Entry 2 shuts down: `shutdown_begin` writes
+/// the waiting revoke before `AppMode::ShuttingDown`, so the last saved meta document holds
+/// `app.example` only; the queued request is answered 4900 and the lock drops the kept step.
+/// Entry 3 applies the held effects (the stale open makes no window). Before F21 the shutdown set
+/// the mode first, its lock's flush wrote nothing and dropped the step, so no meta was saved and
+/// the revoked grant came back at the next start. No production entry takes this path on Windows
+/// (every entry drains, so the answer comes in the revoke's own entry); it is the shape of a
+/// shell that answers in a later entry (S4d E2). The save's survival of the shutdown's
+/// `KeyJob::Lock` is spec/15 §18 26 (open). Headless, no window; files only below the fixture's
+/// temp folder.
+#[test]
+fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
+    use yw_core::policy::BrowserOrigin;
+    use yw_engine::effect::Effect;
+
+    use crate::app::AppMode;
+    use crate::app_approval::AfterOpen;
+    use crate::browser::{DappEvent, GrantChange};
+
+    let fx = fixture("revoke-shutdown-deferred");
+    let outlet = dapp(&fx, false, true);
+    grant(&fx, OTHER, ACCOUNT_B);
+    fx.app().write_grants();
+    assert_eq!(
+        last_saved_meta(fx.key_jobs())
+            .as_ref()
+            .map(|meta| meta.connected_sites.len()),
+        Some(2),
+        "both sites are saved"
+    );
+    let core = Arc::clone(&fx.app.borrow().browser.as_ref().unwrap().core);
+    personal_sign_frame_only(&fx, &outlet, &core);
+    let _ = headless_host::take_effects();
+    // Entry 1: the open is asked for; the revoke's write is kept for its answer; the shell holds
+    // the entry's effects.
+    let held: Vec<Effect> = {
+        let mut app = fx.app();
+        for event in outlet.events.drain() {
+            if let UiEvent::Dapp(event) = event {
+                app.on_dapp_event(event);
+            }
+        }
+        assert!(app.evm.open_unanswered.is_some(), "the open is queued");
+        let other = BrowserOrigin::parse(OTHER).unwrap();
+        assert!(core.remove_grant(&other), "the dispatcher's revoke");
+        app.on_dapp_event(DappEvent::GrantChanged {
+            origin: other,
+            change: GrantChange::Revoked,
+        });
+        assert!(
+            app.evm
+                .after_open
+                .iter()
+                .any(|(_, after)| matches!(after, AfterOpen::WriteGrantsThenRefresh)),
+            "the revoke's write waits for the open's answer"
+        );
+        assert!(
+            app.browser
+                .as_ref()
+                .is_some_and(|browser| browser.grant_write.revoke),
+            "and is noted as waiting"
+        );
+        app.outbox.drain(..).collect()
+    };
+    assert!(
+        last_saved_meta(fx.key_jobs()).is_none(),
+        "nothing written yet"
+    );
+    // Entry 2: the shutdown.
+    {
+        let _ack = LockAck::start(&fx);
+        let mut app = fx.app();
+        app.shutdown();
+        assert_eq!(app.mode, AppMode::ShuttingDown);
+        assert!(app.evm.after_open.is_empty(), "the lock dropped the step");
+        assert!(
+            app.browser
+                .as_ref()
+                .is_some_and(|browser| !browser.grant_write.revoke),
+            "the shutdown wrote the revoke"
+        );
+    }
+    let saved = last_saved_meta(fx.key_jobs()).expect("the shutdown saved meta");
+    let origins: Vec<String> = crate::browser::grants::sites_from_values(&saved.connected_sites)
+        .iter()
+        .map(|site| site.origin.as_str().to_owned())
+        .collect();
+    assert_eq!(
+        origins,
+        vec!["https://app.example".to_owned()],
+        "the revoked site is not in the saved document"
+    );
+    assert_eq!(dapp_answers(&outlet), "4900 Wallet connection closed.");
+    // Entry 3: the shell applies the held effects; the stale open is answered after the shutdown.
+    {
+        let mut app = fx.app();
+        for effect in held {
+            app.emit(effect);
+        }
+    }
+    let app = fx.app.borrow();
+    assert!(app.evm.after_open.is_empty());
+    assert!(app.approval_win.is_none(), "no window was made");
+}
+
 /// The store state of request `id` (shown before a revoke or cancel), without the windowed
 /// fact's window count.
 fn store_fact(fx: &Fixture, id: Option<ApprovalId>) -> String {

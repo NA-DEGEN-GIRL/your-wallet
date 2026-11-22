@@ -5817,12 +5817,14 @@ fn the_shutdown_composition_runs_from_the_shell(files: &[Src]) {
     // mode before the queue's items finish; the dispatcher's stop, then `WalletConnect`, then the
     // key worker's lock count read before the lock (read after it, a fast worker's signal can
     // land first and every shutdown waits the full 5 s), the lock, the count returned; the key
-    // worker's stop, then the RPC worker's, then the AI explanation's.
+    // worker's stop, then the RPC worker's, then the AI explanation's. 2026-11-22 (S4d F21, owner
+    // decision, spec/15 §18 21): the waiting grant writes come before the mode (`flush_grant_writes`
+    // writes only while unlocked); before, the mode came right after the guard.
     in_order(
         "shutdown_begin",
         &[
             "ifself.mode==AppMode::ShuttingDown{returnfalse;}",
-            "self.set_mode(AppMode::ShuttingDown);",
+            "self.flush_grant_writes();self.set_mode(AppMode::ShuttingDown);",
             "self.evm.queue.shutdown()",
             "self.approval_finished(",
             "true}",

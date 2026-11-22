@@ -163,8 +163,8 @@ pub struct GrantWrite {
     /// A revoke the dispatcher reported is waiting to be written: its write
     /// (`AfterOpen::WriteGrantsThenRefresh`) may wait for the answer of an approval open
     /// (2026-11-21, S4 F16, owner decision, spec/04 §5.3, spec/15 §18 item 16). The lock writes it
-    /// first ([`Wallet::flush_grant_writes`]); the main timer does not ([`Self::due`]), and neither
-    /// does the shutdown (spec/15 §18 item 21).
+    /// first ([`Wallet::flush_grant_writes`]), and so does the shutdown since 2026-11-22 (S4d F21,
+    /// spec/15 §18 item 21; before, it did not); the main timer does not ([`Self::due`]).
     pub revoke: bool,
     /// Monotonic ms of the last grant write.
     pub last_ms: Option<u64>,
@@ -185,9 +185,9 @@ impl GrantWrite {
 
     /// Whether any write is waiting (a chain switch or a revoke), due or not: what the lock
     /// writes first ([`Wallet::flush_grant_writes`]; 2026-11-21, S4 F16: before, a chain switch
-    /// only). The shutdown writes neither: `App::shutdown` sets `AppMode::ShuttingDown` before
-    /// its lock, and the flush writes only while unlocked (2026-11-21, F16 review: an open
-    /// question, spec/15 §18 item 21).
+    /// only), and what the shutdown writes before it sets `AppMode::ShuttingDown`
+    /// (`Wallet::shutdown_begin`; 2026-11-22, S4d F21, spec/15 §18 item 21: before, the mode came
+    /// first and the flush, which writes only while unlocked, wrote neither).
     #[must_use]
     pub const fn pending(&self) -> bool {
         self.dirty || self.revoke
@@ -533,12 +533,15 @@ impl Wallet {
     /// steps kept for that open (`Wallet::lock_steps`, F14) and before the dispatcher locks, so the
     /// revoke is in meta and does not come back at the next unlock; before F16 only a chain
     /// switch, and a revoke's kept write was dropped by the lock unwritten).
-    /// It writes only while unlocked, so the shutdown's lock writes nothing: `App::shutdown` has
-    /// set `AppMode::ShuttingDown` first, and a chain switch inside the
-    /// [`GRANT_WRITE_INTERVAL_MS`] window (and, in a shell that answers an open in a later entry,
-    /// S4d E2, a waiting revoke) is lost at exit (2026-11-21, F16 review: the doc said "lock,
-    /// shutdown paths", which the shutdown never did, unchanged since before F16; spec/15 §18
-    /// item 21, open, an obligation before E2).
+    /// It writes only while unlocked. 2026-11-22 (S4d F21, owner decision, spec/15 §18 item 21):
+    /// the shutdown calls it first, in `Wallet::shutdown_begin` before `AppMode::ShuttingDown`, so
+    /// a chain switch inside the [`GRANT_WRITE_INTERVAL_MS`] window (and, in a shell that answers
+    /// an open in a later entry, S4d E2, a waiting revoke) is written at exit; the shutdown's lock
+    /// then writes nothing more. Before F21 the shutdown set the mode first and lost both (the F16
+    /// review fixed this doc's "lock, shutdown paths", which the shutdown never did). The meta
+    /// save is a key job queued before the lock's `KeyJob::Lock`; the worker keeps it only if it
+    /// took it before that `Lock`, which goes to the front of its queue and cancels what is
+    /// still queued (spec/15 §18 item 26, open).
     pub(crate) fn flush_grant_writes(&mut self) {
         if self
             .browser
