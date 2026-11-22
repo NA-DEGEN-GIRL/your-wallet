@@ -195,7 +195,10 @@ impl App {
     /// right after the press reached the wallet (before, by the wallet's family router inside
     /// it); what it changes of the wallet goes through the wallet's fns (`set_screen`,
     /// `return_to`, `emit`, `copy_with_band`), not as `Cmd`s, because the screen it returns to
-    /// is a yw-app `Screen`, no engine data until S4d E0a. Same steps, same order.
+    /// is a yw-app `Screen`, no engine data until S4d E0a. Same steps, same order; only the
+    /// press's own drain (nothing to apply) runs before it, and `on_command` drains its effects
+    /// and their answers right after it, before a closed drop-down's repaint, as inside the press
+    /// (2026-11-22, W15 review; the W15 commit left them to the final drain, behind that repaint).
     pub(crate) fn on_ext(&mut self, press: yw_engine::cmd::ExtPress) {
         use yw_engine::cmd::ExtPress;
         match press {

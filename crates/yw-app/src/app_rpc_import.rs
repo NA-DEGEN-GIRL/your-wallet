@@ -476,7 +476,10 @@ impl App {
     /// same order (the two moves are under `begin_rpc_import` and `delete_rpc_json`).
     /// 2026-11-22 (S4c W15, critique B-5): run by `App::on_command` right after the press
     /// reached the wallet (before, by the wallet's family router inside it), and the wallet's
-    /// entries are named on the wallet (non-test builds have no `DerefMut`).
+    /// entries are named on the wallet (non-test builds have no `DerefMut`). Only the press's
+    /// own drain (nothing to apply) runs before it, and `on_command` drains its effects and
+    /// their answers right after it, before a closed drop-down's repaint, as inside the press
+    /// (2026-11-22, W15 review).
     pub(crate) fn on_rpc_import(&mut self, press: RpcImportPress) {
         match press {
             RpcImportPress::Import => {

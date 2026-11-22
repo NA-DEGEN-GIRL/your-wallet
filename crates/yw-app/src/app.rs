@@ -2876,7 +2876,8 @@ impl Wallet {
         // `SecretEffect::ClearClip` at this point; before, this fn called `clear_secret_clip`
         // (with the clock read here) or `clear_secret_clip_at_exit` itself.
         // (2026-11-21, S4 W3: the mode is read first, as before the call; `emit` is the
-        // wallet's now and is reached through `App`'s `DerefMut`.)
+        // wallet's now and is reached through `App`'s `DerefMut`. 2026-11-22, S4c W15: this fn is
+        // `impl Wallet` and calls the wallet's own `emit`; non-test builds have no `DerefMut`.)
         let at_exit = self.mode == AppMode::ShuttingDown;
         self.emit(Effect::Secret(SecretEffect::ClearClip { at_exit }));
         self.evm_lock();
@@ -5265,8 +5266,15 @@ impl App {
     /// reads the installed folder) and the `rpc.json` import (`Press::RpcImport`, the file) — run
     /// here right after their press reached the wallet (which only took it as the last press and
     /// cleared the copy mark, as for every press), like `종료`'s composition; before, the
-    /// wallet's family router called them inside that press. Nothing ran between the two: the
-    /// press emits nothing before them, and neither reads the press's credential input.
+    /// wallet's family router called them inside that press. Neither reads the press's
+    /// credential input, and the press emits nothing before them.
+    /// 2026-11-22 (S4c W15 review): only the press's own drain runs between the two (it applies
+    /// nothing, the press emitted nothing; its debug `cred_check` finds no credential taken, as
+    /// none of these ids captures one); and the handler's effects and their answers
+    /// (`OpenFolder` → `Cmd::FolderMissing`, `CopyText` → `Cmd::CopyDone`, the scroll memory,
+    /// `Reveal`) are drained right after it, before the closed drop-down's repaint, in the order
+    /// they had inside the press. In the W15 commit they waited for the final drain, behind that
+    /// repaint (cosmetic only).
     fn on_command(&mut self, id: u16) {
         self.note_input();
         let closed = !matches!(id, IDOK | IDCANCEL)
@@ -5291,9 +5299,16 @@ impl App {
                 // `shutdown` inside this `dispatch` as the press's last step (only the press
                 // input's wipe and the dispatch's drain followed it, and both now precede it).
                 Press::Core(CorePress::Exit) => self.shutdown(),
-                // The shell's press handlers (2026-11-22, S4c W15, critique B-5; see above).
-                Press::Ext(press) => self.on_ext(press),
-                Press::RpcImport(press) => self.on_rpc_import(press),
+                // The shell's press handlers (2026-11-22, S4c W15, critique B-5; see above), each
+                // drained at once (W15 review).
+                Press::Ext(press) => {
+                    self.on_ext(press);
+                    self.drain();
+                }
+                Press::RpcImport(press) => {
+                    self.on_rpc_import(press);
+                    self.drain();
+                }
                 _ => {}
             }
         } else {

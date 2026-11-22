@@ -7590,7 +7590,8 @@ fn converted_handlers_reach_the_main_window_only_through_effects() {
 /// 2026-11-20 (S4 P4 review), part of
 /// [`converted_handlers_reach_the_main_window_only_through_effects`] (`body` is its fn reader):
 /// the shell's half — `on_command` resolves Enter and Esc right after their own press (and,
-/// since 2026-11-22 S4c W3b, runs the shutdown right after the `종료` press),
+/// since 2026-11-22 S4c W3b, runs the shutdown right after the `종료` press; since S4c W15, the
+/// S23 and `rpc.json` press handlers, each drained before the closed drop-down's repaint),
 /// `enter_key` reads the window's focus, and the resolvers press what they find through
 /// `on_command`. Whitespace dropped, so only the code's shape counts.
 fn shell_resolves_the_keys(body: &dyn Fn(&str, &str) -> String) {
@@ -7606,11 +7607,14 @@ fn shell_resolves_the_keys(body: &dyn Fn(&str, &str) -> String) {
             // 2026-11-22 (S4c W3b, critic C11): and the `종료` press's shutdown, the shell's
             // composition (before, the wallet's `on_core` called it).
             // 2026-11-22 (S4c W15, critique B-5): and the shell's press handlers of S23 and the
-            // `rpc.json` import (before, the wallet's family router called them).
+            // `rpc.json` import (before, the wallet's family router called them), each drained
+            // at once, so its effects and answers come before the closed drop-down's repaint, as
+            // inside the press before W15 (2026-11-22, W15 review).
             "self.dispatch(Cmd::Press{press,input});matchpress{Press::Enter=>self.enter_key(),\
              Press::Back=>self.escape_key(),Press::Core(CorePress::Exit)=>self.shutdown(),\
-             Press::Ext(press)=>self.on_ext(press),\
-             Press::RpcImport(press)=>self.on_rpc_import(press),_=>{}}",
+             Press::Ext(press)=>{self.on_ext(press);self.drain();}\
+             Press::RpcImport(press)=>{self.on_rpc_import(press);self.drain();}_=>{}}\
+             }else{self.wallet.forget_copy_mark();}ifclosed{self.wallet.refresh();}self.drain();",
         ),
         (
             "    fn enter_key(&mut self) {",
