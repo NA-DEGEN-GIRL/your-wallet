@@ -4674,8 +4674,8 @@ fn free_calls(body: &str, caller: &Src, set: &BTreeSet<(String, String)>) -> BTr
 }
 
 /// The shell's free fns as a fixed point (2026-11-21, S4 W6 review; plan D-30): every yw-app
-/// module-level fn ([`free_fns`]) whose body names `yw_win` (`app_sidecar::local_time`, which
-/// reads `yw_win::time::local_wall_ms`), plus every one that calls ([`free_calls`]) a fn already
+/// module-level fn ([`free_fns`]) whose body names `yw_win` (`ui::screens_sidecar::local_time`,
+/// `app_sidecar` before 2026-11-22 S4d E0c, which reads `yw_win::time::local_wall_ms`), plus every one that calls ([`free_calls`]) a fn already
 /// in the set, until it stops growing; as `(file, name)`.
 fn shell_free_fns(
     files: &[Src],
@@ -6054,11 +6054,14 @@ fn the_main_hidden_mirror_follows_its_cmd_and_the_sync() {
 /// The files whose wallet code moves to yw-engine at S4d E1 (the S4d preflight's "moving
 /// files"), but `app.rs` and `app_approval.rs`: those keep the shell's `App`, its window half
 /// and `Paths` until E0b and E1 (`app_approval.rs` stays a yw-app file after E1; source check S6
-/// covers its flow fns), so S11 leaves them out (preflight critic C10).
-const MOVING_FILES: [&str; 30] = [
+/// covers its flow fns), so S11 leaves them out (preflight critic C10). A moving file's non-test
+/// submodules move with it and are listed too (`app_btc/text.rs` since 2026-11-22, S4d E0c
+/// review: before, it was left out; [`moving_files_name_no_shell`] now fails on an unlisted one).
+const MOVING_FILES: [&str; 31] = [
     "app_book.rs",
     "app_browser.rs",
     "app_btc.rs",
+    "app_btc/text.rs",
     "app_btc_commands.rs",
     "app_btc_view.rs",
     "app_card.rs",
@@ -6205,9 +6208,11 @@ fn use_tree_paths(code: &str) -> String {
 /// `Item::`/`Ctl::`, `ControlSet`, `yw_win`, a yw-app shell module or `browser::server`, and
 /// the modules and types of yw-engine's banned calls (`clippy.toml`: `std::fs`, `std::env`,
 /// `std::process`, `std::net`, `SystemTime`, `Path`/`PathBuf`; `std::process` and `std::net`
-/// since 2026-11-22, S4d E0b review). It does not follow a rename of a parent module
-/// (`use std as s;`) or a glob import of one (`use std::*;`); E1's compiler and `clippy.toml`
-/// do.
+/// since 2026-11-22, S4d E0b review), and `crate::ui` or `crate::browser` imported whole
+/// (`use crate::ui as u;`, since 2026-11-22, S4d E0c review: before, it got past). A `super::`
+/// path is found once [`from_crate_root`] wrote it from the crate root. It does not follow a
+/// rename of another parent module (`use std as s;`, `use super as p;`) or a glob import of one
+/// (`use std::*;`); E1's compiler and `clippy.toml` do.
 fn shell_names(code: &str) -> BTreeSet<String> {
     let expanded = format!("{code}\n{}", use_tree_paths(code));
     let code = expanded.as_str();
@@ -6268,7 +6273,70 @@ fn shell_names(code: &str) -> BTreeSet<String> {
             found.insert(format!("crate::{module}"));
         }
     }
+    for whole in ["crate::ui", "crate::browser"] {
+        let imported = code.match_indices(whole).any(|(at, _)| {
+            let after = &code[at + whole.len()..];
+            !word_before(at)
+                && after.bytes().next().is_none_or(|b| !is_ident(b))
+                && !after.starts_with("::")
+        });
+        if imported {
+            found.insert(whole.to_owned());
+        }
+    }
     found
+}
+
+/// `code` of the moving file `name` (a path under `yw-app/src`) with each `super::` path
+/// written from the crate root: `super::` of a crate-root file is `crate::`, of
+/// `app_yubikey/manage.rs` `crate::app_yubikey::`, so that [`shell_names`] finds
+/// `super::store` as it finds `crate::store` (2026-11-22, S4d E0c review: before, a `super::`
+/// path got past S11). A bare `super` (`use super as p;`) stays as it is.
+fn from_crate_root(code: &str, name: &str) -> String {
+    let module: Vec<&str> = name.trim_end_matches(".rs").split('/').collect();
+    let bytes = code.as_bytes();
+    let mut out = String::with_capacity(code.len());
+    let mut at = 0;
+    while let Some(found) = code[at..].find("super::") {
+        let start = at + found;
+        out.push_str(&code[at..start]);
+        if start > 0 && is_ident(bytes[start - 1]) {
+            out.push_str("super::");
+            at = start + "super::".len();
+            continue;
+        }
+        let mut end = start;
+        let mut ups = 0_usize;
+        while code[end..].starts_with("super::") {
+            ups += 1;
+            end += "super::".len();
+        }
+        out.push_str("crate::");
+        for segment in module.iter().take(module.len().saturating_sub(ups)) {
+            out.push_str(segment);
+            out.push_str("::");
+        }
+        at = end;
+    }
+    out.push_str(&code[at..]);
+    out
+}
+
+/// The files of the non-test `mod <name>;` declarations in `code` of the file `file` (a path
+/// under `yw-app/src`): `app_btc.rs`'s `pub mod text;` is `app_btc/text.rs`.
+fn child_files(code: &str, file: &str) -> Vec<String> {
+    let dir = file.trim_end_matches(".rs");
+    code.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let rest = line
+                .strip_prefix("pub(crate) mod ")
+                .or_else(|| line.strip_prefix("pub mod "))
+                .or_else(|| line.strip_prefix("mod "))?;
+            let child = rest.strip_suffix(';')?.trim();
+            (!child.is_empty() && child.bytes().all(is_ident)).then(|| format!("{dir}/{child}.rs"))
+        })
+        .collect()
 }
 
 /// Source check S11 `moving_files_name_no_shell` (2026-11-22, S4d E0c; plan critique B-6, S4d
@@ -6277,8 +6345,11 @@ fn shell_names(code: &str) -> BTreeSet<String> {
 /// render code (`Item::`/`Ctl::`, `ControlSet`), no control id (`ids::`), no non-facade `ui::`
 /// path, no `yw_win`, no yw-app shell module, and no module or type of the calls yw-engine's
 /// `clippy.toml` bans (`std::fs`, `std::env`, `std::process`, `std::net`, `SystemTime`, `Path`;
-/// as full paths and in grouped `use` trees, not through a renamed or glob-imported parent
-/// module; `std::process`, `std::net` and the grouped trees since 2026-11-22, S4d E0b review:
+/// as full paths, as `super::` paths ([`from_crate_root`]) and in grouped `use` trees, not
+/// through a renamed or glob-imported parent module but `crate::ui`/`crate::browser`; the
+/// `super::` paths, the whole `crate::ui`/`crate::browser` and the listed submodules
+/// ([`child_files`]) since 2026-11-22, S4d E0c review: before, they got past it, though no
+/// moving file used them; `std::process`, `std::net` and the grouped trees since 2026-11-22, S4d E0b review:
 /// before, they got past it, though no moving file named them; the plan's E0b, which E0c absorbed: no
 /// wallet fn used them, and the shell items that did, `Launcher` and the `WalletConnect`
 /// platform, moved to `crate::explorer_launcher` and `crate::wc_platform`). The listed exceptions
@@ -6307,7 +6378,14 @@ fn moving_files_name_no_shell() {
                 code = code.replace(allowed, &" ".repeat(allowed.len()));
             }
         }
-        let names = shell_names(&code);
+        for child in child_files(&code, name) {
+            if !MOVING_FILES.contains(&child.as_str()) {
+                errors.push(format!(
+                    "{path}: its submodule {child} is not in MOVING_FILES"
+                ));
+            }
+        }
+        let names = shell_names(&from_crate_root(&code, name));
         if !names.is_empty() {
             errors.push(format!("{path} names {names:?}"));
         }
@@ -6386,4 +6464,60 @@ fn shell_names_on_made_up_code() {
     assert!(clean.is_empty(), "{clean:?}");
     let pieces = use_tree_paths("use a::{self, b, c::{d as e, f::{}}, };");
     assert_eq!(pieces, "a;\na::b;\na::c::d as e");
+}
+
+/// [`from_crate_root`], the whole `crate::ui`/`crate::browser` of [`shell_names`] and
+/// [`child_files`] on made-up code (2026-11-22, S4d E0c review; the review's probe shapes among
+/// them): `super::` paths are found from the crate root, a nested file's own `super::` paths
+/// and engine paths are let through.
+#[test]
+fn super_paths_and_whole_modules_on_made_up_code() {
+    let root = from_crate_root(
+        "use super::store as _probe_super;\nuse super::{app_effects, ui::screens_evm::ids::X};\n\
+         fn f() { mysuper::x; }\n",
+        "app_tokens.rs",
+    );
+    assert_eq!(
+        root,
+        "use crate::store as _probe_super;\nuse crate::{app_effects, ui::screens_evm::ids::X};\n\
+         fn f() { mysuper::x; }\n"
+    );
+    assert_eq!(
+        from_crate_root(
+            "use super::{text, manage}; super::super::store::x; use super as p;",
+            "app_yubikey/connect.rs"
+        ),
+        "use crate::app_yubikey::{text, manage}; crate::store::x; use super as p;"
+    );
+    let whole = shell_names(
+        &(root
+            + "use crate::ui as _probe_ui;\nuse crate::{browser as b};\nuse crate::ui::{self as u};\n"),
+    );
+    let expected: BTreeSet<String> = [
+        "crate::store",
+        "crate::app_effects",
+        "ui::screens_evm",
+        "ids",
+        "crate::ui",
+        "crate::browser",
+        "ui::self",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(whole, expected);
+    let nested = shell_names(&from_crate_root(
+        "use super::{WizardOrigin, YkPurpose};\n\
+         fn g() { super::text::INDEX_RANGE; super::zec_network_for(b); }\n\
+         use crate::browser::Grants; use crate::uix; crate::ui::approval::X;\n",
+        "app_yubikey/manage.rs",
+    ));
+    assert!(nested.is_empty(), "{nested:?}");
+    assert_eq!(
+        child_files(
+            "pub mod text;\n    pub(crate) mod connect;\nmod a_b;\nmod inline {\n}\n",
+            "app_x.rs"
+        ),
+        ["app_x/text.rs", "app_x/connect.rs", "app_x/a_b.rs"]
+    );
 }
