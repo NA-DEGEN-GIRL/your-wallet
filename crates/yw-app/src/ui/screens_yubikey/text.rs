@@ -162,7 +162,7 @@ yw_core::texts! {
     /// `{0}` the name another card already has.
     CARD_NAME_TAKEN(1) = "다른 YubiKey가 이미 '{0}' 이름을 씁니다. 다른 이름을 고르세요."
         / "Another YubiKey already uses the name '{0}'. Choose another name.";
-    /// `{0}` the card (`App::card_name`: `name (#serial)` or `#serial`, 2026-11-15; the same
+    /// `{0}` the card (`Wallet::card_name`: `name (#serial)` or `#serial`, 2026-11-15; the same
     /// for every card `{0}` below), `{1}` slot.
     HOLDER_BACKUP(2) = "{0} {1}(백업)" / "{0} {1} (backup)";
 

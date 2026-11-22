@@ -52,7 +52,7 @@
 //! 2026-11-20 (spec/15 §11.4 S4 P10b): effects go through an outbox — the Windows shell queues
 //! each one when the logic emits it and applies the queue in order, never coalesced, inside the
 //! `App` borrow before the shell entry that emitted them returns; an answer goes back to the logic
-//! in the same drain (yw-app `App::emit`/`App::drain`/`App::dispatch`). A `SetField` is form
+//! in the same drain (yw-app `Wallet::emit`/`App::drain`/`App::dispatch`). A `SetField` is form
 //! state when it is emitted (owner decision O-10). The second paragraph above describes the
 //! outbox and keeps the S3 … P10a text in its dated note (critique B-23). 2026-11-20 (S4 P10b
 //! review): each dated paragraph's "still applied at once" is the state at its date (until P10b),
@@ -73,7 +73,7 @@ use crate::secret::SecretEffect;
 /// One request to the shell.
 #[derive(Clone, PartialEq, Eq)]
 pub enum Effect {
-    /// Lay the main screen out again and repaint (Windows: today's `App::refresh` body after the
+    /// Lay the main screen out again and repaint (Windows: today's `Wallet::refresh` body after the
     /// dApp state sync).
     Render,
     /// Put text into a live plain edit on purpose (a picker fill, `최대`, a preset).
@@ -158,7 +158,7 @@ pub enum Effect {
         at: EnteredAt,
     },
     /// A confirmation overlay closed back onto the screen under it without a screen entry (S4
-    /// P4; `App::close_overlay_in_place`): that screen is shown where it was, if that was noted.
+    /// P4; `Wallet::close_overlay_in_place`): that screen is shown where it was, if that was noted.
     OverlayClosedInPlace,
     /// A chain tab is selected (S4 P4; emitted before the tab changes): the shell notes where the
     /// screen being left was, under `left`, and the new tab opens at its top. 2026-11-20 (S4

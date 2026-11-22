@@ -418,7 +418,7 @@ impl Wallet {
                 // Only the address string: no browser is started (2026-11-10).
                 // A setup step: its instruction stays a band (not the mark at the button).
                 // 2026-11-20 (S4 P6): the band rides in the copy's mark and is set when the
-                // result arrives (`App::copy_done`; the layout follows at the end of this press);
+                // result arrives (`Wallet::copy_done`; the layout follows at the end of this press);
                 // before, this read the result right after the copy (`copied.take()`).
                 self.copy_with_band(
                     "https://dashboard.reown.com",

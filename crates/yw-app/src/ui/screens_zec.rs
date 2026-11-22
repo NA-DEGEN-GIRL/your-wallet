@@ -425,7 +425,7 @@ impl Wallet {
                 self.refresh();
             }
             ZecPress::SendReview => {
-                // 2026-11-18 (S3 C7): the form state (`App::form_text`); before, reads of the
+                // 2026-11-18 (S3 C7): the form state (`Wallet::form_text`); before, reads of the
                 // edits.
                 self.zec.to_text = self.form_text(EditField::ZecSendTo).unwrap_or_default();
                 self.zec.amount_text = self.form_text(EditField::ZecSendAmount).unwrap_or_default();

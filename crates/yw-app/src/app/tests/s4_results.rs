@@ -17,8 +17,8 @@
 //! `self.`, a closure's `app.`, `Self::` or `App::`; any other use of such a fn fails. There:
 //!
 //! - after an approval window's open nothing may run: every caller with later steps hands them
-//!   to the open (`App::show_next_approval_then`, `AfterOpen`; since P10a also
-//!   `App::after_pending_open`, [`DEFERRALS`]), or is a line of [`NEXT_CALL_OF_AN_ENTRY`] or
+//!   to the open (`Wallet::show_next_approval_then`, `AfterOpen`; since P10a also
+//!   `Wallet::after_pending_open`, [`DEFERRALS`]), or is a line of [`NEXT_CALL_OF_AN_ENTRY`] or
 //!   [`READS_NO_ANSWER`] with its reason;
 //! - after a secret window's open, nothing reads the session (`secret_purpose()`,
 //!   `secret_open()`, `secret_session`, `secret_form(..)`), directly or through a fn that does;
@@ -42,8 +42,8 @@
 //!
 //! 2026-11-20 (S4 P10a): `PENDING_P10` is gone (0 lines). Of its 63 lines, 48 are sites that
 //! hand the code that ran after their call to the open's answer (`AfterOpen` through
-//! `App::after_pending_open`, which runs it at once while no open waits — always, while effects
-//! are applied at once) or call the Bitcoin controller through `App::btc_update`, which executes
+//! `Wallet::after_pending_open`, which runs it at once while no open waits — always, while effects
+//! are applied at once) or call the Bitcoin controller through `Wallet::btc_update`, which executes
 //! no action and so opens nothing; the entries' next calls are [`NEXT_CALL_OF_AN_ENTRY`]
 //! (drained between in P10b), two paths that never open are [`ENDS_ON_ITS_PATH`], and six sites
 //! whose later code reads and changes nothing an open's answer does are [`READS_NO_ANSWER`], each
@@ -4292,11 +4292,15 @@ const RENDER_LOCAL_TIME: [&str; 2] = ["activity_rows", "meta_activity_row"];
 /// `on_btc_command`'s `|app, press|` does, and it is not listed).
 /// 2026-11-22 (S4c W14c-2, the flip): every listed fn is now `impl Wallet` (in place, the same
 /// file), so the check finds them among the `impl Wallet` fns and fails on one still in an
-/// `impl App` block; the compiler now rejects a shell field, a shell fn or `App` itself in their
+/// `impl App` block; the compiler now rejects a shell field or a shell fn on `self` in their
 /// bodies (the two forms above included: `self` is a `Wallet` there), and the scan keeps
 /// checking what the compiler allows, `yw_win` and the shell's free fns (but `format_local` in
 /// [`RENDER_LOCAL_TIME`]). It also checks that `impl Wallet` holds nothing else but the wallet's
 /// own fns of before the flip ([`WALLET_OWN_FNS`]), so a new wallet fn is listed here.
+/// 2026-11-22 (S4c W14c review): the compiler allows the type name `App` in a wallet fn (a
+/// review probe `let _probe: Option<&App> = None;` in `Wallet::on_sites` compiled and passed),
+/// so every `impl Wallet` fn is also scanned for it ([`names_app`]); before, the W14c-2 text
+/// above said the compiler rejected `App` too.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -4396,6 +4400,7 @@ fn wallet_fns_name_no_shell() {
             }
         }
     }
+    errors.extend(names_app(&wallet));
     assert!(errors.is_empty(), "{}", errors.join("\n"));
     let names: BTreeSet<&str> = WALLET_FNS.iter().map(|&(_, name)| name).collect();
     assert_eq!(names.len(), WALLET_FNS.len(), "a fn listed twice");
@@ -4414,6 +4419,61 @@ fn wallet_fns_name_no_shell() {
         unlisted.is_empty(),
         "impl Wallet fns not listed: {unlisted:?}"
     );
+}
+
+/// Every `impl Wallet` fn in `wallet` whose code names the type `App` (2026-11-22, S4c W14c
+/// review), as an error line. The compiler rejects a shell field or a shell fn on `self` in a
+/// wallet fn, but not the type name: `let _probe: Option<&App> = None;` compiled in
+/// `Wallet::on_sites`, and so would a stored `Box<dyn FnOnce(&mut App)>` built in wallet code,
+/// which reaches the shell later. Comments and strings are blanked ([`code_only`]), a longer
+/// name (`AppMode`, `AppEvent`) is another word, and an enum's variant `App` (`QueueSource::App`,
+/// `QueuedItem::App`, `SignWaiter::App`: a path ending in `::App` whose module is not `app`) is
+/// not the type.
+fn names_app(wallet: &BTreeMap<String, Vec<(String, String, bool)>>) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (name, bodies) in wallet {
+        for (file, body, _) in bodies {
+            if names_the_app_type(body) {
+                errors.push(format!("{file}: impl Wallet fn {name} names App"));
+            }
+        }
+    }
+    errors
+}
+
+/// Whether `code` names the type `App`: the word `App` alone or after `app::`, not as a variant
+/// (`Enum::App`) ([`names_app`]).
+fn names_the_app_type(code: &str) -> bool {
+    let bytes = code.as_bytes();
+    code.match_indices("App").any(|(at, word)| {
+        let alone = (at == 0 || !is_ident(bytes[at - 1]))
+            && bytes.get(at + word.len()).is_none_or(|&b| !is_ident(b));
+        let before = code[..at].trim_end();
+        alone && (!before.ends_with("::") || ends_with_word(before, "app::"))
+    })
+}
+
+#[test]
+fn names_the_app_type_on_made_up_code() {
+    for code in [
+        "let _probe: Option<&App> = None;",
+        "Box<dyn FnOnce(&mut App)>",
+        "crate::app::App::drain",
+        "App",
+    ] {
+        assert!(names_the_app_type(code), "{code}");
+    }
+    for code in [
+        "QueueSource::App",
+        "QueuedItem::App(item) => item",
+        "SignWaiter::App => true",
+        "AppMode::Unlocked",
+        "crate::app::AppMode",
+        "Apple",
+        "MyApp",
+    ] {
+        assert!(!names_the_app_type(code), "{code}");
+    }
 }
 
 /// The `impl Wallet` fns of before the flip (2026-11-22, S4c W14c-2): the outbox's `emit` and
@@ -4462,7 +4522,8 @@ fn test_build_code() -> Vec<Src> {
 /// the release build's scan does not already reject, i.e. a test-only shell fn. It finds
 /// `assert_flow_and_window_in_step` among them (A-20). 2026-11-22 (S4c W14c-2): the listed fns
 /// are read from the test build's `impl Wallet` blocks (the compiler now also rejects such a
-/// call there; the scan keeps the reason readable).
+/// call there; the scan keeps the reason readable). 2026-11-22 (S4c W14c review): and no
+/// `impl Wallet` fn of the test build names the type `App` ([`names_app`]).
 #[test]
 fn wallet_fns_name_no_shell_in_test_builds() {
     let files = test_build_code();
@@ -4497,6 +4558,7 @@ fn wallet_fns_name_no_shell_in_test_builds() {
             }
         }
     }
+    errors.extend(names_app(&wallet));
     assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
 
@@ -5121,7 +5183,9 @@ fn free_fn_reach_on_made_up_code() {
 /// no drain; and only the shell's entries (`on_system`, `lock_shortcut`, `shutdown`) call `lock`,
 /// through any receiver, so no wallet fn can lock for `Suspend` and send `KeyJob::Load` before
 /// the wait (the P10b regression `1fb17c1` fixed), while `lock_wallet` has exactly its five
-/// wallet callers (2026-11-21, S4 W3a review). Finds every fn it checks (A-20).
+/// wallet callers (2026-11-21, S4 W3a review), and the halves `lock_steps`/`lock_after_wait`
+/// have exactly the two compositions as callers (2026-11-22, S4c W14c review). Finds every fn
+/// it checks (A-20).
 #[test]
 fn the_lock_composition_drains_only_for_suspend() {
     let files: Vec<Src> = production_code()
@@ -5195,6 +5259,13 @@ fn the_lock_composition_drains_only_for_suspend() {
             "shutdown_steps"
         ]
     );
+    // The halves themselves: only the two compositions above call them (2026-11-22, S4c W14c
+    // review). Since W14c-2 `lock_steps` is an `impl Wallet` fn that still takes a
+    // `LockReason`, `Suspend` included, so a wallet fn calling the halves directly would emit
+    // `AwaitKeyLock` with no drain and send `KeyJob::Load` before the wait (the P10b regression);
+    // before, only the callers of `.lock(` and `.lock_wallet(` were pinned.
+    assert_eq!(callers_of(".lock_steps("), ["lock", "lock_wallet"]);
+    assert_eq!(callers_of(".lock_after_wait("), ["lock", "lock_wallet"]);
     the_shutdown_composition_runs_from_the_shell(&files);
 }
 

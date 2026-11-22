@@ -1062,7 +1062,7 @@ fn mocked_end_to_end_session() {
     assert_eq!(view.verify, super::VerifyStatus::Unknown);
     assert_eq!(view.unsupported_methods, vec!["eth_sign".to_owned()]);
     let origin = super::session_origin(&view.session_topic).unwrap();
-    // The connect window request (the UI answers it like `App::connect_approved`).
+    // The connect window request (the UI answers it like `Wallet::connect_approved`).
     let connect = recorder
         .dapp
         .lock()

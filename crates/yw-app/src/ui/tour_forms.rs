@@ -24,10 +24,10 @@
 //! `App::enter_on`, which skips the key and the focus read.
 //!
 //! After every step the form state is compared with the window for all 58 plain edits, by the
-//! test itself (`App::form_text` against the edit) and, debug builds, by the shell at the end of
+//! test itself (`Wallet::form_text` against the edit) and, debug builds, by the shell at the end of
 //! every drain (`App::check_form_in_step`, which counts a difference in `form_mismatch`; before
 //! S4 W3, 2026-11-21, `App::form_text` compared at each read); then a render is forced and the
-//! comparison runs again. Credential units the handler took (`App::take_cred`: their length and
+//! comparison runs again. Credential units the handler took (`Wallet::take_cred`: their length and
 //! digest, debug builds) are compared, when the next drain starts, with the shell's own read of
 //! the edit made with the press and with the edit then (`App::cred_check`; 2026-11-21, S4 W3
 //! review: before, only the two shell reads were compared, so a misrouted take went unseen;

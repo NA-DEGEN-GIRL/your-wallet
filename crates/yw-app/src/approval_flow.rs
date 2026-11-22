@@ -22,7 +22,7 @@
 //! was reserved and never asks again (before, it worked the condition out a second time).
 //!
 //! 2026-11-19 (S4 B6, plan §3.1, critique A-12, A-13): the window's inputs reach the flow as
-//! `Cmd::Approval` (`App::on_approval_input`), dropped unless their `ShownId` is this flow's
+//! `Cmd::Approval` (`Wallet::on_approval_input`), dropped unless their `ShownId` is this flow's
 //! ([`ApprovalFlow::shown`]). Every new view bumps [`ApprovalFlow::view_rev`]; the shell keeps
 //! the revision its panel layout was drawn from, and a connect account toggle drawn from an
 //! older view changes nothing ([`ApprovalFlow::toggle_account`]).
@@ -529,7 +529,7 @@ impl ApprovalFlow {
     /// One interaction event: the foreground sample first (a `false` → `true` edge restarts the
     /// arm delay), then the event, then the early-release note, then what it did
     /// (`status_action`, S4 B3). The order of today's `interaction()` in `app_approval.rs`
-    /// (2026-11-19, S4 B6: `App::approval_event`, with the sample `window_event` took).
+    /// (2026-11-19, S4 B6: `Wallet::approval_event`, with the sample `window_event` took).
     /// Pinned by `tests::the_foreground_sample_comes_before_the_event` and the source check S8
     /// (2026-11-19, S4 B4 review: no golden can show this order, the harness keeps the
     /// foreground steady between events).

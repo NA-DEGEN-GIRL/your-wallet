@@ -262,7 +262,7 @@ pub enum SecretEffect {
     /// Open the display window of secret session `serial` (W08/W09, 2026-11-20 S4 P7b; one
     /// window at a time: the logic closed the previous one first). The shell creates it, checks
     /// its capture exclusion (spec/04 §4.5: `Required`) and only then takes the secret from the
-    /// session (Windows: `App::take_display_secret`), fills the form and shows it; on any other
+    /// session (Windows: `Wallet::take_display_secret`), fills the form and shows it; on any other
     /// result it keeps no window and the session's secret is wiped. Answered with
     /// `Cmd::SecretOpened { serial, outcome }`: `Shown { capture_excluded: true }`,
     /// `Refused(E-SEC-001)` (not excluded, or refused by the platform) or `Failed(E-APP-009)`. A

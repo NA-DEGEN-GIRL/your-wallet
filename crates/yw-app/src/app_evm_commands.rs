@@ -13,14 +13,14 @@ use yw_engine::screen::SettingsSection;
 
 impl Wallet {
     /// The text of an EVM edit for a handler (2026-11-18, S3 C10: the form state,
-    /// `App::form_text`; before, a read of the edit with the module's cap 512, now
+    /// `Wallet::form_text`; before, a read of the edit with the module's cap 512, now
     /// `EditField::cap`).
     fn evm_edit_text(&self, field: EditField) -> String {
         self.form_text(field).unwrap_or_default()
     }
 
     /// `EN_CHANGE` of an EVM edit: keep the text (controls may be recreated) and leave the
-    /// send-form validation to the send timer (spec/04 §2.7, `App::on_send_timer`: at once for
+    /// send-form validation to the send timer (spec/04 §2.7, `Wallet::on_send_timer`: at once for
     /// a whole address or amount, 500 ms after typing stops otherwise). `검토` is off until that
     /// validation runs; the first edit of a burst repaints it so (the picker, whose rows follow
     /// the text, keeps its controls until the validation).

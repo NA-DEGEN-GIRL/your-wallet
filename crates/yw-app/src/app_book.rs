@@ -559,7 +559,7 @@ impl Wallet {
 
     /// `추가` / `저장` of the S14 form.
     fn save_book_form(&mut self) {
-        // 2026-11-18 (S3 C4): the form state (`App::form_text`); before, reads of the edits.
+        // 2026-11-18 (S3 C4): the form state (`Wallet::form_text`); before, reads of the edits.
         let read = |app: &Self, field| app.form_text(field).unwrap_or_default();
         if self.book.form.editing.is_none() {
             self.book.form.address = read(self, EditField::BookAddress);

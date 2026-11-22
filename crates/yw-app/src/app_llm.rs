@@ -238,7 +238,7 @@ impl Wallet {
             return;
         }
         // Review M1: `settings.json` is plain text. Until the settings were checked against the
-        // vault-encrypted snapshot after an unlock (`App::reconcile_settings`), an `enabled`
+        // vault-encrypted snapshot after an unlock (`Wallet::reconcile_settings`), an `enabled`
         // flag in it is not a consent: no worker, nothing sent. Approvals (the only requests)
         // need an unlocked wallet anyway.
         if !self.guard.verified {

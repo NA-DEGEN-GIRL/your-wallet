@@ -211,7 +211,7 @@ pub mod ids {
     /// The chooser's key source `EVM 계정과 같은 키`.
     pub const ACCOUNT_SOURCE_EVM: u16 = 9_019;
     /// The selected account card's `주소 복사` (2026-11-11): the address that card shows
-    /// (`App::btc_card_address`), not the receive screen's.
+    /// (`Wallet::btc_card_address`), not the receive screen's.
     pub const CARD_COPY: u16 = 9_034;
     /// Address mode of the selected HD account: `고정 주소 하나만 사용`.
     pub const ADDRESS_MODE_SINGLE: u16 = 9_062;

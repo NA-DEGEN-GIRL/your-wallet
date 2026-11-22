@@ -2715,7 +2715,7 @@ fn chip_and_account_changes_read_balances_at_the_next_tick() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// 2026-11-12: a read a click made due starts right after the message (`App::reads_due`), once;
+/// 2026-11-12: a read a click made due starts right after the message (`Wallet::reads_due`), once;
 /// a second early start within the same timer period is left to the tick (a held key).
 #[test]
 fn reads_due_starts_a_due_balance_read_without_the_tick() {
@@ -3685,7 +3685,7 @@ fn a_late_copy_result_marks_the_control_of_its_mark() {
 
 /// 2026-11-20 (S4 P6): the three setup-step copies (S23 `경로 복사`·`주소 복사`, the
 /// `WalletConnect` panel's `주소 복사`) carry their instruction band in the copy's `CopyMark`, and
-/// the result sets it (`App::copy_done`) — the handlers no longer read the result right after the
+/// the result sets it (`Wallet::copy_done`) — the handlers no longer read the result right after the
 /// copy (`copied.take()`). With the copy answered inside the press (the Windows executor; here the
 /// test answer `TEST_COPY_ANSWER`, no clipboard), the shell-call log, the band and the mark are
 /// those recorded from the code before P6 (the same test run on `ce857e6`): success → the band
@@ -3907,7 +3907,7 @@ fn links_and_folders_open_through_effects_answered_in_the_same_borrow() {
 
 /// 2026-11-18 (S3 B5): the form state follows the edits — a press reads them all first
 /// (`Cmd::Form`), `EN_CHANGE` sets one (`Cmd::Edit`, cut to the field's cap) — and
-/// `App::form_text` gives what `controls.text` gives; the credential units captured with a press
+/// `Wallet::form_text` gives what `controls.text` gives; the credential units captured with a press
 /// are gone when it returns, and a masked edit never reaches the form state.
 #[test]
 fn form_state_follows_the_edits_and_press_input_ends_with_the_press() {

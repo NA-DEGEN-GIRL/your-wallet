@@ -174,7 +174,7 @@ pub mod text {
         /// A card approval while another card signature is in progress (spec/10 §9.2).
         BUSY = "다른 YubiKey 서명이 진행 중이어서 방금 승인한 요청은 서명하지 않았습니다. 진행 중인 서명이 끝난 뒤(YubiKey 터치) 다시 시도하세요."
             / "Another YubiKey signature is in progress, so the request you just approved was not signed. Try again after the running signature finishes (YubiKey touch).";
-        /// `{0}` the card (`App::card_name`: `name (#serial)` or `#serial`, 2026-11-15; the
+        /// `{0}` the card (`Wallet::card_name`: `name (#serial)` or `#serial`, 2026-11-15; the
         /// same for every `{…}` card below), `{1}` slot count.
         ENROLLED(2) = "YubiKey {0}을(를) 등록했습니다 (슬롯 {1}개)." / "YubiKey {0} enrolled ({1} slots).";
         /// The tag of a dApp connect-window row (after two spaces): `{0}` the card.

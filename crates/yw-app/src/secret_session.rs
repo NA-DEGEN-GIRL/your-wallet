@@ -3,7 +3,7 @@
 //!
 //! 2026-11-20 (S4 P7a1): created. Before, the purpose lived in the window record (`App::secret`,
 //! `SecretWin.purpose`) and "a secret window is open" was "the window exists". Now the session
-//! starts when the logic asks for a window (`App::open_input`, `App::open_display`) and ends on
+//! starts when the logic asks for a window (`Wallet::open_input`, `Wallet::open_display`) and ends on
 //! every end of that window: refused or failed open, close, cancel, time-out, lock. The shell's
 //! window record (`App::secret`: serial, window, form) holds no purpose. Every field is private;
 //! these methods are the only writers. The struct stays in yw-app (it holds the yw-app
@@ -23,7 +23,7 @@
 //! window and moved the secret into its form itself.
 //!
 //! 2026-11-20 (S4 P9, plan §4.4 S5): the form operations a handler made right after an open
-//! (`App::secret_form`, which reads the session to find the window: an error line, W11's card
+//! (`Wallet::secret_form`, which reads the session to find the window: an error line, W11's card
 //! lines, PIN tries, an information line) travel with the session too ([`AfterShown::Forms`])
 //! and are made when the window is shown, in their order; a refused or failed window makes none,
 //! as before (the session had ended when the handler's `secret_form` ran). Before, the handler
@@ -31,7 +31,7 @@
 //! effects at once.
 //!
 //! 2026-11-22 (S4c W12, preflight critic C12): what the window's form ends or asks for that is
-//! the wallet's reaches it as a [`SecretAction`] through `App::on_secret_action`; the shell's
+//! the wallet's reaches it as a [`SecretAction`] through `Wallet::on_secret_action`; the shell's
 //! `App::apply_form_action` keeps the window's own arms (repaint, paste, copy).
 
 use core::fmt;
@@ -42,7 +42,7 @@ use crate::app::Purpose;
 use crate::ui::secret::{DisplaySecret, Submission};
 
 /// What the open session's window ends or asks for that is the wallet's to handle: the typed,
-/// in-process entry `App::on_secret_action` (2026-11-22, S4c W12, preflight critic C12; plan
+/// in-process entry `Wallet::on_secret_action` (2026-11-22, S4c W12, preflight critic C12; plan
 /// §3.6 `SecretAction`, §7.3). Before, the shell's `App::apply_form_action` held these arms
 /// itself, mixed with its own (a repaint, the clipboard's paste and copy), which it keeps. Never
 /// a `Cmd` or an `Effect`: a submission's values are secrets (`Zeroizing`, wiped when dropped,
@@ -105,7 +105,7 @@ pub(crate) enum AfterShown {
     /// W08 of a new `YubiKey` wallet: its words count as shown (`App::yk_words`, unless they are
     /// already further on) — 2026-11-20, S4 P7b.
     YkWordsShown,
-    /// The window's form operations, made in this order (`App::secret_form`) — 2026-11-20, S4
+    /// The window's form operations, made in this order (`Wallet::secret_form`) — 2026-11-20, S4
     /// P9: the error line of a window opened again after a refused preview (W05, W07), W11's
     /// card, details and error lines, the PIN tries of a card secret window and of the connect
     /// PIN, the passphrase window's information line. Fixed, error and card texts, never a secret.
@@ -172,7 +172,7 @@ impl SecretSession {
     }
 
     /// The session's window kind (2026-11-22, S4c W3b: the idle clock's read of a shown W08/W09,
-    /// `App::idle_window`; before, it read the shell's window record).
+    /// `Wallet::idle_window`; before, it read the shell's window record).
     #[must_use]
     pub(crate) const fn kind(&self) -> SecretKind {
         self.kind

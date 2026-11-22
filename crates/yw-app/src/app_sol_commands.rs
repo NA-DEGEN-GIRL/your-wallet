@@ -20,7 +20,7 @@ pub(crate) mod text {
 
 impl Wallet {
     /// The text of a Solana edit for a handler (2026-11-18, S3 C8: the form state,
-    /// `App::form_text`; before, a read of the edit with the module's cap 256, now
+    /// `Wallet::form_text`; before, a read of the edit with the module's cap 256, now
     /// `EditField::cap`).
     fn sol_edit_text(&self, field: EditField) -> String {
         self.form_text(field).unwrap_or_default()
@@ -28,7 +28,7 @@ impl Wallet {
 
     /// `EN_CHANGE` of a Solana edit (2026-11-18, S3 C8: the field and its text from
     /// `Cmd::Edit`; before, the control id and a read of the edit here); `false` when `field` is
-    /// not one of them. A send-form edit is validated by the send timer (`App::on_send_timer`):
+    /// not one of them. A send-form edit is validated by the send timer (`Wallet::on_send_timer`):
     /// at once when the text is a whole address or amount, after the typing pause otherwise.
     pub(crate) fn on_sol_edit(&mut self, field: EditField, text: &str) -> bool {
         let now = self.clock.now_ms();

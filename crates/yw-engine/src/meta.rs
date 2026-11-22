@@ -1933,7 +1933,7 @@ impl Meta {
     /// accounts are added, removed or read back in another order) and drops the entries of
     /// accounts the document no longer has (2026-11-15, spec/08 §12.3d). Returns whether
     /// anything changed. Run at meta load (`LoadMeta`) and when the key worker reports changed
-    /// accounts (`App::btc_apply`).
+    /// accounts (`Wallet::btc_apply`).
     pub fn reconcile_btc_view(&mut self, lang: Lang) -> bool {
         let held = self.btc_view_held();
         let before = self.btc_view.len();

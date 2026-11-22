@@ -488,7 +488,7 @@ impl Wallet {
     }
 
     /// The lock procedure starts (minimal hook at the top of the lock's first half
-    /// `App::lock_steps`; 2026-11-21, S4 W3a: before, of `App::lock`): the dispatcher is
+    /// `Wallet::lock_steps`; 2026-11-21, S4 W3a: before, of `App::lock`): the dispatcher is
     /// locked right away — grants dropped, `accountsChanged([])` sent — instead of after the
     /// suspend wait, so no reader thread answers `eth_accounts` with accounts meanwhile. The
     /// flag holds the locked view until the mode leaves `Unlocked`.
@@ -530,7 +530,7 @@ impl Wallet {
     /// Writes a coalesced chain switch now if one is pending (lock path, main timer), and a revoke
     /// whose write still waits for an approval open's answer (2026-11-21, S4 F16, owner decision,
     /// spec/04 §5.3, spec/15 §18 item 16: the lock calls this at its start, before it drops the
-    /// steps kept for that open (`App::lock_steps`, F14) and before the dispatcher locks, so the
+    /// steps kept for that open (`Wallet::lock_steps`, F14) and before the dispatcher locks, so the
     /// revoke is in meta and does not come back at the next unlock; before F16 only a chain
     /// switch, and a revoke's kept write was dropped by the lock unwritten).
     /// It writes only while unlocked, so the shutdown's lock writes nothing: `App::shutdown` has

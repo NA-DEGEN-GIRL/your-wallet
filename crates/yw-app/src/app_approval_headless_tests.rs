@@ -1669,7 +1669,7 @@ fn a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry() {
 /// (2026-11-21, S4 F14 review, spec/04 §5.3, spec/15 §18 item 14): a `Suspend` lock drains the
 /// outbox inside `App::lock` before its wait for the key worker (`AwaitKeyLock`), so the stale
 /// open queued earlier in the entry is applied and answered there, before the lock sets the mode
-/// and the screen. The lock dropped the kept steps before that drain (`App::lock_steps`, at the
+/// and the screen. The lock dropped the kept steps before that drain (`Wallet::lock_steps`, at the
 /// `lock_epoch` bump; 2026-11-21, S4 W3a: before, `App::lock`), so none runs inside the lock
 /// either. The kept `SetScreen` alone would not show it (the lock
 /// sets `Locked` after the drain), so a `HiddenNote` is kept too: its banner stays after the lock

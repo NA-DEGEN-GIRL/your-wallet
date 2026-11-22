@@ -1625,7 +1625,7 @@ impl Layouter<'_> {
     }
 }
 
-/// Marks the control `id` of `items` as just copied (2026-11-12, `App::copy_text`): the answer
+/// Marks the control `id` of `items` as just copied (2026-11-12, `Wallet::copy_text`): the answer
 /// is at the control that was pressed and nothing else changes. A copy line's value draws
 /// [`GLYPH_CHECK`] for its copy symbol and gets a caption after its icons (`address`: with the
 /// paste check); an icon becomes the check mark with the same caption; a text button says
@@ -2236,7 +2236,7 @@ impl ControlSet {
     /// Replaces a control's text (non-secret values only).
     pub fn set_text(&self, id: u16, text: &str) {
         // Tests: the length in UTF-16 units, as the edit holds it (2026-11-18 S3 A1–A3 review:
-        // a plain copy counts `char`s instead, `App::copy`; S3 B4's effect log keeps both rules
+        // a plain copy counts `char`s instead, `Wallet::copy`; S3 B4's effect log keeps both rules
         // byte for byte).
         #[cfg(test)]
         self.record(format!("set_text {id} len={}", text.encode_utf16().count()));

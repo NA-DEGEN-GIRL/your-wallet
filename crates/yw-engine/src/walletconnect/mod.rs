@@ -338,7 +338,7 @@ pub fn verify_warning(lang: Lang, verify: VerifyStatus) -> yw_core::approval::Wa
 /// warning (C01–C04): the warning always gets a slot; at [`MAX_DISPLAY_WARNINGS`] the least
 /// severe one gives way. `false` when the draft could not be decorated (the caller must not show
 /// it). 2026-11-17 S2: moved from yw-app `app_walletconnect` (pure; used by
-/// `App::wc_decorate_draft`).
+/// `Wallet::wc_decorate_draft`).
 #[must_use]
 pub fn decorate(draft: &mut ApprovalDraft, peer: &Metadata, verify: VerifyStatus) -> bool {
     let lang = draft.display.lang;

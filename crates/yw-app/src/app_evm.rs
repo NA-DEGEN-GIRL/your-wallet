@@ -407,10 +407,10 @@ pub struct EvmUi {
     /// every open, never reused; not cleared by a lock).
     pub next_shown: u64,
     /// The steps an opener left for after the answer to the open of its window, by window
-    /// (2026-11-20, S4 P9: `App::show_next_approval_then`, `App::after_approval_opened`; since
-    /// P10a also `App::after_pending_open`, and the answer takes them in
-    /// `App::approval_open_answered`). 2026-11-21 (S4 F14, owner decision, spec/04 §5.3, spec/15
-    /// §18 item 14): cleared by a lock (`App::lock_steps`, at the `lock_epoch` bump; `App::lock`
+    /// (2026-11-20, S4 P9: `Wallet::show_next_approval_then`, `App::after_approval_opened`; since
+    /// P10a also `Wallet::after_pending_open`, and the answer takes them in
+    /// `Wallet::approval_open_answered`). 2026-11-21 (S4 F14, owner decision, spec/04 §5.3, spec/15
+    /// §18 item 14): cleared by a lock (`Wallet::lock_steps`, at the `lock_epoch` bump; `App::lock`
     /// until S4 W3a), so no kept step
     /// runs after a lock. Before F14 a lock left them and a late answer still ran them; with the
     /// outbox (2026-11-20, S4 P10b review) that late answer was the stale answer of an open
@@ -420,7 +420,7 @@ pub struct EvmUi {
         crate::app_approval::AfterOpen,
     )>,
     /// The last approval window whose open was asked for (`Effect::Approval(Open)`) and is not
-    /// answered yet (2026-11-20, S4 P10a: `App::after_pending_open` hands a step to its answer).
+    /// answered yet (2026-11-20, S4 P10a: `Wallet::after_pending_open` hands a step to its answer).
     /// 2026-11-20 (S4 P10b): it names the open the outbox still holds, until the entry drains and
     /// the answer comes (`None` again between messages: every entry drains); before, the executor
     /// applied effects at once, the answer came before `emit` returned, and this was `None`
@@ -1166,7 +1166,7 @@ impl Wallet {
     /// The balances of the active chain are read at the next main tick (S10 visible): the
     /// network, the selected account or the account list changed, or a transaction of the
     /// journal confirmed or failed (2026-11-10; before, the next read was up to 60 s away).
-    /// A main-window message runs that check right after itself (`App::reads_due`, 2026-11-12).
+    /// A main-window message runs that check right after itself (`Wallet::reads_due`, 2026-11-12).
     pub(crate) fn evm_balances_due(&mut self) {
         self.evm.next_balance_ms = 0;
     }
@@ -1411,7 +1411,7 @@ impl Wallet {
     }
 
     /// The timer's balance check: a due read starts while S10 shows, unlocked and not hidden;
-    /// whether one did. Also run right after a main-window message (`App::reads_due`,
+    /// whether one did. Also run right after a main-window message (`Wallet::reads_due`,
     /// 2026-11-12).
     pub(crate) fn evm_balance_tick(&mut self, now: u64) -> bool {
         let due = matches!(self.mode, AppMode::Unlocked { .. })

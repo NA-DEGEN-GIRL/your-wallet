@@ -609,7 +609,7 @@ pub mod ids {
     ];
 
     /// The wizard and settings-tab press control `id` stands for (2026-11-18, S3 C11:
-    /// `ui::cmd_table`). `None` when `id` is not one of `App::on_yk`'s (the card actions' and
+    /// `ui::cmd_table`). `None` when `id` is not one of `Wallet::on_yk`'s (the card actions' and
     /// the connect flow's ids are theirs, the edits are fields). An `OpenPGP` radio carries its
     /// slot and choice; each row range is claimed whole, as the ids reached the handler before.
     #[must_use]
@@ -804,7 +804,7 @@ pub mod ids {
     }
 
     /// The card-action press control `id` stands for (2026-11-18, S3 C11). `None` when `id` is
-    /// not one of `App::on_yk_manage_press`'s (the edits are fields); each row range is claimed whole.
+    /// not one of `Wallet::on_yk_manage_press`'s (the edits are fields); each row range is claimed whole.
     #[must_use]
     pub fn manage_press_of(id: u16) -> Option<yw_engine::cmd::YkManagePress> {
         use yw_engine::cmd::{Row, YkManagePress};
@@ -948,7 +948,7 @@ pub mod ids {
     }
 
     /// The connect-flow press control `id` stands for (2026-11-18, S3 C11). `None` when `id` is
-    /// not one of `App::on_yk_connect`'s; a choice radio carries its row and choice (the
+    /// not one of `Wallet::on_yk_connect`'s; a choice radio carries its row and choice (the
     /// eighth id of a row is no radio and stays unclaimed, as before).
     #[must_use]
     pub fn connect_press_of(id: u16) -> Option<yw_engine::cmd::YkConnectPress> {

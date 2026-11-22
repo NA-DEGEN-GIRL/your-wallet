@@ -170,7 +170,7 @@ pub mod ids {
     /// Activity span (50 rows × 8).
     pub const ACTIVITY_SPAN: u16 = 400;
     /// Token card rows ([`TOKEN_ROW_STRIDE`] ids per row: 숨기기/다시 보이기, 삭제), indexed by
-    /// the token's position in `App::chain_tokens` (registry tokens + ≤ 100 user tokens).
+    /// the token's position in `Wallet::chain_tokens` (registry tokens + ≤ 100 user tokens).
     pub const TOKEN_ROW_BASE: u16 = 3_200;
     /// Ids per token row.
     pub const TOKEN_ROW_STRIDE: u16 = 2;
@@ -1165,7 +1165,7 @@ impl App {
     }
 
     /// The S11 token radios `(visible, hidden)`: every token of the chain (zero balances
-    /// included), the ones the user hid apart. Radio ids follow the `App::chain_tokens` index.
+    /// included), the ones the user hid apart. Radio ids follow the `Wallet::chain_tokens` index.
     #[must_use]
     pub fn send_asset_rows(&self, chain_id: u64) -> (Vec<Ctl>, Vec<Ctl>) {
         let lang = self.settings.language;

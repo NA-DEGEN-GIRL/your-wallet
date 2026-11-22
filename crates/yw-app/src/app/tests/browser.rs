@@ -161,7 +161,7 @@ fn sol_tx_kind() -> crate::browser::SiteKind {
     }
 }
 
-/// spec/02 §7.5: while `App::passphrase_unverified` the dispatcher view refuses connect and
+/// spec/02 §7.5: while `Wallet::passphrase_unverified` the dispatcher view refuses connect and
 /// signing (4100 `PassphraseUnverified`; Solana dApp transactions included), a request that
 /// slipped through is answered without a queue entry, and site requests queued while locked
 /// end `PassphraseUnverified` once the session turns out unverified. A verified session is

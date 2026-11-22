@@ -1,7 +1,7 @@
 //! Token-row visibility of the S10 token cards (spec/04 §2.6): `숨기기`·`다시 보이기`,
 //! `잔액 0인 토큰 숨기기`, `숨긴 토큰 n개 보기`, and `삭제` of a user-added EVM token (S16).
 //!
-//! Display only (`crate::token_view`): `App::chain_tokens` still lists every registry and user
+//! Display only (`crate::token_view`): `Wallet::chain_tokens` still lists every registry and user
 //! token, balances are still fetched for all of them, and the approval window, risk rules and
 //! token recognition (registry trust, E19 lookalikes) never read meta `token_view`.
 

@@ -1353,7 +1353,7 @@ impl Wallet {
 
     /// The timer's balance check: a due read starts while S10 shows the Solana tab, unlocked
     /// and not hidden; whether one did. Also run right after a main-window message
-    /// (`App::reads_due`, 2026-11-12).
+    /// (`Wallet::reads_due`, 2026-11-12).
     pub(crate) fn sol_balance_tick(&mut self, now: u64) -> bool {
         let on_tab = self
             .meta

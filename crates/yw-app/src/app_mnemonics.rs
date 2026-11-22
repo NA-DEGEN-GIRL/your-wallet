@@ -974,7 +974,7 @@ impl Wallet {
     }
 
     fn save_mnemonic_label(&mut self) {
-        // 2026-11-18 (S3 C6): the form state (`App::form_text`); before, a read of the edit.
+        // 2026-11-18 (S3 C6): the form state (`Wallet::form_text`); before, a read of the edit.
         let label = self.form_text(EditField::MnRename).unwrap_or_default();
         if !is_valid_label(&label) {
             self.info = Some(crate::errors::ErrorCode::Inp017.text_in(self.settings.language));

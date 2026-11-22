@@ -68,7 +68,7 @@ yw_core::texts! {
     /// The empty Zcash activity card: received deposits are not in the sent list.
     T_ACTIVITY_RECEIVED = "받은 입금은 이 목록(보낸 거래)에 나오지 않습니다. 아래 '받은 내역도 보기'를 켜면 최근 받은 내역을 따로 보여 줍니다(기본 꺼짐)."
         / "Received deposits do not appear in this list (sent transactions). Turn on 'Also show received' below to see recent deposits separately (off by default).";
-    /// T-ALT-PASS (every screen while `App::passphrase_unverified`, spec/04 §2.1).
+    /// T-ALT-PASS (every screen while `Wallet::passphrase_unverified`, spec/04 §2.1).
     T_ALT_PASS = "passphrase 확인값과 맞지 않는 passphrase로 연 지갑입니다. 오타라면 이 지갑은 원래 지갑이 아닌 다른(빈) 지갑이고, 여기로 받은 자산은 지금 입력한 passphrase와 대소문자·공백까지 정확히 같은 값을 다시 넣어야만 꺼낼 수 있습니다. 그래서 받기와 사이트 연결·서명을 막았습니다. 추가한 계정·계정 이름·주소록·연결 기록도 저장되지 않습니다. 잘못 입력했다면 잠그고 다시 여세요."
         / "This wallet was opened with a passphrase that does not match the passphrase check. If it was a typo, this is a different (empty) wallet, not your original one, and assets received here can only be taken out by entering exactly this passphrase again, including case and spaces. So receiving, site connections and signing are blocked. Added accounts, account names, address book entries and connection records are not saved either. If you mistyped, lock and open the wallet again.";
     /// Shown when `받기` is pressed in that mode.

@@ -98,7 +98,7 @@ impl Wallet {
     }
 
     /// Reads the form edits once more before `검토` (the controller copy wins only when equal).
-    /// 2026-11-18 (S3 C9): from the form state (`App::form_text`); before, reads of the edits.
+    /// 2026-11-18 (S3 C9): from the form state (`Wallet::form_text`); before, reads of the edits.
     fn btc_sync_form(&mut self, bump: bool) {
         let fields: &[EditField] = if bump { &BUMP_FIELDS } else { &SEND_FIELDS };
         for field in fields {
@@ -214,7 +214,7 @@ impl Wallet {
             // Names and hiding (2026-11-15, `app_btc_view`).
             BtcPress::Rename => self.btc_rename_start(),
             BtcPress::RenameSave => {
-                // 2026-11-18 (S3 C9): the form state (`App::form_text`, cap 64 as before).
+                // 2026-11-18 (S3 C9): the form state (`Wallet::form_text`, cap 64 as before).
                 let label = self.form_text(EditField::BtcRename).unwrap_or_default();
                 self.btc_save_rename(&label);
             }

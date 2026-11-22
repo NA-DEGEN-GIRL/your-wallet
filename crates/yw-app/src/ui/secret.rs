@@ -988,7 +988,7 @@ impl SecretForm {
         self.details = lines;
     }
 
-    /// W11: the card its first step names (`App::card_name`, a label — not a secret).
+    /// W11: the card its first step names (`Wallet::card_name`, a label — not a secret).
     pub fn set_card(&mut self, card: Option<String>) {
         self.card = card;
     }

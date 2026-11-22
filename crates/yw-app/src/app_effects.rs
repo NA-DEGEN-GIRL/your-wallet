@@ -1,7 +1,7 @@
 //! The Windows shell's effect executor (spec/15 §11.2, §11.4 S3): applies one
 //! [`yw_engine::effect::Effect`] the wallet logic emitted.
 //!
-//! 2026-11-20 (S4 P10b, plan §3.4, D-3): effects go through an outbox. `App::emit` queues the
+//! 2026-11-20 (S4 P10b, plan §3.4, D-3): effects go through an outbox. `Wallet::emit` queues the
 //! effect (a field write puts its text into the form state first, owner decision O-10) and
 //! `App::drain` applies the queue in emission order, never coalesced, inside the `App` borrow of
 //! the entry that emitted them, before that entry returns: every shell entry into the logic
@@ -23,7 +23,7 @@
 //! "inside `emit`" describe the executor at their dates (until P10b); today each arm runs in
 //! `App::apply`, called by `App::drain`, and an answer goes back from the drain.
 //!
-//! 2026-11-18 (S3 B3): created with `Effect::Render` (the body of `App::refresh` after the dApp
+//! 2026-11-18 (S3 B3): created with `Effect::Render` (the body of `Wallet::refresh` after the dApp
 //! state sync). S3 B4: the send forms' one-shot timer (`StartTimer`/`StopTimer`, was
 //! `App::arm_send_timer`'s and `App::on_send_timer`'s own `set_timer`/`kill_timer`) and the plain
 //! copy (`CopyText`, was `App::copy`'s `clipboard::set_text`). S3 B5: `Render` reads the plain

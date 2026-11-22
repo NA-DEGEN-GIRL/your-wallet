@@ -39,7 +39,7 @@ impl LockReason {
 
 /// The reasons wallet code locks for itself (2026-11-21, S4 W3a, spec/04 §5.3, preflight critic
 /// C11): `잠금` (the button, a cancelled passphrase, the vault's own lock after an unconfirmed
-/// password change, a reset's lock) and the idle lock, through `App::lock_wallet`. Never
+/// password change, a reset's lock) and the idle lock, through `Wallet::lock_wallet`. Never
 /// `Suspend`: that lock waits for the key worker between its two halves, which only the shell's
 /// composition `App::lock` does (it drains there), so wallet code cannot ask for it and send
 /// `KeyJob::Load` before the wait. The session and power reasons come from the shell's entries

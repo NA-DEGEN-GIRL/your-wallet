@@ -216,7 +216,7 @@ impl App {
             }
             // A setup step: its instruction stays a band (not the mark at the button).
             // 2026-11-20 (S4 P6): the band rides in the copy's mark and is set when the result
-            // arrives (`App::copy_done`: the band, then the layout); before, this read the result
+            // arrives (`Wallet::copy_done`: the band, then the layout); before, this read the result
             // right after the copy (`if self.copied.take().is_some()`) and set both itself.
             ExtPress::CopyPath => {
                 if let Some(dir) = extension_dir() {

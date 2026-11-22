@@ -527,7 +527,7 @@ impl App {
     }
 
     /// The wallet's Zcash accounts whose key only `slots` of card `serial` hold
-    /// (`App::zec_accounts_using_card`): clearing or re-slotting them leaves the Zcash tab
+    /// (`Wallet::zec_accounts_using_card`): clearing or re-slotting them leaves the Zcash tab
     /// without a signing key (spec/10 §15, spec/12).
     fn yk_zec_unusable_items(
         &self,

@@ -1186,7 +1186,7 @@ impl App {
         if self.passphrase_unverified() {
             disable_receive(&mut items);
         }
-        // The copy just made says so at its own control (2026-11-12, `App::copy_text`).
+        // The copy just made says so at its own control (2026-11-12, `Wallet::copy_text`).
         // 2026-11-20 (S4 P6): the mark holds the press; its control id is the table's.
         if let Some(copied) = self.copied {
             crate::ui::main_window::mark_copied(

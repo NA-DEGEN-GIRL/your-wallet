@@ -278,7 +278,7 @@ impl fmt::Debug for ImportEntry {
 
 /// What the file offers (kept until `가져오기` / `취소`): the plan critique B-5 calls
 /// `RpcImportPlan`. The shell parses it from the file and it enters the wallet only through the
-/// typed in-process entry `App::on_rpc_json_read` (2026-11-22, S4c W13), never in a `Cmd`,
+/// typed in-process entry `Wallet::on_rpc_json_read` (2026-11-22, S4c W13), never in a `Cmd`,
 /// an `Effect`, a log line or a golden (plan §7).
 #[derive(Default)]
 pub struct ImportPlan {

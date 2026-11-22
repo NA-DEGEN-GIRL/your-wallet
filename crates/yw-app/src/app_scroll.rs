@@ -290,7 +290,7 @@ impl App {
     /// follows, the offset is noted under the place of the screen being left (`left`), for a way
     /// back to it. Emitted while the wallet's screen is still the one being left.
     ///
-    /// 2026-11-20 (S4 P10a): `left` is worked out by `App::enter_screen` (`None` when the screen
+    /// 2026-11-20 (S4 P10a): `left` is worked out by `Wallet::enter_screen` (`None` when the screen
     /// stays, or has no remembered place). Before, the effect carried the flag `changes` (another
     /// screen follows) and this arm read the place of the wallet's screen while it applied it.
     pub(crate) fn screen_leaving(&mut self, overlay_opens: bool, left: Option<ScrollPlace>) {
@@ -308,7 +308,7 @@ impl App {
     /// at the top (`EnteredAt::Top`). The layout that follows cuts the offset to the content
     /// height. Any wheel glide ends.
     ///
-    /// 2026-11-20 (S4 P10a): `at` is worked out by `App::enter_screen` from the screen entered
+    /// 2026-11-20 (S4 P10a): `at` is worked out by `Wallet::enter_screen` from the screen entered
     /// and the one left. Before, the effect carried the flags `back` (a way back) and `overlay`
     /// (an overlay closes), and this arm read the wallet's screen and previous screen while it
     /// applied it.

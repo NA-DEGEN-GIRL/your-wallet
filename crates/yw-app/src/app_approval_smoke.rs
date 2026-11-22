@@ -3,7 +3,7 @@
 //! it emits is run through `flow::evm::prepare` against a fixture transport (chain, nonce, fees,
 //! gas and an `eth_simulateV1` response from yw-engine's `tests/fixtures/eth_simulateV1/`, where
 //! the fixtures moved on 2026-11-17, spec/15 §11.4 S2 T1), and the result goes
-//! back through `App::on_simulating` / `App::on_prepared` as the RPC worker would deliver it. The
+//! back through `Wallet::on_simulating` / `Wallet::on_prepared` as the RPC worker would deliver it. The
 //! window then runs its own message loop for `YW_SMOKE_HOLD_MS` (default 3,000 ms) so it can be
 //! captured from outside, and the test checks that it painted a Ready view.
 //!

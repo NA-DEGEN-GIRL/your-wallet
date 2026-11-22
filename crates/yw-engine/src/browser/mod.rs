@@ -198,7 +198,7 @@ pub enum VaultView {
     BackupPending,
     /// Unlocked: grants known.
     Unlocked,
-    /// Unlocked with a BIP39 passphrase that failed its check value (`App::passphrase_unverified`,
+    /// Unlocked with a BIP39 passphrase that failed its check value (`Wallet::passphrase_unverified`,
     /// spec/02 §7.5): no grants (meta stays in memory), reads continue, connect and signing
     /// requests end 4100 `ProviderError::PassphraseUnverified`.
     PassphraseUnverified,
@@ -241,10 +241,10 @@ pub struct WalletView {
     /// settings `bitcoin.enabled`: when off, `btc_*` requests other than `btc_getNetwork` and
     /// `btc_disconnect` end 4100 `BtcDisabled` (spec/05 §4.9).
     pub btc_enabled: bool,
-    /// The Solana public keys dApps may use now (the visible accounts, `App::sol_dapp_rows`;
+    /// The Solana public keys dApps may use now (the visible accounts, `Wallet::sol_dapp_rows`;
     /// empty while locked): a grant naming another key is not used (spec/05 §4.9).
     pub sol_accounts: Vec<[u8; 32]>,
-    /// The Bitcoin addresses dApps may use now on `btc_network` (`App::btc_dapp_rows`; empty
+    /// The Bitcoin addresses dApps may use now on `btc_network` (`Wallet::btc_dapp_rows`; empty
     /// while locked): a grant with any other address is not used.
     pub btc_accounts: Vec<String>,
 }

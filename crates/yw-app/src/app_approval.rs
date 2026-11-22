@@ -1348,7 +1348,7 @@ fn bar_layout(
 /// the open's answer, when the entry drains, as it did. Before, those steps ran right after the
 /// call (`PENDING_P10` lines of the S5 check). A step reads the wallet when it runs, as the code
 /// it replaced did then. 2026-11-21 (S4 F14, owner decision, spec/04 §5.3): a lock drops the
-/// kept steps (`App::lock_steps`, at the `lock_epoch` bump; 2026-11-21, S4 W3a: before,
+/// kept steps (`Wallet::lock_steps`, at the `lock_epoch` bump; 2026-11-21, S4 W3a: before,
 /// `App::lock`), so none runs after it (pinned by
 /// `a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry`,
 /// `a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry` and, since the F14 review,
@@ -1362,7 +1362,7 @@ pub(crate) enum AfterOpen {
     /// `card_site_check`, then `refresh` (a page's cancel, `cancel_site`).
     CardSiteCheckThenRefresh,
     /// The rest of a Bitcoin controller batch after its `Enqueue`, then the batch's `refresh`
-    /// (`App::btc_apply_rest`).
+    /// (`Wallet::btc_apply_rest`).
     BtcRest(Vec<crate::app_btc::BtcAction>),
     /// The steps kept for a window whose open was just answered, in the order they were kept
     /// (`App::on_cmd`'s `Cmd::ApprovalOpened` arm; before P10a, `after_approval_opened` ran the
@@ -1382,7 +1382,7 @@ pub(crate) enum AfterOpen {
     /// not saved to meta; the same before F14 (it ran after the lock, with no meta). Unreachable
     /// while every entry drains; open for S4d E2. 2026-11-21 (S4 F16, owner decision): the revoke
     /// is noted as a waiting write (`GrantWrite::revoke`), which the lock writes at its start
-    /// (`App::flush_grant_writes`) before it drops this step, so the revoke is saved.
+    /// (`Wallet::flush_grant_writes`) before it drops this step, so the revoke is saved.
     WriteGrantsThenRefresh,
     /// `finish_approval` (a consumed Bitcoin approval).
     Finish(QueueOutcome),
@@ -1658,7 +1658,7 @@ impl Wallet {
     /// none waits (2026-11-20, S4 P10a, plan §4.4 S5, §4.6 rule 2). 2026-11-20 (S4 P10b): an
     /// open waits in the outbox until its entry drains, so `after` follows the answer, as it
     /// followed the open before. 2026-11-21 (S4 F14, owner decision, spec/04 §5.3): a lock
-    /// before that answer drops `after` (`App::lock_steps`, at the `lock_epoch` bump; 2026-11-21,
+    /// before that answer drops `after` (`Wallet::lock_steps`, at the `lock_epoch` bump; 2026-11-21,
     /// S4 W3a: before, `App::lock`); from P10b until F14 it ran after the lock
     /// (pinned then by `a_step_kept_for_an_open_runs_after_a_lock_in_the_same_entry`).
     /// Before P10b the executor applied effects at once, an open was answered before `emit`
@@ -1877,7 +1877,7 @@ impl Wallet {
             self.evm.after_open.push((shown, after));
         }
         // 2026-11-20 (S4 P10a): waiting for its answer until `Cmd::ApprovalOpened` arrives
-        // (`App::approval_open_answered`). 2026-11-20 (S4 P10b): the open is queued, so this
+        // (`Wallet::approval_open_answered`). 2026-11-20 (S4 P10b): the open is queued, so this
         // waits until the entry drains; before, applied at once, the answer cleared it before
         // `emit` returned.
         self.evm.open_unanswered = Some(shown);

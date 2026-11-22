@@ -64,7 +64,7 @@ use yw_engine::approval::flow::OpenOutcome;
 use yw_engine::cmd::{Cmd, CorePress, Press, Row, RpcImportPress, RpcRowAction};
 use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 // `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
-// review); since C3 `App::take_cred` uses it in every build.
+// review); since C3 `Wallet::take_cred` uses it in every build.
 use yw_engine::form::{CredField, EditField, FormState, PressInput};
 // Settings sections (S15) and the remembered scroll places: 2026-11-20 (S4 P10a) moved unchanged
 // to `yw_engine::screen` (the scroll effects carry them). P10a re-exported them as
@@ -636,7 +636,7 @@ pub(crate) struct SettingsGuard {
     /// The settings in use were compared with the meta snapshot after an unlock in this process
     /// (or the snapshot was created). Until then the `yw-llm` worker never starts.
     pub(crate) verified: bool,
-    /// Save keys (`App::save_settings`) written while no snapshot was available (locked, or
+    /// Save keys (`Wallet::save_settings`) written while no snapshot was available (locked, or
     /// before the meta loaded): taken over at the next check.
     pub(crate) saved_early: Vec<&'static str>,
     /// The file values that differ from the snapshot and are not used, until the user picks
@@ -710,7 +710,7 @@ pub struct Wallet {
     pub(crate) leftover: bool,
     pub(crate) info: Option<String>,
     /// The copy just made, answered at its control for about 1.5 s (2026-11-12,
-    /// `App::copy_text`).
+    /// `Wallet::copy_text`).
     pub(crate) copied: Option<crate::app_evm::Copied>,
     /// The press being handled (2026-11-18 S3 B4): a plain copy carries it in its `CopyMark`, so
     /// its result marks the pressed control even when the result arrives after another press.
@@ -1294,7 +1294,7 @@ pub fn load_settings(paths: &Paths) -> crate::settings::SettingsLoad {
 /// An LLM key stored by an older version has no `llm:host`. It is no longer bound here to the
 /// endpoint in `settings.json` (a plain file anyone can edit, review M1): it stays unbound —
 /// never attached to a request — until the first check after an unlock binds it to the host
-/// in the vault-encrypted settings snapshot (`App::reconcile_settings`).
+/// in the vault-encrypted settings snapshot (`Wallet::reconcile_settings`).
 ///
 /// 2026-11-20 (S4 P1): reads through `app_store::WinAppStore` and decodes with
 /// `yw_engine::app_store::load_sealed_keys`; the file, the DPAPI call and the results are
@@ -4007,7 +4007,7 @@ impl Wallet {
     /// for a window already shown is dropped. `Shown` marks the session shown; `Refused`
     /// (E-SEC-001) and `Failed` (E-APP-009) end it and say so on the main window, as `open_input`
     /// did. 2026-11-20 (S4 P7a2): `Shown` then takes the session's `AfterShown` step (W12: the
-    /// card's PIN counters read, `App::yk_card_counters`), at the point the handler took it right
+    /// card's PIN counters read, `Wallet::yk_card_counters`), at the point the handler took it right
     /// after the open before. 2026-11-20 (S4 P7b): it also answers the display windows' open
     /// (`open_display` called it with the window's result before): `Shown` takes W08's
     /// `AfterShown::YkWordsShown` (a new `YubiKey` wallet's words count as shown, `yk_words`; the
@@ -5953,7 +5953,7 @@ impl Wallet {
 
     fn save_rename(&mut self) {
         let lang = self.settings.language;
-        // 2026-11-18 (S3 C12): the form state (`App::form_text`; before, a read of the edit,
+        // 2026-11-18 (S3 C12): the form state (`Wallet::form_text`; before, a read of the edit,
         // cap 64 = `EditField::CoreRename.cap()`).
         let label = self.form_text(EditField::CoreRename).unwrap_or_default();
         if !is_valid_label(&label) {
@@ -6080,7 +6080,7 @@ impl Wallet {
     }
 
     fn save_autolock(&mut self) {
-        // 2026-11-18 (S3 C12): the form state (`App::form_text`; before, a read of the edit,
+        // 2026-11-18 (S3 C12): the form state (`Wallet::form_text`; before, a read of the edit,
         // cap 8 = `EditField::CoreAutoLock.cap()`).
         let text = self.form_text(EditField::CoreAutoLock).unwrap_or_default();
         match text.trim().parse::<u8>() {
@@ -6268,7 +6268,7 @@ impl App {
 
 impl Wallet {
     /// The text of credential edit `field` (2026-11-18, S3 C12, plan §3.4: the units the shell
-    /// read with the press, `App::take_cred`; before, `read_wiping(id, max)` read the edit here
+    /// read with the press, `Wallet::take_cred`; before, `read_wiping(id, max)` read the edit here
     /// into a wiping buffer). Decoded as before: one `char` per UTF-16 unit, a unit that is no
     /// `char` (a surrogate half) dropped; empty when the edit did not exist.
     fn read_cred(&mut self, field: CredField) -> Zeroizing<String> {

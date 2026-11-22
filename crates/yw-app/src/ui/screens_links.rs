@@ -28,11 +28,11 @@ pub mod ids {
     pub const PICKER_ZEC: u16 = 18_403;
     /// Every fixed id.
     pub const FIXED: [u16; 4] = [PICKER_EVM, PICKER_SOL, PICKER_BTC, PICKER_ZEC];
-    /// EVM activity: a click on the recipient copies it (row order of `App::activity_rows`).
+    /// EVM activity: a click on the recipient copies it (row order of `Wallet::activity_rows`).
     pub const EVM_TO_BASE: u16 = 18_410;
     /// EVM recipient span (`app_evm::MAX_ACTIVITY_ROWS`).
     pub const EVM_TO_SPAN: u16 = 50;
-    /// Solana activity recipients (display order, as `App::sol_activity_counterparties`).
+    /// Solana activity recipients (display order, as `Wallet::sol_activity_counterparties`).
     pub const SOL_TO_BASE: u16 = 18_460;
     /// Solana recipient span (the journal's 64 records).
     pub const SOL_TO_SPAN: u16 = 64;

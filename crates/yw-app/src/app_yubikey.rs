@@ -2220,7 +2220,7 @@ impl Wallet {
         let typed = if clear {
             String::new()
         } else {
-            // 2026-11-18 (S3 C11): the form state (`App::form_text`; before, a read of the edit,
+            // 2026-11-18 (S3 C11): the form state (`Wallet::form_text`; before, a read of the edit,
             // cap 64 = `EditField::YkCardName.cap()`).
             self.form_text(EditField::YkCardName)
                 .unwrap_or_default()

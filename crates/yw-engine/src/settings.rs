@@ -1366,7 +1366,7 @@ fn language_member(settings: &Settings) -> Option<(&'static str, Value)> {
 
 /// `security_settings.version`.
 pub const SNAPSHOT_VERSION: u64 = 1;
-/// The `App::save_settings` key of `파일 값 사용` (accepting every differing file value).
+/// The `Wallet::save_settings` key of `파일 값 사용` (accepting every differing file value).
 pub const ACCEPT_FILE_KEY: &str = "settingsFileAccepted";
 
 /// The consent part of `llm_explain` the user last gave through the app (spec/06 §2.1-2.2).
@@ -1676,7 +1676,7 @@ pub struct Reconciled {
 }
 
 /// Compares the settings in use with the snapshot (after unlock). `accepted` are the save keys
-/// (`App::save_settings`) the app itself wrote before the snapshot was available: those values
+/// (`Wallet::save_settings`) the app itself wrote before the snapshot was available: those values
 /// are taken over. A genesis pin that differs from the snapshot is always restored, even then.
 ///
 /// - LLM: switched on (effectively) without a consent for the current endpoint host in the

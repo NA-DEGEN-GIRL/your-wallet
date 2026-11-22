@@ -43,7 +43,7 @@ pub mod ids {
     /// Zcash send result line `탐색기 링크 복사`.
     pub const RESULT_ZEC_COPY: u16 = 17_217;
     /// S15 card rows ([`ROW_STRIDE`] ids per row: `변경`, `기본값으로`), in
-    /// `App::explorer_networks` order.
+    /// `Wallet::explorer_networks` order.
     pub const ROW_BASE: u16 = 17_220;
     /// Ids per card row.
     pub const ROW_STRIDE: u16 = 2;
@@ -51,7 +51,7 @@ pub mod ids {
     pub const ROW_SPAN: u16 = 100;
     /// Ids per activity row (`탐색기에서 열기`, `탐색기 링크 복사`).
     pub const ACTIVITY_STRIDE: u16 = 2;
-    /// Solana activity rows (display order, as `App::sol_activity_tx_ids`).
+    /// Solana activity rows (display order, as `Wallet::sol_activity_tx_ids`).
     pub const SOL_ACTIVITY_BASE: u16 = 17_320;
     /// Solana activity span (64 rows × 2).
     pub const SOL_ACTIVITY_SPAN: u16 = 128;
