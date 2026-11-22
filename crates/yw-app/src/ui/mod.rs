@@ -26,6 +26,8 @@ pub mod screens_book;
 pub mod screens_btc;
 pub mod screens_evm;
 pub mod screens_explorer;
+// 2026-11-22 (S4d E0c): the hidden-account rows' ids and render builder (were `app_hidden`'s).
+pub mod screens_hidden;
 pub mod screens_hypercore;
 pub mod screens_keys;
 pub mod screens_links;
@@ -33,6 +35,8 @@ pub mod screens_llm;
 pub mod screens_mnemonics;
 pub mod screens_received;
 pub mod screens_reset;
+// 2026-11-22 (S4d E0c): the side-file overlays' ids and render builders (were `app_sidecar`'s).
+pub mod screens_sidecar;
 pub mod screens_sites;
 pub mod screens_sol;
 pub mod screens_walletconnect;

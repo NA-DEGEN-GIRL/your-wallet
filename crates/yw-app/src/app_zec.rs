@@ -94,6 +94,14 @@ fn ends_text(lang: Lang, (prefix, suffix): (usize, usize)) -> String {
 
 /// Automatic refresh period while the tab is shown (and while a transaction is in flight).
 const REFRESH_MS: u64 = yw_core::zec::ZEC_POLL_SECS * 1_000;
+/// EVM accounts offered as a Zcash key source (`ui::screens_zec::ids::SOURCE_EVM_SPAN` is this).
+/// 2026-11-22 (S4d E0c): a wallet const that the ui ids span re-uses; before, the wallet code read
+/// the ui span `ids::SOURCE_EVM_SPAN`.
+pub const ZEC_SOURCE_EVM_ROWS: u16 = 16;
+/// `YubiKey` Zcash slots offered as a key source (`ui::screens_zec::ids::HW_SPAN` is this).
+/// 2026-11-22 (S4d E0c): a wallet const that the ui ids span re-uses; before, the wallet code read
+/// the ui span `ids::HW_SPAN`.
+pub const ZEC_HW_ROWS: u16 = 8;
 /// A record the node refused (`Rejected`) is handed over again at most once per this many
 /// blocks until it expires (spec/12 §12.2): the same bytes were just refused, and resending on
 /// every 30 s refresh only repeats the answer.

@@ -301,7 +301,7 @@ fn hidden_bitcoin_account_drops_its_grants_and_leaves_the_connect_list() {
     assert_eq!(app.meta.as_ref().unwrap().chain_sites.btc.len(), 1);
     assert_eq!(offered(&app), std::slice::from_ref(&kept));
     // Shown again: still no connection for it.
-    assert!(app.on_hidden_command(crate::app_hidden::ids::BTC_ROW_BASE));
+    assert!(app.on_hidden_command(crate::ui::screens_hidden::ids::BTC_ROW_BASE));
     assert!(
         !app.meta
             .as_ref()

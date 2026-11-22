@@ -5522,7 +5522,7 @@ fn yubikey_backup_copy_removal_and_management_key() {
     // Card A: SIG = EVM 0, AUT = none, no PIV.
     h.app.on_command(crate::ui::screens_yubikey::ids::pgp_id(
         yw_core::yubikey::plan::PgpKey::Aut,
-        crate::ui::screens_yubikey::ids::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
+        crate::app_yubikey::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
     ));
     h.app
         .yk_set_text(yw_engine::form::EditField::YkSolCount, "0".to_owned());
@@ -5713,11 +5713,11 @@ fn yubikey_backup_copy_removal_and_management_key() {
     h.app.on_command(yk::ENROL_START);
     h.app.on_command(crate::ui::screens_yubikey::ids::pgp_id(
         yw_core::yubikey::plan::PgpKey::Sig,
-        crate::ui::screens_yubikey::ids::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
+        crate::app_yubikey::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
     ));
     h.app.on_command(crate::ui::screens_yubikey::ids::pgp_id(
         yw_core::yubikey::plan::PgpKey::Aut,
-        crate::ui::screens_yubikey::ids::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
+        crate::app_yubikey::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
     ));
     h.app.on_command(yk::PLAN_NEXT);
     h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
@@ -6840,7 +6840,8 @@ fn yubikey_connect_without_words_from_the_first_run_screen() {
 /// it back (the hide note says where).
 #[test]
 fn hidden_account_comes_back_with_show_again() {
-    use crate::app_hidden::{Family, ids as hidden_ids};
+    use crate::app_hidden::Family;
+    use crate::ui::screens_hidden::ids as hidden_ids;
     let (mut app, dir) = unlocked_app("unhide", false);
     let meta = app.meta.as_mut().unwrap();
     meta.evm_accounts.push(crate::meta::Account {
@@ -6936,7 +6937,8 @@ fn files_starting(dir: &std::path::Path, prefix: &str) -> Vec<String> {
 /// and remembers the time in meta, after which Bitcoin asks for a check and Solana and Zcash wait.
 #[test]
 fn journal_choice_closes_without_change_and_a_reset_keeps_the_old_copy_and_guards_sends() {
-    use crate::app_sidecar::{JournalHold, SendChain, ids as sidecar_ids};
+    use crate::app_sidecar::{JournalHold, SendChain};
+    use crate::ui::screens_sidecar::ids as sidecar_ids;
     let mut h = Harness::new("journalreset");
     h.create_and_confirm();
     h.app.lock(LockReason::Manual);
@@ -7025,7 +7027,7 @@ fn journal_choice_closes_without_change_and_a_reset_keeps_the_old_copy_and_guard
 /// cannot be read either, nothing moves; starting over moves the file and its `.prev` aside.
 #[test]
 fn unreadable_meta_is_never_overwritten_and_prev_is_checked_before_anything_moves() {
-    use crate::app_sidecar::ids as sidecar_ids;
+    use crate::ui::screens_sidecar::ids as sidecar_ids;
     let mut h = Harness::new("metanewer");
     h.create_and_confirm();
     h.pump();

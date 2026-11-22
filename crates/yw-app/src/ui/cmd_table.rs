@@ -43,11 +43,12 @@ use yw_win::ui::Window;
 
 use crate::ui::main_window::ControlSet;
 use crate::ui::{
-    screens, screens_book, screens_btc, screens_evm, screens_explorer, screens_hypercore,
-    screens_keys, screens_links, screens_llm, screens_mnemonics, screens_received, screens_reset,
-    screens_sites, screens_sol, screens_walletconnect, screens_yubikey, screens_zec,
+    screens, screens_book, screens_btc, screens_evm, screens_explorer, screens_hidden,
+    screens_hypercore, screens_keys, screens_links, screens_llm, screens_mnemonics,
+    screens_received, screens_reset, screens_sidecar, screens_sites, screens_sol,
+    screens_walletconnect, screens_yubikey, screens_zec,
 };
-use crate::{app_hidden, app_rpc_import, app_sidecar, app_walletconnect};
+use crate::{app_rpc_import, app_walletconnect};
 
 /// The command id `IsDialogMessageW` sends for Enter (no control uses it, `ui::command_ids`).
 pub const IDOK: u16 = 1;
@@ -65,8 +66,8 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Option<Press> {
         other => screens::ids::press_of(other, controls)
             .map(Press::Core)
             .or_else(|| screens_received::ids::press_of(other, controls).map(Press::Received))
-            .or_else(|| app_hidden::ids::press_of(other).map(Press::Hidden))
-            .or_else(|| app_sidecar::ids::press_of(other, controls).map(Press::Sidecar))
+            .or_else(|| screens_hidden::ids::press_of(other).map(Press::Hidden))
+            .or_else(|| screens_sidecar::ids::press_of(other, controls).map(Press::Sidecar))
             .or_else(|| screens_links::ids::press_of(other).map(Press::Links))
             .or_else(|| screens_sites::ids::press_of(other).map(Press::Sites))
             .or_else(|| screens_llm::ids::press_of(other, controls).map(Press::Llm))
@@ -98,8 +99,8 @@ pub const fn id_of(press: Press) -> u16 {
         Press::Back => IDCANCEL,
         Press::Core(press) => screens::ids::id_of(press),
         Press::Received(press) => screens_received::ids::id_of(press),
-        Press::Hidden(press) => app_hidden::ids::id_of(press),
-        Press::Sidecar(press) => app_sidecar::ids::id_of(press),
+        Press::Hidden(press) => screens_hidden::ids::id_of(press),
+        Press::Sidecar(press) => screens_sidecar::ids::id_of(press),
         Press::Links(press) => screens_links::ids::id_of(press),
         Press::Sites(press) => screens_sites::ids::id_of(press),
         Press::Llm(press) => screens_llm::ids::id_of(press),
@@ -553,7 +554,7 @@ mod tests {
             assert_eq!(family(id), links, "{id}");
         }
         assert_eq!(
-            press_of(app_hidden::ids::BTC_ROW_BASE + 64, &controls).unwrap(),
+            press_of(screens_hidden::ids::BTC_ROW_BASE + 64, &controls).unwrap(),
             Press::Hidden(HiddenPress::BtcUnhide(Row(64)))
         );
         assert_eq!(
@@ -574,7 +575,7 @@ mod tests {
             })
         );
         controls.type_check(toggle, true);
-        controls.type_check(app_sidecar::ids::RESET_ACK, false);
+        controls.type_check(screens_sidecar::ids::RESET_ACK, false);
         assert_eq!(
             press_of(toggle, &controls).unwrap(),
             Press::Received(ReceivedPress::Toggle {
@@ -583,7 +584,7 @@ mod tests {
             })
         );
         assert_eq!(
-            press_of(app_sidecar::ids::RESET_ACK, &controls).unwrap(),
+            press_of(screens_sidecar::ids::RESET_ACK, &controls).unwrap(),
             Press::Sidecar(SidecarPress::ResetAck(Some(false)))
         );
         assert_eq!(id_of(press_of(toggle, &controls).unwrap()), toggle);
@@ -1262,7 +1263,8 @@ mod tests {
     }
 
     /// S3 C11: the `YubiKey` radios carry the choice the id's decoder gives, and map back to it
-    /// (`pgp_of`, `reslot_of`, `preset_of`, `choice_of`).
+    /// (`pgp_of`, `reslot_of`, `preset_of`, `choice_of`; in the `app_yubikey` files since
+    /// 2026-11-22, S4d E0c).
     #[test]
     fn c11_yubikey_radios_carry_their_choice() {
         use screens_yubikey::ids;
@@ -1270,14 +1272,30 @@ mod tests {
         for id in 13_200..13_960 {
             match press_of(id, &controls) {
                 Some(Press::Yk(press)) => {
-                    assert_eq!(ids::pgp_of(press), ids::pgp_action(id), "{id}");
+                    assert_eq!(
+                        crate::app_yubikey::pgp_of(press),
+                        ids::pgp_action(id),
+                        "{id}"
+                    );
                 }
                 Some(Press::YkManage(press)) => {
-                    assert_eq!(ids::reslot_of(press), ids::reslot_action(id), "{id}");
-                    assert_eq!(ids::preset_of(press), ids::preset(id), "{id}");
+                    assert_eq!(
+                        crate::app_yubikey::manage::reslot_of(press),
+                        ids::reslot_action(id),
+                        "{id}"
+                    );
+                    assert_eq!(
+                        crate::app_yubikey::manage::preset_of(press),
+                        ids::preset(id),
+                        "{id}"
+                    );
                 }
                 Some(Press::YkConnect(press)) => {
-                    assert_eq!(ids::choice_of(press), ids::connect_choice(id), "{id}");
+                    assert_eq!(
+                        crate::app_yubikey::connect::choice_of(press),
+                        ids::connect_choice(id),
+                        "{id}"
+                    );
                 }
                 _ => {}
             }

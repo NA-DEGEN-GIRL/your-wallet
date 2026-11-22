@@ -10,14 +10,12 @@ use yw_core::evm::address::Address;
 use yw_core::secret::Zeroizing;
 use yw_core::vault::{BackupChallenge, EvmKeySource, MnemonicInfo, RecordId};
 
-use crate::app::{App, AppMode, Purpose, Screen, Wallet};
+use crate::app::{AppMode, Purpose, Screen, Wallet};
 use crate::errors::{key_code, vault_code};
 use crate::events::KeyJob;
 use crate::logging;
 use crate::meta::{Account, EvmAccountPref};
 use crate::text::is_valid_label;
-use crate::ui::main_window::{Ctl, Item};
-use crate::ui::screens_mnemonics::ids;
 use crate::workers::key::mnemonics::{MnJob, MnOutcome};
 use yw_engine::cmd::{MnPress, Row};
 use yw_engine::form::EditField;
@@ -436,7 +434,9 @@ impl Wallet {
         }
     }
 
-    fn unlocked(&self) -> bool {
+    /// 2026-11-22 (S4d E0c): `pub(crate)` for the render builder `mn_backup_now`
+    /// (`ui::screens_mnemonics`); private before.
+    pub(crate) fn unlocked(&self) -> bool {
         matches!(self.mode, AppMode::Unlocked { .. })
     }
 
@@ -859,77 +859,6 @@ impl Wallet {
     /// the tests' way to type).
     pub fn mn_set_remove_typed(&mut self, text: String) {
         self.mn.remove_typed = text;
-    }
-}
-
-impl App {
-    /// The prominent banner of a receive screen whose account comes from the phrase `mnemonic`
-    /// ([`Self::mn_backup_gate`]) while that phrase's backup is not confirmed (until its quiz
-    /// passes).
-    pub(crate) fn mn_receive_banner(&self, mnemonic: Option<RecordId>, items: &mut Vec<Item>) {
-        let Some(id) = mnemonic else {
-            return;
-        };
-        if self
-            .mn
-            .infos
-            .iter()
-            .any(|info| info.id == id && !info.backup_confirmed)
-        {
-            items.push(Item::Banner(
-                format!(
-                    "{}: {}",
-                    self.mnemonic_label(id),
-                    text::RECEIVE_UNCONFIRMED.get(self.settings.language)
-                ),
-                Tone::HighRisk,
-            ));
-            self.mn_backup_now(id, items);
-        }
-    }
-
-    /// The selected account's band while its recovery phrase ([`Self::mn_backup_gate`]: an added
-    /// one, or a key-only wallet's later primary one) waits for the backup quiz (2026-11-08):
-    /// the vault refuses its signatures until then (E-VLT-009), so this says it before the send
-    /// form and the approval, with the quiz one press away. Display only; the vault's refusal
-    /// stays the last line of defence.
-    pub(crate) fn mn_signing_banner(&self, mnemonic: Option<RecordId>, items: &mut Vec<Item>) {
-        let Some(id) = mnemonic else {
-            return;
-        };
-        if self
-            .mn
-            .infos
-            .iter()
-            .any(|info| info.id == id && !info.backup_confirmed)
-        {
-            items.push(Item::Banner(
-                text::SIGNING_BANNER.fill(self.settings.language, [&self.mnemonic_label(id)]),
-                Tone::Warn,
-            ));
-            self.mn_backup_now(id, items);
-        }
-    }
-
-    /// `지금 백업 확인`: the recovery-phrase list's `백업 확인` of `id` (W03 → W08 → W10; the
-    /// vault runs the quiz of any phrase in an unlocked session).
-    fn mn_backup_now(&self, id: RecordId, items: &mut Vec<Item>) {
-        if !self.unlocked() {
-            return;
-        }
-        if let Some(offset) = self
-            .mn
-            .infos
-            .iter()
-            .position(|info| info.id == id)
-            .and_then(|position| u16::try_from(position).ok())
-            .filter(|offset| *offset < ids::ROW_SPAN)
-        {
-            items.push(Item::Row(vec![Ctl::button(
-                ids::BACKUP_BASE.saturating_add(offset),
-                text::BACKUP_NOW.get(self.settings.language),
-            )]));
-        }
     }
 }
 

@@ -499,3 +499,86 @@ impl App {
         items.push(Item::Row(buttons));
     }
 }
+
+/// 2026-11-22 (S4d E0c): the recovery-phrase bands of the account cards, send forms and receive
+/// screens; moved from `app_mnemonics` (render code; the gate `Wallet::mn_backup_gate` stays
+/// there).
+impl App {
+    /// The prominent banner of a receive screen whose account comes from the phrase `mnemonic`
+    /// ([`crate::app::Wallet::mn_backup_gate`]) while that phrase's backup is not confirmed
+    /// (until its quiz passes).
+    pub(crate) fn mn_receive_banner(
+        &self,
+        mnemonic: Option<yw_core::vault::RecordId>,
+        items: &mut Vec<Item>,
+    ) {
+        let Some(id) = mnemonic else {
+            return;
+        };
+        if self
+            .mn
+            .infos
+            .iter()
+            .any(|info| info.id == id && !info.backup_confirmed)
+        {
+            items.push(Item::Banner(
+                format!(
+                    "{}: {}",
+                    self.mnemonic_label(id),
+                    mn_text::RECEIVE_UNCONFIRMED.get(self.settings.language)
+                ),
+                Tone::HighRisk,
+            ));
+            self.mn_backup_now(id, items);
+        }
+    }
+
+    /// The selected account's band while its recovery phrase
+    /// ([`crate::app::Wallet::mn_backup_gate`]: an added one, or a key-only wallet's later
+    /// primary one) waits for the backup quiz (2026-11-08):
+    /// the vault refuses its signatures until then (E-VLT-009), so this says it before the send
+    /// form and the approval, with the quiz one press away. Display only; the vault's refusal
+    /// stays the last line of defence.
+    pub(crate) fn mn_signing_banner(
+        &self,
+        mnemonic: Option<yw_core::vault::RecordId>,
+        items: &mut Vec<Item>,
+    ) {
+        let Some(id) = mnemonic else {
+            return;
+        };
+        if self
+            .mn
+            .infos
+            .iter()
+            .any(|info| info.id == id && !info.backup_confirmed)
+        {
+            items.push(Item::Banner(
+                mn_text::SIGNING_BANNER.fill(self.settings.language, [&self.mnemonic_label(id)]),
+                Tone::Warn,
+            ));
+            self.mn_backup_now(id, items);
+        }
+    }
+
+    /// `지금 백업 확인`: the recovery-phrase list's `백업 확인` of `id` (W03 → W08 → W10; the
+    /// vault runs the quiz of any phrase in an unlocked session).
+    fn mn_backup_now(&self, id: yw_core::vault::RecordId, items: &mut Vec<Item>) {
+        if !self.unlocked() {
+            return;
+        }
+        if let Some(offset) = self
+            .mn
+            .infos
+            .iter()
+            .position(|info| info.id == id)
+            .and_then(|position| u16::try_from(position).ok())
+            .filter(|offset| *offset < ids::ROW_SPAN)
+        {
+            items.push(Item::Row(vec![Ctl::button(
+                ids::BACKUP_BASE.saturating_add(offset),
+                mn_text::BACKUP_NOW.get(self.settings.language),
+            )]));
+        }
+    }
+}

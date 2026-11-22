@@ -776,6 +776,38 @@ fn enrol_failure_text(lang: Lang, error: YubiKeyJobError, openpgp: bool) -> Stri
     out
 }
 
+/// What an `OpenPGP` slot control sets.
+/// 2026-11-22 (S4d E0c): moved from `ui::screens_yubikey::ids` (wallet code maps the press).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PgpAction {
+    /// The kind radio.
+    Kind(PgpKind),
+    /// The address-type radio.
+    Script(ScriptType),
+    /// The touch radio.
+    Touch(TouchPolicy),
+    /// The Zcash network radio.
+    Zec(yw_core::zec::ZecNetwork),
+}
+
+/// The `OpenPGP` slot and action of a wizard radio press (the inverse of the mapping in
+/// `ui::screens_yubikey::ids::press_of`); `None` for every other press.
+/// 2026-11-22 (S4d E0c): moved from `ui::screens_yubikey::ids` (wallet code maps the press).
+#[must_use]
+pub const fn pgp_of(press: YkPress) -> Option<(PgpKey, PgpAction)> {
+    Some(match press {
+        YkPress::PgpNone(key) => (key, PgpAction::Kind(PgpKind::None)),
+        YkPress::PgpEvm(key) => (key, PgpAction::Kind(PgpKind::Evm)),
+        YkPress::PgpBtc(key) => (key, PgpAction::Kind(PgpKind::Btc)),
+        YkPress::PgpShared(key) => (key, PgpAction::Kind(PgpKind::Shared)),
+        YkPress::PgpZec(key) => (key, PgpAction::Kind(PgpKind::Zec)),
+        YkPress::PgpScript(key, script) => (key, PgpAction::Script(script)),
+        YkPress::PgpTouch(key, touch) => (key, PgpAction::Touch(touch)),
+        YkPress::PgpZecNetwork(key, network) => (key, PgpAction::Zec(network)),
+        _ => return None,
+    })
+}
+
 /// Command ids of the wizard's touch radios: `(policy, id offset)`.
 pub const PGP_TOUCH: [TouchPolicy; 4] = [
     TouchPolicy::Always,
@@ -2285,7 +2317,6 @@ impl Wallet {
     /// before, this function asked them first by id — their ids are disjoint from these).
     #[expect(clippy::too_many_lines, reason = "one arm per wizard control")]
     pub(crate) fn on_yk(&mut self, press: YkPress) {
-        use crate::ui::screens_yubikey::ids;
         // The connect flow's result screen: `다시 시도` returns to its confirmation, `다른
         // YubiKey 등록(백업)` reads the next card.
         let connecting = self
@@ -2316,14 +2347,14 @@ impl Wallet {
             self.yk_connect_back();
             return;
         }
-        if let Some((key, action)) = ids::pgp_of(press) {
+        if let Some((key, action)) = pgp_of(press) {
             if let Some(wizard) = self.yk_wizard() {
                 let form = wizard.pgp_mut(key);
                 match action {
-                    ids::PgpAction::Kind(kind) => form.kind = kind,
-                    ids::PgpAction::Script(script) => form.script = script,
-                    ids::PgpAction::Touch(touch) => form.touch = touch,
-                    ids::PgpAction::Zec(network) => form.zec = network,
+                    PgpAction::Kind(kind) => form.kind = kind,
+                    PgpAction::Script(script) => form.script = script,
+                    PgpAction::Touch(touch) => form.touch = touch,
+                    PgpAction::Zec(network) => form.zec = network,
                 }
                 wizard.error = None;
             }
@@ -2571,7 +2602,7 @@ impl Wallet {
                 self.card.pins_chosen = true;
                 self.refresh();
             }
-            // The `OpenPGP` radios ran above (`ids::pgp_of`).
+            // The `OpenPGP` radios ran above (`pgp_of`).
             YkPress::PgpNone(_)
             | YkPress::PgpEvm(_)
             | YkPress::PgpBtc(_)

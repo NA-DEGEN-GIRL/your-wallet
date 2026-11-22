@@ -396,7 +396,11 @@ fn english_explorer_chain_and_site_texts() {
         Lang::En,
         &crate::app_book::Resembles::Sent("0x5290".to_owned()),
     ));
-    lines.push(crate::app_browser::status_text(Lang::En, None, None));
+    lines.push(crate::ui::screens_evm::browser_status_text(
+        Lang::En,
+        None,
+        None,
+    ));
     lines.push(crate::explorer::TemplateError::Placeholder(LinkKind::Tx).text_in(Lang::En));
     lines.push(app.unlock_pending_text().unwrap_or_default());
     lines.push(

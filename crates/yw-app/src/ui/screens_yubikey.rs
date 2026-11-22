@@ -33,8 +33,8 @@ pub mod ids {
     use yw_core::yubikey::plan::{PgpKey, TouchPolicy};
     use yw_core::zec::ZecNetwork;
 
-    use crate::app_yubikey::manage::{Chain, Preset};
-    use crate::app_yubikey::{CARD_SCRIPTS, PGP_TOUCH, PgpKind};
+    use crate::app_yubikey::manage::{Chain, Preset, ReslotAction};
+    use crate::app_yubikey::{CARD_SCRIPTS, PGP_TOUCH, PgpAction, PgpKind};
 
     /// Settings tab `YubiKey`.
     pub const SECTION_YUBIKEY: u16 = 13_200;
@@ -232,28 +232,6 @@ pub mod ids {
 
     const KINDS: [PgpKind; 4] = [PgpKind::None, PgpKind::Evm, PgpKind::Btc, PgpKind::Shared];
     const ZEC_NETWORKS: [ZecNetwork; 2] = [ZecNetwork::Mainnet, ZecNetwork::Testnet];
-
-    /// What an `OpenPGP` slot control sets.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum PgpAction {
-        /// The kind radio.
-        Kind(PgpKind),
-        /// The address-type radio.
-        Script(ScriptType),
-        /// The touch radio.
-        Touch(TouchPolicy),
-        /// The Zcash network radio.
-        Zec(ZecNetwork),
-    }
-
-    /// What a re-slot slot control sets.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum ReslotAction {
-        /// The chain radio.
-        Chain(Chain),
-        /// The address-type radio.
-        Script(ScriptType),
-    }
 
     /// The id of a control of `key`'s re-slot form.
     #[must_use]
@@ -688,24 +666,6 @@ pub mod ids {
         })
     }
 
-    /// The `OpenPGP` slot and action of a wizard radio press (the inverse of the mapping in
-    /// [`press_of`]); `None` for every other press.
-    #[must_use]
-    pub const fn pgp_of(press: yw_engine::cmd::YkPress) -> Option<(PgpKey, PgpAction)> {
-        use yw_engine::cmd::YkPress;
-        Some(match press {
-            YkPress::PgpNone(key) => (key, PgpAction::Kind(PgpKind::None)),
-            YkPress::PgpEvm(key) => (key, PgpAction::Kind(PgpKind::Evm)),
-            YkPress::PgpBtc(key) => (key, PgpAction::Kind(PgpKind::Btc)),
-            YkPress::PgpShared(key) => (key, PgpAction::Kind(PgpKind::Shared)),
-            YkPress::PgpZec(key) => (key, PgpAction::Kind(PgpKind::Zec)),
-            YkPress::PgpScript(key, script) => (key, PgpAction::Script(script)),
-            YkPress::PgpTouch(key, touch) => (key, PgpAction::Touch(touch)),
-            YkPress::PgpZecNetwork(key, network) => (key, PgpAction::Zec(network)),
-            _ => return None,
-        })
-    }
-
     /// The offset of a card-script radio in a slot's controls (`CARD_SCRIPTS` order, 5–7); a
     /// script the wizard does not draw falls on the index edit (4), as [`pgp_id`] and
     /// [`reslot_id`] place it.
@@ -865,34 +825,6 @@ pub mod ids {
         })
     }
 
-    /// The slot and action of a re-slot radio press; `None` for every other press.
-    #[must_use]
-    pub const fn reslot_of(press: yw_engine::cmd::YkManagePress) -> Option<(PgpKey, ReslotAction)> {
-        use yw_engine::cmd::YkManagePress;
-        Some(match press {
-            YkManagePress::ReslotEvm(key) => (key, ReslotAction::Chain(Chain::Evm)),
-            YkManagePress::ReslotBtc(key) => (key, ReslotAction::Chain(Chain::Btc)),
-            YkManagePress::ReslotZec(key) => (key, ReslotAction::Chain(Chain::Zec)),
-            YkManagePress::ReslotShared(key) => (key, ReslotAction::Chain(Chain::Shared)),
-            YkManagePress::ReslotScript(key, script) => (key, ReslotAction::Script(script)),
-            _ => return None,
-        })
-    }
-
-    /// The preset of a preset radio press; `None` for every other press.
-    #[must_use]
-    pub const fn preset_of(press: yw_engine::cmd::YkManagePress) -> Option<Preset> {
-        use yw_engine::cmd::YkManagePress;
-        Some(match press {
-            YkManagePress::PresetEvmBtc => Preset::EvmBtc,
-            YkManagePress::PresetEvmZec => Preset::EvmZec,
-            YkManagePress::PresetBtcZec => Preset::BtcZec,
-            YkManagePress::PresetEvmEvm => Preset::EvmEvm,
-            YkManagePress::PresetCustom => Preset::Custom,
-            _ => return None,
-        })
-    }
-
     /// The control id of a card-action press (the inverse of [`manage_press_of`]).
     /// A value no screen draws (a Taproot radio, the `Never` touch radio, a row past its span)
     /// lands on another control's id (S3 C10–C12 review: listed in `ui::cmd_table`'s
@@ -975,24 +907,6 @@ pub mod ids {
             CONNECT_SAVE => YkConnectPress::Save,
             _ => return None,
         })
-    }
-
-    /// The row and choice of a choice radio press; `None` for every other press.
-    #[must_use]
-    pub fn choice_of(
-        press: yw_engine::cmd::YkConnectPress,
-    ) -> Option<(usize, crate::app_yubikey::connect::Choice)> {
-        use crate::app_yubikey::connect::Choice;
-        use yw_engine::cmd::{Row, YkConnectPress};
-        let (Row(row), choice) = match press {
-            YkConnectPress::ChoiceEvm(row) => (row, Choice::Evm),
-            YkConnectPress::ChoiceBtc(row, script) => (row, Choice::Btc(script)),
-            YkConnectPress::ChoiceZec(row) => (row, Choice::Zec),
-            YkConnectPress::ChoiceSol(row) => (row, Choice::Sol),
-            YkConnectPress::ChoiceSkip(row) => (row, Choice::Skip),
-            _ => return None,
-        };
-        Some((usize::from(row), choice))
     }
 
     /// The control id of a connect-flow press (the inverse of [`connect_press_of`]).
@@ -1400,7 +1314,7 @@ impl App {
         reason = "one card per enrolled YubiKey / slot form"
     )]
     fn yk_pgp_items(&self, wizard: &YkWizard, key: PgpKey, items: &mut Vec<Item>) {
-        use ids::PgpAction;
+        use crate::app_yubikey::PgpAction;
         let lang = self.settings.language;
         let form = wizard.pgp(key);
         items.push(Item::CardStart(Some(CardSlot::OpenPgp(key).label_in(lang))));
@@ -2244,5 +2158,35 @@ impl App {
             .collect();
         let _ = crate::ui::removed::removed_items(lang, &accounts, items);
         items.push(Item::Help(t::LOST_CARD.get(lang).to_owned()));
+    }
+}
+
+/// 2026-11-22 (S4d E0c): moved from `app_card` (render code).
+impl App {
+    /// The band of an account card or send form whose `YubiKey` is still on its factory PINs
+    /// (spec/10 §9.3, 2026-11-10), with `PIN 설정` (that card's "PIN 설정" in 설정 → `YubiKey`).
+    /// Display only: the card step's refusal stays the last line of defence.
+    pub(crate) fn card_pin_banner(&self, serial: Option<u32>, items: &mut Vec<Item>) {
+        let Some(serial) = serial else {
+            return;
+        };
+        let lang = self.settings.language;
+        items.push(Item::Banner(
+            crate::app_card::text::PIN_BANNER.fill(lang, [&self.card_name(serial)]),
+            Tone::Warn,
+        ));
+        if let Some(row) = self
+            .card
+            .records
+            .iter()
+            .position(|record| record.serial == serial)
+            .and_then(|row| u16::try_from(row).ok())
+            .filter(|row| *row < ids::PIN_GATE_SPAN)
+        {
+            items.push(Item::Row(vec![Ctl::button(
+                ids::PIN_GATE_BASE + row,
+                crate::app_card::text::SET_PIN.get(lang),
+            )]));
+        }
     }
 }

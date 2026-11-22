@@ -9,10 +9,11 @@ use super::{
     ABOUT, EvmAccountPref, Harness, Purpose, YkSeen, about_wallet, all_text, card_harness, ctl,
     finish_result, has_text, unique_ids, yk_pump,
 };
+use crate::app_yubikey::PgpAction;
 use crate::app_yubikey::YkPurpose;
 use crate::app_yubikey::manage::{CLEAR_WORD, ClearStep, Preset, ReslotStep, YkManage};
 use crate::ui::screens_yubikey::ids as yk;
-use crate::ui::screens_yubikey::ids::{PgpAction, pgp_id};
+use crate::ui::screens_yubikey::ids::pgp_id;
 
 const ADMIN: &[u8] = b"12345678";
 const BIP84_0: &str = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";

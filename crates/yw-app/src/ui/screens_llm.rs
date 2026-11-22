@@ -143,34 +143,16 @@ pub mod ids {
     }
 }
 
-/// The `빠른 입력` presets (spec/06 §2.1, 2026-11-11): command id, button label, endpoint. A
-/// preset only fills the endpoint draft; `저장` (with its consent rule) applies it.
-pub const PRESETS: &[(u16, yw_core::lang::Text, &str)] = &[
-    (
-        ids::PRESET_OPENAI,
-        text::PRESET_OPENAI,
-        "https://api.openai.com/v1/chat/completions",
-    ),
-    (
-        ids::PRESET_CLAUDE,
-        text::PRESET_CLAUDE,
-        "https://api.anthropic.com/v1/chat/completions",
-    ),
-    (
-        ids::PRESET_OPENROUTER,
-        text::PRESET_OPENROUTER,
-        "https://openrouter.ai/api/v1/chat/completions",
-    ),
-    (
-        ids::PRESET_OLLAMA,
-        text::PRESET_OLLAMA,
-        "http://127.0.0.1:11434/v1/chat/completions",
-    ),
-    (
-        ids::PRESET_LM_STUDIO,
-        text::PRESET_LM_STUDIO,
-        "http://127.0.0.1:1234/v1/chat/completions",
-    ),
+/// The `빠른 입력` presets (spec/06 §2.1, 2026-11-11): command id and button label; the endpoint
+/// is the wallet's `app_llm::preset_url` of the button's press. A preset only fills the endpoint
+/// draft; `저장` (with its consent rule) applies it. 2026-11-22 (S4d E0c): the endpoints moved to
+/// `app_llm`, keyed by the press; before, a third column here, looked up by control id.
+pub const PRESETS: &[(u16, yw_core::lang::Text)] = &[
+    (ids::PRESET_OPENAI, text::PRESET_OPENAI),
+    (ids::PRESET_CLAUDE, text::PRESET_CLAUDE),
+    (ids::PRESET_OPENROUTER, text::PRESET_OPENROUTER),
+    (ids::PRESET_OLLAMA, text::PRESET_OLLAMA),
+    (ids::PRESET_LM_STUDIO, text::PRESET_LM_STUDIO),
 ];
 
 /// The S15 `AI 설명` section texts (spec/04 §2.11, spec/06 §2; English spec/14).
@@ -234,15 +216,6 @@ pub mod text {
     }
 }
 
-/// The endpoint of preset button `id`.
-#[must_use]
-pub fn preset_url(id: u16) -> Option<&'static str> {
-    PRESETS
-        .iter()
-        .find(|(preset, ..)| *preset == id)
-        .map(|(_, _, url)| *url)
-}
-
 impl App {
     /// The S15 `AI 설명` section.
     #[expect(
@@ -290,7 +263,7 @@ impl App {
             t(text::QUICK_FILL),
             PRESETS
                 .iter()
-                .map(|(id, label, _)| Ctl::button(*id, label.get(lang)))
+                .map(|(id, label)| Ctl::button(*id, label.get(lang)))
                 .collect(),
         ));
         items.push(Item::Help(t(text::QUICK_HELP)));

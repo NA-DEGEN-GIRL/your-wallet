@@ -788,7 +788,7 @@ pub(crate) const CHECK_IDS: [u16; 21] = [
     screens_received::ids::TOGGLE_BASE + 3,
     screens_received::ids::TOGGLE_BASE + 4,
     screens_reset::ids::RESET_SETTINGS_CHECK,
-    crate::app_sidecar::ids::RESET_ACK,
+    crate::ui::screens_sidecar::ids::RESET_ACK,
 ];
 
 /// The edits Enter presses a button from (`enter_primary`), except the image-file path, whose

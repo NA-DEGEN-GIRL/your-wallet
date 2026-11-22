@@ -48,6 +48,10 @@ pub const SOL_BALANCE_REFRESH_MS: u64 = 15_000;
 pub const SOL_SEND_DEBOUNCE_MS: u64 = 500;
 /// Activity rows shown.
 pub const SOL_MAX_ACTIVITY_ROWS: usize = 50;
+/// Rows of the Solana send form's recipient picker (`ui::screens_sol::ids::SEND_PICK_SPAN` is
+/// this). 2026-11-22 (S4d E0c): a wallet const that the ui ids span re-uses; before, the wallet code read
+/// the ui span `ids::SEND_PICK_SPAN`.
+pub const SOL_SEND_PICK_ROWS: u16 = 40;
 
 /// Settings cluster → core cluster (`network::SolCluster::core`, 2026-11-17).
 #[must_use]

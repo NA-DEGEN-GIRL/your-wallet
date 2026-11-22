@@ -25,8 +25,8 @@
 //! | recovery phrases (`screens_mnemonics`) | 13,600–13,699 | settings 복구 단어; card actions 13,620–13,657 (8 rows each), 계정 추가 picker 13,660–13,667, Solana picker 13,670–13,677, Bitcoin key source 13,680–13,687, Zcash drop-down items 13,690–13,697 |
 //! | address book (`screens_book`) | 14,000–15,699 | S14 form 14,000–14,016, favorite chips 14,020–14,027, BTC picker 14,030–14,069, SOL activity `이 주소 저장` 14,080–14,143, S14 rows 14,200–15,699 (★·편집·삭제) |
 //! | `WalletConnect` (`screens_walletconnect`) | 16,000–16,099 | S13 panel, session rows 16,020–16,083 |
-//! | hidden accounts (`app_hidden`) | 16,100–16,174, 16,200–16,589 | Bitcoin toggle 16,100 and rows 16,110–16,174 (2026-11-15), toggles 16,200–16,201, EVM `다시 보이기` rows 16,210–16,399, Solana rows 16,400–16,589 |
-//! | side-file choices (`app_sidecar`) | 16,600–16,609 | meta `닫기`, `고급`, journal `선택 다시 보기`, the Bitcoin form's check after a journal reset |
+//! | hidden accounts (`screens_hidden`; `app_hidden` before 2026-11-22 S4d E0c) | 16,100–16,174, 16,200–16,589 | Bitcoin toggle 16,100 and rows 16,110–16,174 (2026-11-15), toggles 16,200–16,201, EVM `다시 보이기` rows 16,210–16,399, Solana rows 16,400–16,589 |
+//! | side-file choices (`screens_sidecar`; `app_sidecar` before 2026-11-22 S4d E0c) | 16,600–16,609 | meta `닫기`, `고급`, journal `선택 다시 보기`, the Bitcoin form's check after a journal reset |
 //! | first setup·RPC (`screens`) | 16,700–16,783 | S08 '처음 설정' 16,700–16,705, `모두 테스트` 16,706, the chain tabs' `RPC 설정하기` 16,707–16,710, the EVM·Solana failure bands' `이 네트워크 RPC 테스트`·`RPC 설정 열기` 16,711–16,714, failed-network links 16,720–16,783 |
 //! | block explorers (`screens_explorer`) | 17,200–17,709 | S15 card form 17,200–17,203, account cards' `탐색기에서 주소 보기` 17,204–17,208, send results' `탐색기에서 열기`·`탐색기 링크 복사` 17,210–17,217, card rows 17,220–17,319 (`변경`·`기본값으로`), activity `탐색기에서 열기`·`탐색기 링크 복사`: Solana 17,320–17,447, Bitcoin 17,450–17,549, Zcash 17,550–17,709 (EVM rows use offset 7 of their own stride) |
 //! | received history (`screens_received`) | 17,800–18,399 | `받은 내역도 보기` per card 17,800–17,804 (EVM·Solana·Bitcoin·HyperCore·Zcash), `더 보기` 17,805–17,809, rows 17,900 + 100 × chain + 2 × row (0 a click on the hash = copy, 1 ↗ `탐색기에서 열기`), 50 rows per chain |
@@ -136,22 +136,22 @@ pub fn ranges() -> Vec<IdRange> {
         ),
         range(
             "hidden.evm_rows",
-            crate::app_hidden::ids::EVM_ROW_BASE,
-            crate::app_hidden::ids::ROW_SPAN,
+            crate::ui::screens_hidden::ids::EVM_ROW_BASE,
+            crate::ui::screens_hidden::ids::ROW_SPAN,
             1,
-            usize::from(crate::app_hidden::ids::ROW_SPAN),
+            usize::from(crate::ui::screens_hidden::ids::ROW_SPAN),
         ),
         range(
             "hidden.sol_rows",
-            crate::app_hidden::ids::SOL_ROW_BASE,
-            crate::app_hidden::ids::ROW_SPAN,
+            crate::ui::screens_hidden::ids::SOL_ROW_BASE,
+            crate::ui::screens_hidden::ids::ROW_SPAN,
             1,
-            usize::from(crate::app_hidden::ids::ROW_SPAN),
+            usize::from(crate::ui::screens_hidden::ids::ROW_SPAN),
         ),
         range(
             "hidden.btc_rows",
-            crate::app_hidden::ids::BTC_ROW_BASE,
-            crate::app_hidden::ids::BTC_ROW_SPAN,
+            crate::ui::screens_hidden::ids::BTC_ROW_BASE,
+            crate::ui::screens_hidden::ids::BTC_ROW_SPAN,
             1,
             yw_core::btc::meta::MAX_BTC_ACCOUNTS + 1,
         ),
@@ -572,8 +572,8 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
         ("reset", screens_reset::ids::FIXED),
         ("hypercore", screens_hypercore::ids::FIXED),
         ("walletconnect", screens_walletconnect::ids::FIXED),
-        ("hidden", crate::app_hidden::ids::FIXED),
-        ("sidecar", crate::app_sidecar::ids::FIXED),
+        ("hidden", crate::ui::screens_hidden::ids::FIXED),
+        ("sidecar", crate::ui::screens_sidecar::ids::FIXED),
         ("explorer", screens_explorer::ids::FIXED),
         ("received", &screens_received::ids::FIXED),
         ("links", &screens_links::ids::FIXED),

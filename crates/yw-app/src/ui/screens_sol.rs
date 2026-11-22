@@ -297,7 +297,7 @@ pub mod ids {
     /// Picker rows.
     pub const SEND_PICK_BASE: u16 = 7_030;
     /// Picker span.
-    pub const SEND_PICK_SPAN: u16 = 40;
+    pub const SEND_PICK_SPAN: u16 = crate::app_sol::SOL_SEND_PICK_ROWS;
     /// Settings Solana section.
     pub const SECTION_SOL: u16 = 7_100;
     /// Fee cap edit.
@@ -1495,7 +1495,7 @@ impl Wallet {
                     || address.to_base58().contains(&filter)
                     || label.contains(&filter)
             })
-            .take(usize::from(ids::SEND_PICK_SPAN))
+            .take(usize::from(crate::app_sol::SOL_SEND_PICK_ROWS))
             .collect()
     }
 }

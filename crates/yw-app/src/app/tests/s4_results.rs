@@ -3309,7 +3309,8 @@ fn wallet_chains_on_made_up_code() {
 /// `browser_sign_cancelled`, `browser_tick`, `chain_removed_from_sites`, `reset_read_chain`,
 /// `evm_selected_card_gate`) W11's, the phrase fns (`evm_selected_gate`, `mn_send_blocked`,
 /// `evm_account_unconfirmed`, `backup_refused_text`, `mnemonic_account`, `mnemonic_named`,
-/// `mnemonic_source`) W12's, and the render helpers `activity_rows` ([`RENDER_LOCAL_TIME`]) and
+/// `mnemonic_source`) W12's, and the render helpers `activity_rows` (`RENDER_LOCAL_TIME`, gone
+/// 2026-11-22 S4d E0c) and
 /// `picker_entries` flip at W14c (preflight §3.0). Neither file had shell reach left, so the row
 /// only lists its fns. `on_send_timer`'s closure `|app: &Self|` reads a wallet field only (no
 /// call); no other W10 fn takes an `App` in a closure or calls through an `App::`/`Self::` path.
@@ -3459,7 +3460,7 @@ fn wallet_chains_on_made_up_code() {
 /// W14c-1's call scan missed it and W14c-2 gave it its block), `zec_evm_indices`,
 /// `zec_hw_slots`, `zec_last_balance`, `zec_removed` and `hc_foldable`. `activity_rows` and
 /// `meta_activity_row` still format a local time through `format_local`
-/// ([`RENDER_LOCAL_TIME`], plan D-30: S5's).
+/// (`RENDER_LOCAL_TIME`, plan D-30: S5's; 2026-11-22 S4d E0c: no longer, see below).
 /// W15 (2026-11-22, plan §5 W15 as the owner's second batch amends it, critique B-1, B-5): the
 /// wallet's `on_cmd` and its routers (`on_press`, `on_family`, `on_field_edit`; before, `impl
 /// App`), the plain-data entries it now takes (`activate` for `Cmd::Activate`, `timer_part` for
@@ -4735,17 +4736,20 @@ fn shell_reach(
     found
 }
 
-/// The `impl App` render helpers that format a local time through a shell free fn and that
-/// [`WALLET_FNS`] fns reach (2026-11-21, S4 W6 review): `activity_rows` (`ui/screens_evm.rs`, its
-/// `format_local`, `yw_win::time::local_wall_ms`), which W4's `activity_counterparty` and
-/// `on_links` call for a row's counterparty, and its row helper `meta_activity_row` (the same
-/// `format_local`). Plan "Left out of S4": `local_wall_ms` in render helpers is S5's, and the
-/// render helpers wallet fns call flip with them at W14c or move (preflight §3.0); so
-/// [`wallet_fns_name_no_shell`] does not count a call of these as shell reach, and a new one
-/// fails it. 2026-11-22 (S4c W14c-2): both flipped with the wallet fns (`impl Wallet`, row W14c
-/// of [`WALLET_FNS`]); their own call of `format_local` is the one shell free-fn call a listed
-/// fn may make, and only these two may make it.
-const RENDER_LOCAL_TIME: [&str; 2] = ["activity_rows", "meta_activity_row"];
+// 2026-11-22 (S4d E0c): `RENDER_LOCAL_TIME` is gone. `activity_rows` and `meta_activity_row`
+// return the row's time as `ActivityRowView::time_unix_ms`, and the render code
+// (`evm_main_sections`) prints it with `format_local` (plan D-30), so no wallet fn calls a shell
+// free fn and none is excused. Its text was:
+// The `impl App` render helpers that format a local time through a shell free fn and that
+// [`WALLET_FNS`] fns reach (2026-11-21, S4 W6 review): `activity_rows` (`ui/screens_evm.rs`, its
+// `format_local`, `yw_win::time::local_wall_ms`), which W4's `activity_counterparty` and
+// `on_links` call for a row's counterparty, and its row helper `meta_activity_row` (the same
+// `format_local`). Plan "Left out of S4": `local_wall_ms` in render helpers is S5's, and the
+// render helpers wallet fns call flip with them at W14c or move (preflight §3.0); so
+// [`wallet_fns_name_no_shell`] does not count a call of these as shell reach, and a new one
+// fails it. 2026-11-22 (S4c W14c-2): both flipped with the wallet fns (`impl Wallet`, row W14c
+// of [`WALLET_FNS`]); their own call of `format_local` is the one shell free-fn call a listed
+// fn may make, and only these two may make it.
 
 /// `wallet_fns_name_no_shell` (2026-11-21, S4 W3; preflight §3.0 prep rows, critique B-2, B-11,
 /// A-20): every fn of [`WALLET_FNS`] — wallet code that stays `impl App` until W14c flips it in
@@ -4762,7 +4766,7 @@ const RENDER_LOCAL_TIME: [&str; 2] = ["activity_rows", "meta_activity_row"];
 /// ([`shell_reach_on_made_up_code`], [`app_calls_on_made_up_code`]). 2026-11-21 (S4 W6 review): the shell's free fns too
 /// ([`shell_free_fns`]: yw-app module-level fns that name `yw_win`, at any depth): a listed fn
 /// that calls one (`local_time`, plan D-30's local time) reaches the shell, and so does an
-/// `impl App` fn that calls one (a seed of [`shell_closure`]) but [`RENDER_LOCAL_TIME`]; before,
+/// `impl App` fn that calls one (a seed of [`shell_closure`]) but `RENDER_LOCAL_TIME`; before,
 /// only `self.<fn>(` calls were followed, so a wallet fn that called `local_time` passed and
 /// D-30's "no wallet fn calls `local_time`" (spec/04 §1.3 W6) was not checked.
 /// 2026-11-21 (S4 W8 review): two forms stay unchecked until W14c, where the compiler checks
@@ -4785,17 +4789,16 @@ const RENDER_LOCAL_TIME: [&str; 2] = ["activity_rows", "meta_activity_row"];
 /// `impl App` block; the compiler now rejects a shell field or a shell fn on `self` in their
 /// bodies (the two forms above included: `self` is a `Wallet` there), and the scan keeps
 /// checking what the compiler allows, `yw_win` and the shell's free fns (but `format_local` in
-/// [`RENDER_LOCAL_TIME`]). It also checks that `impl Wallet` holds nothing else but the wallet's
+/// `RENDER_LOCAL_TIME`, gone 2026-11-22 S4d E0c). It also checks that `impl Wallet` holds nothing
+/// else but the wallet's
 /// own fns of before the flip ([`WALLET_OWN_FNS`]), so a new wallet fn is listed here.
 /// 2026-11-22 (S4c W14c review): the compiler allows the type name `App` in a wallet fn (a
 /// review probe `let _probe: Option<&App> = None;` in `Wallet::on_sites` compiled and passed),
 /// so every `impl Wallet` fn is also scanned for it ([`names_app`]); before, the W14c-2 text
-/// above said the compiler rejected `App` too.
+/// above said the compiler rejected `App` too. 2026-11-22 (S4d E0c): without the
+/// `RENDER_LOCAL_TIME` exception the fn is short enough for clippy (its `too_many_lines`
+/// expectation went).
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one check per kind of shell reach, then the listed fns and their blocks"
-)]
 fn wallet_fns_name_no_shell() {
     let files: Vec<Src> = production_code()
         .into_iter()
@@ -4827,7 +4830,7 @@ fn wallet_fns_name_no_shell() {
     let shell_free = shell_free_fns(&files, &free_fns(&files));
     assert!(
         shell_free.contains(&(
-            "yw-app/src/app_sidecar.rs".to_owned(),
+            "yw-app/src/ui/screens_sidecar.rs".to_owned(),
             "local_time".to_owned()
         )),
         "shell free fn local_time found"
@@ -4848,17 +4851,16 @@ fn wallet_fns_name_no_shell() {
         free_callers.contains("journal_send_items"),
         "journal_send_items calls local_time"
     );
-    for name in RENDER_LOCAL_TIME {
+    // 2026-11-22 (S4d E0c): no wallet fn is excused any more (`RENDER_LOCAL_TIME` is gone).
+    for name in ["activity_rows", "meta_activity_row"] {
         assert!(
-            wallet.get(name).is_some_and(calls_shell_free),
-            "{name} no longer calls a shell free fn: remove its RENDER_LOCAL_TIME line"
+            wallet
+                .get(name)
+                .is_some_and(|bodies| !calls_shell_free(bodies)),
+            "{name} calls a shell free fn again"
         );
     }
-    seed.extend(
-        free_callers
-            .into_iter()
-            .filter(|name| !RENDER_LOCAL_TIME.contains(&name.as_str())),
-    );
+    seed.extend(free_callers);
     // 2026-11-21 (S4 W3 review): every level, not only the fns that name the shell themselves.
     let shell_fns = shell_closure(&fns, seed);
     let mut errors = Vec::new();
@@ -4872,19 +4874,7 @@ fn wallet_fns_name_no_shell() {
         };
         for (file, body, _) in bodies {
             let caller = src_of(&files, file);
-            let local_time: BTreeSet<String> = if RENDER_LOCAL_TIME.contains(&name) {
-                free_calls(body, caller, &shell_free)
-                    .into_iter()
-                    .filter(|call| call == "format_local")
-                    .map(|call| format!("calls {call}"))
-                    .collect()
-            } else {
-                BTreeSet::new()
-            };
-            let reach: Vec<String> = shell_reach(body, caller, &shell, &shell_fns, &shell_free)
-                .into_iter()
-                .filter(|found| !local_time.contains(found))
-                .collect();
+            let reach: Vec<String> = shell_reach(body, caller, &shell, &shell_fns, &shell_free);
             if !reach.is_empty() {
                 errors.push(format!("{file}: {row} fn {name}: {reach:?}"));
             }

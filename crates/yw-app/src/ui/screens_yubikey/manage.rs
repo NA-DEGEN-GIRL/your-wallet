@@ -7,11 +7,12 @@ use yw_core::yubikey::plan::{CardSlot, PgpKey, address_texts};
 use yw_core::yubikey::record::{HwKeyRecord, RecordedSlot};
 use yw_core::zec::ZecNetwork;
 
-use super::ids::{self, ReslotAction};
+use super::ids;
 use super::text as t;
 use super::{script_label, slot_items, steps_item, zec_network_label};
 use crate::app::App;
 use crate::app_yubikey::CARD_SCRIPTS;
+use crate::app_yubikey::manage::ReslotAction;
 use crate::app_yubikey::manage::text as mt;
 use crate::app_yubikey::manage::{
     Chain, ClearFlow, ClearStep, MAX_RESLOT_INDEX, Preset, ReslotFlow, ReslotStep, YkManage,

@@ -25,7 +25,7 @@ use yw_core::yubikey::CardError;
 use yw_core::yubikey::plan::{KeyRole, PlannedSlot};
 use yw_core::yubikey::record::HwKeyRecord;
 
-use crate::app::{App, Purpose, Wallet};
+use crate::app::{Purpose, Wallet};
 use crate::events::{
     ChainMessageSigned, EvmSigned, KeyJob, KeyOutcome, MessageSigned, SignInfo, SignTicket,
     YubiKeyJobError,
@@ -914,41 +914,6 @@ impl Wallet {
                 text::CONNECT_TAG.fill(self.settings.language, [&self.card_name(serial)])
             )
         })
-    }
-}
-
-impl App {
-    /// The band of an account card or send form whose `YubiKey` is still on its factory PINs
-    /// (spec/10 §9.3, 2026-11-10), with `PIN 설정` (that card's "PIN 설정" in 설정 → `YubiKey`).
-    /// Display only: the card step's refusal stays the last line of defence.
-    pub(crate) fn card_pin_banner(
-        &self,
-        serial: Option<u32>,
-        items: &mut Vec<crate::ui::main_window::Item>,
-    ) {
-        use crate::ui::main_window::{Ctl, Item};
-        use yw_engine::screen::Tone;
-        let Some(serial) = serial else {
-            return;
-        };
-        let lang = self.settings.language;
-        items.push(Item::Banner(
-            text::PIN_BANNER.fill(lang, [&self.card_name(serial)]),
-            Tone::Warn,
-        ));
-        if let Some(row) = self
-            .card
-            .records
-            .iter()
-            .position(|record| record.serial == serial)
-            .and_then(|row| u16::try_from(row).ok())
-            .filter(|row| *row < crate::ui::screens_yubikey::ids::PIN_GATE_SPAN)
-        {
-            items.push(Item::Row(vec![Ctl::button(
-                crate::ui::screens_yubikey::ids::PIN_GATE_BASE + row,
-                text::SET_PIN.get(lang),
-            )]));
-        }
     }
 }
 

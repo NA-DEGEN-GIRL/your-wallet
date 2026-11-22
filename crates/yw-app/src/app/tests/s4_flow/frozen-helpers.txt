@@ -199,7 +199,7 @@ yw-app/src/app/tests/s3_census.rs fn sections 59261af7cc9a1298 mutable
 yw-app/src/app/tests/s3_census.rs fn commands_golden 771ccdbd82f94dca mutable
 yw-app/src/app/tests/s3_census.rs fn compare ab9d60a0ce1dfeee fixed
 yw-app/src/app/tests/s3_census.rs fn assert_checks_listed 9a86b0ae06919515 mutable
-yw-app/src/app/tests/s3_census.rs const CHECK_IDS 781ec0f119b026df mutable
+yw-app/src/app/tests/s3_census.rs const CHECK_IDS 15431efb4942e994 mutable
 yw-app/src/app/tests/s3_census.rs const ENTER_EDITS 97d99385d7c2886c mutable
 yw-app/src/app/tests/s3_census.rs fn type_one 3e2bbd8b5553e3d3 mutable
 yw-app/src/app/tests/s3_census.rs fn type_x f5e6c57fadc6a46e mutable

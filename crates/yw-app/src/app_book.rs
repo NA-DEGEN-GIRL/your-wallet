@@ -24,13 +24,16 @@ use crate::app::{Confirm, Screen, Wallet};
 use crate::errors::ErrorCode;
 use crate::meta::{BookChain, Contact, ListError, MAX_ADDRESS_BOOK};
 use crate::text::is_valid_label;
-use crate::ui::screens_book::ids;
 use yw_engine::cmd::{BookPress, BookRowAction, Row};
 use yw_engine::effect::Effect;
 use yw_engine::form::EditField;
 
 /// Favorite chips shown above a recipient field.
 pub const FAVORITE_CHIPS: usize = 5;
+/// Rows of the Bitcoin send form's book picker (`ui::screens_book::ids::BTC_PICK_SPAN` is this).
+/// 2026-11-22 (S4d E0c): a wallet const that the ui ids span re-uses; before, the wallet code read
+/// the ui span `ids::BTC_PICK_SPAN`.
+pub const BTC_PICK_ROWS: u16 = 40;
 
 /// Address-book texts (spec/04 §2.10, §2.15; English spec/14 §5).
 pub mod text {
@@ -896,7 +899,7 @@ impl Wallet {
                     || entry.address.to_ascii_lowercase().contains(&filter)
                     || entry.label.to_lowercase().contains(&filter)
             })
-            .take(usize::from(ids::BTC_PICK_SPAN))
+            .take(usize::from(BTC_PICK_ROWS))
             .collect()
     }
 }

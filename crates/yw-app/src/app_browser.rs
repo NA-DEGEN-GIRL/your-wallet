@@ -22,7 +22,6 @@ use crate::browser::{
     BrowserCore, ChainEntry, DappEvent, DappSink, GrantChange, Reply, RequestKey, SiteKind,
     SiteRequest, VaultView, WalletView, outcome_error, pinned_extension_id,
 };
-use crate::errors::ErrorCode;
 use crate::events::{EventQueue, MessageSignFailure, MessageSigned, SignTicket};
 use crate::flow::evm::track::BroadcastOutcome;
 use crate::flow::evm::{Clock, SharedTransport, chain_info};
@@ -257,32 +256,6 @@ impl BrowserUi {
     /// order.
     pub fn stop(&mut self) {
         self.core.stop();
-    }
-}
-
-/// The status-line text (spec/04 §2.6) in `lang`. 2026-11-21 (S4 W1): the pipe facts come from
-/// the shell's `pipe` (before, from `browser`, which held them). The dispatcher and the pipe end
-/// are attached together; a dispatcher with no pipe end (tests) reads E-PIPE-001, as a
-/// dispatcher with no server and no recorded failure did before.
-#[must_use]
-pub fn status_text(
-    lang: yw_core::lang::Lang,
-    browser: Option<&BrowserUi>,
-    pipe: Option<&crate::browser::server::PipeHost>,
-) -> String {
-    match (browser, pipe) {
-        (Some(browser), Some(pipe)) if pipe.server.is_some() => match browser.connections {
-            0 => text::STATUS_NONE.get(lang).to_owned(),
-            count => text::STATUS_CONNECTED.fill(lang, [&count.to_string()]),
-        },
-        (Some(_), pipe) => text::STATUS_UNAVAILABLE.fill(
-            lang,
-            [pipe
-                .and_then(|pipe| pipe.error)
-                .unwrap_or(ErrorCode::Pipe001)
-                .code()],
-        ),
-        (None, _) => text::STATUS_UNAVAILABLE.fill(lang, [ErrorCode::Pipe001.code()]),
     }
 }
 

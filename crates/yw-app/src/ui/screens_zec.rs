@@ -188,12 +188,12 @@ pub mod ids {
     /// before 2026-11-15).
     pub const SOURCE_EVM_BASE: u16 = 8_020;
     /// EVM item span.
-    pub const SOURCE_EVM_SPAN: u16 = 16;
+    pub const SOURCE_EVM_SPAN: u16 = crate::app_zec::ZEC_SOURCE_EVM_ROWS;
     /// Drop-down items of the `YubiKey` Zcash keys (position in the slot list; buttons before
     /// 2026-11-15).
     pub const HW_BASE: u16 = 8_040;
     /// `YubiKey` item span.
-    pub const HW_SPAN: u16 = 8;
+    pub const HW_SPAN: u16 = crate::app_zec::ZEC_HW_ROWS;
     /// `개인키 가져오기` (spec/12 §2.3).
     pub const IMPORT: u16 = 8_050;
     /// `개인키 보기` of the account's imported key.
@@ -354,7 +354,7 @@ impl Wallet {
                 out.push(index);
             }
         }
-        out.truncate(usize::from(ids::HW_SPAN));
+        out.truncate(usize::from(crate::app_zec::ZEC_HW_ROWS));
         out
     }
 
@@ -364,7 +364,7 @@ impl Wallet {
                 .iter()
                 .filter(|account| !account.hidden)
                 .map(|account| account.index)
-                .take(usize::from(ids::SOURCE_EVM_SPAN))
+                .take(usize::from(crate::app_zec::ZEC_SOURCE_EVM_ROWS))
                 .collect()
         })
     }

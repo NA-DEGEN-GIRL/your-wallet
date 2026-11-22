@@ -27,7 +27,6 @@ use crate::explain::{
     explain_once,
 };
 use crate::logging::{self, Field};
-use crate::ui::screens_llm::{ids, preset_url};
 use yw_engine::cmd::LlmPress;
 use yw_engine::effect::Effect;
 use yw_engine::explain::config::DraftNotes;
@@ -225,6 +224,21 @@ pub fn log_request(host: &str, kind: RequestKind, ended: &Ended, stats: Option<&
     );
 }
 
+/// The endpoint of a `빠른 입력` preset press (spec/06 §2.1, 2026-11-11); `None` for every other
+/// press. 2026-11-22 (S4d E0c): keyed by the press; before, `ui::screens_llm::preset_url` of the
+/// button's control id (the endpoints were the third column of `ui::screens_llm::PRESETS`).
+#[must_use]
+pub const fn preset_url(press: LlmPress) -> Option<&'static str> {
+    Some(match press {
+        LlmPress::PresetOpenAi => "https://api.openai.com/v1/chat/completions",
+        LlmPress::PresetClaude => "https://api.anthropic.com/v1/chat/completions",
+        LlmPress::PresetOpenRouter => "https://openrouter.ai/api/v1/chat/completions",
+        LlmPress::PresetOllama => "http://127.0.0.1:11434/v1/chat/completions",
+        LlmPress::PresetLmStudio => "http://127.0.0.1:1234/v1/chat/completions",
+        _ => return None,
+    })
+}
+
 impl Wallet {
     /// (Re)creates or drops the `yw-llm` worker to match the settings and the key (spec/06 §9):
     /// off → `None`; a changed endpoint, model, format, `max_tokens`, reasoning effort or key → a
@@ -361,7 +375,7 @@ impl Wallet {
             | LlmPress::PresetOpenRouter
             | LlmPress::PresetOllama
             | LlmPress::PresetLmStudio => {
-                if let Some(url) = preset_url(ids::id_of(press)) {
+                if let Some(url) = preset_url(press) {
                     self.llm_preset(url);
                 }
             }

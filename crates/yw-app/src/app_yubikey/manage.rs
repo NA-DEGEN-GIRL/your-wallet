@@ -178,6 +178,44 @@ pub enum Chain {
     Shared,
 }
 
+/// What a re-slot slot control sets.
+/// 2026-11-22 (S4d E0c): moved from `ui::screens_yubikey::ids` (wallet code maps the press).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReslotAction {
+    /// The chain radio.
+    Chain(Chain),
+    /// The address-type radio.
+    Script(ScriptType),
+}
+
+/// The slot and action of a re-slot radio press; `None` for every other press.
+/// 2026-11-22 (S4d E0c): moved from `ui::screens_yubikey::ids` (wallet code maps the press).
+#[must_use]
+pub const fn reslot_of(press: YkManagePress) -> Option<(PgpKey, ReslotAction)> {
+    Some(match press {
+        YkManagePress::ReslotEvm(key) => (key, ReslotAction::Chain(Chain::Evm)),
+        YkManagePress::ReslotBtc(key) => (key, ReslotAction::Chain(Chain::Btc)),
+        YkManagePress::ReslotZec(key) => (key, ReslotAction::Chain(Chain::Zec)),
+        YkManagePress::ReslotShared(key) => (key, ReslotAction::Chain(Chain::Shared)),
+        YkManagePress::ReslotScript(key, script) => (key, ReslotAction::Script(script)),
+        _ => return None,
+    })
+}
+
+/// The preset of a preset radio press; `None` for every other press.
+/// 2026-11-22 (S4d E0c): moved from `ui::screens_yubikey::ids` (wallet code maps the press).
+#[must_use]
+pub const fn preset_of(press: YkManagePress) -> Option<Preset> {
+    Some(match press {
+        YkManagePress::PresetEvmBtc => Preset::EvmBtc,
+        YkManagePress::PresetEvmZec => Preset::EvmZec,
+        YkManagePress::PresetBtcZec => Preset::BtcZec,
+        YkManagePress::PresetEvmEvm => Preset::EvmEvm,
+        YkManagePress::PresetCustom => Preset::Custom,
+        _ => return None,
+    })
+}
+
 impl Chain {
     /// Every chain in id order (the radios).
     pub const ALL: [Self; 4] = [Self::Evm, Self::Btc, Self::Zec, Self::Shared];
@@ -1215,7 +1253,6 @@ impl Wallet {
     /// id, and `false` for an id that was not one of them).
     #[expect(clippy::too_many_lines, reason = "one arm per control")]
     pub(crate) fn on_yk_manage_press(&mut self, press: YkManagePress) {
-        use crate::ui::screens_yubikey::ids;
         match press {
             YkManagePress::Reslot(Row(row)) => {
                 self.yk_reslot_open(usize::from(row));
@@ -1231,12 +1268,12 @@ impl Wallet {
             }
             _ => {}
         }
-        if let Some((key, action)) = ids::reslot_of(press) {
+        if let Some((key, action)) = reslot_of(press) {
             if let Some(flow) = self.reslot() {
                 let form = flow.form_mut(key);
                 match action {
-                    ids::ReslotAction::Chain(chain) => form.chain = chain,
-                    ids::ReslotAction::Script(script) => form.script = script,
+                    ReslotAction::Chain(chain) => form.chain = chain,
+                    ReslotAction::Script(script) => form.script = script,
                 }
                 flow.preset = Preset::Custom;
                 flow.error = None;
@@ -1244,7 +1281,7 @@ impl Wallet {
             self.refresh();
             return;
         }
-        if let Some(preset) = ids::preset_of(press) {
+        if let Some(preset) = preset_of(press) {
             if let Some(flow) = self.reslot() {
                 flow.apply_preset(preset);
                 flow.error = None;

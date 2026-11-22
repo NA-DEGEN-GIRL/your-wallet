@@ -250,7 +250,11 @@ pub fn btc_card_role(
 /// One activity row of the S10 list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActivityRowView {
-    /// Time, account label, title.
+    /// When it was made (Unix milliseconds); the render code prints it as local time before
+    /// [`Self::head`] (2026-11-22, S4d E0c: the wallet formats no local time, plan D-30; before,
+    /// `head` began with it).
+    pub time_unix_ms: u64,
+    /// Account label and title (the time is [`Self::time_unix_ms`]).
     pub head: String,
     /// Status.
     pub status: String,

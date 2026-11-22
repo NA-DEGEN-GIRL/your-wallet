@@ -19,7 +19,6 @@ use crate::explorer::{
 };
 use crate::logging::{self, Field};
 use crate::network::{NetworkId, SolCluster};
-use crate::ui::screens_explorer::ids;
 use yw_engine::cmd::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction, LinkTarget, Row};
 use yw_engine::effect::Effect;
 use yw_engine::form::EditField;
@@ -104,6 +103,23 @@ fn explorer_exe(arg: impl AsRef<std::ffi::OsStr>) -> bool {
         .arg(arg)
         .spawn()
         .is_ok()
+}
+
+/// Rows of the S15 card (at most 7 + 32 + 2 + 2 + 2 + 2 = 47 networks;
+/// `ui::screens_explorer::ids::ROW_SPAN` is this × `ROW_STRIDE`). 2026-11-22 (S4d E0c): a wallet
+/// const that the ui ids span re-uses; before, the wallet code read `ids::ROW_SPAN / ROW_STRIDE`.
+pub const EXPLORER_ROWS: u16 = 50;
+
+/// The activity list an activity row's ↗ or 🔗 belongs to (2026-11-22, S4d E0c: before, the
+/// list was named by its first control id, `ids::{SOL,BTC,ZEC}_ACTIVITY_BASE`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActivityList {
+    /// Solana.
+    Sol,
+    /// Bitcoin.
+    Btc,
+    /// Zcash.
+    Zec,
 }
 
 /// The S15 card's state (2026-11-21, S4 W1: the launcher left for the shell, `App::launcher`).
@@ -284,7 +300,7 @@ impl Wallet {
         networks.push(ExplorerNet::HyperCore(
             yw_core::hypercore::HcNetwork::Testnet,
         ));
-        networks.truncate(usize::from(ids::ROW_SPAN / ids::ROW_STRIDE));
+        networks.truncate(usize::from(EXPLORER_ROWS));
         networks
     }
 
@@ -504,17 +520,16 @@ impl Wallet {
         }
     }
 
-    /// The transaction of activity row `row` of the Solana, Bitcoin or Zcash list (`base` names
-    /// the list), as drawn.
-    fn explorer_activity(&self, base: u16, row: usize) -> Option<(ExplorerNet, String)> {
-        match base {
-            ids::SOL_ACTIVITY_BASE => self.sol_activity_tx_ids().get(row).map(|tx_id| {
+    /// The transaction of activity row `row` of the Solana, Bitcoin or Zcash list, as drawn.
+    fn explorer_activity(&self, list: ActivityList, row: usize) -> Option<(ExplorerNet, String)> {
+        match list {
+            ActivityList::Sol => self.sol_activity_tx_ids().get(row).map(|tx_id| {
                 (
                     ExplorerNet::Solana(self.settings.solana.cluster),
                     tx_id.clone(),
                 )
             }),
-            ids::BTC_ACTIVITY_BASE => {
+            ActivityList::Btc => {
                 let ctx = self.btc_ctx();
                 self.btc.activity_rows(&ctx).get(row).map(|view| {
                     (
@@ -523,13 +538,12 @@ impl Wallet {
                     )
                 })
             }
-            ids::ZEC_ACTIVITY_BASE => self
+            ActivityList::Zec => self
                 .zec_records()
                 .iter()
                 .rev()
                 .nth(row)
                 .map(|record| (ExplorerNet::Zcash(self.zec_network()), record.txid_hex())),
-            _ => None,
         }
     }
 
@@ -570,20 +584,25 @@ impl Wallet {
                 }
             }
             ExplorerPress::SolActivity(row, action) => {
-                self.explorer_activity_link(ids::SOL_ACTIVITY_BASE, row, action);
+                self.explorer_activity_link(ActivityList::Sol, row, action);
             }
             ExplorerPress::BtcActivity(row, action) => {
-                self.explorer_activity_link(ids::BTC_ACTIVITY_BASE, row, action);
+                self.explorer_activity_link(ActivityList::Btc, row, action);
             }
             ExplorerPress::ZecActivity(row, action) => {
-                self.explorer_activity_link(ids::ZEC_ACTIVITY_BASE, row, action);
+                self.explorer_activity_link(ActivityList::Zec, row, action);
             }
         }
     }
 
-    /// ↗ or 🔗 of activity row `row` of the list starting at `base`.
-    fn explorer_activity_link(&mut self, base: u16, Row(row): Row, action: ExplorerLinkAction) {
-        if let Some((net, hash)) = self.explorer_activity(base, usize::from(row)) {
+    /// ↗ or 🔗 of activity row `row` of `list`.
+    fn explorer_activity_link(
+        &mut self,
+        list: ActivityList,
+        Row(row): Row,
+        action: ExplorerLinkAction,
+    ) {
+        if let Some((net, hash)) = self.explorer_activity(list, usize::from(row)) {
             match action {
                 ExplorerLinkAction::Open => self.open_explorer_tx(net, &hash),
                 ExplorerLinkAction::Copy => self.copy_explorer_tx(net, &hash),

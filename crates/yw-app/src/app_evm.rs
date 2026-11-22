@@ -62,6 +62,10 @@ pub const SEND_QUOTE_PAUSE_MS: u64 = 250;
 pub(crate) const SEND_TIMER_ID: usize = 21;
 /// Activity rows shown.
 pub const MAX_ACTIVITY_ROWS: usize = 50;
+/// Rows of the S11 send form's recipient picker (`ui::screens_evm::ids::SEND_PICK_SPAN` is this).
+/// 2026-11-22 (S4d E0c): a wallet const that the ui ids span re-uses; before, the wallet code read
+/// the ui span `ids::SEND_PICK_SPAN`.
+pub const SEND_PICK_ROWS: u16 = 40;
 /// EVM flow texts of the app (spec/03 §4, spec/04 §2.7, §2.16, §2.17; English spec/14 §5).
 pub mod text {
     yw_core::texts! {

@@ -59,7 +59,7 @@ pub mod ids {
     /// Bitcoin picker rows.
     pub const BTC_PICK_BASE: u16 = 14_030;
     /// Bitcoin picker span.
-    pub const BTC_PICK_SPAN: u16 = 40;
+    pub const BTC_PICK_SPAN: u16 = crate::app_book::BTC_PICK_ROWS;
     /// Solana activity `이 주소 저장` (one per row, ≤ `SOL_MAX_ACTIVITY_ROWS`).
     pub const SOL_ACTIVITY_BASE: u16 = 14_080;
     /// Solana activity span.

@@ -93,7 +93,7 @@ pub mod ids {
     /// Picker rows.
     pub const SEND_PICK_BASE: u16 = 960;
     /// Picker span.
-    pub const SEND_PICK_SPAN: u16 = 40;
+    pub const SEND_PICK_SPAN: u16 = crate::app_evm::SEND_PICK_ROWS;
     /// 주소 복사.
     pub const COPY_ADDRESS: u16 = 1_000;
     /// Receive QR: EIP-681 (`yw_engine::screen::EvmQrKind::Eip681`).
@@ -528,6 +528,9 @@ impl Wallet {
     }
 
     /// Activity rows of the active chain: journal groups first, then meta activity.
+    /// 2026-11-22 (S4d E0c): a row carries its time as `time_unix_ms` and the render code
+    /// (`evm_main_sections`) prints it as local time; before, `head` began with
+    /// `format_local` of it (plan D-30: no wallet fn formats a local time).
     #[must_use]
     pub fn activity_rows(&self) -> Vec<ActivityRowView> {
         let chain_id = self.settings.evm_chain_id;
@@ -573,9 +576,9 @@ impl Wallet {
                 String::new()
             };
             rows.push(ActivityRowView {
+                time_unix_ms: shown.created_unix_ms,
                 head: format!(
-                    "{} · {} · {}{nonce}",
-                    format_local(shown.created_unix_ms),
+                    "{} · {}{nonce}",
                     self.account_label(&shown.account.to_lower_hex()),
                     shown.label,
                 ),
@@ -622,9 +625,9 @@ impl Wallet {
             value.push_str(text::HIDDEN_TOKEN_TAG.get(lang));
         }
         ActivityRowView {
+            time_unix_ms: entry.time_unix_ms,
             head: format!(
-                "{} · {} · {} · {value}",
-                format_local(entry.time_unix_ms),
+                "{} · {} · {value}",
                 self.account_label(&entry.account),
                 entry.title
             ),
@@ -637,6 +640,35 @@ impl Wallet {
     }
 }
 
+/// The status-line text (spec/04 §2.6) in `lang`. 2026-11-21 (S4 W1): the pipe facts come from
+/// the shell's `pipe` (before, from `browser`, which held them). The dispatcher and the pipe end
+/// are attached together; a dispatcher with no pipe end (tests) reads E-PIPE-001, as a
+/// dispatcher with no server and no recorded failure did before. 2026-11-22 (S4d E0c): moved
+/// from `app_browser::status_text` (render code: it reads the shell's `PipeHost`).
+#[must_use]
+pub fn browser_status_text(
+    lang: yw_core::lang::Lang,
+    browser: Option<&crate::app_browser::BrowserUi>,
+    pipe: Option<&crate::browser::server::PipeHost>,
+) -> String {
+    match (browser, pipe) {
+        (Some(browser), Some(pipe)) if pipe.server.is_some() => match browser.connections {
+            0 => crate::app_browser::text::STATUS_NONE.get(lang).to_owned(),
+            count => crate::app_browser::text::STATUS_CONNECTED.fill(lang, [&count.to_string()]),
+        },
+        (Some(_), pipe) => crate::app_browser::text::STATUS_UNAVAILABLE.fill(
+            lang,
+            [pipe
+                .and_then(|pipe| pipe.error)
+                .unwrap_or(ErrorCode::Pipe001)
+                .code()],
+        ),
+        (None, _) => {
+            crate::app_browser::text::STATUS_UNAVAILABLE.fill(lang, [ErrorCode::Pipe001.code()])
+        }
+    }
+}
+
 impl App {
     /// The S10 status line (spec/04 §2.6).
     #[must_use]
@@ -644,8 +676,7 @@ impl App {
         let chain_id = self.settings.evm_chain_id;
         let network = NetworkId::Eip155(chain_id);
         let lang = self.settings.language;
-        let browser =
-            crate::app_browser::status_text(lang, self.browser.as_ref(), self.pipe.as_ref());
+        let browser = browser_status_text(lang, self.browser.as_ref(), self.pipe.as_ref());
         let rpc = if !self.apikeys.has(crate::apikeys::KeyName::Rpc(network)) {
             text::RPC_NO_ADDRESS.get(lang)
         } else if let Some(kind) = self.evm.blocked(chain_id) {
@@ -897,7 +928,13 @@ impl App {
                     .saturating_mul(ids::ACTIVITY_STRIDE),
             );
             // The status at the end of the first line (2026-11-12: a line of its own before).
-            items.push(Item::Text(format!("{} · {}", row.head, row.status)));
+            // 2026-11-22 (S4d E0c): the local time is formatted here, not in `activity_rows`.
+            items.push(Item::Text(format!(
+                "{} · {} · {}",
+                format_local(row.time_unix_ms),
+                row.head,
+                row.status
+            )));
             // 2026-11-11: the recipient whole (ends emphasized) and the hash on lines of their
             // own; a click copies either (the wallet's own signed journal — the received
             // history's senders never are), the explorer and address-book actions are icons
@@ -1515,7 +1552,7 @@ impl App {
 
 impl Wallet {
     /// The picker rows in display order: book entries and own accounts matching the filter of
-    /// the rows on screen (`SendForm::picker_filter`), at most [`ids::SEND_PICK_SPAN`].
+    /// the rows on screen (`SendForm::picker_filter`), at most [`crate::app_evm::SEND_PICK_ROWS`].
     fn picker_known(&self) -> Vec<crate::flow::evm::form::KnownAddress> {
         let filter = self.evm.send.picker_filter.trim().to_ascii_lowercase();
         self.known_addresses()
@@ -1529,7 +1566,7 @@ impl Wallet {
                         .contains(filter.trim_start_matches("0x"))
                     || entry.name.to_ascii_lowercase().contains(&filter)
             })
-            .take(usize::from(ids::SEND_PICK_SPAN))
+            .take(usize::from(crate::app_evm::SEND_PICK_ROWS))
             .collect()
     }
 

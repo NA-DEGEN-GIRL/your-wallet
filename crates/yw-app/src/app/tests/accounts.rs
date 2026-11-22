@@ -516,7 +516,7 @@ fn bitcoin_rename_hide_and_unhide() {
             .iter()
             .any(|item| matches!(item, Item::Mono(text) if *text == grouped))
     );
-    assert!(app.on_hidden_command(crate::app_hidden::ids::BTC_ROW_BASE));
+    assert!(app.on_hidden_command(crate::ui::screens_hidden::ids::BTC_ROW_BASE));
     assert!(!app.meta.as_ref().unwrap().btc_hidden(network, card));
     assert_eq!(entries(&mut app, Tab::Btc).len(), 4);
     // Read back: the name stays, nothing hidden.

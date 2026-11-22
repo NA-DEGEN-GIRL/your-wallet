@@ -158,6 +158,22 @@ const fn default_choice(slot: CardSlot) -> Choice {
     }
 }
 
+/// The row and choice of a choice radio press; `None` for every other press.
+/// 2026-11-22 (S4d E0c): moved from `ui::screens_yubikey::ids` (wallet code maps the press).
+#[must_use]
+pub fn choice_of(press: YkConnectPress) -> Option<(usize, Choice)> {
+    use yw_engine::cmd::Row;
+    let (Row(row), choice) = match press {
+        YkConnectPress::ChoiceEvm(row) => (row, Choice::Evm),
+        YkConnectPress::ChoiceBtc(row, script) => (row, Choice::Btc(script)),
+        YkConnectPress::ChoiceZec(row) => (row, Choice::Zec),
+        YkConnectPress::ChoiceSol(row) => (row, Choice::Sol),
+        YkConnectPress::ChoiceSkip(row) => (row, Choice::Skip),
+        _ => return None,
+    };
+    Some((usize::from(row), choice))
+}
+
 impl Wallet {
     /// The networks a connected Bitcoin / Zcash key is used on: the settings' Bitcoin network,
     /// and the Zcash network of the settings when Zcash is on (else the one matching Bitcoin).
@@ -485,7 +501,7 @@ impl Wallet {
     /// Presses of the connect flow (2026-11-18, S3 C11: a `YkConnectPress`; before, the control
     /// id, and `false` for an id that was not one of them).
     pub(crate) fn on_yk_connect(&mut self, press: YkConnectPress) {
-        if let Some((row, choice)) = crate::ui::screens_yubikey::ids::choice_of(press) {
+        if let Some((row, choice)) = choice_of(press) {
             self.yk_connect_choose(row, choice);
             return;
         }
