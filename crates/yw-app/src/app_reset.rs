@@ -20,10 +20,10 @@ use crate::errors::ErrorCode;
 use crate::events::KeyJob;
 use crate::lock::WalletLock;
 use crate::logging::{self, Field};
-use crate::store::reset::{ResetError, ResetReport};
 use yw_engine::cmd::ResetPress;
 use yw_engine::form::EditField;
 use yw_engine::secret::{BACKUP_ACK_HOLD_MS, HoldGate};
+use yw_engine::wallet_files::{ResetError, ResetReport};
 
 /// A wait longer than this shows T-WAIT-STALLED.
 pub const WAIT_TIMEOUT_MS: u64 = 30_000;

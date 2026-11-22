@@ -13,7 +13,7 @@ use yw_core::lang::Text;
 use yw_core::secret::Zeroizing;
 use yw_core::vault::RecordId;
 
-use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen, Wallet};
+use crate::app::{AppMode, Confirm, PasswordAction, Purpose, Screen, Wallet};
 use crate::errors::{key_code, vault_code};
 use crate::events::{ImportedAccount, KeyJob};
 use crate::logging::{self, Field};
@@ -777,24 +777,5 @@ impl Wallet {
                 }
             }
         }
-    }
-}
-
-impl App {
-    /// Test adapter (S3 C5, plan §3.2): presses imported-key control `id` directly, as the tests
-    /// did before; `false` when `id` is not one.
-    #[cfg(test)]
-    pub(crate) fn on_keys_command(&mut self, id: u16) -> bool {
-        self.press_family(
-            id,
-            |press| match press {
-                yw_engine::cmd::Press::Keys(press) => Some(press),
-                _ => None,
-            },
-            |app, press| {
-                app.on_keys(press);
-                true
-            },
-        )
     }
 }

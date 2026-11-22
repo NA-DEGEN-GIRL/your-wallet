@@ -1,10 +1,13 @@
 //! The tests of `app_evm.rs` that build an `App` (2026-11-21, S4 W0, spec/09 §2.1),
 //! moved unchanged from its inline `mod tests` (which keeps the tests that build no `App`).
-//! A `#[cfg(test)] #[path]` child of `crate::app_evm`, not of `app::tests`: it keeps the
-//! access of the inline module, so no production item of that file is widened.
+//! It was a `#[cfg(test)] #[path]` child of `crate::app_evm`, not of `app::tests`, to keep the
+//! access of the inline module, so no production item of that file was widened. 2026-11-22 (S4d
+//! E0c, spec/09 §2.1): a child of `app::tests` (that file moves to yw-engine at S4d E1 and these
+//! tests need `App`); what it reaches is `pub(crate)` now (test-only use): `Wallet::on_quote` and
+//! the shared helper `app_evm::tests::record` (its `tests` module too).
 
-use super::tests::record;
-use super::{SEND_DEBOUNCE_MS, SEND_QUICK_MS};
+use crate::app_evm::tests::record;
+use crate::app_evm::{SEND_DEBOUNCE_MS, SEND_QUICK_MS};
 use crate::app_sol::ReviewBlocker;
 
 /// Journal records (every chain) and EVM activity rows feed the look-alike history; book
@@ -260,10 +263,11 @@ fn replacing_a_group_uses_the_account_key_or_refuses() {
     use yw_core::bip32::path::AccountIndex;
     use yw_core::vault::EvmKeySource;
 
-    use super::{QueuedItem, ReplaceMode};
     use crate::apikeys::ApiKeys;
     use crate::app::{App, AppMode, Paths};
+    use crate::app_evm::QueuedItem;
     use crate::events::JournalView;
+    use crate::flow::evm::prepare::ReplaceMode;
     use crate::meta::{Account, Meta};
     use crate::settings::Settings;
 
@@ -293,7 +297,7 @@ fn replacing_a_group_uses_the_account_key_or_refuses() {
     assert!(
         app.banners
             .iter()
-            .any(|banner| banner.text == super::text::REPLACE_NO_KEY.ko)
+            .any(|banner| banner.text == crate::app_evm::text::REPLACE_NO_KEY.ko)
     );
     // The sender is YubiKey EVM account 3.
     app.meta.as_mut().unwrap().hw_accounts.evm = vec![Account {

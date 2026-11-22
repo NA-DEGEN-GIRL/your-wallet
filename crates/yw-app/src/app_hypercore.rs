@@ -1072,9 +1072,3 @@ impl Wallet {
         }
     }
 }
-
-/// The tests that build an `App` (2026-11-21, S4 W0, spec/09 §2.1), in
-/// `app/tests/hypercore.rs`: a child of this module, so that they keep its access.
-#[cfg(test)]
-#[path = "app/tests/hypercore.rs"]
-mod app_tests;

@@ -6050,3 +6050,221 @@ fn the_main_hidden_mirror_follows_its_cmd_and_the_sync() {
     drop(app);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The files whose wallet code moves to yw-engine at S4d E1 (the S4d preflight's "moving
+/// files"), but `app.rs` and `app_approval.rs`: those keep the shell's `App`, its window half
+/// and `Paths` until E0b and E1 (`app_approval.rs` stays a yw-app file after E1; source check S6
+/// covers its flow fns), so S11 leaves them out (preflight critic C10).
+const MOVING_FILES: [&str; 30] = [
+    "app_book.rs",
+    "app_browser.rs",
+    "app_btc.rs",
+    "app_btc_commands.rs",
+    "app_btc_view.rs",
+    "app_card.rs",
+    "app_chain_sites.rs",
+    "app_evm.rs",
+    "app_evm_commands.rs",
+    "app_explorer.rs",
+    "app_hidden.rs",
+    "app_hypercore.rs",
+    "app_keys.rs",
+    "app_llm.rs",
+    "app_mnemonics.rs",
+    "app_received.rs",
+    "app_reset.rs",
+    "app_sidecar.rs",
+    "app_sol.rs",
+    "app_sol_commands.rs",
+    "app_sol_dapp.rs",
+    "app_tokens.rs",
+    "app_walletconnect.rs",
+    "app_yubikey.rs",
+    "app_yubikey/connect.rs",
+    "app_yubikey/manage.rs",
+    "app_zec.rs",
+    "approval_flow.rs",
+    "secret_session.rs",
+    "lock.rs",
+];
+
+/// What [`moving_files_name_no_shell`] lets through, each until S4d E1: `Submission` stays in
+/// yw-app `ui::secret` until E1, because the `mutable` frozen helper `app/secret_seam.rs`
+/// (`impl super::App`, `test_submit`) names that path and E1 re-records it anyway (S4d E0a,
+/// preflight critic C2 i).
+const MOVING_FILE_EXCEPTIONS: [(&str, &str); 1] = [(
+    "yw-app/src/secret_session.rs",
+    "crate::ui::secret::Submission",
+)];
+
+/// The `crate::ui` names of the S2 facade (yw-engine modules re-exported in `ui/mod.rs` until
+/// S4d E3), which a moving file may still name: they are engine code.
+const UI_FACADE: [&str; 7] = [
+    "approval",
+    "interaction",
+    "text_layout",
+    "approval_text",
+    "secure_field",
+    "badge",
+    "approval_view",
+];
+
+/// The yw-app shell modules a moving file may not name (`crate::<module>`).
+const SHELL_MODULES: [&str; 15] = [
+    "store",
+    "app_store",
+    "card_pcsc",
+    "explain_transport",
+    "system_clock",
+    "log_file",
+    "shell_msg",
+    "window_state",
+    "build_info",
+    "app_scroll",
+    "app_effects",
+    "app_extension",
+    "app_rpc_import",
+    "explorer_launcher",
+    "wc_platform",
+];
+
+/// The shell names in `code` ([`code_only`] and [`without_test_items`] text): a non-facade
+/// `ui::` path, `ids::`, `Item::`/`Ctl::`, `ControlSet`, `yw_win`, a yw-app shell module or
+/// `browser::server`, and yw-engine's banned calls (`clippy.toml`: `std::fs`, `std::env`,
+/// `SystemTime`, `Path`/`PathBuf`).
+fn shell_names(code: &str) -> BTreeSet<String> {
+    let bytes = code.as_bytes();
+    let mut found = BTreeSet::new();
+    let word_before = |at: usize| at > 0 && is_ident(bytes[at - 1]);
+    for (at, _) in code.match_indices("ui::") {
+        if word_before(at) {
+            continue;
+        }
+        let rest = &code[at + 4..];
+        let name: String = rest
+            .bytes()
+            .take_while(|&b| is_ident(b))
+            .map(char::from)
+            .collect();
+        if name.is_empty() || !UI_FACADE.contains(&name.as_str()) {
+            found.insert(format!("ui::{name}"));
+        }
+    }
+    for word in [
+        "ids",
+        "Item",
+        "Ctl",
+        "ControlSet",
+        "yw_win",
+        "SystemTime",
+        "Path",
+        "PathBuf",
+    ] {
+        let path = format!("{word}::");
+        let hit = if matches!(word, "ids" | "Item" | "Ctl") {
+            code.match_indices(&path).any(|(at, _)| !word_before(at))
+        } else {
+            has_word(code, word)
+        };
+        if hit {
+            found.insert(word.to_owned());
+        }
+    }
+    for banned in ["std::fs", "std::env", "browser::server"] {
+        if has_word(code, banned) {
+            found.insert(banned.to_owned());
+        }
+    }
+    for module in SHELL_MODULES {
+        if has_word(code, &format!("crate::{module}")) {
+            found.insert(format!("crate::{module}"));
+        }
+    }
+    found
+}
+
+/// Source check S11 `moving_files_name_no_shell` (2026-11-22, S4d E0c; plan critique B-6, S4d
+/// preflight §2 E0c and critic C10): the files that move to yw-engine at S4d E1
+/// ([`MOVING_FILES`]) name, outside their test items, no shell name ([`shell_names`]): no
+/// render code (`Item::`/`Ctl::`, `ControlSet`), no control id (`ids::`), no non-facade `ui::`
+/// path, no `yw_win`, no yw-app shell module, and none of the calls yw-engine's `clippy.toml`
+/// bans (`std::fs`, `std::env`, `SystemTime`, `Path`; the plan's E0b, which E0c absorbed: no
+/// wallet fn used them, and the shell items that did, `Launcher` and the `WalletConnect`
+/// platform, moved to `crate::explorer_launcher` and `crate::wc_platform`). The listed exceptions
+/// ([`MOVING_FILE_EXCEPTIONS`]) must still be there (a stale one fails). The type name `App` and
+/// the `#[cfg(test)]` seam calls join at S4d E0b (critic C10); E1 removes the check, because
+/// from then on the compiler enforces it (yw-engine does not depend on yw-app or yw-win).
+#[test]
+fn moving_files_name_no_shell() {
+    let files = production_code();
+    let mut errors = Vec::new();
+    let mut seen = 0_usize;
+    for name in MOVING_FILES {
+        let path = format!("yw-app/src/{name}");
+        let Some(src) = files.iter().find(|src| src.file == path) else {
+            errors.push(format!("{path}: not found"));
+            continue;
+        };
+        seen += 1;
+        let mut code = src.code.clone();
+        for (file, allowed) in MOVING_FILE_EXCEPTIONS {
+            if file == path {
+                assert!(
+                    code.contains(allowed),
+                    "{path}: the exception {allowed} is stale: remove it"
+                );
+                code = code.replace(allowed, &" ".repeat(allowed.len()));
+            }
+        }
+        let names = shell_names(&code);
+        if !names.is_empty() {
+            errors.push(format!("{path} names {names:?}"));
+        }
+    }
+    assert_eq!(seen, MOVING_FILES.len(), "every moving file found");
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+/// [`shell_names`] on made-up code (A-20): it finds every kind it checks and lets the facade,
+/// longer identifiers and engine paths through.
+#[test]
+fn shell_names_on_made_up_code() {
+    let found = shell_names(
+        "use crate::ui::main_window::{Ctl, Item};\nuse crate::ui::{approval, x};\n\
+         fn a() { items.push(Item::Row(vec![Ctl::button(ids::X, t)])); }\n\
+         fn b(c: &ControlSet) { yw_win::time::local_wall_ms(1); std::fs::read(p); }\n\
+         fn c() { std::env::var_os(k); SystemTime::now(); let _: &Path; let _: PathBuf; }\n\
+         fn d() { crate::store::file_name(k); crate::browser::server::PipeHost; }\n\
+         fn e() { crate::explorer_launcher::Launcher; crate::wc_platform::WinWcPlatform; }\n",
+    );
+    for name in [
+        "ui::main_window",
+        "ui::",
+        "Item",
+        "Ctl",
+        "ids",
+        "ControlSet",
+        "yw_win",
+        "std::fs",
+        "std::env",
+        "SystemTime",
+        "Path",
+        "PathBuf",
+        "crate::store",
+        "browser::server",
+        "crate::explorer_launcher",
+        "crate::wc_platform",
+    ] {
+        assert!(found.contains(name), "{name} found in {found:?}");
+    }
+    assert!(
+        !found.contains("ui::x"),
+        "a group import is reported as ui::"
+    );
+    let clean = shell_names(
+        "use crate::ui::approval::QueueSource;\nuse crate::ui::approval_view::{Block, Tone};\n\
+         fn f() { yw_engine::screen::Tone::Warn; BtcFeeItem::Fast; my_ids::X; Paths; \
+         crate::stores::x; crate::app_book::text::X; yw_core::bip32::path::AccountIndex; }\n",
+    );
+    assert!(clean.is_empty(), "{clean:?}");
+}

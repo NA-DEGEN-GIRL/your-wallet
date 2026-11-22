@@ -12,7 +12,7 @@ use yw_core::evm::address::Address;
 use yw_core::policy::{BrowserOrigin, ConnectedSite, ProviderError};
 use yw_json::Value;
 
-use crate::app::{App, AppMode, Wallet};
+use crate::app::{AppMode, Wallet};
 use crate::app_approval::AfterOpen;
 use crate::app_evm::QueuedItem;
 use crate::browser::envelope::accounts_value;
@@ -340,7 +340,9 @@ impl Wallet {
     }
 
     /// The UI-owned dispatcher view.
-    fn wallet_view(&self) -> WalletView {
+    /// 2026-11-22 (S4d E0c): `pub(crate)` for the tests' adapter `browser_view_current`
+    /// (`app::tests::adapters`); before, that adapter was a `#[cfg(test)]` fn of this module.
+    pub(crate) fn wallet_view(&self) -> WalletView {
         let chains = self
             .settings
             .registered_evm()
@@ -389,17 +391,6 @@ impl Wallet {
             sol_accounts,
             btc_accounts,
         }
-    }
-}
-
-impl App {
-    /// Tests (2026-11-18, S3 A3): whether the dispatcher holds the view the UI state gives now
-    /// (`sync_browser` ran after the last change; spec/05 §4.5).
-    #[cfg(test)]
-    pub(crate) fn browser_view_current(&self) -> bool {
-        self.browser.as_ref().is_some_and(|browser| {
-            format!("{:?}", browser.core.wallet()) == format!("{:?}", self.wallet_view())
-        })
     }
 }
 
@@ -1487,9 +1478,3 @@ mod tests {
         assert!(!write.pending(), "one write takes both");
     }
 }
-
-/// The tests that build an `App` (2026-11-21, S4 W0, spec/09 §2.1), in
-/// `app/tests/browser.rs`: a child of this module, so that they keep its access.
-#[cfg(test)]
-#[path = "app/tests/browser.rs"]
-mod app_tests;

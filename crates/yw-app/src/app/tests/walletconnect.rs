@@ -1,7 +1,10 @@
 //! The tests of `app_walletconnect.rs` that build an `App` (2026-11-21, S4 W0, spec/09 §2.1),
 //! moved unchanged from its inline `mod tests` (which keeps the tests that build no `App`).
-//! A `#[cfg(test)] #[path]` child of `crate::app_walletconnect`, not of `app::tests`: it keeps the
-//! access of the inline module, so no production item of that file is widened.
+//! It was a `#[cfg(test)] #[path]` child of `crate::app_walletconnect`, not of `app::tests`, to
+//! keep the access of the inline module, so no production item of that file was widened. 2026-11-22
+//! (S4d E0c, spec/09 §2.1): a child of `app::tests` (that file moves to yw-engine at S4d E1 and
+//! these tests need `App`); what it reaches is `pub(crate)` now (test-only use):
+//! `Wallet::wc_start`.
 
 use std::collections::HashMap;
 use std::sync::Arc;

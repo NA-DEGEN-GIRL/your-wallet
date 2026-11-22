@@ -14,7 +14,7 @@ use yw_core::evm::address::Address;
 use yw_core::lang::{Lang, Text};
 
 use crate::apikeys::{ApiKeys, KeyName};
-use crate::app::{App, Confirm, Screen, Wallet};
+use crate::app::{Confirm, Screen, Wallet};
 use crate::events::UiEvent;
 use crate::explain::config::{
     KEY_REENTER_TEXT, StoredKey, effectively_enabled, parse_endpoint, valid_api_key, valid_model,
@@ -417,25 +417,6 @@ impl Wallet {
                 self.refresh();
             }
         }
-    }
-}
-
-impl App {
-    /// Test adapter (S3 C3, plan §3.2): presses AI-section control `id` directly, as the tests
-    /// and the screenshot tour did before; `false` when `id` is not one.
-    #[cfg(test)]
-    pub(crate) fn on_llm_command(&mut self, id: u16) -> bool {
-        self.press_family(
-            id,
-            |press| match press {
-                yw_engine::cmd::Press::Llm(press) => Some(press),
-                _ => None,
-            },
-            |app, press| {
-                app.on_llm(press);
-                true
-            },
-        )
     }
 }
 

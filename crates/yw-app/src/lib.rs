@@ -55,6 +55,8 @@ pub mod build_info;
 pub mod card_pcsc;
 pub mod catalogues;
 pub mod explain_transport;
+// 2026-11-22 (S4d E0c): `explorer.exe` for links and folders (was `app_explorer::Launcher`).
+pub mod explorer_launcher;
 pub mod lock;
 pub mod log_file;
 // 2026-11-20 (S4 P7a1): the open secret session (the purpose of the one secret window).
@@ -63,4 +65,6 @@ pub mod shell_msg;
 pub mod store;
 pub mod system_clock;
 pub mod ui;
+// 2026-11-22 (S4d E0c): the Windows `WalletConnect` platform parts (were `app_walletconnect`'s).
+pub mod wc_platform;
 pub mod window_state;

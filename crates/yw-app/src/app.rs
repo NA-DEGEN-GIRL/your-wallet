@@ -962,7 +962,7 @@ pub struct App {
     /// link or a folder is opened (`explorer.exe`; unit-test builds record it). Only the effect
     /// executor uses it (`Effect::OpenUrl`, `Effect::OpenFolder`). Before W1,
     /// `ExplorerUi.launcher`.
-    pub(crate) launcher: crate::app_explorer::Launcher,
+    pub(crate) launcher: crate::explorer_launcher::Launcher,
     /// The shell (2026-11-21, S4 W1): the named-pipe server, why there is none and the read
     /// worker threads (`PipeHost`, spec/05 §8.1), attached with the dispatcher (`browser`) by
     /// [`App::attach_browser`]. Before W1, the fields `server`, `pipe_error` and `threads` of
@@ -1340,14 +1340,15 @@ pub fn load_apikeys(paths: &Paths, settings: &Settings) -> (ApiKeys, bool) {
 
 /// The Windows platform services (2026-11-20, S4 P2, spec/15 §11.2): the `WinHTTP` LLM transport
 /// (`explain_transport::llm_factory`), the `WalletConnect` parts
-/// (`app_walletconnect::WinWcPlatform`) and the relay user agent word `"windows"` (spec/13 §4;
+/// (`wc_platform::WinWcPlatform`; `app_walletconnect::WinWcPlatform` before 2026-11-22 S4d
+/// E0c) and the relay user agent word `"windows"` (spec/13 §4;
 /// the same bytes as before). Building it opens nothing: every part is made only when a worker
 /// starts or the LLM connection test runs.
 #[must_use]
 pub fn windows_services() -> Services {
     Services {
         llm: crate::explain_transport::llm_factory(),
-        walletconnect: Some(Box::new(crate::app_walletconnect::WinWcPlatform)),
+        walletconnect: Some(Box::new(crate::wc_platform::WinWcPlatform)),
         ua_platform: "windows",
     }
 }
@@ -1478,7 +1479,7 @@ impl App {
             placed: Placed::default(),
             approval_win: None,
             ext: crate::app_extension::ExtensionUi::default(),
-            launcher: crate::app_explorer::Launcher::default(),
+            launcher: crate::explorer_launcher::Launcher::default(),
             pipe: None,
             workers: Vec::new(),
             reset_hold: None,

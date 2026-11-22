@@ -8,17 +8,14 @@ use std::sync::Arc;
 use yw_core::approval::{ApprovalDraft, ApprovalOrigin};
 use yw_core::policy::{BrowserOrigin, ProviderError};
 use yw_engine::form::{ClipInput, ImageInput};
-use yw_engine::services::WcPlatform;
 
 use crate::app::Wallet;
 use crate::browser::{SiteRequest, VaultView};
 use crate::logging::{self, Field};
 use crate::walletconnect::engine::ProposalView;
 use crate::walletconnect::store::WcStore;
-use crate::walletconnect::verify::{P256Verify, VerifyHttp};
 use crate::walletconnect::worker::{
-    ConnectError, ProposalEnd, RelayConnector, RelayLink, RelayStatus, SessionView, WcCommand,
-    WcEvent, WcHandle, connect_error,
+    ProposalEnd, RelayStatus, SessionView, WcCommand, WcEvent, WcHandle,
 };
 use crate::walletconnect::{Metadata, VerifyStatus, is_session_origin};
 
@@ -235,51 +232,6 @@ impl Wallet {
     }
 }
 
-/// Relay connect timeout.
-const CONNECT_TIMEOUT_MS: u32 = 15_000;
-
-/// The production relay connector: the `WinHTTP` WebSocket (`yw_win::ws`). 2026-11-17 S2: moved
-/// unchanged from `walletconnect::worker`, which names only the `RelayConnector` seam.
-#[derive(Debug, Default)]
-pub struct WsConnector;
-
-impl RelayConnector for WsConnector {
-    fn connect(&mut self, url: &str) -> Result<Arc<dyn RelayLink>, ConnectError> {
-        let url = yw_platform::http::HttpsUrl::parse(url).map_err(|_| ConnectError::Network)?;
-        match yw_win::ws::WebSocket::connect(&url, CONNECT_TIMEOUT_MS) {
-            Ok(socket) => Ok(Arc::new(socket)),
-            Err(error) => Err(connect_error(error)),
-        }
-    }
-}
-
-/// The Windows `WalletConnect` platform parts of `yw_engine::services::Services` (2026-11-20, S4
-/// P2; before, `wc_start` built them inline): [`WsConnector`], the Verify API's
-/// `yw_win::http::Client` with 5 s for each phase, and `yw_win::cng::p256_verify`.
-#[derive(Debug, Default)]
-pub struct WinWcPlatform;
-
-impl WcPlatform for WinWcPlatform {
-    fn connector(&self) -> Box<dyn RelayConnector> {
-        Box::new(WsConnector)
-    }
-
-    fn verify_http(&self) -> Option<Box<dyn VerifyHttp + Send>> {
-        yw_win::http::Client::new(yw_platform::http::Timeouts {
-            resolve_ms: 5_000,
-            connect_ms: 5_000,
-            send_ms: 5_000,
-            receive_ms: 5_000,
-        })
-        .ok()
-        .map(|client| Box::new(client) as Box<dyn VerifyHttp + Send>)
-    }
-
-    fn p256(&self) -> P256Verify {
-        yw_win::cng::p256_verify
-    }
-}
-
 /// Largest QR image file read (bytes). 2026-11-20 (S4 P5): the shell checks it at the press
 /// (`ui::cmd_table`'s `image_file_acceptable`, moved from here).
 pub const MAX_IMAGE_FILE: u64 = 64 * 1_048_576;
@@ -366,7 +318,9 @@ impl ConnectPatch {
 impl Wallet {
     // ----- worker lifetime -------------------------------------------------------------
 
-    fn wc_start(&mut self) {
+    /// 2026-11-22 (S4d E0c): `pub(crate)` for its App-building tests, children of `app::tests`
+    /// since then (before, of this module).
+    pub(crate) fn wc_start(&mut self) {
         if self.wc.handle.is_some() {
             return;
         }
@@ -770,9 +724,3 @@ mod tests {
         );
     }
 }
-
-/// The tests that build an `App` (2026-11-21, S4 W0, spec/09 §2.1), in
-/// `app/tests/walletconnect.rs`: a child of this module, so that they keep its access.
-#[cfg(test)]
-#[path = "app/tests/walletconnect.rs"]
-mod app_tests;

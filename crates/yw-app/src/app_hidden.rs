@@ -8,7 +8,7 @@
 //! 2026-11-22 (S4d E0c): the command ids and the render builder `hidden_items` moved to
 //! `ui::screens_hidden` (shell code); this file keeps the rows, the presses and `unhide`.
 
-use crate::app::{App, Wallet};
+use crate::app::Wallet;
 use crate::app_sol::SolAccountId;
 use crate::meta::EvmAccountPref;
 use yw_core::lang::Lang;
@@ -206,25 +206,6 @@ impl Wallet {
             HiddenPress::BtcUnhide(Row(row)) => (Family::Btc, row),
         };
         self.unhide(family.0, usize::from(family.1));
-    }
-}
-
-impl App {
-    /// Test adapter (S3 C1, plan §3.2): presses hidden-account control `id` directly, as the
-    /// tests did before; `false` when `id` is not one.
-    #[cfg(test)]
-    pub(crate) fn on_hidden_command(&mut self, id: u16) -> bool {
-        self.press_family(
-            id,
-            |press| match press {
-                yw_engine::cmd::Press::Hidden(press) => Some(press),
-                _ => None,
-            },
-            |app, press| {
-                app.on_hidden(press);
-                true
-            },
-        )
     }
 }
 

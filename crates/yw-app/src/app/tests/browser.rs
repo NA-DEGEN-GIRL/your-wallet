@@ -1,14 +1,16 @@
 //! The tests of `app_browser.rs` that build an `App` (2026-11-21, S4 W0, spec/09 §2.1),
 //! moved unchanged from its inline `mod tests` (which keeps the tests that build no `App`).
-//! A `#[cfg(test)] #[path]` child of `crate::app_browser`, not of `app::tests`: it keeps the
-//! access of the inline module, so no production item of that file is widened.
+//! It was a `#[cfg(test)] #[path]` child of `crate::app_browser`, not of `app::tests`, to keep the
+//! access of the inline module, so no production item of that file was widened. 2026-11-22 (S4d
+//! E0c, spec/09 §2.1): a child of `app::tests` (that file moves to yw-engine at S4d E1 and these
+//! tests need `App`); it reaches nothing private there, so nothing was widened.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::{BrowserUi, GrantWrite, SignWaiter};
 use crate::apikeys::ApiKeys;
 use crate::app::{App, Paths};
+use crate::app_browser::{BrowserUi, GrantWrite, SignWaiter};
 use crate::browser::Reply;
 use crate::browser::envelope::{Correlation, Id16, Id32};
 use crate::events::{EventQueue, MessageSignFailure, MessageSigned};
@@ -42,7 +44,7 @@ fn app() -> App {
         unlocked: false,
         locking: false,
         grant_write: GrantWrite::default(),
-        site_rows: super::SiteRows::default(),
+        site_rows: crate::app_browser::SiteRows::default(),
     });
     app
 }
@@ -66,8 +68,8 @@ fn broadcast_reply(app: &App, hash: [u8; 32]) -> Option<Reply> {
 }
 
 /// `account` signing for `https://app.example`.
-fn signer(account: [u8; 20]) -> super::SiteSigner {
-    super::SiteSigner {
+fn signer(account: [u8; 20]) -> crate::app_browser::SiteSigner {
+    crate::app_browser::SiteSigner {
         origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
         account: yw_core::evm::address::Address::from_bytes(account),
     }

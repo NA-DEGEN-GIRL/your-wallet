@@ -1,7 +1,10 @@
 //! The tests of `app_sol.rs` that build an `App` (2026-11-21, S4 W0, spec/09 §2.1),
 //! moved unchanged from its inline `mod tests` (where every test builds an `App`).
-//! A `#[cfg(test)] #[path]` child of `crate::app_sol`, not of `app::tests`: it keeps the
-//! access of the inline module, so no production item of that file is widened.
+//! It was a `#[cfg(test)] #[path]` child of `crate::app_sol`, not of `app::tests`, to keep the
+//! access of the inline module, so no production item of that file was widened. 2026-11-22 (S4d
+//! E0c, spec/09 §2.1): a child of `app::tests` (that file moves to yw-engine at S4d E1 and these
+//! tests need `App`); what it reaches is `pub(crate)` now (test-only use):
+//! `Wallet::on_sol_tracked`.
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::journal::sol::{SolRecord, SolTxState};
@@ -11,12 +14,12 @@ use yw_core::sol::message::{assemble_transaction, encode_message};
 use yw_core::sol::recipient::KnownKind;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore};
 
-use super::{
+use crate::apikeys::ApiKeys;
+use crate::app::{App, AppMode, Paths, Screen};
+use crate::app_sol::{
     ReviewRefusal, SOL_APPLY_RETRY_MS, SOL_REVIEW_CHANGED_TEXT, SOL_SAVE_FAILED_TEXT,
     SOL_SAVING_TEXT, SOL_SCAN_RECONFIRM_TEXT, ScanStage, SolHalt,
 };
-use crate::apikeys::ApiKeys;
-use crate::app::{App, AppMode, Paths, Screen};
 use crate::errors::ErrorCode;
 use crate::events::{JournalView, SolKeysPurpose};
 use crate::meta::{Account, ActivityEntry, Meta, Tab};
@@ -393,7 +396,7 @@ fn dapp_sends_are_tracked_together_and_do_not_hold_the_send_form() {
     );
     assert_ne!(
         app.sol_review_blocker(),
-        Some(super::ReviewBlocker::InFlight)
+        Some(crate::app_sol::ReviewBlocker::InFlight)
     );
     // A wallet transfer of the account does hold it.
     let mut records = app.sol_records();
@@ -404,6 +407,6 @@ fn dapp_sends_are_tracked_together_and_do_not_hold_the_send_form() {
     });
     assert_eq!(
         app.sol_review_blocker(),
-        Some(super::ReviewBlocker::InFlight)
+        Some(crate::app_sol::ReviewBlocker::InFlight)
     );
 }

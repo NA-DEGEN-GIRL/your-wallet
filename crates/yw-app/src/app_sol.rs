@@ -2142,7 +2142,9 @@ impl Wallet {
     }
 
     /// A broadcast round finished (RPC worker).
-    fn on_sol_tracked(&mut self, result: &TrackResult) {
+    /// 2026-11-22 (S4d E0c): `pub(crate)` for its App-building tests, children of `app::tests`
+    /// since then (before, of this module).
+    pub(crate) fn on_sol_tracked(&mut self, result: &TrackResult) {
         let now = self.clock.now_ms();
         let Some(state) = self.sol.tracking.get_mut(&result.signature) else {
             return;
@@ -2485,9 +2487,3 @@ impl Wallet {
         format!("{} SOL", format_amount(lamports, 9))
     }
 }
-
-/// The tests that build an `App` (2026-11-21, S4 W0, spec/09 §2.1), in
-/// `app/tests/sol.rs`: a child of this module, so that they keep its access.
-#[cfg(test)]
-#[path = "app/tests/sol.rs"]
-mod app_tests;

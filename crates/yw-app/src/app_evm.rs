@@ -1674,7 +1674,9 @@ impl Wallet {
         });
     }
 
-    fn on_quote(&mut self, job: u64, result: Result<Quote, ErrorCode>) {
+    /// 2026-11-22 (S4d E0c): `pub(crate)` for its App-building tests, children of `app::tests`
+    /// since then (before, of this module).
+    pub(crate) fn on_quote(&mut self, job: u64, result: Result<Quote, ErrorCode>) {
         if job != self.evm.send.quote_job {
             return;
         }
@@ -2723,8 +2725,10 @@ pub const fn outcome_name(outcome: QueueOutcome) -> &'static str {
     }
 }
 
+// 2026-11-22 (S4d E0c): `pub(crate)` so that a test of `app::tests` (this file's App-building
+// tests, re-parented there) reaches its shared helper; private before.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::HashMap;
 
     use yw_core::evm::address::Address;
@@ -2738,7 +2742,7 @@ mod tests {
     const BESU_SIGNED: &str = "02f86e048203338301284d8301d97c828ae094000000000000000000000000000000000000aaaa8402933bc980c080a00f924cb68412c8f1cfd74d9b581c71eeaf94fff6abdde3e5b02ca6b2931dcf47a07dd1c50027c3e31f8b565e25ce68a5072110f61fce5eee81b195dd51273c2f83";
 
     // Shared with the `app_tests` child (2026-11-21, S4 W0).
-    pub(super) fn record(flags: u8) -> EvmRecord {
+    pub(crate) fn record(flags: u8) -> EvmRecord {
         let sender =
             yw_core::evm::address::parse_address("0xFE3B557E8Fb62b89F4916B721be55cEb828dBd73")
                 .unwrap_or(Address::from_bytes([0; 20]));
@@ -2785,9 +2789,3 @@ mod tests {
         assert_eq!(notes.get(&manual.tx_hash), Some(&BroadcastOutcome::Sent));
     }
 }
-
-/// The tests that build an `App` (2026-11-21, S4 W0, spec/09 §2.1), in
-/// `app/tests/evm.rs`: a child of this module, so that they keep its access.
-#[cfg(test)]
-#[path = "app/tests/evm.rs"]
-mod app_tests;

@@ -1,11 +1,17 @@
 //! The tests of `app_book.rs` that build an `App` (2026-11-21, S4 W0, spec/09 §2.1),
 //! moved unchanged from its inline `mod tests` (which keeps the tests that build no `App`).
-//! A `#[cfg(test)] #[path]` child of `crate::app_book`, not of `app::tests`: it keeps the
-//! access of the inline module, so no production item of that file is widened.
+//! It was a `#[cfg(test)] #[path]` child of `crate::app_book`, not of `app::tests`, to keep the
+//! access of the inline module, so no production item of that file was widened. 2026-11-22 (S4d
+//! E0c, spec/09 §2.1): a child of `app::tests` (that file moves to yw-engine at S4d E1 and these
+//! tests need `App`); what it reaches is `pub(crate)` now (test-only use): the shared helper
+//! `app_book::tests::EVM` (its `tests` module too).
 
-use super::tests::EVM;
-use super::*;
+use yw_engine::cmd::{BookPress, BookRowAction, Row};
+use yw_engine::effect::Effect;
+
 use crate::app::App;
+use crate::app_book::tests::EVM;
+use crate::meta::{BookChain, Contact};
 
 /// A new entry is compared with everything the send forms know, not only the book: a poison
 /// of a past recipient is flagged on save with the sent-history wording (it used to save

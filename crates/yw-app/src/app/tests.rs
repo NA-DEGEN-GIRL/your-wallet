@@ -3886,9 +3886,10 @@ fn a_late_band_result_keeps_a_newer_mark() {
 #[test]
 fn links_and_folders_open_through_effects_answered_in_the_same_borrow() {
     use crate::app::text::T_EXT_MISSING;
-    use crate::app_explorer::{Launcher, text};
+    use crate::app_explorer::text;
     use crate::app_extension::TOUR_EXTENSION_DIR;
     use crate::explorer::ExplorerNet;
+    use crate::explorer_launcher::Launcher;
     use crate::network::NetworkId;
     use crate::ui::screens::ids::{OPEN_DATA_FOLDER, OPEN_LOG_FOLDER};
     use crate::ui::screens_reset::ids::EXT_OPEN_FOLDER;
@@ -5017,6 +5018,34 @@ pub(crate) mod s4_secret;
 /// S4 P9 (spec/15 §11.4 S4, 2026-11-20): source check S5 — no handler reads an effect's result
 /// after emitting it (`no_result_read_after_its_emit`).
 mod s4_results;
+
+/// The tests' id adapters of the families whose files move to the engine (2026-11-22, S4d E0c).
+mod adapters;
+
+// The App-building tests of the files that move to the engine at S4d E1 (2026-11-21, S4 W0,
+// spec/09 §2.1). 2026-11-22 (S4d E0c): children of this module; before, each was the
+// `#[cfg(test)] #[path] mod app_tests;` of its file's module, so that it kept that module's
+// access (those files move to yw-engine, and these tests need `App`). The items they reach are
+// `pub(crate)` now (test-only widening inside yw-app, preflight critic C12; no card step,
+// `Approved` or secret-session item among them).
+/// `app_book.rs` (address book).
+mod book;
+/// `app_browser.rs` (the dApp sites, grants and waiters).
+mod browser;
+/// `app_btc_commands.rs` (Bitcoin presses).
+mod btc_commands;
+/// `app_evm.rs` (EVM forms and chains).
+mod evm;
+/// `app_explorer.rs` (explorer links).
+mod explorer;
+/// `app_hypercore.rs` (HyperCore).
+mod hypercore;
+/// `app_sol.rs` (Solana).
+mod sol;
+/// `app_sol_commands.rs` (Solana presses).
+mod sol_commands;
+/// `app_walletconnect.rs` (`WalletConnect`).
+mod walletconnect;
 
 /// spec/10 §9.2 (2026-11-10): once the PIN is in, the touch prompt is the S11 form's line next to
 /// `검토` (a dApp request: the header band), and it is gone once the card answered — signed or

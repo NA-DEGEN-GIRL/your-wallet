@@ -29,9 +29,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 
 use super::{App, AppMode, Screen, app_at, unlocked_at};
-use crate::app_explorer::Launcher;
 use crate::app_extension::TOUR_EXTENSION_DIR;
 use crate::app_rpc_import::{TEST_RPC_JSON, rpc_json_path};
+use crate::explorer_launcher::Launcher;
 use crate::meta::Tab;
 use crate::ui::command_ids::{fixed, ranges};
 use crate::ui::{

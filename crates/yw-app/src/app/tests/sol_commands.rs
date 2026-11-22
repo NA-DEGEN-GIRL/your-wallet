@@ -1,7 +1,9 @@
 //! The tests of `app_sol_commands.rs` that build an `App` (2026-11-21, S4 W0, spec/09 §2.1),
 //! moved unchanged from its inline `mod tests` (where every test builds an `App`).
-//! A `#[cfg(test)] #[path]` child of `crate::app_sol_commands`, not of `app::tests`: it keeps the
-//! access of the inline module, so no production item of that file is widened.
+//! It was a `#[cfg(test)] #[path]` child of `crate::app_sol_commands`, not of `app::tests`, to keep
+//! the access of the inline module, so no production item of that file was widened. 2026-11-22 (S4d
+//! E0c, spec/09 §2.1): a child of `app::tests` (that file moves to yw-engine at S4d E1 and these
+//! tests need `App`); it reaches nothing private there, so nothing was widened.
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::slip10::SolKeySource;

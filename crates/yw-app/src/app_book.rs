@@ -911,12 +911,14 @@ fn list_error_text(lang: Lang, error: ListError) -> String {
     }
 }
 
+// 2026-11-22 (S4d E0c): `pub(crate)` so that a test of `app::tests` (this file's App-building
+// tests, re-parented there) reaches its shared helper; private before.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // Shared with the `app_tests` child (2026-11-21, S4 W0).
-    pub(super) const EVM: &str = "0x52908400098527886e0f7030069857d2e4169ee7";
+    pub(crate) const EVM: &str = "0x52908400098527886e0f7030069857d2e4169ee7";
 
     #[test]
     fn canonical_forms_and_networks() {
@@ -941,9 +943,3 @@ mod tests {
         assert_eq!(short_address(BookChain::Evm, EVM), "0x5290…9EE7");
     }
 }
-
-/// The tests that build an `App` (2026-11-21, S4 W0, spec/09 §2.1), in
-/// `app/tests/book.rs`: a child of this module, so that they keep its access.
-#[cfg(test)]
-#[path = "app/tests/book.rs"]
-mod app_tests;

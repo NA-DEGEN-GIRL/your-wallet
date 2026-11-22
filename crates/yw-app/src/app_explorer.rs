@@ -8,12 +8,12 @@
 //! A URL is built only from a validated template and a value of the network's character set
 //! (`crate::explorer::build_url`) and opened with `%SystemRoot%\explorer.exe <url>` like a
 //! folder (§2.14) — no shell API, no `cmd.exe`. The log names only the network. 2026-11-20
-//! (S4 P3): the handlers emit `Effect::OpenUrl`; the effect executor starts the [`Launcher`] and
-//! answers `Cmd::Opened` ([`Wallet::on_opened`]).
+//! (S4 P3): the handlers emit `Effect::OpenUrl`; the effect executor starts the shell's
+//! `Launcher` and answers `Cmd::Opened` ([`Wallet::on_opened`]). 2026-11-22 (S4d E0c): `Launcher`
+//! and `explorer_exe` (the only code here that named `std::env`, `std::process` and `Path`)
+//! moved to the shell module `crate::explorer_launcher`.
 
-use std::path::{Path, PathBuf};
-
-use crate::app::{App, Wallet};
+use crate::app::Wallet;
 use crate::explorer::{
     self, ExplorerNet, ExplorerOverride, LinkKind, Templates, validate_template,
 };
@@ -39,70 +39,6 @@ pub mod text {
         RESET(1) = "{0}의 블록 탐색기 주소를 기본값으로 되돌렸습니다."
             / "Reset the block explorer address of {0} to the default.";
     }
-}
-
-/// How a link or a folder is opened. Only the effect executor (`app_effects`: `Effect::OpenUrl`,
-/// `Effect::OpenFolder`) calls it (2026-11-20, S4 P3: before, `App::open_explorer` launched and
-/// `App::open_folder` started `explorer.exe` for a folder itself, also in unit-test builds); the
-/// census counts its record (`launch N`). 2026-11-21 (S4 W1, plan §3.3): it is shell state, the
-/// field `App::launcher`; before, `ExplorerUi.launcher` (the S15 card's wallet state). The type
-/// stays here, the only file that names the program (`explorer_exe`), until the files that move
-/// to the engine are cut (S4d E0c).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Launcher {
-    /// `%SystemRoot%\explorer.exe <url or folder>` (the default browser or File Explorer;
-    /// spec/04 §2.14).
-    System,
-    /// Tests: what would have been opened, in order: a URL, or a folder's path (no process
-    /// starts).
-    Record(Vec<String>),
-}
-
-impl Default for Launcher {
-    fn default() -> Self {
-        if cfg!(test) {
-            Self::Record(Vec::new())
-        } else {
-            Self::System
-        }
-    }
-}
-
-impl Launcher {
-    /// Opens `url` (already built by `explorer::build_url`); `false` when the process did not
-    /// start.
-    pub(crate) fn launch(&mut self, url: &str) -> bool {
-        match self {
-            Self::System => explorer_exe(url),
-            Self::Record(urls) => {
-                urls.push(url.to_owned());
-                true
-            }
-        }
-    }
-
-    /// Opens the folder `path` in File Explorer (2026-11-20, S4 P3: was `App::open_folder`,
-    /// which always started the process); `false` when the process did not start.
-    pub(crate) fn open_folder(&mut self, path: &Path) -> bool {
-        match self {
-            Self::System => explorer_exe(path),
-            Self::Record(opened) => {
-                opened.push(path.to_string_lossy().into_owned());
-                true
-            }
-        }
-    }
-}
-
-/// `%SystemRoot%\explorer.exe <arg>` (`C:\Windows` when `SystemRoot` is not set; spec/04 §2.14);
-/// whether the process started.
-fn explorer_exe(arg: impl AsRef<std::ffi::OsStr>) -> bool {
-    let root =
-        std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from("C:\\Windows"), PathBuf::from);
-    std::process::Command::new(root.join("explorer.exe"))
-        .arg(arg)
-        .spawn()
-        .is_ok()
 }
 
 /// Rows of the S15 card (at most 7 + 32 + 2 + 2 + 2 + 2 = 47 networks;
@@ -610,28 +546,3 @@ impl Wallet {
         }
     }
 }
-
-impl App {
-    /// Test adapter (S3 C3, plan §3.2): presses explorer control `id` directly, as the tests
-    /// did before; `false` when `id` is not one.
-    #[cfg(test)]
-    pub(crate) fn on_explorer_command(&mut self, id: u16) -> bool {
-        self.press_family(
-            id,
-            |press| match press {
-                yw_engine::cmd::Press::Explorer(press) => Some(press),
-                _ => None,
-            },
-            |app, press| {
-                app.on_explorer(press);
-                true
-            },
-        )
-    }
-}
-
-/// The tests that build an `App` (2026-11-21, S4 W0, spec/09 §2.1), in
-/// `app/tests/explorer.rs`: a child of this module, so that they keep its access.
-#[cfg(test)]
-#[path = "app/tests/explorer.rs"]
-mod app_tests;

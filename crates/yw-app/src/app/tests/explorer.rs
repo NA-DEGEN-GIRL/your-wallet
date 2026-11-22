@@ -1,14 +1,16 @@
 //! The tests of `app_explorer.rs` that build an `App` (2026-11-21, S4 W0, spec/09 §2.1),
 //! moved unchanged from its inline `mod tests` (where every test builds an `App`).
-//! A `#[cfg(test)] #[path]` child of `crate::app_explorer`, not of `app::tests`: it keeps the
-//! access of the inline module, so no production item of that file is widened.
+//! It was a `#[cfg(test)] #[path]` child of `crate::app_explorer`, not of `app::tests`, to keep the
+//! access of the inline module, so no production item of that file was widened. 2026-11-22 (S4d
+//! E0c, spec/09 §2.1): a child of `app::tests` (that file moves to yw-engine at S4d E1 and these
+//! tests need `App`); it reaches nothing private there, so nothing was widened.
 
 use std::path::{Path, PathBuf};
 
 use crate::apikeys::ApiKeys;
 use crate::app::{App, AppMode, Paths, Screen};
-use crate::app_explorer::Launcher;
 use crate::explorer::{EXPLORERS_KEY, ExplorerNet, ExplorerOverride, LinkKind, Templates};
+use crate::explorer_launcher::Launcher;
 use crate::network::{NetworkId, SolCluster};
 use crate::settings::{EvmChainDef, Settings};
 use crate::ui::screens_explorer::ids;
@@ -140,8 +142,9 @@ fn code_only(text: &str) -> String {
 }
 
 /// 2026-11-20 (S4 P3): only the effect executor (`app_effects.rs`: `Effect::OpenUrl`,
-/// `Effect::OpenFolder`) starts the launcher, and only the launcher (this file) names
-/// `explorer.exe`: no handler opens a link or a folder itself. A read-only scan of yw-app's
+/// `Effect::OpenFolder`) starts the launcher, and only the launcher names `explorer.exe`
+/// (2026-11-22, S4d E0c: `explorer_launcher.rs`; before, `app_explorer.rs`): no handler opens a
+/// link or a folder itself. A read-only scan of yw-app's
 /// `src` (code without comments and whitespace, [`code_only`]): every `.launch(` /
 /// `.open_folder(` call and every `::launch` / `::open_folder` path counts, whatever the
 /// receiver (2026-11-20 review: was only `launcher.launch(` / `launcher.open_folder(` within
@@ -215,7 +218,7 @@ fn only_the_effect_executor_starts_the_launcher() {
     }
     assert!(files.len() > 50, "{} files", files.len());
     assert_eq!(launch_sites, [("app_effects.rs".to_owned(), 3)]);
-    assert_eq!(program_sites, [("app_explorer.rs".to_owned(), 1)]);
+    assert_eq!(program_sites, [("explorer_launcher.rs".to_owned(), 1)]);
 }
 
 #[test]

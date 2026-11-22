@@ -4,7 +4,7 @@ use yw_engine::cmd::{Row, SolPress, SolScanAction};
 use yw_engine::effect::Effect;
 use yw_engine::form::EditField;
 
-use crate::app::{App, Screen, Wallet};
+use crate::app::{Screen, Wallet};
 use crate::app_sol::SolSendForm;
 use crate::meta::Tab;
 use crate::network::SolCluster;
@@ -228,28 +228,3 @@ impl Wallet {
         }
     }
 }
-
-impl App {
-    /// Test adapter (S3 C8, plan §3.2): presses Solana control `id` directly, as the tests did
-    /// before; `false` when `id` is not one.
-    #[cfg(test)]
-    pub(crate) fn on_sol_command(&mut self, id: u16) -> bool {
-        self.press_family(
-            id,
-            |press| match press {
-                yw_engine::cmd::Press::Sol(press) => Some(press),
-                _ => None,
-            },
-            |app, press| {
-                app.on_sol(press);
-                true
-            },
-        )
-    }
-}
-
-/// The tests that build an `App` (2026-11-21, S4 W0, spec/09 §2.1), in
-/// `app/tests/sol_commands.rs`: a child of this module, so that they keep its access.
-#[cfg(test)]
-#[path = "app/tests/sol_commands.rs"]
-mod app_tests;

@@ -8,7 +8,7 @@ use yw_engine::cmd::{BtcActivityAction, BtcPress, Row};
 use yw_engine::effect::Effect;
 use yw_engine::form::EditField;
 
-use crate::app::{App, Screen, Wallet};
+use crate::app::{Screen, Wallet};
 use crate::app_btc::{BtcAction, BtcAmountUnit, BtcBumpForm, BtcFeeChoice, BtcSendForm};
 use crate::btc::{app_network, core_network};
 use crate::settings::BtcIndexer;
@@ -422,25 +422,6 @@ impl Wallet {
     }
 }
 
-impl App {
-    /// Test adapter (S3 C9, plan §3.2): presses Bitcoin control `id` directly, as the tests did
-    /// before; `false` when `id` is not one.
-    #[cfg(test)]
-    pub(crate) fn on_btc_command(&mut self, id: u16) -> bool {
-        self.press_family(
-            id,
-            |press| match press {
-                yw_engine::cmd::Press::Btc(press) => Some(press),
-                _ => None,
-            },
-            |app, press| {
-                app.on_btc(press);
-                true
-            },
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::ui::screens_btc::ids;
@@ -460,9 +441,3 @@ mod tests {
         }
     }
 }
-
-/// The tests that build an `App` (2026-11-21, S4 W0, spec/09 §2.1), in
-/// `app/tests/btc_commands.rs`: a child of this module, so that they keep its access.
-#[cfg(test)]
-#[path = "app/tests/btc_commands.rs"]
-mod app_tests;
