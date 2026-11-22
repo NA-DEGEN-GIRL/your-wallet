@@ -133,7 +133,7 @@ pub enum Effect {
     /// `App::reveal_id` in the handlers). Nothing when the screen laid out last does not show it.
     Reveal(RevealTarget),
     /// Show the main window and bring it to the foreground (S4 P4: a second start's
-    /// `WM_YW_ACTIVATE`, spec/04 §1.1; was in `App::activate`). Not answered.
+    /// `WM_YW_ACTIVATE`, spec/04 §1.1; was in `App::activate`; since 2026-11-22 S4c W15 emitted by `Wallet::activate` for `Cmd::Activate`). Not answered.
     RaiseMain,
     /// The screen shown now is being left (S4 P4; the first half of a screen entry, emitted
     /// before the logic changes its screen): the shell notes where it was scrolled when an

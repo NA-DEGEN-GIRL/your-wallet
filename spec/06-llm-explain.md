@@ -291,6 +291,8 @@ pub trait LlmTransport: Send {                     // 테스트는 mock, 실제 
 
 순수 함수 테스트는 `explain/` 단위 테스트, 통신 테스트는 `crates/yw-app/tests/llm_mock.rs`에서 `std::net::TcpListener`(127.0.0.1:0) mock 서버와 실제 WinHTTP 전송(loopback http)으로 한다. 모두 `scripts/check.ps1`의 `cargo test`에 포함한다([01](01-repo-build.md) §4.1, [09](09-testing.md) §5.8).
 
+(2026-11-22, [15] §11.4 S4c W15) E1 중 설정 확인(review M1)의 몫 — 평문 설정에서 켜져 있어도 잠금 해제 뒤 확인 전에는 작업자가 없고, 첫 확인(스냅숏 없음)이 스냅숏을 만들며 작업자를 띄우고, 다른 호스트의 동의를 담은 스냅숏은 끈다 — 은 라이브러리 시험 `app::tests::the_settings_check_starts_the_llm_worker_only_with_its_consent`(전송을 만들지 않는 서비스)로 옮겼다: 그 확인(`Wallet::reconcile_settings`)을 `App`에서 부르려면 시험 빌드의 `DerefMut`이 필요한데, 통합 시험은 비시험 빌드의 라이브러리를 쓴다. `llm_mock`의 E1은 꺼짐·동의 없음·모델 없음에서 작업자 0, 패널 `Off`, 그리고 이 mock 엔드포인트로 띄운 작업자가 요청 전에는 연결하지 않음(mock accept 0)을 그대로 본다.
+
 | ID | 입력 | 기대 |
 |---|---|---|
 | E1 (M6) | `enabled=false`로 tx·personal_sign·typed data 픽스처 처리 | `LlmTransport::post` 0회, 작업자 스레드 0, mock accept 0 |

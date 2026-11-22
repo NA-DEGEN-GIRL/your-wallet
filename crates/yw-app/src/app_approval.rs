@@ -1365,7 +1365,7 @@ pub(crate) enum AfterOpen {
     /// (`Wallet::btc_apply_rest`).
     BtcRest(Vec<crate::app_btc::BtcAction>),
     /// The steps kept for a window whose open was just answered, in the order they were kept
-    /// (`App::on_cmd`'s `Cmd::ApprovalOpened` arm; before P10a, `after_approval_opened` ran the
+    /// (`Wallet::on_cmd`'s `Cmd::ApprovalOpened` arm, `App::on_cmd`'s before 2026-11-22 S4c W15; before P10a, `after_approval_opened` ran the
     /// one kept step there).
     Steps(Vec<AfterOpen>),
     /// `refresh` (a Bitcoin press, a journal read, a site grant change).
@@ -4080,8 +4080,10 @@ impl App {
                 // 2026-11-19 (S4 B4b): the panel state is the flow's `AiFlow`, the body's scroll
                 // the shell's `AiBody`. 2026-11-20 (S4 B6 review): it flips the shown flow's
                 // panel directly, not through `Cmd::Approval` and its id check (see `AnyWindow`).
-                if let Some(ai) = self.evm.approval.as_mut().and_then(ApprovalFlow::ai_mut)
-                    && ai.panel.toggle_expanded()
+                // 2026-11-22 (S4c W15): the flip is the wallet's `toggle_ai_panel` (the flow's AI
+                // state); before, this step wrote it through `DerefMut`. Same order: the flip,
+                // then the shell's body scroll and repaint when it changed.
+                if self.wallet.toggle_ai_panel()
                     && let Some(body) = self.approval_win.as_mut().and_then(|win| win.ai.as_mut())
                 {
                     body.scroll = 0;
@@ -4123,9 +4125,11 @@ impl App {
             // change that order, so it stays here until P10/S4d (spec/15 §11.4, B6 review).
             // 2026-11-20 (S4 P10b): each of its two calls into the flow is drained before the
             // next step, as when `emit` applied each effect at once.
+            // 2026-11-22 (S4c W15): the two calls are the wallet's own fns, named on the wallet
+            // (non-test builds have no `DerefMut`).
             Step::TimerTail => {
                 let now = self.clock.now_ms();
-                self.ai_tick(now);
+                self.wallet.ai_tick(now);
                 self.drain();
                 if let Some(flow) = self.evm.approval.as_ref()
                     && matches!(
@@ -4133,7 +4137,7 @@ impl App {
                         PrepareState::Preparing(PrepareStage::Simulating { .. })
                     )
                 {
-                    self.rebuild_view_with(false);
+                    self.wallet.rebuild_view_with(false);
                 }
                 self.drain();
             }
@@ -4143,6 +4147,30 @@ impl App {
 }
 
 impl Wallet {
+    /// `Step::AiExpand` of the window (`ai.down`, spec/06 §3.2): flips the shown flow's AI panel
+    /// between short and expanded; `true` when it changed (the shell then puts the body's scroll
+    /// at the top and repaints). 2026-11-22 (S4c W15): wallet code (the flow's AI state); before,
+    /// the shell's `run_step` flipped it itself through `DerefMut`.
+    fn toggle_ai_panel(&mut self) -> bool {
+        self.evm
+            .approval
+            .as_mut()
+            .and_then(ApprovalFlow::ai_mut)
+            .is_some_and(|ai| ai.panel.toggle_expanded())
+    }
+
+    /// Before the AI body paints (spec/06 §3.2): the shown flow's AI panel is held while a
+    /// High-risk request's acknowledgement checkbox is clear ([`ApprovalFlow::hold_ai_for_ack`],
+    /// which writes that flag only); `true` when the window has an AI explanation to paint.
+    /// 2026-11-22 (S4c W15): wallet code; before, the shell's `paint_ai_body` called it on the
+    /// flow it had bound mutably.
+    fn hold_shown_ai_for_ack(&mut self) -> bool {
+        self.evm
+            .approval
+            .as_mut()
+            .is_some_and(ApprovalFlow::hold_ai_for_ack)
+    }
+
     /// `다시 시도` / `시뮬레이션 다시 실행` of the shown window (`ApprovalSignal::Retry`).
     fn retry_action(&mut self) {
         let failed_retryable = self.evm.approval.as_ref().is_some_and(|flow| {
@@ -4185,8 +4213,11 @@ impl App {
             .as_ref()
             .is_none_or(crate::explain::ExplainService::busy);
         let lang = self.approval_lang();
+        // 2026-11-22 (S4c W15): the flow is borrowed shared (`&self.wallet.evm`) beside the
+        // shell's fonts and window state; before, a `Self { wallet: Wallet { evm, .. }, .. }`
+        // pattern bound it mutably (it was only read).
+        let evm = &self.wallet.evm;
         let Self {
-            wallet: crate::app::Wallet { evm, .. },
             fonts,
             approval_win,
             ..
@@ -4758,8 +4789,31 @@ impl App {
         let dpi = window.dpi();
         let client = window.client_rect();
         let lang = self.approval_lang();
+        // 2026-11-22 (S4c W15): the AI panel's held flag is the wallet's to write
+        // (`Wallet::hold_shown_ai_for_ack`), so the paint makes its early checks first — the
+        // fonts, the flow and the window, the AI body — in the same order, then that call at the
+        // same point, then the drawing with the flow borrowed shared. Before, one
+        // `Self { wallet: Wallet { evm, .. }, .. }` pattern bound the flow mutably and the paint
+        // called `ApprovalFlow::hold_ai_for_ack` on it there. The fonts are looked up twice; the
+        // second lookup finds the first one's (`FontCache::for_dpi` makes them once per DPI).
+        if self.fonts.for_dpi(dpi, lang).is_none()
+            || self.evm.approval.is_none()
+            || self
+                .approval_win
+                .as_ref()
+                .is_none_or(|win| win.ai.is_none())
+        {
+            return;
+        }
+        // A High-risk request shows its warnings first: the AI text waits for the
+        // acknowledgement checkbox (the panel keeps its reserved place). (2026-11-19, S4 B4b:
+        // `ApprovalFlow::hold_ai_for_ack` sets it from the issued request and the gate, then the
+        // body paints from `ApprovalPaint`; was `ai.panel.set_held(held_for_ack(..))` here.)
+        if !self.wallet.hold_shown_ai_for_ack() {
+            return;
+        }
+        let evm = &self.wallet.evm;
         let Self {
-            wallet: crate::app::Wallet { evm, .. },
             fonts,
             approval_win,
             ..
@@ -4767,7 +4821,7 @@ impl App {
         let Some(fonts) = fonts.for_dpi(dpi, lang) else {
             return;
         };
-        let (Some(flow), Some(win)) = (evm.approval.as_mut(), approval_win.as_mut()) else {
+        let (Some(flow), Some(win)) = (evm.approval.as_ref(), approval_win.as_mut()) else {
             return;
         };
         let ApprovalWin {
@@ -4778,13 +4832,6 @@ impl App {
         let Some(ai_child) = ai_child.as_mut() else {
             return;
         };
-        // A High-risk request shows its warnings first: the AI text waits for the
-        // acknowledgement checkbox (the panel keeps its reserved place). (2026-11-19, S4 B4b:
-        // `ApprovalFlow::hold_ai_for_ack` sets it from the issued request and the gate, then the
-        // body paints from `ApprovalPaint`; was `ai.panel.set_held(held_for_ack(..))` here.)
-        if !flow.hold_ai_for_ack() {
-            return;
-        }
         let paint = flow.paint();
         let Some(ai) = paint.ai else {
             return;
@@ -5105,8 +5152,9 @@ impl App {
         let dpi = window.dpi();
         let client = window.client_rect();
         let lang = self.approval_lang();
+        // 2026-11-22 (S4c W15): the flow borrowed shared, as in `paint_approval`.
+        let evm = &self.wallet.evm;
         let Self {
-            wallet: crate::app::Wallet { evm, .. },
             fonts,
             approval_win,
             ..

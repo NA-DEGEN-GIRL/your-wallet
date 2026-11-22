@@ -2333,6 +2333,54 @@ fn the_llm_transport_comes_only_from_the_injected_services_and_never_by_a_worker
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Review M1 (spec/06 §9, §10 E1): AI explanation switched on in the plain settings file starts no
+/// worker until the check after unlock; the first check (no snapshot yet) creates the snapshot
+/// and starts it; a snapshot whose consent names another host switches it off instead.
+/// 2026-11-22 (S4c W15): moved here from the integration test `llm_mock`
+/// (`e1_off_means_no_worker_and_no_connection`, which keeps the loopback part): it calls the
+/// wallet's `reconcile_settings` on an `App`, which only test builds of the library can do (no
+/// non-test `DerefMut`). The counting services return no transport: nothing is sent anywhere.
+#[test]
+fn the_settings_check_starts_the_llm_worker_only_with_its_consent() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let on = |tag: &str| {
+        let (mut app, dir) = llm_app(tag, "http://127.0.0.1:9/v1/chat/completions");
+        app.settings.llm_explain.enabled = true;
+        app.settings.llm_explain.privacy_notice_version = 1;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        app.services.llm = Arc::new(move |_endpoint| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            None
+        });
+        let (tx, _rx) = std::sync::mpsc::channel();
+        app.attach_workers(
+            Arc::new(crate::events::EventQueue::new(Box::new(|| {}))),
+            Vec::new(),
+            tx,
+        );
+        (app, dir, calls)
+    };
+    let (mut app, dir, calls) = on("llm-check-on");
+    assert!(!app.llm_running(), "not before the check");
+    let snapshot = app.reconcile_settings(None);
+    assert!(app.llm_running(), "started by the first check");
+    assert!(snapshot.llm.enabled);
+    assert_eq!(wait_for_calls(&calls, 1), 1);
+    app.llm_shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+
+    let (mut other, dir, calls) = on("llm-check-elsewhere");
+    let mut elsewhere = snapshot;
+    elsewhere.llm.host = "consented.example.org".to_owned();
+    let _ = other.reconcile_settings(Some(elsewhere));
+    assert!(!other.llm_running(), "no consent for this host");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Review L15: fee caps and auto-lock changed in the file use the snapshot values; the banner's
 /// `파일 값 사용` takes the file values (and the snapshot follows), `되돌리기` rewrites the file;
 /// a deleted `HyperEVM` pin is restored in memory and on disk.
@@ -3585,7 +3633,7 @@ fn an_id_that_is_no_press_only_clears_the_copy_mark() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// S3 D3: `App::on_field_edit` routes each field by `match` to the one family handler that
+/// S3 D3: `Wallet::on_field_edit` (`App::on_field_edit` before 2026-11-22 S4c W15) routes each field by `match` to the one family handler that
 /// claims it (before, the handlers were asked in turn); no field is claimed by two handlers,
 /// and the fields read only at their `저장` are claimed by none.
 #[test]
@@ -7557,8 +7605,12 @@ fn shell_resolves_the_keys(body: &dyn Fn(&str, &str) -> String) {
             "    fn on_command(&mut self, id: u16) {",
             // 2026-11-22 (S4c W3b, critic C11): and the `종료` press's shutdown, the shell's
             // composition (before, the wallet's `on_core` called it).
+            // 2026-11-22 (S4c W15, critique B-5): and the shell's press handlers of S23 and the
+            // `rpc.json` import (before, the wallet's family router called them).
             "self.dispatch(Cmd::Press{press,input});matchpress{Press::Enter=>self.enter_key(),\
-             Press::Back=>self.escape_key(),Press::Core(CorePress::Exit)=>self.shutdown(),_=>{}}",
+             Press::Back=>self.escape_key(),Press::Core(CorePress::Exit)=>self.shutdown(),\
+             Press::Ext(press)=>self.on_ext(press),\
+             Press::RpcImport(press)=>self.on_rpc_import(press),_=>{}}",
         ),
         (
             "    fn enter_key(&mut self) {",
@@ -7571,8 +7623,9 @@ fn shell_resolves_the_keys(body: &dyn Fn(&str, &str) -> String) {
         ),
         (
             "    pub(crate) fn escape_key(&mut self) {",
+            // 2026-11-22 (S4c W15): the two wallet fns are named on the wallet.
             "matchself.escape_target(){EscTarget::Press(id)=>self.on_command(id),\
-             EscTarget::ClosePickers=>{let_=self.close_pickers();self.refresh();}\
+             EscTarget::ClosePickers=>{let_=self.wallet.close_pickers();self.wallet.refresh();}\
              EscTarget::Nothing=>{}}",
         ),
     ];

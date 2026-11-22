@@ -189,7 +189,7 @@ pub(crate) mod host {
     }
 
     /// The executor's note of the answer to a secret effect (`Cmd::SecretOpened`, 2026-11-20,
-    /// S4 P8 review), before it goes to `App::on_cmd`.
+    /// S4 P8 review), before it goes to `Wallet::on_cmd` (`App::on_cmd` before 2026-11-22 S4c W15).
     pub(crate) fn saw_cmd(cmd: &Cmd) {
         note(format!("{cmd:?}"));
     }
@@ -296,7 +296,7 @@ pub(crate) mod host {
         App::log_capture(kind, made);
         let outcome = match capture_decision(kind, excluded) {
             CaptureDecision::Show { warning: false } => {
-                let Some(display) = app.take_display_secret(serial) else {
+                let Some(display) = app.wallet.take_display_secret(serial) else {
                     return Some(answered(OpenOutcome::Refused(ErrorCode::Sec001)));
                 };
                 note(format!("{display:?}"));
@@ -309,11 +309,11 @@ pub(crate) mod host {
                 }
             }
             CaptureDecision::Show { warning: true } => {
-                app.drop_display_secret(serial);
+                app.wallet.drop_display_secret(serial);
                 OpenOutcome::Refused(ErrorCode::Sec001)
             }
             CaptureDecision::Refuse(code) => {
-                app.drop_display_secret(serial);
+                app.wallet.drop_display_secret(serial);
                 OpenOutcome::Refused(code)
             }
         };
@@ -795,7 +795,9 @@ fn the_headless_secret_host_mirrors_the_shell() {
         // 2026-11-21 (S4 W2, plan §3.4, D-4): a display window's open is the composition's
         // (`display_window_handoff`, called by `open_display_composed` from `App::drain`), with
         // the shell's two halves `make_display_window` and `show_display`; before, one shell fn
-        // `open_display_window` held all of it, in this order.
+        // `open_display_window` held all of it, in this order. 2026-11-22 (S4c W15): the take and
+        // the drop are named on the wallet (`self.wallet.`; non-test builds have no `DerefMut`),
+        // and the host spells them the same way.
         (
             "display_window_handoff",
             &[
@@ -803,12 +805,12 @@ fn the_headless_secret_host_mirrors_the_shell() {
                  serial, kind, step, timeout_note, lang) { return outcome; }",
                 "match self.make_display_window(serial, kind, lang) { \
                  DisplayWindow::Verified(window) => { let Some(display) = \
-                 self.take_display_secret(serial) else { drop(window); return \
+                 self.wallet.take_display_secret(serial) else { drop(window); return \
                  OpenOutcome::Refused(ErrorCode::Sec001); }; self.show_display(serial, window, \
                  kind, display, step, timeout_note, lang); OpenOutcome::Shown { \
                  capture_excluded: true, } }",
                 "DisplayWindow::Unverified { outcome, window } => { \
-                 self.drop_display_secret(serial); drop(window); outcome }",
+                 self.wallet.drop_display_secret(serial); drop(window); outcome }",
             ],
         ),
         (
@@ -952,10 +954,10 @@ fn the_headless_secret_host_mirrors_the_shell() {
             "display_window_handoff",
             "open_display",
             &[
-                "let Some(display) = self.take_display_secret(serial) else {",
+                "let Some(display) = self.wallet.take_display_secret(serial) else {",
                 "OpenOutcome::Refused(ErrorCode::Sec001)",
                 "OpenOutcome::Shown { capture_excluded: true, }",
-                "self.drop_display_secret(serial);",
+                "self.wallet.drop_display_secret(serial);",
             ],
         ),
         (

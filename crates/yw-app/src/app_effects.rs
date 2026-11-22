@@ -91,6 +91,11 @@
 //! drain one effect at a time; `App::drain` (the composition) stays here and applies each one as
 //! before. Before W3 the queue and `emit` were `App`'s (`App::emit`, `self.outbox.pop_front()`
 //! in the drain).
+//!
+//! 2026-11-22 (S4c W15): non-test builds have no `App` → `Wallet` `DerefMut`, so the drain and
+//! `App::dispatch` hand a `Cmd` to `Wallet::on_cmd` on the wallet (`self.wallet.on_cmd`; before,
+//! `App::on_cmd`), and every other wallet fn the shell calls is listed with its reason in the
+//! source check `the_shell_writes_wallet_state_only_through_entries`.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Cmd;
@@ -285,10 +290,10 @@ impl App {
             // before the effect's answer; the window's own `WM_SIZE` came inside this borrow and
             // was dropped. Before W3 the wallet read the window when it needed to.
             if let Some(hidden) = self.main_hidden_answer() {
-                self.on_cmd(hidden);
+                self.wallet.on_cmd(hidden);
             }
             if let Some(answer) = answer {
-                self.on_cmd(answer);
+                self.wallet.on_cmd(answer);
             }
         }
         debug_assert!(self.outbox.is_empty(), "the outbox drained");
@@ -310,9 +315,10 @@ impl App {
 
     /// One input from the shell, then the effects it emitted (2026-11-20, S4 P10b, plan §3.4:
     /// `App::dispatch`): the shell's way to send a `Cmd`. An answer is not sent this way: the
-    /// drain that applied its effect hands it to `on_cmd`.
+    /// drain that applied its effect hands it to `on_cmd`. 2026-11-22 (S4c W15): the wallet's
+    /// `Wallet::on_cmd`, named on the wallet (non-test builds have no `DerefMut`).
     pub(crate) fn dispatch(&mut self, cmd: Cmd) {
-        self.on_cmd(cmd);
+        self.wallet.on_cmd(cmd);
         self.drain();
     }
 

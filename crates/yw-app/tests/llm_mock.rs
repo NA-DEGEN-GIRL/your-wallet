@@ -426,19 +426,19 @@ mod llm {
             enabled: true,
             ..configured
         };
-        let mut app = app_with(on.clone());
+        let app = app_with(on);
         assert!(!app.llm_running());
-        // After the check (here: the first one, which creates the snapshot) it starts (still
-        // no request).
-        let snapshot = app.reconcile_settings(None);
-        assert!(app.llm_running());
-        assert!(snapshot.llm.enabled);
-        // A snapshot without that consent (another host) switches it off instead.
-        let mut other = app_with(on);
-        let mut elsewhere = snapshot;
-        elsewhere.llm.host = "consented.example.org".to_owned();
-        let _ = other.reconcile_settings(Some(elsewhere));
-        assert!(!other.llm_running());
+        // A worker started on this endpoint opens no connection before a request.
+        // 2026-11-22 (S4c W15): the worker is started directly; before, through the app's check
+        // after unlock (`reconcile_settings`, called on the `App`), which an integration test can
+        // no longer reach: non-test builds of the library have no `App` → `Wallet` `DerefMut`.
+        // That check — the worker starts after it, a snapshot without the host's consent stops
+        // it — is the library test
+        // `app::tests::the_settings_check_starts_the_llm_worker_only_with_its_consent`.
+        let sink = Box::new(|_: LlmDone| {});
+        let service = ExplainService::start(config(&mock, None), factory(), sink).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        service.stop(100);
         assert_eq!(mock.accepts(), 0);
     }
 

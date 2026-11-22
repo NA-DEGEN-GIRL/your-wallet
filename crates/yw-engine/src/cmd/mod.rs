@@ -81,6 +81,16 @@
 //! state for the wallet's mirror (the periodic reads pause while it is set). Windows sends it when
 //! the window changes (made hidden, shown, minimized or restored, dropped); before, the logic read
 //! the window itself.
+//!
+//! 2026-11-22 (S4c W15, plan §5 W15 as the owner's second batch amends it, critique B-1):
+//! [`Cmd::Activate`] (a second start brings the wallet up), [`Cmd::Input`] (app input for the
+//! idle timer) and [`Cmd::Tick`] (one part of the main timer, [`TickPart`]): the shell's entries
+//! that are plain data. Before, the Windows shell called those wallet fns itself (through
+//! `App`'s `DerefMut`, which non-test builds no longer have). A worker's result, a lock and the
+//! shutdown are no `Cmd`: a result can hold a secret (a key worker's outcome, plan §7.1), so it
+//! enters through a typed in-process call; the lock and the shutdown are the shell's
+//! compositions of the wallet's halves around the shell's own wait for the key worker (spec/04
+//! §1.5, §5.3).
 
 use core::fmt;
 
@@ -229,6 +239,50 @@ pub enum Cmd {
     /// `HyperCore` and received-history reads. Sent only when the value changed; no main window
     /// is not hidden.
     MainHidden(bool),
+    /// A second start of the app asked for the wallet (S4c W15; Windows `WM_YW_ACTIVATE`, spec/04
+    /// §1.1): the main window comes up (`Effect::RaiseMain`), then the unlock window when locked.
+    Activate,
+    /// Key or button input to one of the app's windows (S4c W15, spec/04 §5.1): the idle clock
+    /// restarts at the logic's `Clock`. Input to other programs never comes here.
+    Input,
+    /// One part of the main timer's period (S4c W15): the logic runs that part at `now_ms`. The
+    /// shell sends the parts one at a time and applies what each emitted before the next, as the
+    /// timer ran them before (spec/04 §1.4).
+    Tick {
+        /// The shell's monotonic clock read once for the whole period (the logic's `Clock`).
+        now_ms: u64,
+        /// Which part.
+        part: TickPart,
+    },
+}
+
+/// The wallet's parts of the main timer's period, in the order the Windows timer sends them
+/// (S4c W15), and the early reads after a main-window message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TickPart {
+    /// The idle clock: pause or resume, then the idle lock or the first-run discard when due.
+    Idle,
+    /// The loading waits that time out (T-WAIT-STALLED).
+    Wait,
+    /// S22's 2 s hold gate.
+    ResetHold,
+    /// The copy mark's end.
+    Copied,
+    /// EVM reads and the approval queue's expiry.
+    Evm,
+    /// `HyperCore` reads.
+    HyperCore,
+    /// Solana reads.
+    Sol,
+    /// Bitcoin reads.
+    Btc,
+    /// Zcash reads.
+    Zec,
+    /// The received-history reads.
+    Received,
+    /// Not the timer: the reads a main-window message made due start right after it (at most
+    /// once per timer period; the timer's own checks).
+    ReadsDue,
 }
 
 /// Variant, field names and lengths only (D28): never a field's text or a credential unit.
@@ -285,6 +339,13 @@ impl fmt::Debug for Cmd {
                 .finish(),
             Self::HoldEnd => formatter.write_str("HoldEnd"),
             Self::MainHidden(hidden) => formatter.debug_tuple("MainHidden").field(hidden).finish(),
+            Self::Activate => formatter.write_str("Activate"),
+            Self::Input => formatter.write_str("Input"),
+            Self::Tick { now_ms, part } => formatter
+                .debug_struct("Tick")
+                .field("now_ms", now_ms)
+                .field("part", part)
+                .finish(),
         }
     }
 }

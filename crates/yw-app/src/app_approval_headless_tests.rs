@@ -3613,8 +3613,10 @@ fn the_windowless_main_entry_mirrors_on_main() {
     let system = "self.sync_main_hidden(); if let Some(action) = system_action(msg) { \
                   return self.on_system(action); } match msg {";
     let timer = "Msg::Timer(MAIN_TIMER_ID) => { self.tick(); Reply::Handled(0) }";
+    // 2026-11-22 (S4c W15): the activation is `Cmd::Activate` to the wallet, and the early reads
+    // `Cmd::Tick` with `TickPart::ReadsDue` (before, `self.activate()` and `self.reads_due(now)`).
     let window_arms = [
-        " WM_YW_ACTIVATE => self.activate(),",
+        " WM_YW_ACTIVATE => self.wallet.on_cmd(Cmd::Activate),",
         " WM_YW_TAB_SHORTCUT if window.is_foreground() => self.tab_shortcut(*wparam),",
         " WM_YW_SHORTCUT if window.is_foreground() => self.shortcut(*wparam),",
         " WM_YW_NAV_KEY if window.is_foreground() => self.main_nav_key(window, *wparam),",
@@ -3624,7 +3626,8 @@ fn the_windowless_main_entry_mirrors_on_main() {
     let app_in_main = format!(
         "Msg::App {{ msg, wparam }} => {{ match *msg {{ WM_YW_EVENTS => self.drain_events(),{} \
          WM_YW_LOCK_SHORTCUT => self.lock_shortcut(),{} _ => {{}} }} \
-         self.drain(); let now = self.clock.now_ms(); self.reads_due(now); Reply::Handled(0) }}",
+         self.drain(); let now = self.clock.now_ms(); self.wallet.on_cmd(Cmd::Tick {{ now_ms: \
+         now, part: TickPart::ReadsDue, }}); Reply::Handled(0) }}",
         window_arms[0],
         window_arms[1..].concat()
     );

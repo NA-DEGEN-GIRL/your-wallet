@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use yw_engine::cmd::CopyBand;
 
-use crate::app::{App, AppMode, Screen};
+use crate::app::{App, AppMode, Screen, Wallet};
 use crate::logging;
 
 /// The Chrome page that loads unpacked extensions.
@@ -167,14 +167,17 @@ impl App {
         }
     }
 
-    /// `Chrome 확장 설치` links (S08, S13, settings).
+    /// `Chrome 확장 설치` links (S08, S13, settings). 2026-11-22 (S4c W15): the shell's (its way
+    /// back, `ext`, is shell state); the screen change is the wallet's `set_screen`, named on
+    /// the wallet (non-test builds have no `DerefMut`).
     pub(crate) fn open_extension_help(&mut self) {
         if self.screen != Screen::Extension {
             self.ext.back = Some(self.screen.clone());
         }
-        self.set_screen(Screen::Extension);
+        self.wallet.set_screen(Screen::Extension);
     }
 
+    /// `← 돌아가기` of S23. 2026-11-22 (S4c W15): the return is the wallet's `return_to`.
     fn close_extension_help(&mut self) {
         let back = self.ext.back.take();
         let fallback = match self.mode {
@@ -184,22 +187,15 @@ impl App {
             _ => Screen::Locked,
         };
         // `← 돌아가기` opens the screen where it was left (2026-11-10).
-        self.return_to(back.unwrap_or(fallback));
-    }
-
-    /// `Cmd::FolderMissing` (S4 P3): `탐색기에서 폴더 열기` found no extension folder — the
-    /// `extension.folder_missing` log line, the band and the repaint, as the press did before.
-    pub(crate) fn on_folder_missing(&mut self) {
-        logging::info("app", "extension.folder_missing", &[]);
-        self.info = Some(
-            crate::ui::screens_reset::T_EXT_MISSING
-                .get(self.settings.language)
-                .to_owned(),
-        );
-        self.refresh();
+        self.wallet.return_to(back.unwrap_or(fallback));
     }
 
     /// Presses of S23 (2026-11-18, S3 C5: an `ExtPress`; before, the control id).
+    /// 2026-11-22 (S4c W15, critique B-5): the shell's press handler, run by `App::on_command`
+    /// right after the press reached the wallet (before, by the wallet's family router inside
+    /// it); what it changes of the wallet goes through the wallet's fns (`set_screen`,
+    /// `return_to`, `emit`, `copy_with_band`), not as `Cmd`s, because the screen it returns to
+    /// is a yw-app `Screen`, no engine data until S4d E0a. Same steps, same order.
     pub(crate) fn on_ext(&mut self, press: yw_engine::cmd::ExtPress) {
         use yw_engine::cmd::ExtPress;
         match press {
@@ -210,7 +206,7 @@ impl App {
             // `Cmd::FolderMissing` (`on_folder_missing`). Before, this resolved the folder and
             // started `explorer.exe` itself.
             ExtPress::OpenFolder => {
-                self.emit(yw_engine::effect::Effect::OpenFolder(
+                self.wallet.emit(yw_engine::effect::Effect::OpenFolder(
                     yw_engine::effect::Folder::Extension,
                 ));
             }
@@ -220,13 +216,31 @@ impl App {
             // right after the copy (`if self.copied.take().is_some()`) and set both itself.
             ExtPress::CopyPath => {
                 if let Some(dir) = extension_dir() {
-                    self.copy_with_band(&dir.display().to_string(), CopyBand::ExtensionPath);
+                    self.wallet
+                        .copy_with_band(&dir.display().to_string(), CopyBand::ExtensionPath);
                 }
             }
             ExtPress::CopyUrl => {
-                self.copy_with_band(CHROME_EXTENSIONS_URL, CopyBand::ExtensionsUrl);
+                self.wallet
+                    .copy_with_band(CHROME_EXTENSIONS_URL, CopyBand::ExtensionsUrl);
             }
         }
+    }
+}
+
+impl Wallet {
+    /// `Cmd::FolderMissing` (S4 P3): `탐색기에서 폴더 열기` found no extension folder — the
+    /// `extension.folder_missing` log line, the band and the repaint, as the press did before.
+    /// 2026-11-22 (S4c W15): wallet code (`Wallet::on_cmd` handles the answer); before, an
+    /// `impl App` fn reached through `DerefMut`.
+    pub(crate) fn on_folder_missing(&mut self) {
+        logging::info("app", "extension.folder_missing", &[]);
+        self.info = Some(
+            crate::ui::screens_reset::T_EXT_MISSING
+                .get(self.settings.language)
+                .to_owned(),
+        );
+        self.refresh();
     }
 }
 

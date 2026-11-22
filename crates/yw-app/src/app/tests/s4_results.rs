@@ -542,8 +542,11 @@ fn ends_with_word(before: &str, word: &str) -> bool {
 }
 
 /// The receivers of a counted call: `self.<name>(`, a closure's or `Forward`'s
-/// `app.<name>(`, `Self::<name>(`, `App::<name>(`.
-const DOT_RECEIVERS: [&str; 2] = ["self", "app"];
+/// `app.<name>(`, `Self::<name>(`, `App::<name>(`. 2026-11-22 (S4c W15): also the shell's
+/// `self.wallet.<name>(` (non-test builds have no `DerefMut`, so the shell names the wallet),
+/// and `main.rs`'s `state.<name>(` (its start steps' and loop observer's `App` borrow, which
+/// now reaches `Cmd::Input` through `App::note_input`).
+const DOT_RECEIVERS: [&str; 4] = ["self", "app", "self.wallet", "state"];
 const PATH_RECEIVERS: [&str; 2] = ["Self", "App"];
 
 /// Every counted call ([`DOT_RECEIVERS`], [`PATH_RECEIVERS`]) of one of `names` in `file`.
@@ -608,6 +611,13 @@ fn other_uses(files: &[Src], names: &BTreeSet<String>) -> Vec<String> {
                         .into_iter()
                         .rev()
                         .collect();
+                    // 2026-11-22 (S4c W15): `self.wallet.<name>` is the receiver `self.wallet`.
+                    let receiver = if receiver == "wallet" && ends_with_word(before, "self.wallet")
+                    {
+                        "self.wallet".to_owned()
+                    } else {
+                        receiver
+                    };
                     let refused = if sep == "." {
                         called
                             && !DOT_RECEIVERS.contains(&receiver.as_str())
@@ -631,16 +641,21 @@ fn other_uses(files: &[Src], names: &BTreeSet<String>) -> Vec<String> {
     found
 }
 
-/// Every `self.emit(` call whose argument holds `literal`.
+/// Every `self.emit(` call whose argument holds `literal` (2026-11-22, S4c W15: or
+/// `self.wallet.emit(`, the shell's way to queue one, non-test builds having no `DerefMut`).
 fn emits_of(files: &[Src], literal: &str) -> Vec<Site> {
     let mut sites = Vec::new();
     for (src, file) in files.iter().enumerate() {
         let code = &file.code;
         for (at, _) in code.match_indices(literal) {
-            let Some(emit) = code[..at].rfind("self.emit(") else {
+            let Some((emit, receiver)) = ["self.emit(", "self.wallet.emit("]
+                .into_iter()
+                .filter_map(|call| Some((code[..at].rfind(call)?, call)))
+                .max_by_key(|&(emit, _)| emit)
+            else {
                 continue;
             };
-            let end = paren_end(code.as_bytes(), emit + "self.emit".len());
+            let end = paren_end(code.as_bytes(), emit + receiver.len() - 1);
             if end > at {
                 sites.push(Site {
                     src,
@@ -1120,7 +1135,8 @@ const KINDS: [Kind; 4] = [
             "generate_and_report",
             "items",
             "layout_and_paint",
-            "on_command",
+            // 2026-11-22 (S4c W15): `on_command`'s `self.copied = None` is the wallet's
+            // `forget_copy_mark` (below), and `tick`'s `copied_tick` call `timer_part`'s.
             "on_core",
             "on_folder_missing",
             "on_key_imported",
@@ -1146,7 +1162,8 @@ const KINDS: [Kind; 4] = [
             "set_info",
             "sol_save_fees",
             "start_repin",
-            "tick",
+            "timer_part",
+            "forget_copy_mark",
             "toggle_evm_token_hidden",
             "toggle_sol_token_hidden",
             "yk_note",
@@ -1236,7 +1253,7 @@ const NEXT_CALL_OF_AN_ENTRY: [&str; 0] = [];
 /// code emits queues behind the open and is applied after the answer in the same drain. Not
 /// converted because the fn would become an opener for every caller (each revoke and removal
 /// path, the shell's press entry, every `refresh`).
-const READS_NO_ANSWER: [&str; 7] = [
+const READS_NO_ANSWER: [&str; 9] = [
     // After the press: the press input is put back (the outer press's) and this press's is
     // wiped (`used`, debug: its unread credential count). An open's answer reads no press input:
     // `take_cred` (core, RPC, LLM and EVM settings handlers) and `take_clip`/`take_image` (the
@@ -1270,6 +1287,14 @@ const READS_NO_ANSWER: [&str; 7] = [
     // After it, the drop-downs' close and its repaint read and change nothing an open's answer
     // does. Before W1 the hold's logic ran inside `hold_down` (`refresh`, a listed site above).
     "approval app.rs on_main_msg hold_down 1",
+    // 2026-11-22 (S4c W15): the press entry's first step and the loop observer's. `note_input`
+    // sends only `Cmd::Input` (the idle clock's restart), which opens no approval window;
+    // it counts because `on_cmd` also routes an open's answer. After it come the drop-downs' close,
+    // the press (`on_command`), or the observer's navigation key and its drain (`main.rs`): none
+    // reads or changes what an open's answer does. Before W15 `note_input` wrote the idle clock
+    // itself and called nothing.
+    "approval app.rs on_command note_input 1",
+    "approval main.rs main note_input 1",
 ];
 
 /// Sites the check reports whose opening path never reaches the code after them (it has no
@@ -2702,9 +2727,12 @@ fn wallet_writes_and_self_calls_on_made_up_code() {
 /// drops a display secret, and only `App::drain` calls the composition `open_display_composed`.
 fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
     // The secret's move: only the composition takes or drops it.
+    // 2026-11-22 (S4c W15): through `self.` or `self.wallet.` ([`normalized`]); the composition
+    // names the wallet since non-test builds have no `DerefMut`.
     let mut handoffs = 0;
     for src in files {
         for (name, body) in fn_blocks(src) {
+            let body = normalized(body);
             for call in ["take_display_secret(", "drop_display_secret("] {
                 if body.contains(&format!("self.{call}")) {
                     handoffs += 1;
@@ -2739,6 +2767,443 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
         .map(|(src, name, _)| format!("{}:{name}", src.file))
         .collect::<Vec<_>>();
     assert_eq!(callers, ["yw-app/src/app_effects.rs:drain"]);
+}
+
+// ---- The shell's way into the wallet (2026-11-22, S4c W15; plan §3.3–§3.4, D-21) ---------------
+
+/// The wallet fns that take `&mut self` and that the shell's code (non-test `impl App`) calls,
+/// each as (shell fn, wallet fn, reason) (2026-11-22, S4c W15; owner's second batch item 1,
+/// critique B-1, B-5): non-test builds have no `App` → `Wallet` `DerefMut`, so every such call
+/// names the wallet (`self.wallet.<fn>(`), and
+/// [`the_shell_writes_wallet_state_only_through_entries`] allows these and nothing else. They are
+/// the wallet's entries: a `Cmd` (`on_cmd`), the outbox (`next_effect`), the typed in-process
+/// entries of what may hold a secret (a worker's event, a secret window's action, the display
+/// secret's move, the `rpc.json` plan), the shell's compositions around its own waits (lock,
+/// shutdown) and the named wallet steps of shell code that S4d/S5 turns into `Cmd`s or answers.
+const SHELL_WALLET_CALLS: [(&str, &str, &str); 47] = [
+    (
+        "dispatch",
+        "on_cmd",
+        "a `Cmd` from the shell (plan §3.4: `App::dispatch`)",
+    ),
+    (
+        "drain",
+        "next_effect",
+        "the outbox, one effect at a time (plan §3.4, critic C13)",
+    ),
+    (
+        "drain",
+        "on_cmd",
+        "an applied effect's answer, and the main-window mirror's `Cmd::MainHidden` (B-10)",
+    ),
+    (
+        "cred_check",
+        "take_cred_log",
+        "debug builds: the credential edits the logic took, for the shell's comparison (B-11)",
+    ),
+    (
+        "on_main_msg",
+        "on_cmd",
+        "`Cmd::HoldEnd`, `Cmd::Activate` and `Cmd::Tick` (`ReadsDue`) of the main window's messages",
+    ),
+    ("on_main_msg", "refresh", "the layout after `WM_SIZE`"),
+    (
+        "on_main_msg",
+        "close_pickers",
+        "a click on the window itself closes an open drop-down (2026-11-12)",
+    ),
+    (
+        "hold_down",
+        "on_cmd",
+        "`Cmd::HoldBegin` (S22's hold area, W1)",
+    ),
+    (
+        "hold_move",
+        "on_cmd",
+        "`Cmd::HoldEnd` (the pointer left the held area, W1)",
+    ),
+    (
+        "note_input",
+        "on_cmd",
+        "`Cmd::Input` (the idle clock, spec/04 §5.1)",
+    ),
+    (
+        "escape_key",
+        "close_pickers",
+        "Esc closes an open drop-down (P4)",
+    ),
+    ("escape_key", "refresh", "the layout after that"),
+    (
+        "on_command",
+        "close_pickers",
+        "a press closes an open drop-down first (2026-11-12)",
+    ),
+    (
+        "on_command",
+        "forget_copy_mark",
+        "an id that is no press only clears the copy mark (S3 D3)",
+    ),
+    (
+        "on_command",
+        "refresh",
+        "the layout after a closed drop-down",
+    ),
+    (
+        "show_main",
+        "refresh",
+        "the first layout of the main window shown",
+    ),
+    (
+        "register_session",
+        "error_banner",
+        "E-APP-004 after the session registration's last retry (spec/04 §1.4-6)",
+    ),
+    (
+        "set_install_commit",
+        "install_commit_read",
+        "`main.rs`'s start: the installation record's commit",
+    ),
+    (
+        "note_wer_unprotected",
+        "wer_unprotected_noted",
+        "`main.rs`'s start: crash reports may be written (review L9)",
+    ),
+    (
+        "start_banner",
+        "banner",
+        "`main.rs`'s start: refused settings, unreadable `apikeys.dpapi`",
+    ),
+    (
+        "start_fill_template_gaps",
+        "fill_template_gaps",
+        "`main.rs`'s start: networks added since the addresses were made",
+    ),
+    (
+        "attach_browser",
+        "browser_attached",
+        "`main.rs`'s start: the dispatcher (the pipe end stays the shell's, W1)",
+    ),
+    (
+        "attach_workers",
+        "workers_attached",
+        "`main.rs`'s start: the event queue and the RPC sender (the threads are the shell's)",
+    ),
+    (
+        "clear_secret_clip",
+        "drop_clip_notice",
+        "the clip-clear notices (spec/04 §4.8), where the clipboard answered",
+    ),
+    ("clear_secret_clip", "notice", "the same notices"),
+    (
+        "clear_secret_clip",
+        "refresh",
+        "the repaint of those notices",
+    ),
+    (
+        "clear_earlier_secret_clip",
+        "notice",
+        "a copy an earlier run left, cleared late",
+    ),
+    (
+        "copy_secret",
+        "drop_clip_notice",
+        "a new secret copy replaced one whose clear was noticed (spec/04 §4.8)",
+    ),
+    ("copy_secret", "refresh", "the repaint of that band"),
+    (
+        "lock",
+        "lock_steps",
+        "the lock's composition (spec/04 §5.3, W3a): the first half, then the `Suspend` drain",
+    ),
+    (
+        "lock",
+        "lock_after_wait",
+        "the second half, after the key worker's lock",
+    ),
+    (
+        "shutdown",
+        "shutdown_begin",
+        "the shutdown's composition (spec/04 §1.5, W3b): the mode and the queue's items",
+    ),
+    (
+        "shutdown",
+        "shutdown_steps",
+        "after the pipe server: the dispatcher, `WalletConnect`, the wallet's lock",
+    ),
+    (
+        "shutdown",
+        "shutdown_after_wait",
+        "after the 5 s wait: the workers told to stop",
+    ),
+    (
+        "drain_events",
+        "worker_event",
+        "a worker's event, typed in-process (a key outcome can hold a secret, plan §7.1)",
+    ),
+    (
+        "display_window_handoff",
+        "take_display_secret",
+        "the display secret moves into a window verified as capture-excluded (D-4, §7.2)",
+    ),
+    (
+        "display_window_handoff",
+        "drop_display_secret",
+        "any other window result drops (wipes) it",
+    ),
+    (
+        "apply_form_action",
+        "on_secret_action",
+        "a secret window's action, typed in-process (a submission holds secrets, §7.3)",
+    ),
+    (
+        "run_step",
+        "toggle_ai_panel",
+        "`Step::AiExpand`: the shown flow's AI panel (no `Cmd::Approval`: see `AnyWindow`)",
+    ),
+    (
+        "run_step",
+        "ai_tick",
+        "`Step::TimerTail` after the window timer's `Tick` (B6 review: no id check)",
+    ),
+    (
+        "run_step",
+        "rebuild_view_with",
+        "the same tail: the view while the simulation runs",
+    ),
+    (
+        "paint_ai_body",
+        "hold_shown_ai_for_ack",
+        "the AI panel's held flag before the AI body paints (spec/06 §3.2; never the gate)",
+    ),
+    (
+        "open_extension_help",
+        "set_screen",
+        "S23 (B-5: its way back is shell state; a yw-app `Screen` is no `Cmd` data before E0a)",
+    ),
+    (
+        "close_extension_help",
+        "return_to",
+        "S23's `← 돌아가기` (the same)",
+    ),
+    (
+        "on_ext",
+        "emit",
+        "`Effect::OpenFolder(Folder::Extension)`, which the shell resolves (P3)",
+    ),
+    (
+        "on_ext",
+        "copy_with_band",
+        "S23's two copies, the path the shell found (B-5) and the page address",
+    ),
+    (
+        "on_rpc_import",
+        "finish_rpc_import",
+        "the import's confirmation (B-5: the wallet's half of `rpc.json`, W13)",
+    ),
+];
+
+/// [`SHELL_WALLET_CALLS`]'s `rpc.json` lines (2026-11-22, S4c W15, critique B-5): the shell's
+/// three fns of the import hand the rest to the wallet's typed halves (W13).
+const SHELL_WALLET_RPC_CALLS: [(&str, &str, &str); 4] = [
+    ("on_rpc_import", "rpc_import_cancel", "the import's `취소`"),
+    (
+        "on_rpc_import",
+        "rpc_json_delete_asked",
+        "`rpc.json 지우기…` or its `취소`",
+    ),
+    (
+        "delete_rpc_json",
+        "on_rpc_json_deleted",
+        "the delete's result, typed in-process",
+    ),
+    (
+        "begin_rpc_import",
+        "on_rpc_json_read",
+        "the parsed plan, typed in-process (it holds RPC URLs and a token, §7)",
+    ),
+];
+
+/// The methods the shell may call on a wallet field it names through `self.wallet.` (a read the
+/// split borrow needs), each with why it only reads (2026-11-22, S4c W15).
+const SHELL_WALLET_READS: [(&str, &str); 3] = [
+    ("as_ref", "a shared view of an `Option`"),
+    ("is_some", "whether an `Option` holds a value"),
+    ("now_ms", "the injected clock (`Clock::now_ms`, `&self`)"),
+];
+
+/// The `self.wallet.` chains of `body`, whitespace aside, as (the names after `self.wallet.`,
+/// whether a call follows): `self.wallet.on_cmd(x)` is (`["on_cmd"]`, true),
+/// `self.wallet.evm.approval.as_ref()` is (`["evm", "approval", "as_ref"]`, true),
+/// `self.wallet.evm.next_shown` is (`["evm", "next_shown"]`, false).
+fn wallet_chains(body: &str) -> Vec<(Vec<String>, bool)> {
+    let text = body
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(" .", ".")
+        .replace(". ", ".");
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    for (at, _) in text.match_indices("self.wallet.") {
+        if at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'.') {
+            continue;
+        }
+        let mut end = at + "self.wallet".len();
+        let mut names = Vec::new();
+        while bytes.get(end) == Some(&b'.') {
+            let start = end + 1;
+            let mut stop = start;
+            while stop < bytes.len() && is_ident(bytes[stop]) {
+                stop += 1;
+            }
+            if stop == start {
+                break;
+            }
+            names.push(text[start..stop].to_owned());
+            end = stop;
+        }
+        let called = text[end..].trim_start().starts_with('(');
+        found.push((names, called));
+    }
+    found
+}
+
+/// `the_shell_writes_wallet_state_only_through_entries` (2026-11-22, S4c W15; plan §3.3–§3.4,
+/// D-21, owner's second batch item 1, preflight §0 item 3): non-test builds have no `App` →
+/// `Wallet` `DerefMut` (production code has `Deref` only), so the compiler refuses any write of
+/// the wallet's state through `App` there; what the compiler allows — naming the wallet
+/// (`self.wallet.`) — is checked here. In every non-test `impl App` fn: no wallet field is written
+/// ([`wallet_writes`]), the whole wallet is never taken ([`whole_wallet`]), a wallet cell is
+/// borrowed mutably only as [`EXECUTOR_CELL_WRITES`] lists, a wallet fn that takes `&mut self`
+/// is called only as [`SHELL_WALLET_CALLS`] (and [`SHELL_WALLET_RPC_CALLS`]) list, and a method
+/// called on a wallet field named through `self.wallet.` is one of [`SHELL_WALLET_READS`]. Every
+/// listed call is found, with its reason (A-20). Before W15, `impl App` code wrote the wallet
+/// through `DerefMut` and only the executor was checked
+/// ([`the_executor_writes_no_wallet_state`], which stays).
+#[test]
+fn the_shell_writes_wallet_state_only_through_entries() {
+    let files: Vec<Src> = production_code()
+        .into_iter()
+        .filter(|src| src.file.starts_with("yw-app/"))
+        .collect();
+    let app = src_of(&files, "yw-app/src/app.rs");
+    assert!(
+        app.code.contains("impl core::ops::Deref for App {"),
+        "App derefs to the wallet"
+    );
+    assert!(
+        !app.code.contains("DerefMut for App"),
+        "non-test builds have no App → Wallet DerefMut"
+    );
+    let fields = wallet_fields(app);
+    let shell_fns = app_fns(&files);
+    assert!(shell_fns.len() > 300, "{} impl App fns", shell_fns.len());
+    let wallet_fns = impl_fns(&files, "Wallet");
+    let writers: BTreeSet<&str> = wallet_fns
+        .iter()
+        .filter(|(_, bodies)| bodies.iter().any(|(_, _, takes_mut)| *takes_mut))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(writers.contains("on_cmd") && writers.contains("emit"));
+    let listed: Vec<(&str, &str, &str)> = SHELL_WALLET_CALLS
+        .iter()
+        .chain(SHELL_WALLET_RPC_CALLS.iter())
+        .copied()
+        .collect();
+    let mut seen = BTreeSet::new();
+    let mut findings = Vec::new();
+    for (name, bodies) in &shell_fns {
+        for (file, body, _) in bodies {
+            findings.extend(
+                wallet_writes(body, &fields)
+                    .into_iter()
+                    .map(|chain| format!("{file}: {name} writes {chain}")),
+            );
+            // The constructor builds the wallet (`Self { wallet: Wallet { .. }, .. }`).
+            if name != "with_clock" {
+                findings.extend(
+                    whole_wallet(body)
+                        .into_iter()
+                        .map(|whole| format!("{file}: {name} takes {whole}")),
+                );
+            }
+            for receiver in cell_writes(body) {
+                let first = receiver
+                    .trim_start_matches("self.wallet.")
+                    .trim_start_matches("self.")
+                    .split('.')
+                    .next()
+                    .unwrap_or_default();
+                let allowed = EXECUTOR_CELL_WRITES
+                    .iter()
+                    .any(|&(from, cell, _)| from == name && cell == receiver);
+                if fields.contains(first) && !allowed {
+                    findings.push(format!("{file}: {name} borrows {receiver} mutably"));
+                }
+            }
+            for (names, called) in wallet_chains(body) {
+                match names.as_slice() {
+                    [wallet_fn] if called => {
+                        if !writers.contains(wallet_fn.as_str()) {
+                            continue;
+                        }
+                        if listed
+                            .iter()
+                            .any(|&(from, to, _)| from == name && to == wallet_fn)
+                        {
+                            seen.insert((name.clone(), wallet_fn.clone()));
+                        } else {
+                            findings.push(format!("{file}: {name} calls the wallet's {wallet_fn}"));
+                        }
+                    }
+                    [_, .., method]
+                        if called
+                            && !SHELL_WALLET_READS.iter().any(|&(read, _)| read == method) =>
+                    {
+                        findings.push(format!(
+                            "{file}: {name} calls self.wallet.{}",
+                            names.join(".")
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    assert!(findings.is_empty(), "{findings:#?}");
+    for (from, to, reason) in &listed {
+        assert!(!reason.is_empty(), "{from} → {to}: no reason");
+        assert!(
+            writers.contains(to),
+            "{from} → {to}: not a wallet fn that takes &mut self"
+        );
+        assert!(
+            seen.contains(&((*from).to_owned(), (*to).to_owned())),
+            "{from} → {to}: not found"
+        );
+    }
+}
+
+/// The scanner of [`the_shell_writes_wallet_state_only_through_entries`] on made-up code: it can
+/// fail (2026-11-22, S4c W15).
+#[test]
+fn wallet_chains_on_made_up_code() {
+    assert_eq!(
+        wallet_chains(
+            "{ self.wallet.on_cmd(Cmd::Input); let a = self.wallet.evm.next_shown; \
+             self.wallet .evm.approval\n.as_ref(); self.wallets.x(); my.self.wallet.y(); \
+             self.wallet.idle.input(0); }"
+        ),
+        [
+            (vec!["on_cmd".to_owned()], true),
+            (vec!["evm".to_owned(), "next_shown".to_owned()], false),
+            (
+                vec!["evm".to_owned(), "approval".to_owned(), "as_ref".to_owned()],
+                true
+            ),
+            (vec!["idle".to_owned(), "input".to_owned()], true),
+        ]
+    );
 }
 
 // ---- The wallet fns' source check (2026-11-21, S4 W3; preflight §3.0, critique B-2) ------------
@@ -2995,7 +3460,16 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// `zec_hw_slots`, `zec_last_balance`, `zec_removed` and `hc_foldable`. `activity_rows` and
 /// `meta_activity_row` still format a local time through `format_local`
 /// ([`RENDER_LOCAL_TIME`], plan D-30: S5's).
-static WALLET_FNS: [(&str, &str); 963] = [
+/// W15 (2026-11-22, plan §5 W15 as the owner's second batch amends it, critique B-1, B-5): the
+/// wallet's `on_cmd` and its routers (`on_press`, `on_family`, `on_field_edit`; before, `impl
+/// App`), the plain-data entries it now takes (`activate` for `Cmd::Activate`, `timer_part` for
+/// `Cmd::Tick`), the worker events' typed entry `worker_event` (was the `match` of
+/// `App::drain_events`), and the wallet halves the shell's former writes became:
+/// `on_folder_missing` (`Cmd::FolderMissing`), `drop_clip_notice`, `forget_copy_mark`,
+/// `toggle_ai_panel` (`Step::AiExpand`), `hold_shown_ai_for_ack` (the AI body's paint) and the
+/// start steps `install_commit_read`, `wer_unprotected_noted`, `browser_attached`,
+/// `workers_attached`. Each is called from the shell only as [`SHELL_WALLET_CALLS`] lists.
+static WALLET_FNS: [(&str, &str); 979] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -3959,6 +4433,22 @@ static WALLET_FNS: [(&str, &str); 963] = [
     ("W14c", "zec_last_balance"),
     ("W14c", "zec_removed"),
     ("W14c", "hc_foldable"),
+    ("W15", "on_cmd"),
+    ("W15", "on_press"),
+    ("W15", "on_family"),
+    ("W15", "on_field_edit"),
+    ("W15", "activate"),
+    ("W15", "timer_part"),
+    ("W15", "worker_event"),
+    ("W15", "hold_shown_ai_for_ack"),
+    ("W15", "on_folder_missing"),
+    ("W15", "drop_clip_notice"),
+    ("W15", "forget_copy_mark"),
+    ("W15", "toggle_ai_panel"),
+    ("W15", "install_commit_read"),
+    ("W15", "wer_unprotected_noted"),
+    ("W15", "browser_attached"),
+    ("W15", "workers_attached"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
@@ -4766,13 +5256,17 @@ fn assert_secret_form_shell_reach(app: &Src, shell_calls: &BTreeSet<String>) {
 /// [`the_secret_form_action_splits_at_on_secret_action`] allows nothing else. W15, which removes
 /// the non-test `DerefMut`, must resolve them (make `drop_clip_notice` wallet code, as `refresh`
 /// already is, and call both through the wallet, or carry the notice drop in an answer).
+/// 2026-11-22 (S4c W15): resolved the first way — `drop_clip_notice` is `impl Wallet` (row W15
+/// of [`WALLET_FNS`]) and `copy_secret` calls both on the wallet (`self.wallet.`), as
+/// [`SHELL_WALLET_CALLS`] lists; they stay here as the shell half's only `App`-level calls.
 const SECRET_FORM_SHELL_WALLET_CALLS: [(&str, &str, &str); 2] = [
     (
         "copy_secret",
         "drop_clip_notice",
         "the clip-clear notice (spec/04 §4.8): a new copy replaced one whose clear was still \
          being retried and noticed, so T-CLIP-NOT-CLEARED leaves the wallet's `banners`; the \
-         shell knows it where the clipboard answered. Not wallet code yet (W15)",
+         shell knows it where the clipboard answered. Wallet code since W15 (2026-11-22), \
+         called on the wallet",
     ),
     ("copy_secret", "refresh", "the repaint of that band"),
 ];
@@ -4822,7 +5316,8 @@ const RPC_IMPORT_WALLET_FNS: [&str; 6] = [
 /// `begin_rpc_import`/`delete_rpc_json` wrote the import state, the band and the confirmation
 /// themselves. It finds every fn and source it names (A-20). Since the W13 review
 /// (2026-11-22) also: no wallet half calls one of the shell's three fns, those are called only
-/// from the press path (`on_family` → `on_rpc_import` → the read or the delete), and
+/// from the press path (`on_family` → `on_rpc_import` → the read or the delete; since S4c W15,
+/// 2026-11-22, the shell's `on_command` → `on_rpc_import`, critique B-5), and
 /// `finish_rpc_import` keeps B-5's order (apply → `save_apikeys` → `save_settings` →
 /// `fill_template_gaps` → `queue_rpc_tests`), which the lifecycle scenario pins only in part.
 #[test]
@@ -4898,8 +5393,13 @@ fn the_rpc_import_plan_enters_the_wallet_typed() {
     );
     // The shell's fns are reached from the press path only (2026-11-22, S4c W13 review): the
     // family router, then the press handler. No wallet fn reaches the file work through them,
-    // directly or through a helper.
-    assert_eq!(callers_of("on_rpc_import"), ["yw-app/src/app.rs:on_family"]);
+    // directly or through a helper. 2026-11-22 (S4c W15, critique B-5): the shell's press entry
+    // `on_command` runs it right after the press reached the wallet; before, the wallet's family
+    // router `on_family`.
+    assert_eq!(
+        callers_of("on_rpc_import"),
+        ["yw-app/src/app.rs:on_command"]
+    );
     for shell_step in ["begin_rpc_import", "delete_rpc_json"] {
         assert_eq!(
             callers_of(shell_step),
@@ -5198,10 +5698,12 @@ fn the_lock_composition_drains_only_for_suspend() {
         assert_eq!(bodies.len(), 1, "one fn {name} in app.rs");
         bodies[0].split_whitespace().collect()
     };
+    // 2026-11-22 (S4c W15): the halves are named on the wallet (non-test builds have no
+    // `DerefMut`); before, `self.lock_steps(` and `self.lock_after_wait(`.
     assert_eq!(
         one("lock"),
-        "fnlock(&mutself,reason:LockReason){letvault_present=self.lock_steps(reason);\
-         ifreason==LockReason::Suspend{self.drain();}self.lock_after_wait(vault_present);}"
+        "fnlock(&mutself,reason:LockReason){letvault_present=self.wallet.lock_steps(reason);\
+         ifreason==LockReason::Suspend{self.drain();}self.wallet.lock_after_wait(vault_present);}"
     );
     assert_eq!(
         one("lock_wallet"),
@@ -5298,14 +5800,16 @@ fn the_shutdown_composition_runs_from_the_shell(files: &[Src]) {
             at += found.unwrap_or_default() + step.len();
         }
     };
+    // 2026-11-22 (S4c W15): the halves are named on the wallet (`self.wallet.`; non-test builds
+    // have no `DerefMut`).
     in_order(
         "shutdown",
         &[
-            "if!self.shutdown_begin(){return;}",
+            "if!self.wallet.shutdown_begin(){return;}",
             "pipe.stop();",
-            "letbefore=self.shutdown_steps();self.drain();",
+            "letbefore=self.wallet.shutdown_steps();self.drain();",
             "self.lock_signal.wait_beyond(before,Duration::from_secs(5));\
-             self.shutdown_after_wait();self.save_window_state();",
+             self.wallet.shutdown_after_wait();self.save_window_state();",
             "yw_win::ui::quit(0);",
         ],
     );
@@ -5487,9 +5991,10 @@ fn the_main_hidden_mirror_changes_where_the_window_does() {
     // is followed by the mirror's answer in the drain, before the effect's own answer.
     let effects = src_of(&files, "yw-app/src/app_effects.rs");
     let drain = flat(fn_bodies(effects, "drain")[0]);
+    // 2026-11-22 (S4c W15): the answers go to `Wallet::on_cmd`, named on the wallet.
     let mirror = concat!(
-        "ifletSome(hidden)=self.main_hidden_answer(){self.on_cmd(hidden);}",
-        "ifletSome(answer)=answer{self.on_cmd(answer);}"
+        "ifletSome(hidden)=self.main_hidden_answer(){self.wallet.on_cmd(hidden);}",
+        "ifletSome(answer)=answer{self.wallet.on_cmd(answer);}"
     );
     assert!(drain.contains(mirror), "{drain}");
     // Every main window message syncs first.

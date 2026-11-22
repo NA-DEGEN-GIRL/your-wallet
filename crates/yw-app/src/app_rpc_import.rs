@@ -474,6 +474,9 @@ impl App {
     /// `rpc_import_cancel` and `rpc_json_delete_asked`. Before, the arms wrote
     /// the import state themselves and one fn read the file and wrote the wallet. Same steps,
     /// same order (the two moves are under `begin_rpc_import` and `delete_rpc_json`).
+    /// 2026-11-22 (S4c W15, critique B-5): run by `App::on_command` right after the press
+    /// reached the wallet (before, by the wallet's family router inside it), and the wallet's
+    /// entries are named on the wallet (non-test builds have no `DerefMut`).
     pub(crate) fn on_rpc_import(&mut self, press: RpcImportPress) {
         match press {
             RpcImportPress::Import => {
@@ -481,11 +484,12 @@ impl App {
                     self.begin_rpc_import(&path);
                 }
             }
-            RpcImportPress::Overwrite => self.finish_rpc_import(true),
-            RpcImportPress::Fill => self.finish_rpc_import(false),
-            RpcImportPress::Cancel => self.rpc_import_cancel(),
+            RpcImportPress::Overwrite => self.wallet.finish_rpc_import(true),
+            RpcImportPress::Fill => self.wallet.finish_rpc_import(false),
+            RpcImportPress::Cancel => self.wallet.rpc_import_cancel(),
             RpcImportPress::Delete | RpcImportPress::DeleteCancel => {
-                self.rpc_json_delete_asked(press == RpcImportPress::Delete);
+                self.wallet
+                    .rpc_json_delete_asked(press == RpcImportPress::Delete);
             }
             RpcImportPress::DeleteConfirm => {
                 if let Some(path) = rpc_json_path() {
@@ -534,7 +538,7 @@ impl App {
     /// confirmation before the delete (now right after it: nothing reads it in between).
     pub(crate) fn delete_rpc_json(&mut self, path: &Path) {
         let deleted = delete_file(path);
-        self.on_rpc_json_deleted(deleted);
+        self.wallet.on_rpc_json_deleted(deleted);
     }
 }
 
@@ -570,7 +574,7 @@ impl App {
     /// and settings only, never that state).
     pub(crate) fn begin_rpc_import(&mut self, path: &Path) {
         let read = read_plan(path, &self.url_networks(), &self.settings);
-        self.on_rpc_json_read(read);
+        self.wallet.on_rpc_json_read(read);
     }
 }
 

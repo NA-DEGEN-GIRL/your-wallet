@@ -2499,6 +2499,8 @@ fn the_approval_flow_names_no_window() {
     // open goes to the executor (`effect => self.apply(effect)`; before, `let answer =
     // self.apply(effect);` for all of them). 2026-11-21 (S4 W3, plan §3.4): the queue is the
     // wallet's, taken one effect at a time (before, `self.outbox.pop_front()` on `App`'s).
+    // 2026-11-22 (S4c W15): the answer goes to `Wallet::on_cmd`, named on the wallet (before,
+    // `self.on_cmd(answer)` through `DerefMut`, which non-test builds no longer have).
     let effects = folded(&code_only(include_str!("app_effects.rs")));
     assert!(
         effects.contains("Effect::Approval(effect) => self.apply_approval_effect(effect),"),
@@ -2511,7 +2513,7 @@ fn the_approval_flow_names_no_window() {
             "while let Some(effect) = self.wallet.next_effect() {",
             "let answer = match effect {",
             "effect => self.apply(effect), };",
-            "if let Some(answer) = answer { self.on_cmd(answer); }",
+            "if let Some(answer) = answer { self.wallet.on_cmd(answer); }",
         ],
     );
 }

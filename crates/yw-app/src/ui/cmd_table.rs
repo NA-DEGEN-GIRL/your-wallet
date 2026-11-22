@@ -491,7 +491,7 @@ mod tests {
     }
 
     /// Table test (4) (S3 C1): for every id that is a family's press, the receive gate and the
-    /// received-history observer `App::on_press` applies before the family handler are exactly
+    /// received-history observer `Wallet::on_press` (`App::on_press` before 2026-11-22 S4c W15) applies before the family handler are exactly
     /// the ones the legacy chain applied to that id (`screens::RECEIVE_IDS`,
     /// `app_received::refresh_chain`).
     #[test]

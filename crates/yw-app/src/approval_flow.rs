@@ -138,7 +138,8 @@ impl core::fmt::Debug for AiFlow {
 /// ([`Self::bar`]); the smoke harness and the tour hooks read through here too. It is not the
 /// shell's only way to the flow (2026-11-19, S4 B4 review: this said "one reviewed read
 /// surface", stronger than the code): before the AI body paints, `paint_ai_body` calls
-/// [`ApprovalFlow::hold_ai_for_ack`], which writes the AI panel's held flag (never the gate), and
+/// [`ApprovalFlow::hold_ai_for_ack`] (2026-11-22, S4c W15: through the wallet's
+/// `hold_shown_ai_for_ack`), which writes the AI panel's held flag (never the gate), and
 /// the window's input steps and layout read the flow's read-only accessors (`Step::Tab` reads
 /// [`ApprovalFlow::view`] for the tab order).
 pub(crate) struct ApprovalPaint<'a> {

@@ -265,7 +265,7 @@ fn main() -> ExitCode {
                 "settings.invalid",
                 &[("code", Field::Code(ErrorCode::App001))],
             );
-            state.banner(
+            state.start_banner(
                 Some(ErrorCode::App001),
                 ErrorCode::App001.render_in(lang, &loaded.banners.join(", ")),
             );
@@ -276,10 +276,10 @@ fn main() -> ExitCode {
                 "apikeys.unreadable",
                 &[("code", Field::Code(ErrorCode::Key001))],
             );
-            state.banner(Some(ErrorCode::Key001), ErrorCode::Key001.text_in(lang));
+            state.start_banner(Some(ErrorCode::Key001), ErrorCode::Key001.text_in(lang));
         } else {
             // Networks added since the addresses were made get the template's address.
-            state.fill_template_gaps();
+            state.start_fill_template_gaps();
         }
         if wer_unprotected {
             // Review L9: crash dumps are possible; say so instead of only logging it.
