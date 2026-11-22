@@ -15,11 +15,12 @@
 //! (A01's focus is shell state: reset to `거부` when a window opens, moved by `MoveFocus` and Tab
 //! as `run_step` moves it), an approving event built by `Trusted::deliver` from the oracle. The
 //! main window's entries go through `App::test_on_main_windowless` (the arms of `on_main` that read
-//! no window). (2026-11-23, S4d F22) Three grant-write tests outside the golden (the lock's and
-//! the shutdown's flush) run the captured key queue on a key worker of their own (`DiskWorker`, a
-//! vault below the fixture's temp folder), so the meta save is written, not only queued. Nothing here makes a window, touches the network, a card reader, a process, the
-//! clipboard or the registry; files are written only below the fixtures' own temp folders (and by
-//! `print_headless`, into `YW_S4_FLOW_OUT` when it is set).
+//! no window). (2026-11-23, S4d F22; the Solana/Bitcoin one since the F22 review) Four
+//! grant-write tests outside the golden (the lock's and the shutdown's flush) run the captured key
+//! queue on a key worker of their own (`DiskWorker`, a vault below the fixture's temp folder), so
+//! the meta save is written, not only queued. Nothing here makes a window, touches the network, a
+//! card reader, a process, the clipboard or the registry; files are written only below the
+//! fixtures' own temp folders (and by `print_headless`, into `YW_S4_FLOW_OUT` when it is set).
 //!
 //! A line is the windowed line without its shell column (`focus=`) plus the approval effects the
 //! flow emitted since the last line (`effects`: `open#<id>` / `open-connect#<id>`, `close#<id>`,
@@ -1845,14 +1846,6 @@ fn granted_origins(fx: &Fixture) -> Vec<String> {
     })
 }
 
-/// The meta document of the last `KeyJob::SaveMeta` in `jobs`, if any.
-fn last_saved_meta(jobs: Vec<KeyJob>) -> Option<crate::meta::Meta> {
-    jobs.into_iter().rev().find_map(|job| match job {
-        KeyJob::SaveMeta { meta } => Some(*meta),
-        _ => None,
-    })
-}
-
 /// An unlock in one entry: the mode is `Unlocked` and the key worker's meta load answers with
 /// `meta` (`KeyOutcome::Meta`, at the current epoch), as after the password.
 fn unlock_with_meta(fx: &Fixture, meta: crate::meta::Meta) {
@@ -1987,6 +1980,30 @@ fn queued(fx: &Fixture) -> Vec<String> {
         queue.push(epoch, job);
     }
     names
+}
+
+/// The documents of the App's queued meta saves (`KeyJob::SaveMeta`) in queue order, left queued
+/// as [`queued`] leaves them.
+fn queued_saves(fx: &Fixture) -> Vec<crate::meta::Meta> {
+    let queue = Arc::clone(&fx.app.borrow().key_queue);
+    let mut entries = Vec::new();
+    while !queue.is_empty() {
+        let Some(entry) = queue.pop() else {
+            break;
+        };
+        entries.push(entry);
+    }
+    let saves = entries
+        .iter()
+        .filter_map(|(_, job)| match job {
+            KeyJob::SaveMeta { meta } => Some((**meta).clone()),
+            _ => None,
+        })
+        .collect();
+    for (epoch, job) in entries {
+        queue.push(epoch, job);
+    }
+    saves
 }
 
 /// The EVM grant origins of a meta document.
@@ -2193,8 +2210,18 @@ fn saved_chain_sites(meta: &crate::meta::Meta, sol: bool) -> usize {
 /// them. The deferred-answer shape of [`a_lock_keeps_a_revoke_whose_write_waits_for_an_open`],
 /// one fixture per family, checked on the last saved meta document's `chain_sites.sol`/`btc`
 /// (the review's mutation that noted `GrantChange::Revoked` only left the yw-app lib green).
+/// (2026-11-23, S4d F22 review, spec/15 §18 26 (가)) The key queue runs on a [`DiskWorker`] too:
+/// the queued revoke's document holds no site of that family, and the lock's `KeyJob::Lock`
+/// writes it first (`MetaSaved` at the epoch before the lock, then `LockDone`). The document is
+/// not read back from disk: the meta load prunes grants that name accounts the worker's wallet
+/// does not hold (spec/05 §4.1), and the fixture's Solana key and Bitcoin address are not its
+/// accounts. Before, this test only looked at the queued document.
 /// Headless, no window; files only below each fixture's temp folder.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario in three entries, per family"
+)]
 fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
     use yw_core::policy::BrowserOrigin;
     use yw_engine::effect::Effect;
@@ -2213,12 +2240,15 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
         let core = Arc::clone(&fx.app.borrow().browser.as_ref().unwrap().core);
         let other = BrowserOrigin::parse(OTHER).unwrap();
         assert!(chain_grant(&core, &other, sol), "{tag}: granted");
+        let mut disk = DiskWorker::new(&fx);
         fx.app().write_grants();
+        let epoch = fx.app.borrow().lock_epoch;
         assert_eq!(
-            last_saved_meta(fx.key_jobs()).as_ref().map(sites),
-            Some(1),
+            queued_saves(&fx).iter().map(sites).collect::<Vec<_>>(),
+            [1],
             "{tag}: the site is saved"
         );
+        assert_eq!(disk.run(&fx), [format!("MetaSaved@{epoch}")], "{tag}");
         personal_sign_frame_only(&fx, &outlet, &core);
         let _ = headless_host::take_effects();
         // Entry 1: the open is asked for; the revoke's write is kept for its answer.
@@ -2258,8 +2288,12 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
             );
             app.outbox.drain(..).collect()
         };
+        assert!(queued_saves(&fx).is_empty(), "{tag}: nothing written yet");
         assert!(
-            last_saved_meta(fx.key_jobs()).is_none(),
+            !disk
+                .run(&fx)
+                .iter()
+                .any(|name| name.starts_with("MetaSaved")),
             "{tag}: nothing written yet"
         );
         // Entry 2: a lock writes the waiting revoke before it drops the kept step.
@@ -2277,10 +2311,32 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
                 "{tag}: the lock took the noted write"
             );
         }
+        // The worker's `Lock` (at the front) writes the revoke's save first, then wipes; the
+        // lock's `Load` follows.
+        let lock_epoch = fx.app.borrow().lock_epoch;
+        assert_eq!(lock_epoch, epoch + 1, "{tag}: one lock");
         assert_eq!(
-            last_saved_meta(fx.key_jobs()).as_ref().map(sites),
-            Some(0),
+            queued(&fx),
+            [
+                format!("Lock@{lock_epoch}"),
+                format!("SaveMeta@{epoch}"),
+                format!("Load@{lock_epoch}")
+            ],
+            "{tag}"
+        );
+        assert_eq!(
+            queued_saves(&fx).iter().map(sites).collect::<Vec<_>>(),
+            [0],
             "{tag}: the lock saved the revoke"
+        );
+        assert_eq!(
+            disk.run(&fx),
+            [
+                format!("MetaSaved@{epoch}"),
+                format!("LockDone@{lock_epoch}"),
+                format!("Loaded@{lock_epoch}")
+            ],
+            "{tag}: the meta save is written before the lock"
         );
         // Entry 3: the shell applies the held effects; the stale open is answered.
         {

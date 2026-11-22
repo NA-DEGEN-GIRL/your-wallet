@@ -2251,8 +2251,21 @@ pub fn step(
             // lock goes on: the wipe always follows, and the `LockSignal` (the `Suspend` and
             // shutdown waits) still comes after it. Before F22 the `Lock` wiped first and
             // `cancel_pending` cancelled those saves (`KeyOutcome::Cancelled`) unless the worker
-            // had taken them before the `Lock` arrived — a race.
-            for (save_epoch, save) in queue.take_saves_before(epoch) {
+            // had taken them before the `Lock` arrived — a race. (2026-11-23, F22 review) Only
+            // the newest of them runs: every `SaveMeta` carries the whole document (yw-app
+            // `save_meta` sends the meta it holds), so the older ones are answered cancelled
+            // (`Locked`, as before F22) and the wipe waits for one seal and atomic write (and the
+            // rest of an interrupted DEK rotation, which that write finishes first:
+            // `Vault::save_sidecar` → `continue_rotation`), never for one write per queued save.
+            let mut saves = queue.take_saves_before(epoch);
+            let newest = saves.pop();
+            for (superseded_epoch, superseded) in saves {
+                sink(KeyResult {
+                    epoch: superseded_epoch,
+                    outcome: superseded.cancelled_outcome(),
+                });
+            }
+            if let Some((save_epoch, save)) = newest {
                 for outcome in worker.handle(save) {
                     if let KeyOutcome::MetaSaved(Err(error)) = &outcome {
                         logging::warn(
@@ -2442,7 +2455,11 @@ pub(crate) mod tests {
     /// epoch's), then wipes the DEK, then cancels the rest as before — the signing job answers
     /// `Locked`, the later save is cancelled — then `LockSignal` and `LockDone`. The next unlock
     /// reads the document without the revoked site. Before F22 the `Lock` cancelled the revoke's
-    /// save (`Cancelled:SaveMeta@1`) and the grant came back at the unlock.
+    /// save (`Cancelled:SaveMeta@1`) and the grant came back at the unlock. (2026-11-23, F22
+    /// review) An older whole document queued before the revoke's is superseded: it is answered
+    /// `Cancelled:SaveMeta@1` and never written, so the wipe waits for one write only (the unlock
+    /// reading the revoked document shows the newest one was the one written); a written save
+    /// logs no `meta.lock_save_failed`.
     #[test]
     #[expect(clippy::too_many_lines, reason = "one scenario")]
     fn a_lock_writes_the_meta_saves_queued_before_it_first() {
@@ -2487,6 +2504,13 @@ pub(crate) mod tests {
         let request = approvals.issue(draft, 0, 1_790_000_000_000).unwrap();
         let approved = approvals.consume(request.id, request.digest, 1).unwrap();
         let queue = KeyQueue::default();
+        // An older whole document queued first (before the revoke): superseded by the newer one.
+        queue.push(
+            1,
+            KeyJob::SaveMeta {
+                meta: Box::new(granted.clone()),
+            },
+        );
         queue.push(
             1,
             KeyJob::SaveMeta {
@@ -2516,17 +2540,26 @@ pub(crate) mod tests {
             matches!(entry, (2, KeyJob::Lock)),
             "the lock is at the front"
         );
-        assert!(super::step(
-            &mut worker,
-            &queue,
-            entry,
-            &|result| results.lock().unwrap().push(result),
-            &signal,
-        ));
+        let ((), lines) = crate::logging::capture(|| {
+            assert!(super::step(
+                &mut worker,
+                &queue,
+                entry,
+                &|result| results.lock().unwrap().push(result),
+                &signal,
+            ));
+        });
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("meta.lock_save_failed")),
+            "a written save logs no failure"
+        );
         let results = results.into_inner().unwrap();
         assert_eq!(
             outcome_names(&results),
             [
+                "Cancelled:SaveMeta@1",
                 "MetaSaved@1",
                 "SignMessageLocked@1",
                 "Cancelled:SaveMeta@2",
@@ -2555,8 +2588,10 @@ pub(crate) mod tests {
                 .pop(),
             Some(KeyOutcome::MetaSaved(Err(_)))
         ));
-        // The UI drops the save's result (epoch 1) once it is at the lock's epoch 2.
+        // The UI drops the save's result and the superseded save's answer (epoch 1) once it is at
+        // the lock's epoch 2.
         assert!(!accept_result(&results[0], 2));
+        assert!(!accept_result(&results[1], 2));
         // The next unlock reads the document the lock wrote: the revoked site is gone.
         let _ = worker.handle(KeyJob::Unlock {
             password: Zeroizing::new(LOCK_SAVE_PASSWORD.as_bytes().to_vec()),
@@ -2574,6 +2609,8 @@ pub(crate) mod tests {
     /// fails (here the meta file left the data folder, so the vault's generation check refuses
     /// the write) is answered `MetaSaved(Err)` at its own epoch and logged
     /// (`meta.lock_save_failed`); the lock still wipes the DEK, signals and reports `LockDone`.
+    /// (2026-11-23, F22 review) The log line is pinned (`logging::capture`): the event name and
+    /// the error code only.
     #[test]
     fn a_failing_save_before_a_lock_still_locks() {
         use yw_core::vault::{FileKind, VaultStatus, VaultStorage};
@@ -2593,16 +2630,32 @@ pub(crate) mod tests {
         let signal = LockSignal::default();
         let before = signal.count();
         let entry = queue.pop().unwrap();
-        assert!(super::step(
-            &mut worker,
-            &queue,
-            entry,
-            &|result| results.lock().unwrap().push(result),
-            &signal,
-        ));
+        let ((), lines) = crate::logging::capture(|| {
+            assert!(super::step(
+                &mut worker,
+                &queue,
+                entry,
+                &|result| results.lock().unwrap().push(result),
+                &signal,
+            ));
+        });
+        let results = results.into_inner().unwrap();
+        assert_eq!(outcome_names(&results), ["MetaSaveFailed@1", "LockDone@2"]);
+        // The failure is logged by its static name with its error code only (no path, no value).
+        let Some(KeyOutcome::MetaSaved(Err(error))) = results.first().map(|result| &result.outcome)
+        else {
+            unreachable!("the failed save");
+        };
+        let failed: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains("meta.lock_save_failed"))
+            .collect();
         assert_eq!(
-            outcome_names(&results.into_inner().unwrap()),
-            ["MetaSaveFailed@1", "LockDone@2"]
+            failed,
+            [&format!(
+                "1970-01-01T00:00:00.000Z WARN key meta.lock_save_failed code={}\n",
+                crate::errors::vault_code(*error).code()
+            )]
         );
         assert!(queue.is_empty());
         assert_eq!(signal.count(), before + 1);

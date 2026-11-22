@@ -272,6 +272,28 @@ pub fn set_level(level: LogLevel) {
     }
 }
 
+// Test builds of this crate only (2026-11-23, S4d F22 review): the lines this thread logs while
+// [`capture`] runs, so a test can pin an event without the process logger (tests install none;
+// `install` is the release log file's).
+#[cfg(test)]
+thread_local! {
+    static CAPTURED: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Test builds only: runs `body` and returns the lines this thread logged meanwhile, each as
+/// [`format_line`] builds it at time 0, before the level check and whether or not a logger is
+/// installed.
+#[cfg(test)]
+pub(crate) fn capture<T>(body: impl FnOnce() -> T) -> (T, Vec<String>) {
+    CAPTURED.with(|captured| *captured.borrow_mut() = Some(Vec::new()));
+    let value = body();
+    let lines = CAPTURED
+        .with(|captured| captured.borrow_mut().take())
+        .unwrap_or_default();
+    (value, lines)
+}
+
 /// Logs one event. `warn` and above are flushed immediately.
 pub fn log(
     level: LogLevel,
@@ -279,6 +301,12 @@ pub fn log(
     event: &'static str,
     fields: &[(&'static str, Field<'_>)],
 ) {
+    #[cfg(test)]
+    CAPTURED.with(|captured| {
+        if let Some(lines) = captured.borrow_mut().as_mut() {
+            lines.push(format_line(0, level, area, event, fields));
+        }
+    });
     let Some(logger) = LOGGER.get() else {
         return;
     };

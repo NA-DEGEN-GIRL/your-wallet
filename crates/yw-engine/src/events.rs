@@ -1020,7 +1020,9 @@ impl KeyQueue {
     /// (2026-11-23, S4d F22, owner decision spec/15 §18 26 (가) "저장 후 잠금", spec/04 §5.3
     /// step 2). Only the jobs queued when it is called: a save queued later, or one at the lock's
     /// epoch, is left for [`Self::cancel_pending`] as before. Before F22 the `Lock` (at the front)
-    /// cancelled those saves unless the worker had taken them first.
+    /// cancelled those saves unless the worker had taken them first. (2026-11-23, F22 review)
+    /// The worker runs only the last one returned (each carries the whole document) and answers
+    /// the older ones cancelled.
     pub fn take_saves_before(&self, lock_epoch: u64) -> Vec<(u64, KeyJob)> {
         let Ok(mut queue) = self.queue.lock() else {
             return Vec::new();
