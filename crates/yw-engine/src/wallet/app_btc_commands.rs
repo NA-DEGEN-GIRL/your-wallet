@@ -68,8 +68,7 @@ impl Wallet {
 
     /// Hands a form edit's text to the controller (no repaint). 2026-11-18 (S3 C9): the field
     /// is an `EditField` (before, its control id).
-    #[doc(hidden)]
-    pub fn btc_apply_field(&mut self, field: EditField, text: &str) {
+    pub(crate) fn btc_apply_field(&mut self, field: EditField, text: &str) {
         // 2026-11-20 (S4 P10a): `btc_update` (was `btc_call` with an empty batch).
         self.btc_update(|ui, ctx| match field {
             EditField::BtcSendTo => ui.set_recipient(ctx, text),
@@ -118,8 +117,7 @@ impl Wallet {
     /// `EN_CHANGE` of a Bitcoin edit (2026-11-18, S3 C9: the field and its text from
     /// `Cmd::Edit`; before, the control id and a read of the edit here); `false` when `field` is
     /// not one of them (the name edit has no change handler, as before).
-    #[doc(hidden)]
-    pub fn on_btc_edit(&mut self, field: EditField, text: &str) -> bool {
+    pub(crate) fn on_btc_edit(&mut self, field: EditField, text: &str) -> bool {
         match field {
             EditField::BtcSendTo
             | EditField::BtcSendAmount
@@ -195,8 +193,7 @@ impl Wallet {
     /// Bitcoin presses (2026-11-18, S3 C9: a `BtcPress`; before, the control id, and `false` for
     /// an id that was not one of them). Every press repaints at the end, as every claimed id
     /// did.
-    #[doc(hidden)]
-    pub fn on_btc(&mut self, press: BtcPress) {
+    pub(crate) fn on_btc(&mut self, press: BtcPress) {
         match press {
             BtcPress::TabBtc => self.btc_select_tab(),
             BtcPress::SectionBtc => {

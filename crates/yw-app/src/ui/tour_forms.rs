@@ -60,6 +60,7 @@ use crate::app::tests::s3_census::{
 };
 use crate::ui::cmd_table::{IDOK, edit_id_of, press_of};
 use crate::ui::screens_walletconnect;
+use yw_engine::testkit::WalletTestExt;
 use yw_engine::workers::rpc::RpcJob;
 
 /// Totals of one run.

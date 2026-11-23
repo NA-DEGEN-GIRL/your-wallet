@@ -194,8 +194,7 @@ impl Wallet {
 
 impl Wallet {
     /// The hidden-account presses (2026-11-18, S3 C1: a `HiddenPress`; before, the control id).
-    #[doc(hidden)]
-    pub fn on_hidden(&mut self, press: HiddenPress) {
+    pub(crate) fn on_hidden(&mut self, press: HiddenPress) {
         let family = match press {
             HiddenPress::EvmToggle | HiddenPress::SolToggle | HiddenPress::BtcToggle => {
                 self.hidden_open = !self.hidden_open;

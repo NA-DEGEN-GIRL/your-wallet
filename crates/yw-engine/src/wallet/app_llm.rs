@@ -310,8 +310,7 @@ impl Wallet {
     /// `EN_CHANGE` of an AI-section edit: `text` is the field's text now (2026-11-18, S3 C3:
     /// from `Cmd::Edit`, or the form state for `저장`; before, a read of the edit by id);
     /// `false` when `field` is not one of them.
-    #[doc(hidden)]
-    pub fn on_llm_edit(&mut self, field: EditField, text: &str) -> bool {
+    pub(crate) fn on_llm_edit(&mut self, field: EditField, text: &str) -> bool {
         match field {
             EditField::LlmEndpoint => {
                 let before = DraftNotes::of(&self.llm_ui.endpoint_text);
@@ -369,8 +368,7 @@ impl Wallet {
 
     /// AI-section presses (2026-11-18, S3 C3: an `LlmPress`, the check boxes carrying their
     /// state and `키 저장` its key; before, the control id and reads of the controls here).
-    #[doc(hidden)]
-    pub fn on_llm(&mut self, press: LlmPress) {
+    pub(crate) fn on_llm(&mut self, press: LlmPress) {
         match press {
             LlmPress::PresetOpenAi
             | LlmPress::PresetClaude
@@ -486,8 +484,7 @@ impl Wallet {
     }
 
     /// `저장` of the S15 form with the current drafts.
-    #[doc(hidden)]
-    pub fn llm_save(&mut self) {
+    pub(crate) fn llm_save(&mut self) {
         let endpoint = self.llm_ui.endpoint_text.trim().to_owned();
         let model = self.llm_ui.model_text.trim().to_owned();
         if !endpoint.is_empty() && parse_endpoint(&endpoint).is_none() {
@@ -568,8 +565,7 @@ impl Wallet {
 
     /// Stores an entered key bound to the saved endpoint's `host[:port]` (spec/06 §2.1;
     /// unbound when no valid endpoint is saved yet: it is bound by the next `저장`).
-    #[doc(hidden)]
-    pub fn llm_store_key(&mut self, key: &str) {
+    pub(crate) fn llm_store_key(&mut self, key: &str) {
         if !valid_api_key(key) {
             self.llm_message(text::BAD_KEY, false);
             return;
@@ -589,8 +585,7 @@ impl Wallet {
 
     /// `연결 테스트` (spec/06 §2.2): the fixed sample through §4–§5 once with the saved settings
     /// and key, on a short-lived thread; only the resulting state is shown.
-    #[doc(hidden)]
-    pub fn llm_test(&mut self) {
+    pub(crate) fn llm_test(&mut self) {
         let lang = self.settings.language;
         let config =
             LlmConfig::from_settings(&self.settings.llm_explain, stored_llm_key(&self.apikeys));

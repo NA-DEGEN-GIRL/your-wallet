@@ -183,8 +183,7 @@ pub fn chain_answer_value(answer: &ChainAnswer, signature: &ChainSignature) -> O
 
 impl Wallet {
     /// The settings Bitcoin network.
-    #[doc(hidden)]
-    pub const fn btc_network_now(&self) -> BtcNetwork {
+    pub(crate) const fn btc_network_now(&self) -> BtcNetwork {
         crate::btc::core_network(self.settings.bitcoin.network)
     }
 
@@ -212,8 +211,7 @@ impl Wallet {
 
     /// Every visible Bitcoin account of the settings network with its stable address (a hidden
     /// account is never offered or used, 2026-11-15, spec/05 §4.9).
-    #[doc(hidden)]
-    pub fn btc_dapp_rows(&self) -> Vec<BtcRow> {
+    pub(crate) fn btc_dapp_rows(&self) -> Vec<BtcRow> {
         let net = self.btc_network_now();
         let ctx = self.btc_ctx();
         ctx.accounts()
@@ -252,8 +250,7 @@ impl Wallet {
     /// The immediate refusal of a Solana/Bitcoin connect while unlocked: no account to offer
     /// (4100 with the reason, spec/05 §4.9). With Bitcoin off every Bitcoin request is
     /// `BtcDisabled`.
-    #[doc(hidden)]
-    pub fn chain_unlocked_refusal(&self, site: &SiteRequest) -> Option<ProviderError> {
+    pub(crate) fn chain_unlocked_refusal(&self, site: &SiteRequest) -> Option<ProviderError> {
         if matches!(
             site.kind,
             SiteKind::BtcConnect(_) | SiteKind::BtcSign { .. }
@@ -285,8 +282,7 @@ impl Wallet {
     /// `sol_connect` waits in it, the wallet shows no Solana account yet and one is on its way
     /// (account 0 comes with the session's meta, spec/07 §3.1). The queue moves again when the
     /// key worker answers; the connect then gets its window, or `NoSolAccount` if nothing came.
-    #[doc(hidden)]
-    pub fn sol_connect_waits_for_account(&self) -> bool {
+    pub(crate) fn sol_connect_waits_for_account(&self) -> bool {
         self.sol.creating
             && self.evm.queue.waiting_payloads().any(|item| {
                 matches!(item, crate::wallet::app_evm::QueuedItem::Site(site) if site.kind == SiteKind::SolConnect)
@@ -297,8 +293,7 @@ impl Wallet {
     /// The connect-window choices of a Solana or Bitcoin connect: `(choice, label, address,
     /// group)`, the default selection (the granted account, else the first of each group that
     /// can sign) and the network name.
-    #[doc(hidden)]
-    pub fn chain_connect_choices(
+    pub(crate) fn chain_connect_choices(
         &self,
         site: &SiteRequest,
     ) -> (Vec<ConnectEntry>, Vec<bool>, String) {
@@ -382,8 +377,7 @@ impl Wallet {
     }
 
     /// [`Self::chain_connect_choices`] of a Bitcoin connect: one radio group per purpose.
-    #[doc(hidden)]
-    pub fn btc_connect_choices(
+    pub(crate) fn btc_connect_choices(
         &self,
         origin: &BrowserOrigin,
         purposes: &[BtcPurpose],
@@ -510,8 +504,7 @@ impl Wallet {
     /// then the account event to the origin's documents. The choices are checked against the
     /// accounts of now (4100 `Unauthorized` when one is gone, e.g. after a Bitcoin network
     /// change while the window was open) and the 256-grant limit (4100 `TooManySites`).
-    #[doc(hidden)]
-    pub fn chain_connect_approved(&mut self, site: &SiteRequest, choices: &[ConnectChoice]) {
+    pub(crate) fn chain_connect_approved(&mut self, site: &SiteRequest, choices: &[ConnectChoice]) {
         let now = self.clock.now_unix_ms();
         let Some(browser) = self.browser.as_ref() else {
             return;
@@ -610,8 +603,10 @@ impl Wallet {
         clippy::too_many_lines,
         reason = "one arm per Solana/Bitcoin request kind"
     )]
-    #[doc(hidden)]
-    pub fn chain_site_preflight(&mut self, site: &SiteRequest) -> Option<Option<QueueOutcome>> {
+    pub(crate) fn chain_site_preflight(
+        &mut self,
+        site: &SiteRequest,
+    ) -> Option<Option<QueueOutcome>> {
         let core = std::sync::Arc::clone(&self.browser.as_ref()?.core);
         // Queued while locked (no dispatcher check then): no account to offer, Bitcoin off, or
         // a new origin past the 256-grant limit end here with the reason (spec/05 §4.9).
@@ -737,8 +732,7 @@ impl Wallet {
     }
 
     /// The approval draft of a Solana/Bitcoin message request (`None` when the account is gone).
-    #[doc(hidden)]
-    pub fn chain_sign_draft(&self, site: &SiteRequest) -> Option<ApprovalDraft> {
+    pub(crate) fn chain_sign_draft(&self, site: &SiteRequest) -> Option<ApprovalDraft> {
         let id = Self::new_approval_id().ok()?;
         match &site.kind {
             SiteKind::SolSign {
@@ -797,9 +791,8 @@ impl Wallet {
     }
 
     /// The waiter of an approved chain message (from the site kind and the approved payload).
-    #[doc(hidden)]
     #[must_use]
-    pub fn chain_waiter(site: &SiteRequest, payload: &SigningPayload) -> Option<SignWaiter> {
+    pub(crate) fn chain_waiter(site: &SiteRequest, payload: &SigningPayload) -> Option<SignWaiter> {
         let answer = match (&site.kind, payload) {
             (
                 SiteKind::SolSign {
@@ -828,8 +821,7 @@ impl Wallet {
 
     /// Whether the Solana grant of `origin` still names `public` (spec/07 §20.10-4: checked
     /// again before signed transaction bytes leave the wallet).
-    #[doc(hidden)]
-    pub fn sol_grant_holds(&self, origin: &BrowserOrigin, public: &[u8; 32]) -> bool {
+    pub(crate) fn sol_grant_holds(&self, origin: &BrowserOrigin, public: &[u8; 32]) -> bool {
         self.browser.as_ref().is_some_and(|browser| {
             browser
                 .core
@@ -867,8 +859,7 @@ impl Wallet {
     /// the origin's grant still names the key or address; a site disconnected meanwhile gets 4100
     /// and the signature or bytes are dropped (spec/07 §20.10-4; messages since 2026-11-13,
     /// spec/05 §4.5).
-    #[doc(hidden)]
-    pub fn browser_chain_message_signed(&mut self, signed: &ChainMessageSigned) {
+    pub(crate) fn browser_chain_message_signed(&mut self, signed: &ChainMessageSigned) {
         let Some(SignWaiter::Chain(reply, answer)) = self.take_sign_waiter(signed.ticket) else {
             return;
         };
@@ -894,8 +885,7 @@ impl Wallet {
     /// deleted and written to meta, its origins get `solAccountsChanged([])` and their waiting
     /// Solana signing items end `Revoked` (spec/05 §4.9; importing the key again does not bring
     /// a connection back).
-    #[doc(hidden)]
-    pub fn sol_account_removed_from_sites(&mut self, public: &[u8; 32]) {
+    pub(crate) fn sol_account_removed_from_sites(&mut self, public: &[u8; 32]) {
         // The same key may still be a visible account (an imported copy of a derived key).
         if self.sol_dapp_rows().iter().any(|row| row.public == *public) {
             return;
@@ -911,8 +901,7 @@ impl Wallet {
     /// Bitcoin addresses left the wallet (an imported key removed) or an account was hidden
     /// (2026-11-15): every grant listing one is deleted as a whole, like
     /// [`Self::sol_account_removed_from_sites`].
-    #[doc(hidden)]
-    pub fn btc_addresses_removed_from_sites(&mut self, addresses: &[String]) {
+    pub(crate) fn btc_addresses_removed_from_sites(&mut self, addresses: &[String]) {
         // An address another visible account still has (any network) stays connected; a hidden
         // account keeps no grant alive (spec/05 §4.9, as EVM's "숨기지 않은 다른 계정").
         let held: Vec<String> = self.meta.as_ref().map_or_else(Vec::new, |meta| {

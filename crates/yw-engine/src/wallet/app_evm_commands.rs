@@ -28,8 +28,7 @@ impl Wallet {
     /// `저장`); `false` when `field` is not one of them. Before, `on_edit_change(id)` read the
     /// edit by id, and its `_ => {}` swallowed every other edit's change; nothing handles those
     /// now either.
-    #[doc(hidden)]
-    pub fn on_evm_edit(&mut self, field: EditField, text: &str) -> bool {
+    pub(crate) fn on_evm_edit(&mut self, field: EditField, text: &str) -> bool {
         let now = self.clock.now_ms();
         match field {
             EditField::EvmSendTo | EditField::EvmSendAmount => {

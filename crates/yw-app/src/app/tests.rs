@@ -673,7 +673,7 @@ fn phrase_label_saves_from_the_label_edit_by_button_and_enter() {
 fn idle_lock_pauses_while_an_approval_is_shown() {
     let (mut app, dir) = unlocked_app("idle", false);
     app.settings.auto_lock_minutes = 1;
-    app.idle = IdleTracker::new(0);
+    *app.idle_mut() = IdleTracker::new(0);
     let item = QueuedItem::App(Box::new(AppApproval {
         chain_id: 11_155_111,
         account: parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap(),
@@ -696,7 +696,7 @@ fn idle_lock_pauses_while_an_approval_is_shown() {
     assert!(matches!(app.mode, AppMode::Unlocked { .. }));
     assert!(app.key_queue.is_empty());
     // Answered by the user at 300 s (the click is input): the count starts there.
-    app.idle.input(300_000);
+    app.idle_mut().input(300_000);
     let _ = app.evm.queue.finish_shown(QueueOutcome::Rejected);
     app.idle_tick(300_000);
     app.idle_tick(359_000);
@@ -744,7 +744,7 @@ fn idle_lock_pauses_while_a_display_window_is_shown() {
     const DISPLAY: u64 = 1 << 63;
     let (mut app, dir) = unlocked_app("idle-display", false);
     app.settings.auto_lock_minutes = 1;
-    app.idle = IdleTracker::new(0);
+    *app.idle_mut() = IdleTracker::new(0);
     assert_eq!(app.idle_window(), None);
     app.set_secret_session(Some(yw_engine::testkit::secret_session(
         7,
@@ -818,7 +818,7 @@ fn the_exit_press_shuts_down_through_the_shell() {
         }
     }
     assert_eq!(jobs, ["Lock", "Shutdown"]);
-    assert!(app.outbox.is_empty());
+    assert!(app.outbox().is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1715,7 +1715,7 @@ fn idle_first_run_import_is_discarded() {
     assert!(matches!(h.app.screen, Screen::ImportAddress(_)));
     assert_eq!(h.app.mode, AppMode::NoVault);
     let start = h.app.clock.now_ms();
-    h.app.idle = IdleTracker::new(start);
+    *h.app.idle_mut() = IdleTracker::new(start);
     let minutes = u64::from(h.app.settings.auto_lock_minutes);
     h.app.idle_tick(start + minutes * 60_000 - 1);
     assert!(matches!(h.app.screen, Screen::ImportAddress(_)), "not yet");
@@ -2158,7 +2158,7 @@ fn a_failed_apikeys_save_reloads_the_stored_keys_and_shows_e_app_002() {
         },
     );
     app.meta = Some(meta_with_snapshot(&consented_llm(LLM_A)));
-    app.guard.verified = true;
+    app.set_settings_verified(true);
 
     app.llm_store_key("test-key-03");
     assert_eq!(app.apikeys.llm_key(), Some("legacy-key-01"), "reloaded");
@@ -2269,7 +2269,7 @@ fn the_llm_transport_comes_only_from_the_injected_services_and_never_by_a_worker
     let (mut app, dir) = llm_app("llm-services", "http://127.0.0.1:9/v1/chat/completions");
     let calls = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&calls);
-    app.services.llm = Arc::new(move |_endpoint| {
+    app.services_mut().llm = Arc::new(move |_endpoint| {
         counted.fetch_add(1, Ordering::SeqCst);
         None
     });
@@ -2292,7 +2292,7 @@ fn the_llm_transport_comes_only_from_the_injected_services_and_never_by_a_worker
     );
 
     // On and checked: the worker starts and makes its transport once, on its thread.
-    app.guard.verified = true;
+    app.set_settings_verified(true);
     app.llm_reconfigure();
     assert!(app.llm_running());
     assert_eq!(wait_for_calls(&calls, 1), 1);
@@ -2356,7 +2356,7 @@ fn the_settings_check_starts_the_llm_worker_only_with_its_consent() {
         app.settings.llm_explain.privacy_notice_version = 1;
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&calls);
-        app.services.llm = Arc::new(move |_endpoint| {
+        app.services_mut().llm = Arc::new(move |_endpoint| {
             counted.fetch_add(1, Ordering::SeqCst);
             None
         });
@@ -2503,7 +2503,7 @@ fn snapshot_created_once_and_early_saves_taken_over() {
     let mut changed = app.settings.clone();
     changed.auto_lock_minutes = 30;
     app.save_settings(changed, "autoLockMinutes");
-    assert_eq!(app.guard.saved_early, vec!["autoLockMinutes"]);
+    assert_eq!(app.settings_saved_early(), vec!["autoLockMinutes"]);
     app.meta = Some(Meta {
         security: Box::new(yw_engine::meta::MetaSecurity {
             snapshot: Some(created),
@@ -2526,7 +2526,7 @@ fn snapshot_created_once_and_early_saves_taken_over() {
             .auto_lock_minutes,
         30
     );
-    assert!(app.guard.saved_early.is_empty());
+    assert!(app.settings_saved_early().is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -2543,11 +2543,11 @@ fn vault_generation_going_backwards_is_flagged() {
         h.app.meta.as_ref().unwrap().security.vault_generation_seen,
         now
     );
-    assert!(h.app.guard.rollback.is_none());
+    assert!(h.app.settings_rollback().is_none());
     // The meta remembers a newer generation than the file: the file was rolled back.
     h.app.meta.as_mut().unwrap().security.vault_generation_seen = now + 3;
     h.app.verify_settings();
-    assert_eq!(h.app.guard.rollback, Some((now + 3, now)));
+    assert_eq!(h.app.settings_rollback(), Some((now + 3, now)));
     h.app.set_screen(Screen::Main);
     assert!(has_text(
         &h.app.items(),
@@ -3993,7 +3993,7 @@ fn form_state_follows_the_edits_and_press_input_ends_with_the_press() {
         app.form_text(EditField::LlmEndpoint).as_deref(),
         Some("https://llm.example.test/v1")
     );
-    assert!(app.input.take(CredField::QnToken).is_empty());
+    assert!(app.take_press_cred(CredField::QnToken).is_empty());
     #[cfg(debug_assertions)]
     {
         // The take above had no entry outside a press: one miss, and nothing else differed.
@@ -4079,10 +4079,10 @@ fn a_field_write_is_form_state_before_the_shell_applies_it() {
         Some(&long[..field.cap()]),
         "written first, cut"
     );
-    assert_eq!(app.outbox.len(), 2, "queued, not applied");
+    assert_eq!(app.outbox().len(), 2, "queued, not applied");
     assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
     app.drain();
-    assert!(app.outbox.is_empty());
+    assert!(app.outbox().is_empty());
     assert_eq!(
         app.controls.take_shell_log(),
         vec![
@@ -6278,7 +6278,10 @@ fn backup_pending_after_restart_shows_s04_and_receive() {
     assert_eq!(again.app.mode, AppMode::BackupPending);
     assert_eq!(again.app.screen, Screen::BackupPending);
     assert!(again.app.meta.is_some(), "BackupPending loads the meta");
-    assert!(again.app.guard.verified, "the settings snapshot check ran");
+    assert!(
+        again.app.settings_verified(),
+        "the settings snapshot check ran"
+    );
     let items = again.app.items();
     assert!(has_text(&items, "백업 확인이 필요합니다"));
     let shown = control_ids(&items);
@@ -6551,7 +6554,7 @@ fn the_reset_hold_area_is_the_shells_and_its_gate_the_wallets() {
     app.reset_phrase_changed("");
     assert!(!app.reset.gate.active());
     assert_eq!(
-        app.outbox.iter().collect::<Vec<_>>(),
+        app.outbox().iter().collect::<Vec<_>>(),
         [&Effect::ReleaseHold, &Effect::Render],
         "the release, then the repaint"
     );
@@ -6565,12 +6568,12 @@ fn the_reset_hold_area_is_the_shells_and_its_gate_the_wallets() {
     app.hold_move(500, 500);
     app.on_cmd(Cmd::HoldEnd);
     assert!(
-        app.outbox.is_empty(),
+        app.outbox().is_empty(),
         "no second cancel, no second ReleaseHold"
     );
     // A phrase change with no hold running releases nothing, as before.
     app.reset_phrase_changed(phrase);
-    assert_eq!(app.outbox.iter().collect::<Vec<_>>(), [&Effect::Render]);
+    assert_eq!(app.outbox().iter().collect::<Vec<_>>(), [&Effect::Render]);
     app.drain();
     // The logic's half names no shell state (the source check
     // `converted_handlers_reach_the_main_window_only_through_effects` reads its text).
@@ -6593,7 +6596,7 @@ fn a_reset_hold_the_logic_ends_releases_the_pointer() {
     use yw_engine::effect::Effect;
     use yw_win::ui::Rect;
     let releases = |app: &App| {
-        app.outbox
+        app.outbox()
             .iter()
             .filter(|effect| **effect == Effect::ReleaseHold)
             .count()
@@ -6619,18 +6622,18 @@ fn a_reset_hold_the_logic_ends_releases_the_pointer() {
     // `취소` while held: the release comes first, then the screen goes back.
     held(&mut app, 1_000);
     app.on_reset(ResetPress::Cancel);
-    assert_eq!(app.outbox.front(), Some(&Effect::ReleaseHold), "first");
+    assert_eq!(app.outbox().front(), Some(&Effect::ReleaseHold), "first");
     assert_eq!(releases(&app), 1);
     assert!(!app.reset.gate.active());
     app.drain();
     assert_eq!(app.reset_hold, None, "Effect::ReleaseHold cleared it");
     assert_ne!(app.screen, Screen::Reset);
     app.on_cmd(Cmd::HoldEnd);
-    assert!(app.outbox.is_empty(), "nothing left to end");
+    assert!(app.outbox().is_empty(), "nothing left to end");
     // `지갑 초기화…` again on S22 while held: S22 starts over, the hold ends with the old state.
     held(&mut app, 2_000);
     app.on_reset(ResetPress::Open);
-    assert_eq!(app.outbox.front(), Some(&Effect::ReleaseHold), "first");
+    assert_eq!(app.outbox().front(), Some(&Effect::ReleaseHold), "first");
     assert_eq!(releases(&app), 1);
     assert!(!app.reset.gate.active());
     app.drain();
@@ -6642,7 +6645,7 @@ fn a_reset_hold_the_logic_ends_releases_the_pointer() {
     app.hold_down(15, 25, 3_000);
     app.drain();
     app.reset_phrase_changed(&format!(" {phrase} "));
-    assert!(app.outbox.is_empty(), "no change, no repaint, no release");
+    assert!(app.outbox().is_empty(), "no change, no repaint, no release");
     assert!(app.reset.gate.active());
     // The hold's own end: the 2 s complete, one release (`hold_cancel`), and the reset's start
     // replaces S22's state with no hold left (no second release).
@@ -7516,12 +7519,15 @@ fn scroll_effects_carry_what_they_read() {
 /// 2026-11-21 (S4 W1): the wallet half of the S22 hold, checked with the converted handlers below
 /// (the shell keeps the area and the pointer: `App::hold_down`/`hold_move` in `app.rs`).
 /// 2026-11-23 (S4d E1): `reset_hold_tick` and `reset_phrase_changed` are `pub` in yw-engine (the
-/// shell's hold timer and edit reach them). 2026-11-21 (S4 F19): also `replace_reset`, which ends a running hold through
-/// `Effect::ReleaseHold` when it replaces S22's state (the pointer is the shell's to let go).
+/// shell's hold timer and edit reach them). 2026-11-23 (S4d final review): `pub(crate)` again —
+/// the shell reaches them through `Cmd::Tick` and `Cmd::Input`, and only the tests named them
+/// (through `testkit::WalletTestExt` since). 2026-11-21 (S4 F19): also `replace_reset`, which
+/// ends a running hold through `Effect::ReleaseHold` when it replaces S22's state (the pointer is
+/// the shell's to let go).
 const RESET_HOLD_LOGIC: [&str; 4] = [
     "    pub(crate) fn reset_hold_begin(&mut self, now: u64) {",
-    "    pub fn reset_hold_tick(&mut self, now: u64) {",
-    "    pub fn reset_phrase_changed(&mut self, text: &str) {",
+    "    pub(crate) fn reset_hold_tick(&mut self, now: u64) {",
+    "    pub(crate) fn reset_phrase_changed(&mut self, text: &str) {",
     "    fn replace_reset(&mut self, state: ResetUi) {",
 ];
 
@@ -7802,7 +7808,7 @@ fn secret_sessions_follow_their_window_results() {
         }),
     );
     assert!(app.key_queue.is_empty(), "no ChangePassword job");
-    assert!(app.outbox.is_empty(), "no Busy form operation");
+    assert!(app.outbox().is_empty(), "no Busy form operation");
     assert_eq!(app.secret_purpose(), Some(Purpose::ChangePassword));
     app.apply_form_action(serial, FormAction::Cancel);
     assert!(!app.secret_open());

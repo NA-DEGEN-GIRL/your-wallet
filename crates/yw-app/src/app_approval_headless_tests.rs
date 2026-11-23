@@ -1649,19 +1649,23 @@ fn a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry() {
                 app.on_dapp_event(event);
             }
         }
-        assert!(app.evm.open_unanswered.is_some(), "the open is queued");
+        assert!(app.open_unanswered().is_some(), "the open is queued");
         app.after_pending_open(AfterOpen::SetScreen(Screen::Sites));
-        assert_eq!(app.evm.after_open.len(), 1, "kept for the open's answer");
+        assert_eq!(
+            app.after_open_steps().len(),
+            1,
+            "kept for the open's answer"
+        );
         app.lock(LockReason::Manual);
         assert_eq!(app.screen, Screen::Locked);
         assert!(app.evm.approval.is_none(), "the lock ended the flow");
-        assert!(app.evm.after_open.is_empty(), "the lock dropped the step");
-        assert_eq!(
-            app.evm.open_unanswered, None,
-            "no open waits after the lock"
-        );
         assert!(
-            app.outbox
+            app.after_open_steps().is_empty(),
+            "the lock dropped the step"
+        );
+        assert_eq!(app.open_unanswered(), None, "no open waits after the lock");
+        assert!(
+            app.outbox()
                 .iter()
                 .any(|effect| matches!(effect, Effect::Approval(ApprovalEffect::Open { .. }))),
             "the stale open is still queued"
@@ -1674,9 +1678,9 @@ fn a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry() {
     );
     assert_eq!(dapp_answers(&outlet), "4001 User rejected the request.");
     let app = fx.app.borrow();
-    assert!(app.outbox.is_empty());
-    assert_eq!(app.evm.open_unanswered, None);
-    assert!(app.evm.after_open.is_empty());
+    assert!(app.outbox().is_empty());
+    assert_eq!(app.open_unanswered(), None);
+    assert!(app.after_open_steps().is_empty());
     assert_eq!(app.screen, Screen::Locked, "the kept step did not run");
     assert!(app.approval_win.is_none(), "no window was made");
     assert!(app.evm.approval.is_none());
@@ -1719,10 +1723,14 @@ fn a_suspend_lock_drops_the_steps_kept_for_an_open_before_its_drain() {
                 app.on_dapp_event(event);
             }
         }
-        assert!(app.evm.open_unanswered.is_some(), "the open is queued");
+        assert!(app.open_unanswered().is_some(), "the open is queued");
         app.after_pending_open(AfterOpen::SetScreen(Screen::Sites));
         app.after_pending_open(AfterOpen::HiddenNote("kept-step".to_owned()));
-        assert_eq!(app.evm.after_open.len(), 2, "kept for the open's answer");
+        assert_eq!(
+            app.after_open_steps().len(),
+            2,
+            "kept for the open's answer"
+        );
         app.lock(LockReason::Suspend);
         // The lock's own drain applied the stale open and answered it, inside the lock.
         assert_eq!(
@@ -1732,11 +1740,11 @@ fn a_suspend_lock_drops_the_steps_kept_for_an_open_before_its_drain() {
         );
         assert_eq!(app.screen, Screen::Locked);
         assert!(app.evm.approval.is_none(), "the lock ended the flow");
-        assert!(app.evm.after_open.is_empty(), "the lock dropped the steps");
-        assert_eq!(
-            app.evm.open_unanswered, None,
-            "no open waits after the lock"
+        assert!(
+            app.after_open_steps().is_empty(),
+            "the lock dropped the steps"
         );
+        assert_eq!(app.open_unanswered(), None, "no open waits after the lock");
         assert!(
             !app.banners.iter().any(|banner| banner.text == note),
             "the kept steps did not run inside the lock"
@@ -1748,9 +1756,9 @@ fn a_suspend_lock_drops_the_steps_kept_for_an_open_before_its_drain() {
     );
     assert_eq!(dapp_answers(&outlet), "4001 User rejected the request.");
     let app = fx.app.borrow();
-    assert!(app.outbox.is_empty());
-    assert_eq!(app.evm.open_unanswered, None);
-    assert!(app.evm.after_open.is_empty());
+    assert!(app.outbox().is_empty());
+    assert_eq!(app.open_unanswered(), None);
+    assert!(app.after_open_steps().is_empty());
     assert_eq!(app.screen, Screen::Locked, "the kept steps did not run");
     assert!(
         !app.banners.iter().any(|banner| banner.text == note),
@@ -1796,11 +1804,15 @@ fn a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry() {
                 app.on_dapp_event(event);
             }
         }
-        let shown = app.evm.open_unanswered;
+        let shown = app.open_unanswered();
         assert!(shown.is_some(), "the open is queued");
         app.after_pending_open(AfterOpen::SetScreen(Screen::Sites));
-        assert_eq!(app.evm.after_open.len(), 1, "kept for the open's answer");
-        let held: Vec<Effect> = app.outbox.drain(..).collect();
+        assert_eq!(
+            app.after_open_steps().len(),
+            1,
+            "kept for the open's answer"
+        );
+        let held: Vec<Effect> = app.take_outbox();
         assert!(
             held.iter()
                 .any(|effect| matches!(effect, Effect::Approval(ApprovalEffect::Open { .. }))),
@@ -1810,18 +1822,18 @@ fn a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry() {
     };
     {
         let app = fx.app.borrow();
-        assert!(app.evm.open_unanswered.is_some(), "the open still waits");
-        assert_eq!(app.evm.after_open.len(), 1, "and so does its step");
+        assert!(app.open_unanswered().is_some(), "the open still waits");
+        assert_eq!(app.after_open_steps().len(), 1, "and so does its step");
     }
     // Entry 2: a lock.
     {
         let mut app = fx.app();
         app.lock(LockReason::Manual);
-        assert!(app.evm.after_open.is_empty(), "the lock dropped the step");
-        assert_eq!(
-            app.evm.open_unanswered, None,
-            "no open waits after the lock"
+        assert!(
+            app.after_open_steps().is_empty(),
+            "the lock dropped the step"
         );
+        assert_eq!(app.open_unanswered(), None, "no open waits after the lock");
     }
     assert_eq!(fx.app.borrow().screen, Screen::Locked);
     assert_eq!(effect_names(&headless_host::take_effects()), "close#1");
@@ -1839,9 +1851,9 @@ fn a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry() {
     );
     assert_eq!(dapp_answers(&outlet), "4001 User rejected the request.");
     let app = fx.app.borrow();
-    assert!(app.outbox.is_empty());
-    assert_eq!(app.evm.open_unanswered, None);
-    assert!(app.evm.after_open.is_empty());
+    assert!(app.outbox().is_empty());
+    assert_eq!(app.open_unanswered(), None);
+    assert!(app.after_open_steps().is_empty());
     assert_eq!(app.screen, Screen::Locked, "the kept step did not run");
     assert!(app.approval_win.is_none(), "no window was made");
     assert!(app.evm.approval.is_none());
@@ -2088,7 +2100,7 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
                 app.on_dapp_event(event);
             }
         }
-        assert!(app.evm.open_unanswered.is_some(), "the open is queued");
+        assert!(app.open_unanswered().is_some(), "the open is queued");
         let other = BrowserOrigin::parse(OTHER).unwrap();
         assert!(core.remove_grant(&other), "the dispatcher's revoke");
         app.on_dapp_event(DappEvent::GrantChanged {
@@ -2096,8 +2108,7 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
             change: GrantChange::Revoked,
         });
         assert!(
-            app.evm
-                .after_open
+            app.after_open_steps()
                 .iter()
                 .any(|(_, after)| matches!(after, AfterOpen::WriteGrantsThenRefresh)),
             "the revoke's write waits for the open's answer"
@@ -2108,7 +2119,7 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
                 .is_some_and(|browser| browser.grant_write.revoke),
             "and is noted as waiting"
         );
-        app.outbox.drain(..).collect()
+        app.take_outbox()
     };
     assert!(
         !disk
@@ -2122,7 +2133,10 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
     {
         let mut app = fx.app();
         app.lock(LockReason::Manual);
-        assert!(app.evm.after_open.is_empty(), "the lock dropped the step");
+        assert!(
+            app.after_open_steps().is_empty(),
+            "the lock dropped the step"
+        );
         assert!(
             app.browser
                 .as_ref()
@@ -2175,7 +2189,7 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
         "the revoked site stays disconnected after the unlock"
     );
     let app = fx.app.borrow();
-    assert!(app.evm.after_open.is_empty());
+    assert!(app.after_open_steps().is_empty());
     assert!(app.approval_win.is_none(), "no window was made");
 }
 
@@ -2273,10 +2287,7 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
                     app.on_dapp_event(event);
                 }
             }
-            assert!(
-                app.evm.open_unanswered.is_some(),
-                "{tag}: the open is queued"
-            );
+            assert!(app.open_unanswered().is_some(), "{tag}: the open is queued");
             let removed = if sol {
                 core.remove_sol_grant(&other)
             } else {
@@ -2288,8 +2299,7 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
                 change,
             });
             assert!(
-                app.evm
-                    .after_open
+                app.after_open_steps()
                     .iter()
                     .any(|(_, after)| matches!(after, AfterOpen::WriteGrantsThenRefresh)),
                 "{tag}: the revoke's write waits for the open's answer"
@@ -2300,7 +2310,7 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
                     .is_some_and(|browser| browser.grant_write.revoke),
                 "{tag}: and is noted as waiting"
             );
-            app.outbox.drain(..).collect()
+            app.take_outbox()
         };
         assert!(queued_saves(&fx).is_empty(), "{tag}: nothing written yet");
         assert!(
@@ -2315,7 +2325,7 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
             let mut app = fx.app();
             app.lock(LockReason::Manual);
             assert!(
-                app.evm.after_open.is_empty(),
+                app.after_open_steps().is_empty(),
                 "{tag}: the lock dropped the step"
             );
             assert!(
@@ -2361,7 +2371,7 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
         }
         assert_eq!(dapp_answers(&outlet), "4001 User rejected the request.");
         let app = fx.app.borrow();
-        assert!(app.evm.after_open.is_empty());
+        assert!(app.after_open_steps().is_empty());
         assert!(app.approval_win.is_none(), "{tag}: no window was made");
     }
 }
@@ -2533,7 +2543,7 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
                 app.on_dapp_event(event);
             }
         }
-        assert!(app.evm.open_unanswered.is_some(), "the open is queued");
+        assert!(app.open_unanswered().is_some(), "the open is queued");
         let other = BrowserOrigin::parse(OTHER).unwrap();
         assert!(core.remove_grant(&other), "the dispatcher's revoke");
         app.on_dapp_event(DappEvent::GrantChanged {
@@ -2541,8 +2551,7 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
             change: GrantChange::Revoked,
         });
         assert!(
-            app.evm
-                .after_open
+            app.after_open_steps()
                 .iter()
                 .any(|(_, after)| matches!(after, AfterOpen::WriteGrantsThenRefresh)),
             "the revoke's write waits for the open's answer"
@@ -2553,7 +2562,7 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
                 .is_some_and(|browser| browser.grant_write.revoke),
             "and is noted as waiting"
         );
-        app.outbox.drain(..).collect()
+        app.take_outbox()
     };
     assert!(
         !disk
@@ -2568,7 +2577,10 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
         let mut app = fx.app();
         app.shutdown();
         assert_eq!(app.mode, AppMode::ShuttingDown);
-        assert!(app.evm.after_open.is_empty(), "the lock dropped the step");
+        assert!(
+            app.after_open_steps().is_empty(),
+            "the lock dropped the step"
+        );
         assert!(
             app.browser
                 .as_ref()
@@ -2601,7 +2613,7 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
         }
     }
     let app = fx.app.borrow();
-    assert!(app.evm.after_open.is_empty());
+    assert!(app.after_open_steps().is_empty());
     assert!(app.approval_win.is_none(), "no window was made");
 }
 
@@ -2666,10 +2678,7 @@ fn late_answers_under_the_deferred_schedule() {
                     app.on_dapp_event(event);
                 }
             }
-            assert!(
-                app.evm.open_unanswered.is_some(),
-                "{tag}: the open is queued"
-            );
+            assert!(app.open_unanswered().is_some(), "{tag}: the open is queued");
             if revoke {
                 let other = BrowserOrigin::parse(OTHER).unwrap();
                 assert!(core.remove_grant(&other), "{tag}: the dispatcher's revoke");
@@ -2678,8 +2687,7 @@ fn late_answers_under_the_deferred_schedule() {
                     change: GrantChange::Revoked,
                 });
                 assert!(
-                    app.evm
-                        .after_open
+                    app.after_open_steps()
                         .iter()
                         .any(|(_, after)| matches!(after, AfterOpen::WriteGrantsThenRefresh)),
                     "{tag}: the revoke's write waits for the open's answer"
@@ -2703,10 +2711,10 @@ fn late_answers_under_the_deferred_schedule() {
                 End::Shutdown => app.shutdown(),
             }
             assert!(
-                app.evm.after_open.is_empty(),
+                app.after_open_steps().is_empty(),
                 "{tag}: the lock dropped the step"
             );
-            assert_eq!(app.evm.open_unanswered, None, "{tag}: no open waits");
+            assert_eq!(app.open_unanswered(), None, "{tag}: no open waits");
             assert!(
                 app.browser
                     .as_ref()
@@ -2757,8 +2765,8 @@ fn late_answers_under_the_deferred_schedule() {
                 assert_eq!(dapp_answers(&outlet), "4900 Wallet connection closed.");
             }
         }
-        assert!(app.outbox.is_empty());
-        assert!(app.evm.after_open.is_empty());
+        assert!(app.outbox().is_empty());
+        assert!(app.after_open_steps().is_empty());
         assert!(app.evm.approval.is_none());
         assert!(app.approval_win.is_none(), "{tag}: no window was made");
     }

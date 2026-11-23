@@ -1207,8 +1207,7 @@ impl Wallet {
     /// `EN_CHANGE` of a `HyperCore` edit (2026-11-18, S3 C7: the field and its text from
     /// `Cmd::Edit`; before, the control id and a read of the edit here); `false` when `field`
     /// is not one of them.
-    #[doc(hidden)]
-    pub fn on_hc_edit(&mut self, field: EditField, text: &str) -> bool {
+    pub(crate) fn on_hc_edit(&mut self, field: EditField, text: &str) -> bool {
         if ![EditField::HcTo, EditField::HcAmount, EditField::HcApi].contains(&field) {
             return false;
         }

@@ -296,7 +296,11 @@ mod tests {
 
     /// yw-app's `cfg(test)` module files outside a `tests` folder (2026-11-23, S4d E1): the file,
     /// the file that declares it and the declaration (with its `cfg(test)`) found there.
-    const CFG_TEST_FILES: [(&str, &str, &str); 8] = [
+    /// 2026-11-23 (S4d final review): also the three dev-only tour modules of `ui` (the screenshot
+    /// tour, the windowed form test and the secret characterization), which reach the wallet's
+    /// crate-private steps through `testkit::WalletTestExt` since the review made them
+    /// crate-private again.
+    const CFG_TEST_FILES: [(&str, &str, &str); 11] = [
         (
             "app/secret_seam.rs",
             "app.rs",
@@ -342,6 +346,27 @@ pub(crate) mod secret_seam;",
             "app_approval_headless_tests.rs",
             "app_approval_lifecycle_tests.rs",
             "#[path = \"app_approval_headless_tests.rs\"]",
+        ),
+        (
+            "ui/tour.rs",
+            "ui/mod.rs",
+            "#[cfg(test)]
+#[cfg(debug_assertions)]
+mod tour;",
+        ),
+        (
+            "ui/tour_forms.rs",
+            "ui/mod.rs",
+            "#[cfg(test)]
+#[cfg(debug_assertions)]
+mod tour_forms;",
+        ),
+        (
+            "ui/tour_secrets.rs",
+            "ui/mod.rs",
+            "#[cfg(test)]
+#[cfg(debug_assertions)]
+pub(crate) mod tour_secrets;",
         ),
     ];
 

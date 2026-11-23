@@ -555,8 +555,7 @@ impl Wallet {
 
     /// [`Self::mn_backup_gate`] of the selected EVM account (S11 and S-HC sign with it).
     #[must_use]
-    #[doc(hidden)]
-    pub fn evm_selected_gate(&self) -> Option<RecordId> {
+    pub(crate) fn evm_selected_gate(&self) -> Option<RecordId> {
         self.selected_account()
             .and_then(|(_, source, _)| self.evm_backup_gate(source))
     }
@@ -844,8 +843,7 @@ impl Wallet {
     /// `EN_CHANGE` of a recovery-phrase edit: `text` is the field's text now (2026-11-18, S3 C6:
     /// from `Cmd::Edit`; before, a read of the edit by id); `false` when `field` is not the
     /// removal warning's typed phrase (the label edit has no change handler, as before).
-    #[doc(hidden)]
-    pub fn on_mn_edit(&mut self, field: EditField, text: &str) -> bool {
+    pub(crate) fn on_mn_edit(&mut self, field: EditField, text: &str) -> bool {
         if field != EditField::MnRemoveTyped {
             return false;
         }
@@ -1049,8 +1047,7 @@ impl Wallet {
 
     /// W08's hold finished: the quiz of an added mnemonic; for the phrase whose removal is
     /// open, its words count as shown.
-    #[doc(hidden)]
-    pub fn mn_hold_complete(&mut self, purpose: MnPurpose) {
+    pub(crate) fn mn_hold_complete(&mut self, purpose: MnPurpose) {
         self.close_secret();
         match purpose {
             MnPurpose::ShowWords(id, true) => {
@@ -1112,8 +1109,7 @@ impl Wallet {
 
     /// A finished recovery-phrase job.
     #[expect(clippy::too_many_lines, reason = "one arm per outcome")]
-    #[doc(hidden)]
-    pub fn on_mn_outcome(&mut self, outcome: MnOutcome, now: u64) {
+    pub(crate) fn on_mn_outcome(&mut self, outcome: MnOutcome, now: u64) {
         match outcome {
             MnOutcome::Preview(Ok((address, cards))) => {
                 self.mn.preview = Some(address.to_checksum());

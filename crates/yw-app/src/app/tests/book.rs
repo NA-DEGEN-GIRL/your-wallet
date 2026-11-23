@@ -14,6 +14,7 @@ use crate::app::App;
 /// whose module moved to yw-engine and is private again).
 const EVM: &str = "0x52908400098527886e0f7030069857d2e4169ee7";
 use yw_engine::meta::{BookChain, Contact};
+use yw_engine::testkit::WalletTestExt;
 
 /// A new entry is compared with everything the send forms know, not only the book: a poison
 /// of a past recipient is flagged on save with the sent-history wording (it used to save
@@ -129,8 +130,8 @@ fn a_book_row_edit_opens_the_form_at_the_top_through_an_effect() {
     app.on_book(BookPress::Row(Row(0), BookRowAction::Edit));
     assert_eq!(app.book.form.editing.as_deref(), Some(EVM));
     assert_eq!(app.scroll, 120, "the handler writes no shell state");
-    assert_eq!(app.outbox.front(), Some(&Effect::ScrollTop));
-    assert_eq!(app.outbox.back(), Some(&Effect::Render));
+    assert_eq!(app.outbox().front(), Some(&Effect::ScrollTop));
+    assert_eq!(app.outbox().back(), Some(&Effect::Render));
     app.drain();
     assert_eq!(app.scroll, 0);
     assert_eq!(app.scroll_memory.get(place), Some(200));
@@ -150,7 +151,7 @@ fn a_book_row_edit_opens_the_form_at_the_top_through_an_effect() {
     // A row the screen does not show queues nothing.
     app.scroll = 120;
     app.on_book(BookPress::Row(Row(5), BookRowAction::Edit));
-    assert!(app.outbox.is_empty());
+    assert!(app.outbox().is_empty());
     assert_eq!(app.scroll, 120);
     let _ = std::fs::remove_dir_all(&dir);
 }

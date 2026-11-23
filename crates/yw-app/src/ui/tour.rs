@@ -54,6 +54,7 @@ use yw_engine::network::{BtcNet, NetworkId, SolCluster};
 use yw_engine::screen::SettingsSection;
 use yw_engine::secret::{DisplaySecret, SecretFormOp, SecretKind};
 use yw_engine::settings::Settings;
+use yw_engine::testkit::WalletTestExt;
 use yw_engine::wallet::app_evm::{AppApproval, BalanceState};
 use yw_engine::wallet::{AppMode, Purpose, Screen};
 use yw_engine::workers::rpc::RpcJob;
@@ -2260,7 +2261,7 @@ fn screenshot_tour() {
             Box::new(|| {}),
         )));
         // The tour's wallet is unlocked: the settings snapshot check has run.
-        state.guard.verified = true;
+        state.set_settings_verified(true);
         state.llm_reconfigure();
         state.drain();
     }

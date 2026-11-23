@@ -2471,9 +2471,9 @@ impl App {
         {
             self.cred_shadow = self.cred_shadow_of(id);
         }
-        let outer = core::mem::replace(&mut self.input, input);
+        let outer = test_steps::swap_press_input(&mut self.wallet, input);
         let claimed = run(self, press);
-        let used = core::mem::replace(&mut self.input, outer);
+        let used = test_steps::swap_press_input(&mut self.wallet, outer);
         #[cfg(debug_assertions)]
         {
             self.cred_misses = self.cred_misses.saturating_add(used.misses());
@@ -2634,7 +2634,8 @@ impl App {
     #[cfg(all(test, debug_assertions))]
     #[must_use]
     pub(crate) fn cred_misses(&self) -> u32 {
-        self.cred_misses.saturating_add(self.input.misses())
+        self.cred_misses
+            .saturating_add(test_steps::press_input_misses(self))
     }
 }
 
@@ -2655,7 +2656,7 @@ impl App {
         purpose: Purpose,
         display: DisplaySecret,
     ) {
-        self.open_display(kind, purpose, display);
+        test_steps::open_display(&mut self.wallet, kind, purpose, display);
     }
 
     /// Types `text` into the open secret window's active field (tour values only).
@@ -2676,6 +2677,53 @@ impl App {
             let _ = secret.form.on_key(0x09, false, false, false, now);
             secret.window.invalidate();
         }
+    }
+}
+
+/// Test builds: the wallet steps that `impl App` test adapters and tour hooks of production
+/// files call (the press input swap of [`App::press_family`], the miss count of
+/// [`App::cred_misses`], `tour_open_display`, `tour_reject_approval`, `on_links_command`,
+/// `on_sites_command`). 2026-11-23 (S4d final review, A-15/D-22): these wallet fields and steps
+/// are crate-private in yw-engine again and the tests reach them through `testkit`; before, the
+/// adapters called them through `DerefMut`. A production file names `testkit` only inside a
+/// `#[cfg(test)]` module (source check `testkit_is_named_only_by_tests`), hence this one.
+#[cfg(test)]
+pub(crate) mod test_steps {
+    use yw_engine::cmd::{LinksPress, SitesPress};
+    use yw_engine::form::PressInput;
+    use yw_engine::testkit::WalletTestExt;
+    use yw_engine::wallet::Wallet;
+
+    pub(crate) fn swap_press_input(wallet: &mut Wallet, input: PressInput) -> PressInput {
+        wallet.swap_press_input(input)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn press_input_misses(app: &super::App) -> u32 {
+        app.wallet.press_input_misses()
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn open_display(
+        wallet: &mut Wallet,
+        kind: yw_engine::secret::SecretKind,
+        purpose: yw_engine::wallet::Purpose,
+        display: yw_engine::secret::DisplaySecret,
+    ) {
+        wallet.open_display(kind, purpose, display);
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn finish_approval(wallet: &mut Wallet, outcome: yw_engine::approval::QueueOutcome) {
+        wallet.finish_approval(outcome);
+    }
+
+    pub(crate) fn on_links(wallet: &mut Wallet, press: LinksPress) {
+        wallet.on_links(press);
+    }
+
+    pub(crate) fn on_sites(wallet: &mut Wallet, press: SitesPress) {
+        wallet.on_sites(press);
     }
 }
 

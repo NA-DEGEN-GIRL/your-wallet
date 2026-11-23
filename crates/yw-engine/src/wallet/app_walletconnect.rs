@@ -322,8 +322,7 @@ impl Wallet {
 
     /// 2026-11-22 (S4d E0c): `pub(crate)` for its App-building tests, children of `app::tests`
     /// since then (before, of this module).
-    #[doc(hidden)]
-    pub fn wc_start(&mut self) {
+    pub(crate) fn wc_start(&mut self) {
         if self.wc.handle.is_some() {
             return;
         }
@@ -397,8 +396,7 @@ impl Wallet {
     }
 
     /// Shutdown: stop the worker (it closes the relay connection).
-    #[doc(hidden)]
-    pub fn wc_shutdown(&mut self) {
+    pub(crate) fn wc_shutdown(&mut self) {
         if let Some(mut handle) = self.wc.handle.take() {
             let _ = handle.send(WcCommand::Shutdown);
             if let Some(thread) = handle.thread.take() {
@@ -795,8 +793,7 @@ impl Wallet {
 
     /// Edit changes of the panel: `text` is the field's text now (2026-11-18, S3 C2: from
     /// `Cmd::Edit`; before, a read of the edit by id); `false` when `field` is not one of them.
-    #[doc(hidden)]
-    pub fn on_wc_edit(&mut self, field: EditField, text: &str) -> bool {
+    pub(crate) fn on_wc_edit(&mut self, field: EditField, text: &str) -> bool {
         match field {
             EditField::WcUri => text.clone_into(&mut self.wc.uri_text),
             EditField::WcFile => text.clone_into(&mut self.wc.file_text),

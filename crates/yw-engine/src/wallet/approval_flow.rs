@@ -265,9 +265,8 @@ impl ApprovalFlow {
     }
 
     /// The window's language.
-    #[doc(hidden)]
     #[must_use]
-    pub const fn lang(&self) -> Lang {
+    pub(crate) const fn lang(&self) -> Lang {
         self.lang
     }
 
@@ -277,9 +276,8 @@ impl ApprovalFlow {
     }
 
     /// The connect window's accounts and chain.
-    #[doc(hidden)]
     #[must_use]
-    pub const fn connect(&self) -> Option<&ConnectState> {
+    pub(crate) const fn connect(&self) -> Option<&ConnectState> {
         self.connect.as_ref()
     }
 
@@ -391,9 +389,8 @@ impl ApprovalFlow {
     // ----- AI explanation (spec/06), beside the gate ----------------------------------------
 
     /// The AI explanation, when the window has one.
-    #[doc(hidden)]
     #[must_use]
-    pub const fn ai(&self) -> Option<&AiFlow> {
+    pub(crate) const fn ai(&self) -> Option<&AiFlow> {
         self.ai.as_ref()
     }
 

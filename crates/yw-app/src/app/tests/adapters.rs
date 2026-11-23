@@ -5,6 +5,8 @@
 //! dispatcher's view (S3 A3), so they are shell test code; the method names and bodies are
 //! unchanged, and every test that calls them is unchanged.
 
+use yw_engine::testkit::WalletTestExt;
+
 use crate::app::App;
 
 impl App {

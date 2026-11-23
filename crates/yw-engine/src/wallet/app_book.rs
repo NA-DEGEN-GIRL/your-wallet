@@ -704,8 +704,7 @@ impl Wallet {
     /// `EN_CHANGE` of an address-book edit: `text` is the field's text now (2026-11-18, S3 C4:
     /// from `Cmd::Edit`; before, a read of the edit by id); `false` when `field` is not one of
     /// them.
-    #[doc(hidden)]
-    pub fn on_book_edit(&mut self, field: EditField, text: &str) -> bool {
+    pub(crate) fn on_book_edit(&mut self, field: EditField, text: &str) -> bool {
         match field {
             EditField::BookAddress => {
                 let text = text.to_owned();
@@ -732,8 +731,7 @@ impl Wallet {
 
     /// Address-book presses (2026-11-18, S3 C4: a `BookPress`, the check boxes carrying their
     /// state; before, the control id and reads of the controls here).
-    #[doc(hidden)]
-    pub fn on_book(&mut self, press: BookPress) {
+    pub(crate) fn on_book(&mut self, press: BookPress) {
         match press {
             BookPress::ChainEvm | BookPress::ChainSol | BookPress::ChainBtc => {
                 if self.book.form.editing.is_none() {
@@ -932,8 +930,7 @@ impl Wallet {
     /// The drop-down buttons and the activity recipients (2026-11-18, S3 C1: a `LinksPress`;
     /// before, the control id). The open drop-down is kept as its button's press (2026-11-20,
     /// S4 P6; before, as its control id).
-    #[doc(hidden)]
-    pub fn on_links(&mut self, press: LinksPress) {
+    pub(crate) fn on_links(&mut self, press: LinksPress) {
         let address = match press {
             LinksPress::PickerEvm
             | LinksPress::PickerSol

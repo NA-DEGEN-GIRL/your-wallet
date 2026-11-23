@@ -11,6 +11,7 @@ use super::{
 };
 use crate::ui::screens_yubikey::ids as yk;
 use crate::ui::screens_yubikey::ids::pgp_id;
+use yw_engine::testkit::WalletTestExt;
 use yw_engine::wallet::app_yubikey::PgpAction;
 use yw_engine::wallet::app_yubikey::YkPurpose;
 use yw_engine::wallet::app_yubikey::manage::{CLEAR_WORD, ClearStep, Preset, ReslotStep, YkManage};

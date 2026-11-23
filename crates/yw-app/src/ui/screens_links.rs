@@ -315,7 +315,7 @@ impl App {
                 _ => None,
             },
             |app, press| {
-                app.on_links(press);
+                crate::app::test_steps::on_links(&mut app.wallet, press);
                 true
             },
         )

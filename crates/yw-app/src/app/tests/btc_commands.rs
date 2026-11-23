@@ -22,6 +22,7 @@ use yw_engine::meta::{Meta, Tab};
 use yw_engine::network::{BtcNet, NetworkId};
 use yw_engine::screen::SettingsSection;
 use yw_engine::settings::{BtcIndexer, Settings};
+use yw_engine::testkit::WalletTestExt;
 use yw_engine::wallet::app_btc::{BtcAmountUnit, BtcConfirm, BtcFeeChoice, BtcSendForm};
 use yw_engine::wallet::{AppMode, Confirm, Screen};
 use yw_engine::workers::journal::btc::BtcMetaOp;

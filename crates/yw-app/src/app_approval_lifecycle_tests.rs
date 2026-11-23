@@ -35,7 +35,7 @@
 // them across the crate boundary (`yw_engine::testkit`).
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use yw_engine::testkit::{FlowTestExt, WalletTestExt};
+use yw_engine::testkit::{CardStepTestExt, FlowTestExt, WalletTestExt};
 
 use yw_core::evm::address::parse_address;
 use yw_core::policy::{BrowserOrigin, ConnectedSite};

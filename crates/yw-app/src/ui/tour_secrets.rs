@@ -79,6 +79,7 @@ use crate::explorer_launcher::Launcher;
 use crate::ui::secret::SECRET_TIMER_ID;
 use yw_engine::events::{KeyJob, KeyOutcome, KeyResult, RevealWhat};
 use yw_engine::secret::{CardSecretKind, DisplaySecret, SecretKind};
+use yw_engine::testkit::{CardStepTestExt, WalletTestExt};
 use yw_engine::wallet::app_mnemonics::MnPurpose;
 use yw_engine::wallet::app_yubikey::YkPurpose;
 use yw_engine::wallet::lock::LockReason;

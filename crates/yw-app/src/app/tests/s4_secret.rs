@@ -1334,7 +1334,7 @@ fn the_secret_entry_drains_and_its_headless_twin_mirrors_it() {
         assert!(host::holds_window(), "W02 open");
         let reply = app.test_secret_entry_headless(serial, &msg);
         assert!(matches!(reply, Reply::Handled(0)), "{msg:?}");
-        assert!(app.outbox.is_empty(), "{msg:?}: the entry drained");
+        assert!(app.outbox().is_empty(), "{msg:?}: the entry drained");
         assert_eq!(
             ops(secret_seam::take_log()),
             ["close:W02:left=0"],

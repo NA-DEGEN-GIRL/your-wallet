@@ -16,6 +16,7 @@ use crate::app::App;
 use crate::ui::main_window::Item;
 use crate::ui::screens_links::ids::{PICKER_EVM, PICKER_SOL};
 use yw_engine::meta::{Account, RawAccount, Tab};
+use yw_engine::testkit::WalletTestExt;
 
 const SERIAL_A: u32 = 7_700_021;
 const SERIAL_B: u32 = 7_700_022;

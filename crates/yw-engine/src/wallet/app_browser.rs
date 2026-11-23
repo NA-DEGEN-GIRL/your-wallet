@@ -324,8 +324,7 @@ pub fn broadcast_answer(
 }
 
 impl Wallet {
-    #[doc(hidden)]
-    pub fn vault_view(&self) -> VaultView {
+    pub(crate) fn vault_view(&self) -> VaultView {
         let locking = self.browser.as_ref().is_some_and(|browser| browser.locking);
         match self.mode {
             AppMode::Starting => VaultView::Starting,
@@ -349,8 +348,7 @@ impl Wallet {
     /// The UI-owned dispatcher view.
     /// 2026-11-22 (S4d E0c): `pub(crate)` for the tests' adapter `browser_view_current`
     /// (`app::tests::adapters`); before, that adapter was a `#[cfg(test)]` fn of this module.
-    #[doc(hidden)]
-    pub fn wallet_view(&self) -> WalletView {
+    pub(crate) fn wallet_view(&self) -> WalletView {
         let chains = self
             .settings
             .registered_evm()
@@ -474,8 +472,7 @@ impl Wallet {
     }
 
     /// Writes the dispatcher's grants to meta and saves it.
-    #[doc(hidden)]
-    pub fn write_grants(&mut self) {
+    pub(crate) fn write_grants(&mut self) {
         let Some(browser) = self.browser.as_mut() else {
             return;
         };
@@ -542,8 +539,7 @@ impl Wallet {
     /// `Vault::load` reported a status: waiting dApp items get the unlock window (locked) or
     /// 4100 (no wallet, damaged vault, backup pending; spec/05 §4.1–§4.2). A `WalletConnect`
     /// request never opens the password window (spec/13 §5.2; the lock ends them anyway).
-    #[doc(hidden)]
-    pub fn browser_vault_loaded(&mut self) {
+    pub(crate) fn browser_vault_loaded(&mut self) {
         let waiting = self
             .evm
             .queue
@@ -652,8 +648,7 @@ impl Wallet {
     /// from an account whose signing slot is held (`TransactionPending`), or a connect in a
     /// key-only wallet without an EVM key (4100 `NoEvmAccount`, spec/05 §4.2 — e.g. a wallet
     /// started from a Bitcoin or Solana key).
-    #[doc(hidden)]
-    pub fn unlocked_refusal(&self, site: &SiteRequest) -> Option<ProviderError> {
+    pub(crate) fn unlocked_refusal(&self, site: &SiteRequest) -> Option<ProviderError> {
         if let SiteKind::Send(tx) = &site.kind
             && self.slot_held(site.chain_id, &tx.from)
         {
@@ -670,8 +665,7 @@ impl Wallet {
 
     /// Answers a site item refused without a window with `error`; a connect refused for a
     /// reason the user can fix in the app also gets [`Self::connect_refused_notice`].
-    #[doc(hidden)]
-    pub fn refuse_site(&mut self, site: &SiteRequest, error: ProviderError) {
+    pub(crate) fn refuse_site(&mut self, site: &SiteRequest, error: ProviderError) {
         if site.kind.is_connect() {
             let purposes = match &site.kind {
                 SiteKind::BtcConnect(purposes) => purposes.as_slice(),
@@ -898,8 +892,7 @@ impl Wallet {
 
     /// Checks of a site item taken from the queue (unlocked): returns `Some(outcome)` when it
     /// finished without a window (already answered or answered by the outcome).
-    #[doc(hidden)]
-    pub fn site_preflight(&mut self, site: &SiteRequest) -> Option<QueueOutcome> {
+    pub(crate) fn site_preflight(&mut self, site: &SiteRequest) -> Option<QueueOutcome> {
         if self.mode == AppMode::BackupPending {
             return Some(QueueOutcome::NotReady);
         }
@@ -1148,8 +1141,7 @@ impl Wallet {
     /// The `YubiKey` accounts of the meta in memory while the dispatcher holds the grants (a
     /// verified, unlocked session with its meta); `None` otherwise. Taken before a meta reload
     /// replaces the document, for [`Self::hardware_accounts_reloaded`].
-    #[doc(hidden)]
-    pub fn hardware_site_accounts(&self) -> Option<HardwareSiteAccounts> {
+    pub(crate) fn hardware_site_accounts(&self) -> Option<HardwareSiteAccounts> {
         let loaded = self
             .browser
             .as_ref()
@@ -1238,8 +1230,12 @@ impl Wallet {
     /// accounts are checked against the visible accounts of now — one hidden or removed while
     /// the window was open is refused with 4100 `Unauthorized` like a stale Solana/Bitcoin choice
     /// (security review L4(a)); the caller already made sure `chain_id` is the origin's chain.
-    #[doc(hidden)]
-    pub fn connect_approved(&mut self, site: &SiteRequest, accounts: Vec<Address>, chain_id: u64) {
+    pub(crate) fn connect_approved(
+        &mut self,
+        site: &SiteRequest,
+        accounts: Vec<Address>,
+        chain_id: u64,
+    ) {
         let own = self.own_accounts();
         if !accounts
             .iter()
@@ -1317,8 +1313,7 @@ impl Wallet {
     }
 
     /// `SignEvm` finished: a dApp transaction waits for its broadcast; a failure answers -32603.
-    #[doc(hidden)]
-    pub fn browser_tx_signed(&mut self, ticket: SignTicket, result: Result<[u8; 32], ()>) {
+    pub(crate) fn browser_tx_signed(&mut self, ticket: SignTicket, result: Result<[u8; 32], ()>) {
         if let Some(SignWaiter::Tx(reply, signer)) = self.take_sign_waiter(ticket) {
             match result {
                 Ok(hash) => {
@@ -1335,8 +1330,7 @@ impl Wallet {
     /// goes out only while the site's grant still names the account; a site disconnected (or the
     /// account hidden) meanwhile gets 4100 and the signature is dropped (spec/05 §4.5,
     /// 2026-11-13).
-    #[doc(hidden)]
-    pub fn browser_message_signed(&mut self, signed: MessageSigned) {
+    pub(crate) fn browser_message_signed(&mut self, signed: MessageSigned) {
         if self.hc_message_signed(&signed) {
             return;
         }
@@ -1373,8 +1367,7 @@ impl Wallet {
     }
 
     /// A consumed signing job was cancelled by the lock: 4001 (spec/04 §1.2).
-    #[doc(hidden)]
-    pub fn browser_sign_cancelled(&mut self, ticket: SignTicket) {
+    pub(crate) fn browser_sign_cancelled(&mut self, ticket: SignTicket) {
         if self.hc_sign_cancelled(ticket) {
             let _ = self.take_sign_waiter(ticket);
             return;
@@ -1395,8 +1388,7 @@ impl Wallet {
     /// instead of the hash — the journaled transaction is sent all the same, like a Solana dApp
     /// send (spec/05 §4.5, spec/07 §20.8; 2026-11-13). While locked the grants are put away and
     /// nothing is checked (as for Solana, spec/07 §20.10-5).
-    #[doc(hidden)]
-    pub fn browser_broadcast(&mut self, tx_hash: [u8; 32], outcome: BroadcastOutcome) {
+    pub(crate) fn browser_broadcast(&mut self, tx_hash: [u8; 32], outcome: BroadcastOutcome) {
         let Some((reply, signer)) = self
             .browser
             .as_mut()
@@ -1459,8 +1451,7 @@ impl Wallet {
 
 impl Wallet {
     /// Presses of S13 (2026-11-18, S3 C2: a `SitesPress`; before, the control id).
-    #[doc(hidden)]
-    pub fn on_sites(&mut self, press: SitesPress) {
+    pub(crate) fn on_sites(&mut self, press: SitesPress) {
         match press {
             SitesPress::Open => {
                 self.set_screen(crate::wallet::Screen::Sites);

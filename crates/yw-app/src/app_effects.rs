@@ -543,7 +543,7 @@ pub(crate) mod deferred {
 
     use yw_engine::cmd::Cmd;
     use yw_engine::effect::Effect;
-    use yw_engine::testkit::{RecordingShell, Schedule, ShellHost};
+    use yw_engine::testkit::{RecordingShell, Schedule, ShellHost, WalletTestExt};
     use yw_engine::wallet::Wallet;
 
     use crate::app::App;
@@ -642,7 +642,7 @@ pub(crate) mod deferred {
         /// collected.
         fn apply_batch(&mut self, batch: Vec<Effect>) -> Vec<Cmd> {
             ANSWERS.with(|answers| *answers.borrow_mut() = Some(Vec::new()));
-            self.wallet.outbox.extend(batch);
+            self.wallet.requeue_effects(batch);
             self.drain();
             ANSWERS
                 .with(|answers| answers.borrow_mut().take())

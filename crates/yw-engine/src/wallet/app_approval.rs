@@ -384,8 +384,7 @@ impl Wallet {
     /// [`Self::show_next_approval`] for a caller with steps after it (2026-11-20, S4 P9): `after`
     /// runs once the window's open is answered, or at once when none is asked for ([`AfterOpen`]).
     /// Before, the caller ran them after this call returned.
-    #[doc(hidden)]
-    pub fn show_next_approval_then(&mut self, after: AfterOpen) {
+    pub(crate) fn show_next_approval_then(&mut self, after: AfterOpen) {
         self.show_next_approval_with(Some(after));
     }
 
@@ -562,8 +561,7 @@ impl Wallet {
     /// (pinned then by `a_step_kept_for_an_open_runs_after_a_lock_in_the_same_entry`).
     /// Before P10b the executor applied effects at once, an open was answered before `emit`
     /// returned, and `after` always ran here, where the caller ran it before.
-    #[doc(hidden)]
-    pub fn after_pending_open(&mut self, after: AfterOpen) {
+    pub(crate) fn after_pending_open(&mut self, after: AfterOpen) {
         // No steps (an answer whose opener left none) is nothing to keep.
         if matches!(&after, AfterOpen::Steps(steps) if steps.is_empty()) {
             return;
@@ -599,8 +597,7 @@ impl Wallet {
         AfterOpen::Steps(steps)
     }
 
-    #[doc(hidden)]
-    pub fn connect_state(&self, site: &SiteRequest) -> ConnectState {
+    pub(crate) fn connect_state(&self, site: &SiteRequest) -> ConnectState {
         let family = site.kind.family();
         if family != yw_core::policy::Family::Evm {
             let (accounts, selected, chain_name) = self.chain_connect_choices(site);
@@ -800,8 +797,7 @@ impl Wallet {
     /// left without a flow; unreachable while effects were applied at once). 2026-11-20 (S4
     /// P10b): a stale answer is reachable now (a flow ended in the entry that queued its open);
     /// the stale open made no window (`open_approval_window`), so its `Failed` answer is dropped.
-    #[doc(hidden)]
-    pub fn on_approval_opened(&mut self, shown: ShownId, outcome: OpenOutcome, wide: bool) {
+    pub(crate) fn on_approval_opened(&mut self, shown: ShownId, outcome: OpenOutcome, wide: bool) {
         if self.evm.approval.as_ref().map(ApprovalFlow::shown) != Some(shown) {
             if matches!(outcome, OpenOutcome::Shown { .. }) {
                 self.emit(Effect::Approval(ApprovalEffect::Close { shown }));
@@ -1112,8 +1108,7 @@ impl Wallet {
     /// spec/03 §1.4 (security review L12): message signatures (`personal_sign`,
     /// `eth_signTypedData_v4`) on a chain whose last check found `RpcMismatch` are blocked with
     /// E34 like a send. No RPC is called for a message, so only a known mismatch blocks.
-    #[doc(hidden)]
-    pub fn message_chain_failure(
+    pub(crate) fn message_chain_failure(
         &self,
         chain_id: u64,
     ) -> Option<crate::flow::evm::prepare::PrepareFailure> {
@@ -1275,8 +1270,7 @@ impl Wallet {
         self.evm.approval.as_ref().map(ApprovalFlow::shown)
     }
 
-    #[doc(hidden)]
-    pub fn finish_approval(&mut self, outcome: QueueOutcome) {
+    pub(crate) fn finish_approval(&mut self, outcome: QueueOutcome) {
         let id = self
             .evm
             .approval
@@ -1368,8 +1362,7 @@ impl Wallet {
 
     /// Issues a draft at its first Ready display (spec/03 §11.5). Transactions keep their
     /// preparation (signing, journal, re-simulation); messages have none.
-    #[doc(hidden)]
-    pub fn show_ready_draft(
+    pub(crate) fn show_ready_draft(
         &mut self,
         draft: yw_core::approval::ApprovalDraft,
         prepared: Option<Box<Prepared>>,

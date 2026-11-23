@@ -1372,8 +1372,7 @@ impl Wallet {
     }
 
     /// W08 `다 적었습니다` held: the W10 challenge.
-    #[doc(hidden)]
-    pub fn yk_hold_complete(&mut self, purpose: YkPurpose) {
+    pub(crate) fn yk_hold_complete(&mut self, purpose: YkPurpose) {
         self.close_secret();
         if purpose == YkPurpose::ShowWords {
             if self.yk_words == YkWords::None {
@@ -1438,8 +1437,12 @@ impl Wallet {
     /// answers `Shown` ([`Self::yk_card_counters`]); before, this read the session right after the
     /// open (the same point while the open is answered at once): a refused or failed window
     /// reads no counters, as before.
-    #[doc(hidden)]
-    pub fn yk_open_card_secret(&mut self, kind: CardSecretKind, purpose: YkPurpose, serial: u32) {
+    pub(crate) fn yk_open_card_secret(
+        &mut self,
+        kind: CardSecretKind,
+        purpose: YkPurpose,
+        serial: u32,
+    ) {
         self.open_input_then(
             SecretKind::CardSecret(kind),
             Purpose::YubiKey(purpose),
@@ -2614,8 +2617,7 @@ impl Wallet {
     /// from `Cmd::Edit`; before, the control id and a read of the edit here, cap 16 for the
     /// typed word and 8 for the numbers, now `EditField::cap`); `false` when `field` is not
     /// one of them (the card name edit is read only by its `저장`, as before).
-    #[doc(hidden)]
-    pub fn on_yk_edit(&mut self, field: EditField, text: &str) -> bool {
+    pub(crate) fn on_yk_edit(&mut self, field: EditField, text: &str) -> bool {
         if self.on_yk_manage_edit(field, text) {
             return true;
         }

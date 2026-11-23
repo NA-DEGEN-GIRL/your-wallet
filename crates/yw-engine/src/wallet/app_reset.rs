@@ -171,8 +171,7 @@ pub fn reset_failed_text(lang: Lang, error: &ResetError) -> String {
 impl Wallet {
     /// Queues `KeyJob::LoadMeta` and starts its wait clock (a failed load's T-META-FAILED
     /// gives way to the loading line; no meta is in memory until the answer).
-    #[doc(hidden)]
-    pub fn request_meta(&mut self) {
+    pub(crate) fn request_meta(&mut self) {
         self.wait.meta_failed = None;
         self.key(KeyJob::LoadMeta);
         if self.wait.meta_since.is_none() {
@@ -194,8 +193,7 @@ impl Wallet {
     }
 
     /// Main-timer part of the waits.
-    #[doc(hidden)]
-    pub fn wait_tick(&mut self, now: u64) {
+    pub(crate) fn wait_tick(&mut self, now: u64) {
         if self.meta.is_none()
             && self.wait.meta_since.is_none()
             && self.wait.meta_failed.is_none()
@@ -260,8 +258,7 @@ impl Wallet {
     }
 
     /// `지갑 초기화…`: S22 over the current screen.
-    #[doc(hidden)]
-    pub fn open_reset(&mut self) {
+    pub(crate) fn open_reset(&mut self) {
         if matches!(self.mode, AppMode::Starting | AppMode::ShuttingDown) || self.reset.running {
             return;
         }
@@ -280,8 +277,7 @@ impl Wallet {
     }
 
     /// `취소` on S22.
-    #[doc(hidden)]
-    pub fn cancel_reset(&mut self) {
+    pub(crate) fn cancel_reset(&mut self) {
         let back = self.reset.back.take();
         self.replace_reset(ResetUi::default());
         let fallback = match self.mode {
@@ -299,8 +295,7 @@ impl Wallet {
     /// `Effect::ReleaseHold` before the repaint, so the shell lets the pointer go; before, only
     /// the gate was cancelled and the main window kept the pointer capture (the later
     /// `Cmd::HoldEnd` found no running gate).
-    #[doc(hidden)]
-    pub fn reset_phrase_changed(&mut self, text: &str) {
+    pub(crate) fn reset_phrase_changed(&mut self, text: &str) {
         let ok = phrase_matches(self.settings.language, text);
         if ok != self.reset.phrase_ok {
             self.reset.phrase_ok = ok;
@@ -327,8 +322,7 @@ impl Wallet {
     }
 
     /// The hold completed: lock, then move the files on the key worker.
-    #[doc(hidden)]
-    pub fn reset_execute(&mut self) {
+    pub(crate) fn reset_execute(&mut self) {
         if !self.reset.phrase_ok || self.reset.running || self.screen != Screen::Reset {
             return;
         }
@@ -381,8 +375,7 @@ impl Wallet {
     }
 
     /// `KeyOutcome::WalletReset`.
-    #[doc(hidden)]
-    pub fn on_wallet_reset(&mut self, result: Result<ResetReport, ResetError>) {
+    pub(crate) fn on_wallet_reset(&mut self, result: Result<ResetReport, ResetError>) {
         let in_flight = self.reset.warned_in_flight;
         self.replace_reset(ResetUi::default());
         // Nothing of the old wallet's recovery-phrase flows (held words, preview, list) stays.
@@ -484,8 +477,7 @@ impl Wallet {
     /// hold is the gate's (before, the held area's id `ResetUi.holding`, set exactly while the
     /// gate was active); the action is the reset, the one hold area's (before, run only when that
     /// id was `ui::screens_reset::ids::RESET_HOLD`, the only id `Placed::holds` ever held).
-    #[doc(hidden)]
-    pub fn reset_hold_tick(&mut self, now: u64) {
+    pub(crate) fn reset_hold_tick(&mut self, now: u64) {
         if !self.reset.gate.active() {
             return;
         }
@@ -507,8 +499,7 @@ impl Wallet {
     /// Presses of S22 and T-WAIT-STALLED (2026-11-18, S3 C5: a `ResetPress`, the check box
     /// carrying its state; before, the control id and a read of the box here). The 2 s hold area
     /// is not a press (`App::reset_hold_*`).
-    #[doc(hidden)]
-    pub fn on_reset(&mut self, press: ResetPress) {
+    pub(crate) fn on_reset(&mut self, press: ResetPress) {
         match press {
             ResetPress::Open => self.open_reset(),
             ResetPress::Cancel => self.cancel_reset(),
@@ -523,8 +514,7 @@ impl Wallet {
 
     /// `EN_CHANGE` of the S22 field: `text` is its text now (2026-11-18, S3 C5: from
     /// `Cmd::Edit`; before, a read of the edit by id); `false` for other fields.
-    #[doc(hidden)]
-    pub fn on_reset_edit(&mut self, field: EditField, text: &str) -> bool {
+    pub(crate) fn on_reset_edit(&mut self, field: EditField, text: &str) -> bool {
         if field != EditField::ResetPhrase {
             return false;
         }

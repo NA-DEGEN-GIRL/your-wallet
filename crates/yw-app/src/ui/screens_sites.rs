@@ -409,7 +409,7 @@ impl App {
                 _ => None,
             },
             |app, press| {
-                app.on_sites(press);
+                crate::app::test_steps::on_sites(&mut app.wallet, press);
                 true
             },
         )

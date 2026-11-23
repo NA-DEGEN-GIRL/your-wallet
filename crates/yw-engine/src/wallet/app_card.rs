@@ -273,9 +273,8 @@ pub fn touch_text(kind: &CardJobKind, touches: u8) -> String {
 impl CardStep {
     /// Whether the step holds its consumed approval (waiting for the PIN) (2026-11-23, S4d E1,
     /// preflight critic C2 i: the test facts read this; before E1, the field).
-    #[doc(hidden)]
     #[must_use]
-    pub const fn holds_approval(&self) -> bool {
+    pub(crate) const fn holds_approval(&self) -> bool {
         self.approved.is_some()
     }
 }
@@ -719,8 +718,7 @@ impl Wallet {
 
     /// After a meta load: the slot maps for the PIN window, and the accounts of the last
     /// enrolment shown again.
-    #[doc(hidden)]
-    pub fn card_after_meta(&mut self) {
+    pub(crate) fn card_after_meta(&mut self) {
         self.key(KeyJob::HardwareKeys);
         if let Some(serial) = self.card.pending_default.take()
             && let Some(meta) = self.meta.as_mut()
@@ -868,8 +866,7 @@ impl Wallet {
     }
 
     /// [`Self::card_on_defaults`] of the selected EVM account (S11 and S-HC sign with it).
-    #[doc(hidden)]
-    pub fn evm_selected_card_gate(&self) -> Option<u32> {
+    pub(crate) fn evm_selected_card_gate(&self) -> Option<u32> {
         self.selected_account()
             .and_then(|(_, source, _)| self.evm_card_gate(source))
     }
@@ -1033,8 +1030,7 @@ impl Wallet {
 
     /// The card W11's first step names (2026-11-15): the first card holding `role`, as shown
     /// everywhere else (`name (#serial)` or `#serial`); `None` while no record holds it.
-    #[doc(hidden)]
-    pub fn card_step_card(&self, role: KeyRole) -> Option<String> {
+    pub(crate) fn card_step_card(&self, role: KeyRole) -> Option<String> {
         crate::yubikey::holders(&self.card.records, role)
             .first()
             .map(|serial| self.card_name(*serial))
@@ -1042,8 +1038,7 @@ impl Wallet {
 
     /// The non-secret lines of the PIN window: the cards holding the key, the last error and
     /// the last-try warning.
-    #[doc(hidden)]
-    pub fn card_details(&self, step: &CardStep) -> Vec<String> {
+    pub(crate) fn card_details(&self, step: &CardStep) -> Vec<String> {
         let lang = self.settings.language;
         let serials = crate::yubikey::holders(&self.card.records, step.role);
         let mut lines = vec![text::DETAIL_KEY.fill(
@@ -1637,8 +1632,7 @@ impl Wallet {
 
     /// Main timer: the card step's 120 s bound, and a PIN window that is gone (closed without
     /// a cancel, refused by capture exclusion) ends the step as cancelled.
-    #[doc(hidden)]
-    pub fn card_tick(&mut self, now: u64) {
+    pub(crate) fn card_tick(&mut self, now: u64) {
         let Some(step) = self.card.step.as_ref() else {
             return;
         };

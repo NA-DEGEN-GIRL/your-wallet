@@ -27,7 +27,7 @@ use yw_engine::errors::ErrorCode;
 use yw_engine::form::EditField;
 use yw_engine::services::Services;
 use yw_engine::settings::Settings;
-use yw_engine::testkit::{RecordingShell, Schedule};
+use yw_engine::testkit::{RecordingShell, Schedule, WalletTestExt};
 use yw_engine::wallet::app_evm::QueuedItem;
 use yw_engine::wallet::app_hypercore::HcApprovalItem;
 use yw_engine::wallet::lock::LockReason;
@@ -149,9 +149,9 @@ fn state(wallet: &Wallet) -> String {
             .approval
             .as_ref()
             .map(yw_engine::wallet::approval_flow::ApprovalFlow::shown),
-        wallet.evm.open_unanswered,
+        wallet.open_unanswered(),
         wallet.evm.queue.len(),
-        wallet.evm.after_open.len(),
+        wallet.after_open_steps().len(),
     )
 }
 
@@ -270,14 +270,11 @@ fn an_open_is_answered_under_both_schedules() {
         shell.drain(&mut wallet);
         match schedule {
             Schedule::Immediate => {
-                assert_eq!(
-                    wallet.evm.open_unanswered, None,
-                    "answered inside the drain"
-                );
+                assert_eq!(wallet.open_unanswered(), None, "answered inside the drain");
                 assert_eq!(shell.held(), 0);
             }
             Schedule::Deferred => {
-                assert!(wallet.evm.open_unanswered.is_some(), "not answered yet");
+                assert!(wallet.open_unanswered().is_some(), "not answered yet");
                 assert!(shell.held() > 0, "the open is held");
                 assert!(
                     shell.take_log().is_empty(),
@@ -296,7 +293,7 @@ fn an_open_is_answered_under_both_schedules() {
             wallet.evm.approval.is_some(),
             "{schedule:?}: the flow is shown"
         );
-        assert_eq!(wallet.evm.open_unanswered, None, "{schedule:?}: answered");
+        assert_eq!(wallet.open_unanswered(), None, "{schedule:?}: answered");
         finals.push(state(&wallet));
     }
     assert_eq!(finals[0], finals[1], "the same final state");
@@ -359,9 +356,16 @@ fn a_lock_before_the_shell_ran_drops_the_steps_kept_for_the_open() {
         wallet.after_pending_open(AfterOpen::SetScreen(Screen::Sites));
     });
     assert!(shell.held() > 0, "the shell has not run");
-    assert_eq!(late.evm.after_open.len(), 1, "kept for the open's answer");
+    assert_eq!(
+        late.after_open_steps().len(),
+        1,
+        "kept for the open's answer"
+    );
     shell.entry(&mut late, lock);
-    assert!(late.evm.after_open.is_empty(), "the lock dropped the step");
+    assert!(
+        late.after_open_steps().is_empty(),
+        "the lock dropped the step"
+    );
     shell.release_model(&mut late);
     let log = shell.take_log();
     assert!(

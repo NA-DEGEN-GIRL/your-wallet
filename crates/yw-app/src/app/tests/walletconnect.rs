@@ -16,6 +16,7 @@ use crate::app::{App, Paths};
 use yw_engine::apikeys::ApiKeys;
 use yw_engine::events::EventQueue;
 use yw_engine::settings::Settings;
+use yw_engine::testkit::WalletTestExt;
 use yw_engine::wallet::app_browser::{BrowserUi, GrantWrite, SiteRows};
 use yw_engine::walletconnect::verify::{P256Verify, VerifyHttp};
 use yw_engine::walletconnect::worker::{ConnectError, RelayConnector, RelayLink};
@@ -104,7 +105,7 @@ fn counts(counts: &Counts) -> [usize; 4] {
 fn the_relay_worker_starts_from_the_injected_services() {
     let mut app = app_with_browser("services");
     let shared: Counts = Arc::new([0, 0, 0, 0].map(AtomicUsize::new));
-    app.services.walletconnect = Some(Box::new(CountingWc(Arc::clone(&shared))));
+    app.services_mut().walletconnect = Some(Box::new(CountingWc(Arc::clone(&shared))));
     app.wc_start();
     assert!(app.wc.handle.is_some());
     assert_eq!(counts(&shared), [1, 1, 1, 0]);
@@ -115,7 +116,7 @@ fn the_relay_worker_starts_from_the_injected_services() {
     assert_eq!(counts(&shared), [1, 1, 1, 0], "never connected");
 
     let mut app = app_with_browser("none");
-    app.services.walletconnect = None;
+    app.services_mut().walletconnect = None;
     app.wc_start();
     assert!(app.wc.handle.is_none(), "no platform parts, no worker");
 }

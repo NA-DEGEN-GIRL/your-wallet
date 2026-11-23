@@ -30,8 +30,7 @@ impl Wallet {
     /// `Cmd::Edit`; before, the control id and a read of the edit here); `false` when `field` is
     /// not one of them. A send-form edit is validated by the send timer (`Wallet::on_send_timer`):
     /// at once when the text is a whole address or amount, after the typing pause otherwise.
-    #[doc(hidden)]
-    pub fn on_sol_edit(&mut self, field: EditField, text: &str) -> bool {
+    pub(crate) fn on_sol_edit(&mut self, field: EditField, text: &str) -> bool {
         let now = self.clock.now_ms();
         match field {
             EditField::SolSendTo => {
@@ -101,8 +100,7 @@ impl Wallet {
 
     /// Solana presses (2026-11-18, S3 C8: a `SolPress`; before, the control id, and `false` for
     /// an id that was not one of them).
-    #[doc(hidden)]
-    pub fn on_sol(&mut self, press: SolPress) {
+    pub(crate) fn on_sol(&mut self, press: SolPress) {
         match press {
             SolPress::TabEvm => self.sol_select_tab(Tab::Evm),
             SolPress::TabSol => self.sol_select_tab(Tab::Sol),

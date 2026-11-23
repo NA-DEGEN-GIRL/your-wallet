@@ -42,7 +42,7 @@ use yw_win::ui::UiError;
 use yw_engine::secret::SecretKind;
 // 2026-11-23 (S4d E1): the wallet's crate-private steps and buffers (`on_submit`, the held
 // flags) as the tests reach them across the crate boundary.
-use yw_engine::testkit::WalletTestExt;
+use yw_engine::testkit::{CardStepTestExt, WalletTestExt};
 
 /// How `create_secret` refuses a window while a refusal is set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

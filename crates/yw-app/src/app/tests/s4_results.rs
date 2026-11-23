@@ -62,6 +62,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use yw_engine::testkit::WalletTestExt;
+
 /// Test code among yw-app's `src` files (each is a `#[cfg(test)]` module, or a file of one):
 /// not scanned. Other files are scanned with their `#[cfg(test)]` items blanked.
 const TEST_FILES: [&str; 8] = [
@@ -1528,27 +1530,23 @@ fn an_openers_later_steps_follow_the_answer_to_its_open() {
     app.show_next_approval_then(AfterOpen::CardSiteCheckThenRefresh);
     app.drain();
     assert_eq!(app.controls.take_shell_log(), ["refresh", "refresh"]);
-    assert!(app.evm.after_open.is_empty());
+    assert!(app.after_open_steps().is_empty());
     // A step kept for window `shown`: another window's answer leaves it; its own runs it once
     // (this answer is stale — no flow — so the step is all it does).
     let shown = ShownId(u64::MAX);
-    app.evm
-        .after_open
-        .push((shown, AfterOpen::CardSiteCheckThenRefresh));
+    app.keep_after_open(shown, AfterOpen::CardSiteCheckThenRefresh);
     app.dispatch(answer(ShownId(u64::MAX - 1)));
     assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
-    assert_eq!(app.evm.after_open.len(), 1);
+    assert_eq!(app.after_open_steps().len(), 1);
     app.dispatch(answer(shown));
     assert_eq!(app.controls.take_shell_log(), ["refresh"]);
-    assert!(app.evm.after_open.is_empty());
+    assert!(app.after_open_steps().is_empty());
     app.dispatch(answer(shown));
     assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
     // The rest of a Bitcoin batch: none left but the batch's repaint.
-    app.evm
-        .after_open
-        .push((shown, AfterOpen::BtcRest(Vec::new())));
+    app.keep_after_open(shown, AfterOpen::BtcRest(Vec::new()));
     assert_eq!(
-        format!("{:?}", app.evm.after_open),
+        format!("{:?}", app.after_open_steps()),
         "[(ShownId(18446744073709551615), BtcRest(0))]"
     );
     app.dispatch(answer(shown));
@@ -1578,33 +1576,33 @@ fn steps_after_an_open_wait_for_its_answer() {
     };
     let _ = app.controls.take_shell_log();
     // Nothing waits: at once (2026-11-20, S4 P10b: its repaint is applied when the entry drains).
-    assert_eq!(app.evm.open_unanswered, None);
+    assert_eq!(app.open_unanswered(), None);
     app.after_pending_open(AfterOpen::Refresh);
     app.drain();
     assert_eq!(app.controls.take_shell_log(), ["refresh"]);
     // An open waits (as it will with the outbox): kept for it, in order.
     let shown = ShownId(u64::MAX);
-    app.evm.open_unanswered = Some(shown);
+    app.set_open_unanswered(Some(shown));
     app.after_pending_open(AfterOpen::Refresh);
     app.after_pending_open(AfterOpen::RefreshUnlessActed(true));
     app.after_pending_open(AfterOpen::HiddenNote("계정 2".to_owned()));
     assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
     assert_eq!(
-        format!("{:?}", app.evm.after_open),
+        format!("{:?}", app.after_open_steps()),
         "[(ShownId(18446744073709551615), Refresh), (ShownId(18446744073709551615), \
          RefreshUnlessActed(true)), (ShownId(18446744073709551615), HiddenNote(4))]"
     );
     // Another window's answer leaves them, and the open still waits.
     app.dispatch(answer(ShownId(u64::MAX - 1)));
-    assert_eq!(app.evm.open_unanswered, Some(shown));
-    assert_eq!(app.evm.after_open.len(), 3);
+    assert_eq!(app.open_unanswered(), Some(shown));
+    assert_eq!(app.after_open_steps().len(), 3);
     assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
     // Its own answer (stale here: no flow, so no steps of its own): no longer waiting, the kept
     // steps once, in order (the note's repaint is the second `refresh`).
     let banners = app.banners.len();
     app.dispatch(answer(shown));
-    assert_eq!(app.evm.open_unanswered, None);
-    assert!(app.evm.after_open.is_empty());
+    assert_eq!(app.open_unanswered(), None);
+    assert!(app.after_open_steps().is_empty());
     assert_eq!(app.controls.take_shell_log(), ["refresh", "refresh"]);
     assert_eq!(app.banners.len(), banners + 1);
     app.dispatch(answer(shown));
@@ -5083,12 +5081,25 @@ const APPROVED_VARIANT_OWNERS: [&str; 2] = ["QueueOutcome", "InteractionStatus"]
 /// approval it holds (`card_submit`, `card_cancel`), and the signing waiter that a consumed
 /// approval answers through (`push_sign_waiter`). With the `impl Wallet` fns that take an
 /// `Approved` ([`wallet_fn_heads`]) they are crate-private in yw-engine and unnamed in yw-app's
-/// code.
-const CONSENT_STEPS: [&str; 4] = [
+/// code. 2026-11-23 (S4d final review, A-15, D-22): also the steps that complete a user's
+/// consent or a hold without an `Approved`: the dApp connect windows' grant writes
+/// (`connect_approved`, `chain_connect_approved`, which save a grant and answer the site), the
+/// reset that the 2 s hold guards (`reset_execute`), the W08 backup holds' completions
+/// (`mn_hold_complete`, `yk_hold_complete`) and the `YubiKey` PIN window's open
+/// (`yk_open_card_secret`). E1 had made them `#[doc(hidden)] pub` because only yw-app's tests
+/// called them; they are `pub(crate)` again and the tests reach them through
+/// `testkit::WalletTestExt`.
+const CONSENT_STEPS: [&str; 10] = [
     "consume_and_sign",
     "card_submit",
     "card_cancel",
     "push_sign_waiter",
+    "connect_approved",
+    "chain_connect_approved",
+    "reset_execute",
+    "mn_hold_complete",
+    "yk_hold_complete",
+    "yk_open_card_secret",
 ];
 
 /// The `impl Wallet` fns that take an `Approved` which the S4d preflight (row E4) and critique

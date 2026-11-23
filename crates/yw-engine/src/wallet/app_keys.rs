@@ -650,8 +650,7 @@ impl Wallet {
     /// address leaves the dApp grants unless another visible account still has it — a derived,
     /// added-phrase or `YubiKey` account whose private key was imported (spec/02 §8.4) stays,
     /// and so do its site connections — then the key leaves meta.
-    #[doc(hidden)]
-    pub fn on_evm_raw_key_removed(&mut self, id: RecordId) {
+    pub(crate) fn on_evm_raw_key_removed(&mut self, id: RecordId) {
         self.close_secret();
         let record = *id.as_bytes();
         let removed: Vec<Address> = self
@@ -719,8 +718,7 @@ impl Wallet {
 
     /// Main-window presses of this module (2026-11-18, S3 C5: a `KeysPress`, an address-type
     /// radio carrying its `ScriptType`; before, the control id).
-    #[doc(hidden)]
-    pub fn on_keys(&mut self, press: KeysPress) {
+    pub(crate) fn on_keys(&mut self, press: KeysPress) {
         match press {
             KeysPress::Script(script) => {
                 if self.screen == Screen::KeyStartIntro {

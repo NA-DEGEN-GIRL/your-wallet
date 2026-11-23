@@ -21,6 +21,7 @@ use yw_engine::events::{JournalView, SolKeysPurpose};
 use yw_engine::meta::{Account, ActivityEntry, Meta, Tab};
 use yw_engine::settings::Settings;
 use yw_engine::sol::flow::TrackResult;
+use yw_engine::testkit::WalletTestExt;
 use yw_engine::wallet::app_sol::{
     ReviewRefusal, SOL_APPLY_RETRY_MS, SOL_REVIEW_CHANGED_TEXT, SOL_SAVE_FAILED_TEXT,
     SOL_SAVING_TEXT, SOL_SCAN_RECONFIRM_TEXT, ScanStage, SolHalt,

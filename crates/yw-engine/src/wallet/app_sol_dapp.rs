@@ -221,8 +221,7 @@ impl Wallet {
     /// waited), no endpoint for the cluster (4901; the preview needs RPC), or for a send the
     /// (cluster, signer) or whole-journal cap of pending dApp sends (-32002). `None`: open the
     /// window.
-    #[doc(hidden)]
-    pub fn sol_dapp_refusal(
+    pub(crate) fn sol_dapp_refusal(
         &self,
         public: &[u8; 32],
         cluster: SolCluster,
@@ -313,8 +312,7 @@ impl Wallet {
     /// Otherwise the window's failure `(code, retryable)`, never a draft without the preview (no
     /// X01): the wallet switched to another cluster since the request came (Q16) or a genesis
     /// mismatch is E-RPC-006, not retried; a transport error keeps its own code.
-    #[doc(hidden)]
-    pub fn sol_dapp_draft(
+    pub(crate) fn sol_dapp_draft(
         &self,
         site: &SiteRequest,
         result: Result<DappPreview, ErrorCode>,
@@ -483,8 +481,7 @@ impl Wallet {
     /// The pre-sign check finished: the key worker signs and journals the send (the 20 s
     /// signing deadline runs from now), or the dApp gets -32603 `BroadcastFailed` with the
     /// reason in a band. A check whose entry is gone (the lock answered it) is dropped.
-    #[doc(hidden)]
-    pub fn on_sol_dapp_presigned(
+    pub(crate) fn on_sol_dapp_presigned(
         &mut self,
         job: u64,
         result: Result<(u64, PreSignCheck), PreSignError>,
@@ -577,8 +574,7 @@ impl Wallet {
     /// answer the origin's grant must still name the key (4100 otherwise; the transaction is
     /// journaled and still broadcast, spec/07 §20.10-4). A lock before signing answers 4001, the
     /// caps -32002, anything else -32603 with the reason in a band.
-    #[doc(hidden)]
-    pub fn on_sol_dapp_signed(&mut self, signed: SolDappSigned) {
+    pub(crate) fn on_sol_dapp_signed(&mut self, signed: SolDappSigned) {
         let SolDappSigned { ticket, result } = signed;
         if matches!(result, Err(SolSignFailure::Locked)) {
             self.browser_sign_cancelled(ticket);
@@ -685,8 +681,7 @@ impl Wallet {
 
     /// `minContextSlot` for a send of the dApp record `signature`: only while its answer waits
     /// for the first round (spec/07 §20.8).
-    #[doc(hidden)]
-    pub fn sol_dapp_min_context_slot(&self, signature: &[u8; 64]) -> Option<u64> {
+    pub(crate) fn sol_dapp_min_context_slot(&self, signature: &[u8; 64]) -> Option<u64> {
         self.browser
             .as_ref()?
             .sol_broadcasts

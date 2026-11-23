@@ -475,8 +475,7 @@ pub struct EvmUi {
     /// runs after a lock. Before F14 a lock left them and a late answer still ran them; with the
     /// outbox (2026-11-20, S4 P10b review) that late answer was the stale answer of an open
     /// queued in the entry that then locked, so its steps ran after the lock.
-    #[doc(hidden)]
-    pub after_open: Vec<(
+    pub(crate) after_open: Vec<(
         crate::approval::flow::ShownId,
         crate::wallet::app_approval::AfterOpen,
     )>,
@@ -488,8 +487,7 @@ pub struct EvmUi {
     /// whenever logic code ran. 2026-11-21 (S4 F14): cleared by a lock with the kept steps
     /// (`after_open`), so a step asked for after the lock runs at once; before F14 a lock left it
     /// and a late answer still ran the steps kept for it.
-    #[doc(hidden)]
-    pub open_unanswered: Option<crate::approval::flow::ShownId>,
+    pub(crate) open_unanswered: Option<crate::approval::flow::ShownId>,
     /// What the S12 receive QR encodes (session only, spec/04 §2.8).
     pub receive_qr: crate::screen::EvmQrKind,
     /// The S10 network drop-down is open (2026-11-11; session only, closed by a choice).
@@ -1475,8 +1473,7 @@ impl Wallet {
     /// The timer's balance check: a due read starts while S10 shows, unlocked and not hidden;
     /// whether one did. Also run right after a main-window message (`Wallet::reads_due`,
     /// 2026-11-12).
-    #[doc(hidden)]
-    pub fn evm_balance_tick(&mut self, now: u64) -> bool {
+    pub(crate) fn evm_balance_tick(&mut self, now: u64) -> bool {
         let due = matches!(self.mode, AppMode::Unlocked { .. })
             && matches!(self.screen, Screen::Main)
             && now >= self.evm.next_balance_ms
@@ -1492,8 +1489,7 @@ impl Wallet {
     /// How long an edit of the recipient (`true`) or the amount waits for its validation
     /// (2026-11-12): text that is a whole address or amount, or empty, is checked at once;
     /// anything else after the typing pause, so no error flashes under half-typed text.
-    #[doc(hidden)]
-    pub fn send_edit_wait_ms(&self, recipient: bool) -> u64 {
+    pub(crate) fn send_edit_wait_ms(&self, recipient: bool) -> u64 {
         let form = &self.evm.send;
         let whole = if recipient {
             let text = form.to_text.trim();
@@ -1521,8 +1517,7 @@ impl Wallet {
 
     /// The send timer fired: the edit it waited for is validated. Never from `EN_CHANGE` itself
     /// — a validation may rebuild the controls, the edit that is notifying included.
-    #[doc(hidden)]
-    pub fn on_send_timer(&mut self) {
+    pub(crate) fn on_send_timer(&mut self) {
         self.emit(Effect::StopTimer {
             timer: TimerId::SendCheck,
         });
@@ -1731,8 +1726,7 @@ impl Wallet {
 
     /// 2026-11-22 (S4d E0c): `pub(crate)` for its App-building tests, children of `app::tests`
     /// since then (before, of this module).
-    #[doc(hidden)]
-    pub fn on_quote(&mut self, job: u64, result: Result<Quote, ErrorCode>) {
+    pub(crate) fn on_quote(&mut self, job: u64, result: Result<Quote, ErrorCode>) {
         if job != self.evm.send.quote_job {
             return;
         }
@@ -2067,8 +2061,7 @@ impl Wallet {
     /// The key source of an own EVM account with this address: derived, imported, an added
     /// mnemonic's, then a `YubiKey` account's (`EvmKeySource::Hardware`, spec/10 §10 — the
     /// signing step then moves to the card).
-    #[doc(hidden)]
-    pub fn account_source(&self, address: &Address) -> Option<EvmKeySource> {
+    pub(crate) fn account_source(&self, address: &Address) -> Option<EvmKeySource> {
         let meta = self.meta.as_ref()?;
         let text = address.to_lower_hex();
         if let Some(account) = meta

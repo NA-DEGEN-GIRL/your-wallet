@@ -2078,8 +2078,7 @@ impl Wallet {
         self.refresh();
     }
 
-    #[doc(hidden)]
-    pub fn sol_tick_tracking(&mut self, now: u64) {
+    pub(crate) fn sol_tick_tracking(&mut self, now: u64) {
         let records = self.sol_records();
         // A final state that is still not in the journal long after `SolApply`: the write failed
         // (the key worker reports it only to the log). Resume the loop; it observes the same
@@ -2156,8 +2155,7 @@ impl Wallet {
     /// A broadcast round finished (RPC worker).
     /// 2026-11-22 (S4d E0c): `pub(crate)` for its App-building tests, children of `app::tests`
     /// since then (before, of this module).
-    #[doc(hidden)]
-    pub fn on_sol_tracked(&mut self, result: &TrackResult) {
+    pub(crate) fn on_sol_tracked(&mut self, result: &TrackResult) {
         let now = self.clock.now_ms();
         let Some(state) = self.sol.tracking.get_mut(&result.signature) else {
             return;

@@ -133,22 +133,51 @@ pub fn yubikey_wallet(
 // returns outcomes only, and by four setup steps that only put state in. Still, an `Approved` is
 // made only by an `ApprovalStore`'s `consume` (yw-core).
 
+use std::collections::VecDeque;
+
 use yw_core::approval::{
     ApprovalDraft, ApprovalError, ApprovalId, ApprovalRequest, ApprovalStore, Approved,
+    SigningPayload,
 };
-use yw_core::vault::BackupChallenge;
+use yw_core::evm::address::Address;
+use yw_core::lang::Lang;
+use yw_core::policy::{BrowserOrigin, BtcPurpose, ProviderError};
+use yw_core::sol::SolCluster;
+use yw_core::sol::dapp::{PreSignCheck, SolTxMode};
+use yw_core::vault::{BackupChallenge, EvmKeySource, RecordId};
 
+use crate::approval::QueueOutcome;
+use crate::approval::flow::{OpenOutcome, ShownId};
 use crate::approval::interaction::{ApprovalSession, InteractionStatus, PrepareState};
-use crate::browser::SiteRequest;
-use crate::events::{SignInfo, SignTicket};
+use crate::browser::{SiteRequest, VaultView, WalletView};
+use crate::cmd::{
+    BookPress, BtcPress, ExplorerPress, HiddenPress, KeysPress, LinksPress, LlmPress, ResetPress,
+    SitesPress, SolPress,
+};
+use crate::effect::Effect;
+use crate::errors::ErrorCode;
+use crate::events::{ChainMessageSigned, MessageSigned, SignInfo, SignTicket, SolDappSigned};
+use crate::flow::evm::form::Quote;
 use crate::flow::evm::prepare::Prepared;
-use crate::secret::{DisplaySecret, SecretKind, Submission};
-use crate::wallet::app_browser::SignWaiter;
-use crate::wallet::app_card::{CardJobKind, PinBuffer};
+use crate::flow::evm::track::BroadcastOutcome;
+use crate::form::{CredField, EditField, PressInput};
+use crate::network::NetworkId;
+use crate::secret::{CardSecretKind, DisplaySecret, SecretFormOp, SecretKind, Submission};
+use crate::services::Services;
+use crate::sol::flow::{DappPreview, PreSignError, TrackResult};
+use crate::wallet::app_approval::{AfterOpen, ConnectState};
+use crate::wallet::app_browser::{HardwareSiteAccounts, SignWaiter};
+use crate::wallet::app_card::{CardJobKind, CardStep, PinBuffer};
+use crate::wallet::app_chain_sites::{BtcRow, ConnectChoice, ConnectEntry};
+use crate::wallet::app_mnemonics::MnPurpose;
 use crate::wallet::app_sol_dapp::PendingDappSign;
-use crate::wallet::approval_flow::ApprovalFlow;
+use crate::wallet::app_yubikey::YkPurpose;
+use crate::wallet::approval_flow::{AiFlow, ApprovalFlow};
+use crate::wallet::lock::IdleTracker;
 use crate::wallet::secret_session::{AfterShown, SecretSession};
-use crate::wallet::{Purpose, Wallet};
+use crate::wallet::{Purpose, TestState, Wallet};
+use crate::wallet_files::{ResetError, ResetReport};
+use crate::workers::key::mnemonics::MnOutcome;
 
 /// The wallet's crate-private steps and buffers as the yw-app tests reach them (tests only).
 pub trait WalletTestExt {
@@ -218,6 +247,288 @@ pub trait WalletTestExt {
     /// Whether the `YubiKey` wizard holds its admin PIN or words (debug builds; a flag only).
     #[cfg(debug_assertions)]
     fn yk_wizard_holds_secret(&self) -> bool;
+
+    // 2026-11-23 (S4d final review, A-15, D-22): the wallet's fields and steps below were
+    // `#[doc(hidden)] pub` from E1 on although only tests named them outside the engine, so any
+    // crate could call a consent or hold-gated step (`connect_approved`, `reset_execute`,
+    // `mn_hold_complete`, …) or write the outbox. They are `pub(crate)` again and the tests reach
+    // them here, as the consent steps above; the methods keep their names, so the test bodies (the
+    // frozen ones among them) call them unchanged with this trait imported.
+    /// The effects queued and not applied yet (read-only).
+    fn outbox(&self) -> &VecDeque<Effect>;
+    /// The effects queued and not applied yet, taken out in order (none is applied).
+    fn take_outbox(&mut self) -> Vec<Effect>;
+    /// Puts `batch` back at the end of the queue unchanged (a test host's held batch).
+    fn requeue_effects(&mut self, batch: Vec<Effect>);
+    /// Puts `input` in as the press input and gives back the one before (`App::press_family`).
+    fn swap_press_input(&mut self, input: PressInput) -> PressInput;
+    /// `PressInput::take` on the press input (outside a press it counts a miss, debug builds).
+    fn take_press_cred(&mut self, field: CredField) -> Zeroizing<Vec<u16>>;
+    /// Debug builds: the press input's takes of a field its press did not capture.
+    #[cfg(debug_assertions)]
+    fn press_input_misses(&self) -> u32;
+    /// The auto-lock idle tracker.
+    fn idle_mut(&mut self) -> &mut IdleTracker;
+    /// The platform services the optional network workers start from.
+    fn services_mut(&mut self) -> &mut Services;
+    /// The steps kept for an approval window's open answer (read-only).
+    fn after_open_steps(&self) -> &[(ShownId, AfterOpen)];
+    /// Keeps `after` for the open answer of window `shown`.
+    fn keep_after_open(&mut self, shown: ShownId, after: AfterOpen);
+    /// The approval window open that waits for its answer.
+    fn open_unanswered(&self) -> Option<ShownId>;
+    /// Sets the approval window open that waits for its answer.
+    fn set_open_unanswered(&mut self, shown: Option<ShownId>);
+    /// Whether the settings in use were compared with the meta snapshot.
+    fn settings_verified(&self) -> bool;
+    /// Marks the settings in use as compared with the meta snapshot.
+    fn set_settings_verified(&mut self, verified: bool);
+    /// The save keys written while no snapshot was available (read-only).
+    fn settings_saved_early(&self) -> &[&'static str];
+    /// `(seen, found)` of a `vault.ywv` generation older than the meta remembers.
+    fn settings_rollback(&self) -> Option<(u64, u64)>;
+    /// `Wallet::show_next_approval_then` (`wallet::app_approval`).
+    fn show_next_approval_then(&mut self, after: AfterOpen);
+    /// `Wallet::after_pending_open` (`wallet::app_approval`).
+    fn after_pending_open(&mut self, after: AfterOpen);
+    /// `Wallet::connect_state` (`wallet::app_approval`).
+    fn connect_state(&self, site: &SiteRequest) -> ConnectState;
+    /// `Wallet::on_approval_opened` (`wallet::app_approval`).
+    fn on_approval_opened(&mut self, shown: ShownId, outcome: OpenOutcome, wide: bool);
+    /// `Wallet::message_chain_failure` (`wallet::app_approval`).
+    fn message_chain_failure(
+        &self,
+        chain_id: u64,
+    ) -> Option<crate::flow::evm::prepare::PrepareFailure>;
+    /// `Wallet::finish_approval` (`wallet::app_approval`).
+    fn finish_approval(&mut self, outcome: QueueOutcome);
+    /// `Wallet::show_ready_draft` (`wallet::app_approval`).
+    fn show_ready_draft(
+        &mut self,
+        draft: yw_core::approval::ApprovalDraft,
+        prepared: Option<Box<Prepared>>,
+    );
+    /// `Wallet::on_book_edit` (`wallet::app_book`).
+    fn on_book_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::on_book` (`wallet::app_book`).
+    fn on_book(&mut self, press: BookPress);
+    /// `Wallet::on_links` (`wallet::app_book`).
+    fn on_links(&mut self, press: LinksPress);
+    /// `Wallet::vault_view` (`wallet::app_browser`).
+    fn vault_view(&self) -> VaultView;
+    /// `Wallet::wallet_view` (`wallet::app_browser`).
+    fn wallet_view(&self) -> WalletView;
+    /// `Wallet::write_grants` (`wallet::app_browser`).
+    fn write_grants(&mut self);
+    /// `Wallet::browser_vault_loaded` (`wallet::app_browser`).
+    fn browser_vault_loaded(&mut self);
+    /// `Wallet::unlocked_refusal` (`wallet::app_browser`).
+    fn unlocked_refusal(&self, site: &SiteRequest) -> Option<ProviderError>;
+    /// `Wallet::refuse_site` (`wallet::app_browser`).
+    fn refuse_site(&mut self, site: &SiteRequest, error: ProviderError);
+    /// `Wallet::site_preflight` (`wallet::app_browser`).
+    fn site_preflight(&mut self, site: &SiteRequest) -> Option<QueueOutcome>;
+    /// `Wallet::hardware_site_accounts` (`wallet::app_browser`).
+    fn hardware_site_accounts(&self) -> Option<HardwareSiteAccounts>;
+    /// `Wallet::connect_approved` (`wallet::app_browser`).
+    fn connect_approved(&mut self, site: &SiteRequest, accounts: Vec<Address>, chain_id: u64);
+    /// `Wallet::browser_tx_signed` (`wallet::app_browser`).
+    fn browser_tx_signed(&mut self, ticket: SignTicket, result: Result<[u8; 32], ()>);
+    /// `Wallet::browser_message_signed` (`wallet::app_browser`).
+    fn browser_message_signed(&mut self, signed: MessageSigned);
+    /// `Wallet::browser_sign_cancelled` (`wallet::app_browser`).
+    fn browser_sign_cancelled(&mut self, ticket: SignTicket);
+    /// `Wallet::browser_broadcast` (`wallet::app_browser`).
+    fn browser_broadcast(&mut self, tx_hash: [u8; 32], outcome: BroadcastOutcome);
+    /// `Wallet::on_sites` (`wallet::app_browser`).
+    fn on_sites(&mut self, press: SitesPress);
+    /// `Wallet::btc_apply_field` (`wallet::app_btc_commands`).
+    fn btc_apply_field(&mut self, field: EditField, text: &str);
+    /// `Wallet::on_btc_edit` (`wallet::app_btc_commands`).
+    fn on_btc_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::on_btc` (`wallet::app_btc_commands`).
+    fn on_btc(&mut self, press: BtcPress);
+    /// `Wallet::card_after_meta` (`wallet::app_card`).
+    fn card_after_meta(&mut self);
+    /// `Wallet::evm_selected_card_gate` (`wallet::app_card`).
+    fn evm_selected_card_gate(&self) -> Option<u32>;
+    /// `Wallet::card_step_card` (`wallet::app_card`).
+    fn card_step_card(&self, role: KeyRole) -> Option<String>;
+    /// `Wallet::card_details` (`wallet::app_card`).
+    fn card_details(&self, step: &CardStep) -> Vec<String>;
+    /// `Wallet::card_tick` (`wallet::app_card`).
+    fn card_tick(&mut self, now: u64);
+    /// `Wallet::btc_network_now` (`wallet::app_chain_sites`).
+    fn btc_network_now(&self) -> BtcNetwork;
+    /// `Wallet::btc_dapp_rows` (`wallet::app_chain_sites`).
+    fn btc_dapp_rows(&self) -> Vec<BtcRow>;
+    /// `Wallet::chain_unlocked_refusal` (`wallet::app_chain_sites`).
+    fn chain_unlocked_refusal(&self, site: &SiteRequest) -> Option<ProviderError>;
+    /// `Wallet::sol_connect_waits_for_account` (`wallet::app_chain_sites`).
+    fn sol_connect_waits_for_account(&self) -> bool;
+    /// `Wallet::chain_connect_choices` (`wallet::app_chain_sites`).
+    fn chain_connect_choices(&self, site: &SiteRequest) -> (Vec<ConnectEntry>, Vec<bool>, String);
+    /// `Wallet::btc_connect_choices` (`wallet::app_chain_sites`).
+    fn btc_connect_choices(
+        &self,
+        origin: &BrowserOrigin,
+        purposes: &[BtcPurpose],
+    ) -> (Vec<ConnectEntry>, Vec<bool>, String);
+    /// `Wallet::chain_connect_approved` (`wallet::app_chain_sites`).
+    fn chain_connect_approved(&mut self, site: &SiteRequest, choices: &[ConnectChoice]);
+    /// `Wallet::chain_site_preflight` (`wallet::app_chain_sites`).
+    #[expect(
+        clippy::option_option,
+        reason = "not-mine / passed / finished, as `Wallet::chain_site_preflight` returns it"
+    )]
+    fn chain_site_preflight(&mut self, site: &SiteRequest) -> Option<Option<QueueOutcome>>;
+    /// `Wallet::chain_sign_draft` (`wallet::app_chain_sites`).
+    fn chain_sign_draft(&self, site: &SiteRequest) -> Option<ApprovalDraft>;
+    /// `Wallet::chain_waiter` (`wallet::app_chain_sites`).
+    fn chain_waiter(site: &SiteRequest, payload: &SigningPayload) -> Option<SignWaiter>
+    where
+        Self: Sized;
+    /// `Wallet::sol_grant_holds` (`wallet::app_chain_sites`).
+    fn sol_grant_holds(&self, origin: &BrowserOrigin, public: &[u8; 32]) -> bool;
+    /// `Wallet::browser_chain_message_signed` (`wallet::app_chain_sites`).
+    fn browser_chain_message_signed(&mut self, signed: &ChainMessageSigned);
+    /// `Wallet::sol_account_removed_from_sites` (`wallet::app_chain_sites`).
+    fn sol_account_removed_from_sites(&mut self, public: &[u8; 32]);
+    /// `Wallet::btc_addresses_removed_from_sites` (`wallet::app_chain_sites`).
+    fn btc_addresses_removed_from_sites(&mut self, addresses: &[String]);
+    /// `Wallet::evm_balance_tick` (`wallet::app_evm`).
+    fn evm_balance_tick(&mut self, now: u64) -> bool;
+    /// `Wallet::send_edit_wait_ms` (`wallet::app_evm`).
+    fn send_edit_wait_ms(&self, recipient: bool) -> u64;
+    /// `Wallet::on_send_timer` (`wallet::app_evm`).
+    fn on_send_timer(&mut self);
+    /// `Wallet::on_quote` (`wallet::app_evm`).
+    fn on_quote(&mut self, job: u64, result: Result<Quote, ErrorCode>);
+    /// `Wallet::account_source` (`wallet::app_evm`).
+    fn account_source(&self, address: &Address) -> Option<EvmKeySource>;
+    /// `Wallet::on_evm_edit` (`wallet::app_evm_commands`).
+    fn on_evm_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::on_explorer_edit` (`wallet::app_explorer`).
+    fn on_explorer_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::on_explorer` (`wallet::app_explorer`).
+    fn on_explorer(&mut self, press: ExplorerPress);
+    /// `Wallet::on_hidden` (`wallet::app_hidden`).
+    fn on_hidden(&mut self, press: HiddenPress);
+    /// `Wallet::on_hc_edit` (`wallet::app_hypercore`).
+    fn on_hc_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::on_evm_raw_key_removed` (`wallet::app_keys`).
+    fn on_evm_raw_key_removed(&mut self, id: RecordId);
+    /// `Wallet::on_keys` (`wallet::app_keys`).
+    fn on_keys(&mut self, press: KeysPress);
+    /// `Wallet::on_llm_edit` (`wallet::app_llm`).
+    fn on_llm_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::on_llm` (`wallet::app_llm`).
+    fn on_llm(&mut self, press: LlmPress);
+    /// `Wallet::llm_save` (`wallet::app_llm`).
+    fn llm_save(&mut self);
+    /// `Wallet::llm_store_key` (`wallet::app_llm`).
+    fn llm_store_key(&mut self, key: &str);
+    /// `Wallet::llm_test` (`wallet::app_llm`).
+    fn llm_test(&mut self);
+    /// `Wallet::evm_selected_gate` (`wallet::app_mnemonics`).
+    fn evm_selected_gate(&self) -> Option<RecordId>;
+    /// `Wallet::on_mn_edit` (`wallet::app_mnemonics`).
+    fn on_mn_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::mn_hold_complete` (`wallet::app_mnemonics`).
+    fn mn_hold_complete(&mut self, purpose: MnPurpose);
+    /// `Wallet::on_mn_outcome` (`wallet::app_mnemonics`).
+    fn on_mn_outcome(&mut self, outcome: MnOutcome, now: u64);
+    /// `Wallet::request_meta` (`wallet::app_reset`).
+    fn request_meta(&mut self);
+    /// `Wallet::wait_tick` (`wallet::app_reset`).
+    fn wait_tick(&mut self, now: u64);
+    /// `Wallet::open_reset` (`wallet::app_reset`).
+    fn open_reset(&mut self);
+    /// `Wallet::cancel_reset` (`wallet::app_reset`).
+    fn cancel_reset(&mut self);
+    /// `Wallet::reset_phrase_changed` (`wallet::app_reset`).
+    fn reset_phrase_changed(&mut self, text: &str);
+    /// `Wallet::reset_execute` (`wallet::app_reset`).
+    fn reset_execute(&mut self);
+    /// `Wallet::on_wallet_reset` (`wallet::app_reset`).
+    fn on_wallet_reset(&mut self, result: Result<ResetReport, ResetError>);
+    /// `Wallet::reset_hold_tick` (`wallet::app_reset`).
+    fn reset_hold_tick(&mut self, now: u64);
+    /// `Wallet::on_reset` (`wallet::app_reset`).
+    fn on_reset(&mut self, press: ResetPress);
+    /// `Wallet::on_reset_edit` (`wallet::app_reset`).
+    fn on_reset_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::sol_tick_tracking` (`wallet::app_sol`).
+    fn sol_tick_tracking(&mut self, now: u64);
+    /// `Wallet::on_sol_tracked` (`wallet::app_sol`).
+    fn on_sol_tracked(&mut self, result: &TrackResult);
+    /// `Wallet::on_sol_edit` (`wallet::app_sol_commands`).
+    fn on_sol_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::on_sol` (`wallet::app_sol_commands`).
+    fn on_sol(&mut self, press: SolPress);
+    /// `Wallet::sol_dapp_refusal` (`wallet::app_sol_dapp`).
+    fn sol_dapp_refusal(
+        &self,
+        public: &[u8; 32],
+        cluster: SolCluster,
+        mode: SolTxMode,
+    ) -> Option<ProviderError>;
+    /// `Wallet::sol_dapp_draft` (`wallet::app_sol_dapp`).
+    ///
+    /// # Errors
+    ///
+    /// As `Wallet::sol_dapp_draft`.
+    fn sol_dapp_draft(
+        &self,
+        site: &SiteRequest,
+        result: Result<DappPreview, ErrorCode>,
+    ) -> Result<ApprovalDraft, (ErrorCode, bool)>;
+    /// `Wallet::on_sol_dapp_presigned` (`wallet::app_sol_dapp`).
+    fn on_sol_dapp_presigned(
+        &mut self,
+        job: u64,
+        result: Result<(u64, PreSignCheck), PreSignError>,
+    );
+    /// `Wallet::on_sol_dapp_signed` (`wallet::app_sol_dapp`).
+    fn on_sol_dapp_signed(&mut self, signed: SolDappSigned);
+    /// `Wallet::sol_dapp_min_context_slot` (`wallet::app_sol_dapp`).
+    fn sol_dapp_min_context_slot(&self, signature: &[u8; 64]) -> Option<u64>;
+    /// `Wallet::wc_start` (`wallet::app_walletconnect`).
+    fn wc_start(&mut self);
+    /// `Wallet::wc_shutdown` (`wallet::app_walletconnect`).
+    fn wc_shutdown(&mut self);
+    /// `Wallet::on_wc_edit` (`wallet::app_walletconnect`).
+    fn on_wc_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::yk_hold_complete` (`wallet::app_yubikey`).
+    fn yk_hold_complete(&mut self, purpose: YkPurpose);
+    /// `Wallet::yk_open_card_secret` (`wallet::app_yubikey`).
+    fn yk_open_card_secret(&mut self, kind: CardSecretKind, purpose: YkPurpose, serial: u32);
+    /// `Wallet::on_yk_edit` (`wallet::app_yubikey`).
+    fn on_yk_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::on_zec_edit` (`wallet::app_zec`).
+    fn on_zec_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::reads_due` (`wallet::mod`).
+    fn reads_due(&mut self, now: u64);
+    /// `Wallet::on_rpc_event` (`wallet::mod`).
+    fn on_rpc_event(&mut self, network: NetworkId, message: String, ok: bool);
+    /// `Wallet::secret_purpose` (`wallet::mod`).
+    fn secret_purpose(&self) -> Option<Purpose>;
+    /// `Wallet::secret_form` (`wallet::mod`).
+    fn secret_form(&mut self, op: SecretFormOp);
+    /// `Wallet::open_input` (`wallet::mod`).
+    fn open_input(&mut self, kind: SecretKind, purpose: Purpose, topmost: bool);
+    /// `Wallet::open_display` (`wallet::mod`).
+    fn open_display(&mut self, kind: SecretKind, purpose: Purpose, display: DisplaySecret);
+    /// `Wallet::save_meta` (`wallet::mod`).
+    fn save_meta(&mut self);
+    /// `Wallet::verify_settings` (`wallet::mod`).
+    fn verify_settings(&mut self);
+    /// `Wallet::on_field_edit` (`wallet::mod`).
+    fn on_field_edit(&mut self, field: EditField, text: &str) -> bool;
+    /// `Wallet::form_text` (`wallet::mod`).
+    fn form_text(&self, field: EditField) -> Option<String>;
+    /// `Wallet::set_rpc_message` (`wallet::mod`).
+    fn set_rpc_message(&mut self, network: NetworkId, message: String, state: TestState);
 }
 
 impl WalletTestExt for Wallet {
@@ -332,6 +643,511 @@ impl WalletTestExt for Wallet {
             .as_ref()
             .is_some_and(crate::wallet::app_yubikey::YkWizard::test_holds_secret)
     }
+
+    fn outbox(&self) -> &VecDeque<Effect> {
+        &self.outbox
+    }
+
+    fn take_outbox(&mut self) -> Vec<Effect> {
+        self.outbox.drain(..).collect()
+    }
+
+    fn requeue_effects(&mut self, batch: Vec<Effect>) {
+        self.outbox.extend(batch);
+    }
+
+    fn swap_press_input(&mut self, input: PressInput) -> PressInput {
+        core::mem::replace(&mut self.input, input)
+    }
+
+    fn take_press_cred(&mut self, field: CredField) -> Zeroizing<Vec<u16>> {
+        self.input.take(field)
+    }
+
+    #[cfg(debug_assertions)]
+    fn press_input_misses(&self) -> u32 {
+        self.input.misses()
+    }
+
+    fn idle_mut(&mut self) -> &mut IdleTracker {
+        &mut self.idle
+    }
+
+    fn services_mut(&mut self) -> &mut Services {
+        &mut self.services
+    }
+
+    fn after_open_steps(&self) -> &[(ShownId, AfterOpen)] {
+        &self.evm.after_open
+    }
+
+    fn keep_after_open(&mut self, shown: ShownId, after: AfterOpen) {
+        self.evm.after_open.push((shown, after));
+    }
+
+    fn open_unanswered(&self) -> Option<ShownId> {
+        self.evm.open_unanswered
+    }
+
+    fn set_open_unanswered(&mut self, shown: Option<ShownId>) {
+        self.evm.open_unanswered = shown;
+    }
+
+    fn settings_verified(&self) -> bool {
+        self.guard.verified
+    }
+
+    fn set_settings_verified(&mut self, verified: bool) {
+        self.guard.verified = verified;
+    }
+
+    fn settings_saved_early(&self) -> &[&'static str] {
+        &self.guard.saved_early
+    }
+
+    fn settings_rollback(&self) -> Option<(u64, u64)> {
+        self.guard.rollback
+    }
+
+    fn show_next_approval_then(&mut self, after: AfterOpen) {
+        Self::show_next_approval_then(self, after);
+    }
+
+    fn after_pending_open(&mut self, after: AfterOpen) {
+        Self::after_pending_open(self, after);
+    }
+
+    fn connect_state(&self, site: &SiteRequest) -> ConnectState {
+        Self::connect_state(self, site)
+    }
+
+    fn on_approval_opened(&mut self, shown: ShownId, outcome: OpenOutcome, wide: bool) {
+        Self::on_approval_opened(self, shown, outcome, wide);
+    }
+
+    fn message_chain_failure(
+        &self,
+        chain_id: u64,
+    ) -> Option<crate::flow::evm::prepare::PrepareFailure> {
+        Self::message_chain_failure(self, chain_id)
+    }
+
+    fn finish_approval(&mut self, outcome: QueueOutcome) {
+        Self::finish_approval(self, outcome);
+    }
+
+    fn show_ready_draft(
+        &mut self,
+        draft: yw_core::approval::ApprovalDraft,
+        prepared: Option<Box<Prepared>>,
+    ) {
+        Self::show_ready_draft(self, draft, prepared);
+    }
+
+    fn on_book_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_book_edit(self, field, text)
+    }
+
+    fn on_book(&mut self, press: BookPress) {
+        Self::on_book(self, press);
+    }
+
+    fn on_links(&mut self, press: LinksPress) {
+        Self::on_links(self, press);
+    }
+
+    fn vault_view(&self) -> VaultView {
+        Self::vault_view(self)
+    }
+
+    fn wallet_view(&self) -> WalletView {
+        Self::wallet_view(self)
+    }
+
+    fn write_grants(&mut self) {
+        Self::write_grants(self);
+    }
+
+    fn browser_vault_loaded(&mut self) {
+        Self::browser_vault_loaded(self);
+    }
+
+    fn unlocked_refusal(&self, site: &SiteRequest) -> Option<ProviderError> {
+        Self::unlocked_refusal(self, site)
+    }
+
+    fn refuse_site(&mut self, site: &SiteRequest, error: ProviderError) {
+        Self::refuse_site(self, site, error);
+    }
+
+    fn site_preflight(&mut self, site: &SiteRequest) -> Option<QueueOutcome> {
+        Self::site_preflight(self, site)
+    }
+
+    fn hardware_site_accounts(&self) -> Option<HardwareSiteAccounts> {
+        Self::hardware_site_accounts(self)
+    }
+
+    fn connect_approved(&mut self, site: &SiteRequest, accounts: Vec<Address>, chain_id: u64) {
+        Self::connect_approved(self, site, accounts, chain_id);
+    }
+
+    fn browser_tx_signed(&mut self, ticket: SignTicket, result: Result<[u8; 32], ()>) {
+        Self::browser_tx_signed(self, ticket, result);
+    }
+
+    fn browser_message_signed(&mut self, signed: MessageSigned) {
+        Self::browser_message_signed(self, signed);
+    }
+
+    fn browser_sign_cancelled(&mut self, ticket: SignTicket) {
+        Self::browser_sign_cancelled(self, ticket);
+    }
+
+    fn browser_broadcast(&mut self, tx_hash: [u8; 32], outcome: BroadcastOutcome) {
+        Self::browser_broadcast(self, tx_hash, outcome);
+    }
+
+    fn on_sites(&mut self, press: SitesPress) {
+        Self::on_sites(self, press);
+    }
+
+    fn btc_apply_field(&mut self, field: EditField, text: &str) {
+        Self::btc_apply_field(self, field, text);
+    }
+
+    fn on_btc_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_btc_edit(self, field, text)
+    }
+
+    fn on_btc(&mut self, press: BtcPress) {
+        Self::on_btc(self, press);
+    }
+
+    fn card_after_meta(&mut self) {
+        Self::card_after_meta(self);
+    }
+
+    fn evm_selected_card_gate(&self) -> Option<u32> {
+        Self::evm_selected_card_gate(self)
+    }
+
+    fn card_step_card(&self, role: KeyRole) -> Option<String> {
+        Self::card_step_card(self, role)
+    }
+
+    fn card_details(&self, step: &CardStep) -> Vec<String> {
+        Self::card_details(self, step)
+    }
+
+    fn card_tick(&mut self, now: u64) {
+        Self::card_tick(self, now);
+    }
+
+    fn btc_network_now(&self) -> BtcNetwork {
+        Self::btc_network_now(self)
+    }
+
+    fn btc_dapp_rows(&self) -> Vec<BtcRow> {
+        Self::btc_dapp_rows(self)
+    }
+
+    fn chain_unlocked_refusal(&self, site: &SiteRequest) -> Option<ProviderError> {
+        Self::chain_unlocked_refusal(self, site)
+    }
+
+    fn sol_connect_waits_for_account(&self) -> bool {
+        Self::sol_connect_waits_for_account(self)
+    }
+
+    fn chain_connect_choices(&self, site: &SiteRequest) -> (Vec<ConnectEntry>, Vec<bool>, String) {
+        Self::chain_connect_choices(self, site)
+    }
+
+    fn btc_connect_choices(
+        &self,
+        origin: &BrowserOrigin,
+        purposes: &[BtcPurpose],
+    ) -> (Vec<ConnectEntry>, Vec<bool>, String) {
+        Self::btc_connect_choices(self, origin, purposes)
+    }
+
+    fn chain_connect_approved(&mut self, site: &SiteRequest, choices: &[ConnectChoice]) {
+        Self::chain_connect_approved(self, site, choices);
+    }
+
+    fn chain_site_preflight(&mut self, site: &SiteRequest) -> Option<Option<QueueOutcome>> {
+        Self::chain_site_preflight(self, site)
+    }
+
+    fn chain_sign_draft(&self, site: &SiteRequest) -> Option<ApprovalDraft> {
+        Self::chain_sign_draft(self, site)
+    }
+
+    fn chain_waiter(site: &SiteRequest, payload: &SigningPayload) -> Option<SignWaiter> {
+        Self::chain_waiter(site, payload)
+    }
+
+    fn sol_grant_holds(&self, origin: &BrowserOrigin, public: &[u8; 32]) -> bool {
+        Self::sol_grant_holds(self, origin, public)
+    }
+
+    fn browser_chain_message_signed(&mut self, signed: &ChainMessageSigned) {
+        Self::browser_chain_message_signed(self, signed);
+    }
+
+    fn sol_account_removed_from_sites(&mut self, public: &[u8; 32]) {
+        Self::sol_account_removed_from_sites(self, public);
+    }
+
+    fn btc_addresses_removed_from_sites(&mut self, addresses: &[String]) {
+        Self::btc_addresses_removed_from_sites(self, addresses);
+    }
+
+    fn evm_balance_tick(&mut self, now: u64) -> bool {
+        Self::evm_balance_tick(self, now)
+    }
+
+    fn send_edit_wait_ms(&self, recipient: bool) -> u64 {
+        Self::send_edit_wait_ms(self, recipient)
+    }
+
+    fn on_send_timer(&mut self) {
+        Self::on_send_timer(self);
+    }
+
+    fn on_quote(&mut self, job: u64, result: Result<Quote, ErrorCode>) {
+        Self::on_quote(self, job, result);
+    }
+
+    fn account_source(&self, address: &Address) -> Option<EvmKeySource> {
+        Self::account_source(self, address)
+    }
+
+    fn on_evm_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_evm_edit(self, field, text)
+    }
+
+    fn on_explorer_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_explorer_edit(self, field, text)
+    }
+
+    fn on_explorer(&mut self, press: ExplorerPress) {
+        Self::on_explorer(self, press);
+    }
+
+    fn on_hidden(&mut self, press: HiddenPress) {
+        Self::on_hidden(self, press);
+    }
+
+    fn on_hc_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_hc_edit(self, field, text)
+    }
+
+    fn on_evm_raw_key_removed(&mut self, id: RecordId) {
+        Self::on_evm_raw_key_removed(self, id);
+    }
+
+    fn on_keys(&mut self, press: KeysPress) {
+        Self::on_keys(self, press);
+    }
+
+    fn on_llm_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_llm_edit(self, field, text)
+    }
+
+    fn on_llm(&mut self, press: LlmPress) {
+        Self::on_llm(self, press);
+    }
+
+    fn llm_save(&mut self) {
+        Self::llm_save(self);
+    }
+
+    fn llm_store_key(&mut self, key: &str) {
+        Self::llm_store_key(self, key);
+    }
+
+    fn llm_test(&mut self) {
+        Self::llm_test(self);
+    }
+
+    fn evm_selected_gate(&self) -> Option<RecordId> {
+        Self::evm_selected_gate(self)
+    }
+
+    fn on_mn_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_mn_edit(self, field, text)
+    }
+
+    fn mn_hold_complete(&mut self, purpose: MnPurpose) {
+        Self::mn_hold_complete(self, purpose);
+    }
+
+    fn on_mn_outcome(&mut self, outcome: MnOutcome, now: u64) {
+        Self::on_mn_outcome(self, outcome, now);
+    }
+
+    fn request_meta(&mut self) {
+        Self::request_meta(self);
+    }
+
+    fn wait_tick(&mut self, now: u64) {
+        Self::wait_tick(self, now);
+    }
+
+    fn open_reset(&mut self) {
+        Self::open_reset(self);
+    }
+
+    fn cancel_reset(&mut self) {
+        Self::cancel_reset(self);
+    }
+
+    fn reset_phrase_changed(&mut self, text: &str) {
+        Self::reset_phrase_changed(self, text);
+    }
+
+    fn reset_execute(&mut self) {
+        Self::reset_execute(self);
+    }
+
+    fn on_wallet_reset(&mut self, result: Result<ResetReport, ResetError>) {
+        Self::on_wallet_reset(self, result);
+    }
+
+    fn reset_hold_tick(&mut self, now: u64) {
+        Self::reset_hold_tick(self, now);
+    }
+
+    fn on_reset(&mut self, press: ResetPress) {
+        Self::on_reset(self, press);
+    }
+
+    fn on_reset_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_reset_edit(self, field, text)
+    }
+
+    fn sol_tick_tracking(&mut self, now: u64) {
+        Self::sol_tick_tracking(self, now);
+    }
+
+    fn on_sol_tracked(&mut self, result: &TrackResult) {
+        Self::on_sol_tracked(self, result);
+    }
+
+    fn on_sol_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_sol_edit(self, field, text)
+    }
+
+    fn on_sol(&mut self, press: SolPress) {
+        Self::on_sol(self, press);
+    }
+
+    fn sol_dapp_refusal(
+        &self,
+        public: &[u8; 32],
+        cluster: SolCluster,
+        mode: SolTxMode,
+    ) -> Option<ProviderError> {
+        Self::sol_dapp_refusal(self, public, cluster, mode)
+    }
+
+    fn sol_dapp_draft(
+        &self,
+        site: &SiteRequest,
+        result: Result<DappPreview, ErrorCode>,
+    ) -> Result<ApprovalDraft, (ErrorCode, bool)> {
+        Self::sol_dapp_draft(self, site, result)
+    }
+
+    fn on_sol_dapp_presigned(
+        &mut self,
+        job: u64,
+        result: Result<(u64, PreSignCheck), PreSignError>,
+    ) {
+        Self::on_sol_dapp_presigned(self, job, result);
+    }
+
+    fn on_sol_dapp_signed(&mut self, signed: SolDappSigned) {
+        Self::on_sol_dapp_signed(self, signed);
+    }
+
+    fn sol_dapp_min_context_slot(&self, signature: &[u8; 64]) -> Option<u64> {
+        Self::sol_dapp_min_context_slot(self, signature)
+    }
+
+    fn wc_start(&mut self) {
+        Self::wc_start(self);
+    }
+
+    fn wc_shutdown(&mut self) {
+        Self::wc_shutdown(self);
+    }
+
+    fn on_wc_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_wc_edit(self, field, text)
+    }
+
+    fn yk_hold_complete(&mut self, purpose: YkPurpose) {
+        Self::yk_hold_complete(self, purpose);
+    }
+
+    fn yk_open_card_secret(&mut self, kind: CardSecretKind, purpose: YkPurpose, serial: u32) {
+        Self::yk_open_card_secret(self, kind, purpose, serial);
+    }
+
+    fn on_yk_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_yk_edit(self, field, text)
+    }
+
+    fn on_zec_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_zec_edit(self, field, text)
+    }
+
+    fn reads_due(&mut self, now: u64) {
+        Self::reads_due(self, now);
+    }
+
+    fn on_rpc_event(&mut self, network: NetworkId, message: String, ok: bool) {
+        Self::on_rpc_event(self, network, message, ok);
+    }
+
+    fn secret_purpose(&self) -> Option<Purpose> {
+        Self::secret_purpose(self)
+    }
+
+    fn secret_form(&mut self, op: SecretFormOp) {
+        Self::secret_form(self, op);
+    }
+
+    fn open_input(&mut self, kind: SecretKind, purpose: Purpose, topmost: bool) {
+        Self::open_input(self, kind, purpose, topmost);
+    }
+
+    fn open_display(&mut self, kind: SecretKind, purpose: Purpose, display: DisplaySecret) {
+        Self::open_display(self, kind, purpose, display);
+    }
+
+    fn save_meta(&mut self) {
+        Self::save_meta(self);
+    }
+
+    fn verify_settings(&mut self) {
+        Self::verify_settings(self);
+    }
+
+    fn on_field_edit(&mut self, field: EditField, text: &str) -> bool {
+        Self::on_field_edit(self, field, text)
+    }
+
+    fn form_text(&self, field: EditField) -> Option<String> {
+        Self::form_text(self, field)
+    }
+
+    fn set_rpc_message(&mut self, network: NetworkId, message: String, state: TestState) {
+        Self::set_rpc_message(self, network, message, state);
+    }
 }
 
 /// The approval flow's state as the yw-app tests and the render harness read it (read-only;
@@ -355,6 +1171,26 @@ pub trait FlowTestExt {
     fn raw_open(&self) -> bool;
     /// The paint's test facts: the shown content, the interaction's status, a hold under way.
     fn paint_test_facts(&self) -> (&PrepareState, InteractionStatus, bool);
+    /// `ApprovalFlow::lang`: the shown approval's language (2026-11-23, S4d final review: was a
+    /// `#[doc(hidden)] pub` method; the three below too).
+    fn lang(&self) -> Lang;
+    /// `ApprovalFlow::connect`: the connect window's choices.
+    fn connect(&self) -> Option<&ConnectState>;
+    /// `ApprovalFlow::ai`: the AI explanation's state.
+    fn ai(&self) -> Option<&AiFlow>;
+}
+
+/// A card step's facts as the yw-app tests read them (2026-11-23, S4d final review: was a
+/// `#[doc(hidden)] pub` method).
+pub trait CardStepTestExt {
+    /// `CardStep::holds_approval`: the step still holds its `Approved` (a flag only).
+    fn holds_approval(&self) -> bool;
+}
+
+impl CardStepTestExt for CardStep {
+    fn holds_approval(&self) -> bool {
+        Self::holds_approval(self)
+    }
 }
 
 impl FlowTestExt for ApprovalFlow {
@@ -392,6 +1228,18 @@ impl FlowTestExt for ApprovalFlow {
 
     fn paint_test_facts(&self) -> (&PrepareState, InteractionStatus, bool) {
         Self::paint_test_facts(self)
+    }
+
+    fn lang(&self) -> Lang {
+        Self::lang(self)
+    }
+
+    fn connect(&self) -> Option<&ConnectState> {
+        Self::connect(self)
+    }
+
+    fn ai(&self) -> Option<&AiFlow> {
+        Self::ai(self)
     }
 }
 
@@ -501,12 +1349,9 @@ impl StoreProbe<'_> {
 // here makes a window, touches a file, the network, the clipboard or a card reader, and no
 // secret is kept: a display secret the model takes for a verified window is wiped at once.
 
-use std::collections::VecDeque;
-
-use crate::approval::flow::{ApprovalEffect, OpenOutcome};
+use crate::approval::flow::ApprovalEffect;
 use crate::cmd::Cmd;
-use crate::effect::{Effect, Folder};
-use crate::errors::ErrorCode;
+use crate::effect::Folder;
 use crate::secret::SecretEffect;
 use crate::wallet::DisplayCheck;
 

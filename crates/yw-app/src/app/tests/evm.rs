@@ -7,6 +7,7 @@
 //! the shared helper `app_evm::tests::record` (its `tests` module too). 2026-11-23 (S4d E1):
 //! `record` is a copy here (the inline module moved to yw-engine and is private again).
 
+use yw_engine::testkit::WalletTestExt;
 use yw_engine::wallet::app_evm::{SEND_DEBOUNCE_MS, SEND_QUICK_MS};
 use yw_engine::wallet::app_sol::ReviewBlocker;
 

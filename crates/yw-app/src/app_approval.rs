@@ -2788,7 +2788,7 @@ impl App {
 
     /// Rejects the open approval (as `거부` would).
     pub(crate) fn tour_reject_approval(&mut self) {
-        self.finish_approval(QueueOutcome::Rejected);
+        crate::app::test_steps::finish_approval(&mut self.wallet, QueueOutcome::Rejected);
     }
 
     /// The open window's AI panel state (spec/06), if it has one.

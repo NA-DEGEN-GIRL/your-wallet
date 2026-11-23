@@ -256,8 +256,7 @@ impl Wallet {
     /// `EN_CHANGE` of the card's fields: `text` is the field's text now (2026-11-18, S3 C3:
     /// from `Cmd::Edit`; before, a read of the edit by id); `false` when `field` is not one of
     /// them.
-    #[doc(hidden)]
-    pub fn on_explorer_edit(&mut self, field: EditField, text: &str) -> bool {
+    pub(crate) fn on_explorer_edit(&mut self, field: EditField, text: &str) -> bool {
         match field {
             EditField::ExplorerTx => text.clone_into(&mut self.explorer_ui.tx_text),
             EditField::ExplorerAddress => text.clone_into(&mut self.explorer_ui.address_text),
@@ -485,8 +484,7 @@ impl Wallet {
     }
 
     /// The explorer presses (2026-11-18, S3 C3: an `ExplorerPress`; before, the control id).
-    #[doc(hidden)]
-    pub fn on_explorer(&mut self, press: ExplorerPress) {
+    pub(crate) fn on_explorer(&mut self, press: ExplorerPress) {
         match press {
             ExplorerPress::Save => self.explorer_save_edit(),
             ExplorerPress::Cancel => self.explorer_cancel_edit(),

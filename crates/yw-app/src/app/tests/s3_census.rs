@@ -40,6 +40,7 @@ use crate::ui::{
 };
 use yw_engine::meta::Tab;
 use yw_engine::screen::SettingsSection;
+use yw_engine::testkit::WalletTestExt;
 use yw_engine::workers::rpc::RpcJob;
 
 const COMMANDS: &str = include_str!("s3_census/commands.txt");

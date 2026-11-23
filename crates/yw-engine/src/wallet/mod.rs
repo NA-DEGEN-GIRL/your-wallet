@@ -462,12 +462,10 @@ pub struct Banner {
 pub struct SettingsGuard {
     /// The settings in use were compared with the meta snapshot after an unlock in this process
     /// (or the snapshot was created). Until then the `yw-llm` worker never starts.
-    #[doc(hidden)]
-    pub verified: bool,
+    pub(crate) verified: bool,
     /// Save keys (`Wallet::save_settings`) written while no snapshot was available (locked, or
     /// before the meta loaded): taken over at the next check.
-    #[doc(hidden)]
-    pub saved_early: Vec<&'static str>,
+    pub(crate) saved_early: Vec<&'static str>,
     /// The file values that differ from the snapshot and are not used, until the user picks
     /// `파일 값 사용` or `되돌리기` (the settings in use hold the snapshot values meanwhile).
     pub pending: Option<Box<(Settings, Vec<crate::settings::Differing>)>>,
@@ -476,8 +474,7 @@ pub struct SettingsGuard {
     /// `vault.ywv` generation and last write time (Unix ms), read from the file header.
     pub vault_file: Option<(u64, u64)>,
     /// `(seen, found)`: the meta remembers a newer `vault.ywv` generation than the file has.
-    #[doc(hidden)]
-    pub rollback: Option<(u64, u64)>,
+    pub(crate) rollback: Option<(u64, u64)>,
 }
 
 /// What the shell read back from a display window it made (the D-4 hand-off,
@@ -532,8 +529,7 @@ pub struct Wallet {
     /// (2026-11-20, S4 P2: yw-engine `Services`, [`windows_services`] from [`App::with_clock`];
     /// before, `app_llm` and `app_walletconnect` built the `WinHTTP`, WebSocket and CNG values
     /// inline). A test that needs other services swaps this field.
-    #[doc(hidden)]
-    pub services: Services,
+    pub(crate) services: Services,
     pub(crate) background: bool,
     pub events: Option<Arc<crate::events::EventQueue>>,
     /// The time source of every `impl App` time read (2026-11-19, S4 B1a, spec/15 §11.4 S4;
@@ -627,8 +623,9 @@ pub struct Wallet {
     /// Handlers read it through [`Wallet::form_text`].
     pub form: FormState,
     /// The credential units captured with the press being handled (S3 B5), wiped when it ends.
-    #[doc(hidden)]
-    pub input: PressInput,
+    /// 2026-11-23 (S4d final review, A-15): crate-private again (E1 had it `#[doc(hidden)] pub`);
+    /// the press comes in with `Cmd::Press`, the tests swap it through `testkit`.
+    pub(crate) input: PressInput,
     pub evm: crate::wallet::app_evm::EvmUi,
     pub sol: crate::wallet::app_sol::SolUi,
     pub btc: crate::wallet::app_btc::BtcUi,
@@ -674,8 +671,7 @@ pub struct Wallet {
     secret_serial: u64,
     import: ImportFlow,
     challenge: Option<BackupChallenge>,
-    #[doc(hidden)]
-    pub idle: IdleTracker,
+    pub(crate) idle: IdleTracker,
     startup_load: bool,
     /// When [`Wallet::reads_due`] last started a balance read ahead of the timer.
     reads_due_ms: u64,
@@ -685,8 +681,10 @@ pub struct Wallet {
     /// borrow before the entry that emitted them returns (an answer `Cmd` goes back to the logic
     /// in the same drain). Empty between entries. Before P10 `emit` applied each effect at once;
     /// from P10b until 2026-11-21 (S4 W3, plan §3.4) the queue and `emit` were `App`'s.
-    #[doc(hidden)]
-    pub outbox: VecDeque<Effect>,
+    /// 2026-11-23 (S4d final review, A-15): crate-private again (E1 had it `#[doc(hidden)] pub`,
+    /// so any crate could rewrite the queue); the shell takes effects with `next_effect`, the
+    /// tests read it through `testkit::WalletTestExt::{outbox, take_outbox}`.
+    pub(crate) outbox: VecDeque<Effect>,
     /// The main window is hidden or minimized, as the shell last reported it
     /// (`Cmd::MainHidden`; 2026-11-21, S4 W3, critique B-10): the periodic balance, `HyperCore`
     /// and received-history reads pause while it is set. No main window (tests) is not hidden.
@@ -1298,8 +1296,7 @@ impl Wallet {
     /// `HyperCore` commands start their reads themselves. At most one early balance start per
     /// timer period — a held key (Ctrl+2 repeating) marks them due at the repeat rate, and
     /// the RPC worker runs jobs one after another; the tick starts what this leaves.
-    #[doc(hidden)]
-    pub fn reads_due(&mut self, now: u64) {
+    pub(crate) fn reads_due(&mut self, now: u64) {
         if now.saturating_sub(self.reads_due_ms) < u64::from(crate::screen::MAIN_TIMER_MS) {
             return;
         }
@@ -1630,8 +1627,7 @@ impl Wallet {
     }
 
     /// A `테스트` answer: its band, then the next queued test (one at a time).
-    #[doc(hidden)]
-    pub fn on_rpc_event(&mut self, network: NetworkId, message: String, ok: bool) {
+    pub(crate) fn on_rpc_event(&mut self, network: NetworkId, message: String, ok: bool) {
         self.set_rpc_message(
             network,
             message,
@@ -1660,8 +1656,7 @@ impl Wallet {
 
     /// What the open secret window is for (2026-11-20, S4 P7a1: the wallet's session; before,
     /// the window record's purpose — the session lasts exactly as long as that window).
-    #[doc(hidden)]
-    pub fn secret_purpose(&self) -> Option<Purpose> {
+    pub(crate) fn secret_purpose(&self) -> Option<Purpose> {
         self.secret_session.as_ref().map(SecretSession::purpose)
     }
 
@@ -1670,8 +1665,7 @@ impl Wallet {
     /// window). Nothing when no session is open. Before, `with_form` changed the window's form and
     /// invalidated the window here (whatever secret window was open — the same window, since the
     /// session and its window end together).
-    #[doc(hidden)]
-    pub fn secret_form(&mut self, op: SecretFormOp) {
+    pub(crate) fn secret_form(&mut self, op: SecretFormOp) {
         if let Some(serial) = self.secret_session.as_ref().map(SecretSession::serial) {
             self.emit(Effect::Secret(SecretEffect::Form { serial, op }));
         }
@@ -2358,8 +2352,7 @@ impl Wallet {
     /// and applied when the entry drains, so the window exists, or the banner is up, when the
     /// entry returns; before, applied at once (the inline executor), they were when this
     /// returned.
-    #[doc(hidden)]
-    pub fn open_input(&mut self, kind: SecretKind, purpose: Purpose, topmost: bool) {
+    pub(crate) fn open_input(&mut self, kind: SecretKind, purpose: Purpose, topmost: bool) {
         self.open_input_with(kind, purpose, topmost, None);
     }
 
@@ -2474,8 +2467,12 @@ impl Wallet {
     /// before the answer's banner and the S04 change; before P7b it was destroyed after them, at
     /// the end of this fn's match. It is still destroyed after the wipe, was never shown and never
     /// held the secret, so nothing reaches the screen either way.
-    #[doc(hidden)]
-    pub fn open_display(&mut self, kind: SecretKind, purpose: Purpose, display: DisplaySecret) {
+    pub(crate) fn open_display(
+        &mut self,
+        kind: SecretKind,
+        purpose: Purpose,
+        display: DisplaySecret,
+    ) {
         self.open_display_with(kind, purpose, display, None);
     }
 
@@ -2925,8 +2922,7 @@ impl Wallet {
 
     // ----- meta, settings, apikeys -------------------------------------------------------
 
-    #[doc(hidden)]
-    pub fn save_meta(&mut self) {
+    pub(crate) fn save_meta(&mut self) {
         // After a failed meta load nothing in memory may replace the sealed meta.
         if self.wait.meta_failed.is_some() {
             logging::warn("app", "meta.save_skipped", &[]);
@@ -3120,8 +3116,7 @@ impl Wallet {
 
     /// The check after the meta loaded (unlock): the settings snapshot (review M1, L15) and the
     /// remembered `vault.ywv` generation (review L17).
-    #[doc(hidden)]
-    pub fn verify_settings(&mut self) {
+    pub(crate) fn verify_settings(&mut self) {
         let Some(stored) = self
             .meta
             .as_ref()
@@ -3352,8 +3347,7 @@ impl Wallet {
     /// handler claims is still ignored). S3 D3: routed by `match field`; before, each family's
     /// handler was asked in turn until one claimed the field (they claim disjoint fields, so
     /// the order never mattered: test `edits_route_to_the_one_handler_that_claims_them`).
-    #[doc(hidden)]
-    pub fn on_field_edit(&mut self, field: EditField, text: &str) -> bool {
+    pub(crate) fn on_field_edit(&mut self, field: EditField, text: &str) -> bool {
         use EditField as F;
         match field {
             F::WcUri | F::WcFile | F::WcProject => self.on_wc_edit(field, text),
@@ -4071,8 +4065,7 @@ impl Wallet {
     /// [`Wallet::form_text_wiping`] instead, so it keeps no plain copy beyond `wc.uri_text`; before,
     /// this note said "S4: return `Zeroizing<String>` here, or add a `WcUri` reader".
     #[must_use]
-    #[doc(hidden)]
-    pub fn form_text(&self, field: EditField) -> Option<String> {
+    pub(crate) fn form_text(&self, field: EditField) -> Option<String> {
         self.form.text(field).map(str::to_owned)
     }
 
@@ -4392,8 +4385,12 @@ impl Wallet {
         self.refresh();
     }
 
-    #[doc(hidden)]
-    pub fn set_rpc_message(&mut self, network: NetworkId, message: String, state: TestState) {
+    pub(crate) fn set_rpc_message(
+        &mut self,
+        network: NetworkId,
+        message: String,
+        state: TestState,
+    ) {
         self.rpc_messages.retain(|(id, _, _)| *id != network);
         self.rpc_messages.push((network, message, state));
     }
