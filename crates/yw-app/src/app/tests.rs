@@ -8051,6 +8051,7 @@ fn w12_reads_its_card_counters_only_once_shown() {
     reason = "one scenario per seam rule, in order"
 )]
 fn display_secrets_move_only_into_verified_windows() {
+    use std::rc::Rc;
     use std::sync::Arc;
 
     use yw_core::secret::SecretString;
@@ -8066,37 +8067,56 @@ fn display_secrets_move_only_into_verified_windows() {
 
     /// A recording display host (2026-11-24, S5-1): its windows are verified unless `refuse` is
     /// set (then made but not verified, answered `refuse`); a secret moved in is counted and wiped
-    /// at once, never kept.
+    /// at once, never kept. 2026-11-24 (S5-1 review): its window logs its drop into `log`, after
+    /// the secret seam's operations logged before it (`display-dropped`), so the order of the wipe
+    /// and the window's destruction is seen.
     #[derive(Default)]
     struct Recording {
         made: u32,
         filled: u32,
         refuse: Option<OpenOutcome>,
+        log: Rc<RefCell<Vec<String>>>,
+    }
+
+    /// A model window: dropped, it logs the seam's operations so far, then `window-dropped`.
+    struct ModelWindow(Rc<RefCell<Vec<String>>>);
+
+    impl Drop for ModelWindow {
+        fn drop(&mut self) {
+            let mut log = self.0.borrow_mut();
+            log.extend(
+                secret_seam::take_log()
+                    .into_iter()
+                    .map(secret_seam::Op::name),
+            );
+            log.push("window-dropped".to_owned());
+        }
     }
 
     impl DisplayHost for Recording {
-        type Window = ();
+        type Window = ModelWindow;
 
         fn make(
             &mut self,
             _serial: u64,
             _kind: SecretKind,
             _lang: yw_core::lang::Lang,
-        ) -> DisplayMade<()> {
+        ) -> DisplayMade<ModelWindow> {
             self.made += 1;
+            let window = ModelWindow(Rc::clone(&self.log));
             match self.refuse {
                 Some(outcome) => DisplayMade::Unverified {
                     outcome,
-                    window: Some(()),
+                    window: Some(window),
                 },
-                None => DisplayMade::Verified(()),
+                None => DisplayMade::Verified(window),
             }
         }
 
         fn fill_and_show(
             &mut self,
             _serial: u64,
-            (): (),
+            window: ModelWindow,
             _kind: SecretKind,
             secret: DisplaySecret,
             _step: Option<SecretStep>,
@@ -8106,7 +8126,20 @@ fn display_secrets_move_only_into_verified_windows() {
         ) {
             self.filled += 1;
             drop(secret);
+            self.log.borrow_mut().push("filled".to_owned());
+            drop(window);
         }
+    }
+
+    /// What `host` logged, then the seam's operations logged after its last window's drop.
+    fn logged(host: &Recording) -> Vec<String> {
+        let mut log = std::mem::take(&mut *host.log.borrow_mut());
+        log.extend(
+            secret_seam::take_log()
+                .into_iter()
+                .map(secret_seam::Op::name),
+        );
+        log
     }
 
     let dir = temp_dir("secret-display-seam");
@@ -8156,7 +8189,7 @@ fn display_secrets_move_only_into_verified_windows() {
     // wiped); before, the test took it with `WalletTestExt::take_display_secret`, a `pub` way to
     // the secret that is gone.
     let lang = app.settings.language;
-    let moved = |app: &mut App, serial: u64| -> (u32, u32, OpenOutcome) {
+    let moved = |app: &mut App, serial: u64| -> (u32, u32, OpenOutcome, Vec<String>) {
         let mut host = Recording::default();
         let outcome = app.wallet.open_display_window(
             &mut host,
@@ -8166,7 +8199,7 @@ fn display_secrets_move_only_into_verified_windows() {
             None,
             lang,
         );
-        (host.made, host.filled, outcome)
+        (host.made, host.filled, outcome, logged(&host))
     };
     let serial = app.begin_secret(SecretKind::ShowKey, Purpose::ShowRevealed, false);
     app.hold_display_secret(display());
@@ -8174,15 +8207,33 @@ fn display_secrets_move_only_into_verified_windows() {
     let shown = OpenOutcome::Shown {
         capture_excluded: true,
     };
+    let none = Vec::<String>::new;
     assert_eq!(
         moved(&mut app, serial + 1),
-        (0, 0, refused),
+        (0, 0, refused, none()),
         "another serial"
     );
-    assert_eq!(moved(&mut app, serial), (1, 1, shown));
-    assert_eq!(moved(&mut app, serial), (1, 0, refused), "taken twice");
+    assert_eq!(
+        moved(&mut app, serial),
+        (
+            1,
+            1,
+            shown,
+            vec!["filled".to_owned(), "window-dropped".to_owned()]
+        )
+    );
+    // 2026-11-24 (S5-1 review): a verified window whose session holds no secret is dropped,
+    // and nothing is wiped (`display-dropped`) or filled.
+    assert_eq!(
+        moved(&mut app, serial),
+        (1, 0, refused, vec!["window-dropped".to_owned()]),
+        "taken twice"
+    );
     assert!(!app.holds_display_secret());
     // An unverified window wipes the held secret (before its window goes) and makes nothing.
+    // 2026-11-24 (S5-1 review): the wipe's probe note (`display-dropped`) is logged before the
+    // made window's drop (`window-dropped`); before, only the source check's exact text of
+    // `open_display_window` pinned that order (every test host's window was `()`).
     app.hold_display_secret(display());
     let mut unverified = Recording {
         refuse: Some(OpenOutcome::Failed(ErrorCode::App009)),
@@ -8201,7 +8252,8 @@ fn display_secrets_move_only_into_verified_windows() {
     );
     assert_eq!((unverified.made, unverified.filled), (1, 0));
     assert!(!app.holds_display_secret(), "dropped");
-    assert_eq!(ops(), ["display-dropped"]);
+    assert_eq!(logged(&unverified), ["display-dropped", "window-dropped"]);
+    assert!(ops().is_empty());
     // Once shown, a held secret is never handed out again.
     app.hold_display_secret(display());
     app.dispatch(Cmd::SecretOpened {
@@ -8210,7 +8262,11 @@ fn display_secrets_move_only_into_verified_windows() {
             capture_excluded: true,
         },
     });
-    assert_eq!(moved(&mut app, serial), (0, 0, refused), "a shown session");
+    assert_eq!(
+        moved(&mut app, serial),
+        (0, 0, refused, none()),
+        "a shown session"
+    );
     app.close_secret();
     app.drain();
     let _ = ops();
@@ -8257,7 +8313,12 @@ fn display_secrets_move_only_into_verified_windows() {
     );
     assert_eq!(
         moved(&mut app, serial),
-        (1, 1, shown),
+        (
+            1,
+            1,
+            shown,
+            vec!["filled".to_owned(), "window-dropped".to_owned()]
+        ),
         "still there to move"
     );
     app.close_secret();
@@ -8277,7 +8338,7 @@ fn display_secrets_move_only_into_verified_windows() {
     assert!(!app.holds_display_secret(), "the lock left the secret");
     assert_eq!(
         moved(&mut app, serial),
-        (0, 0, refused),
+        (0, 0, refused, none()),
         "the lock left the session"
     );
     let late = composed(&mut app, serial);

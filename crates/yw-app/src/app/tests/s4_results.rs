@@ -2789,52 +2789,93 @@ fn wallet_writes_and_self_calls_on_made_up_code() {
 /// 2026-11-24 (spec/15 §11.4 S5-1, §18 30 (나), 주인 결정(2026-11-23), critic C1): the secret
 /// reaches a shell only through `secret::DisplayHost::fill_and_show`, a call the wallet makes
 /// after the host's `make` reported the window verified, and never comes back as a value. Pinned
-/// here: (1) the crate-private take and drop are called only by `open_display_window` (and the
+/// here: (1) the crate-private take and drop are named only by `open_display_window` (and the
 /// drop's own take); (2) `open_display_window` makes, verifies, moves and shows in that order and
-/// nothing else of the host is called; (3) it is called only by `open_display_composed` in
-/// production and by testkit's `RecordingShell` once; (4) there is exactly one non-test
-/// `DisplayHost` impl outside yw-engine (`WinDisplayHost`, whose fields are shell state only) and
-/// in yw-engine only testkit's `RecordingShell`; (5) `DisplayMade::Verified(` is built in the
-/// shell only in `WinDisplayHost::make`'s `Show { warning: false }` arm on the created window;
-/// (6) its `fill_and_show` hands the secret only to the form and the form only to
-/// `show_secret_window`; (7) no `pub` fn or trait method of yw-engine (testkit included) returns
-/// a `DisplaySecret`. Before S5-1 the composition `display_window_handoff` called the engine's
-/// `pub` hand-off `hand_display_secret(serial, DisplayCheck::Verified)`, which returned the
-/// secret, and testkit's `WalletTestExt::take_display_secret` was a second `pub` way to it.
+/// nothing else of the host is called; (3)–(5) every occurrence of the names `DisplayHost`,
+/// `DisplayMade`, `open_display_window` and `WinDisplayHost` in production code stands at one of
+/// [`DISPLAY_SITES`] — so `open_display_window` is named in production only by
+/// `open_display_composed`, the one non-test `DisplayHost` impl outside yw-engine is
+/// `WinDisplayHost` (whose fields are shell state only), yw-engine's production code has none,
+/// and `DisplayMade` is built in the shell only in `WinDisplayHost::make` — and in testkit at one
+/// of [`TESTKIT_DISPLAY_SITES`] (`RecordingShell`, its one host and one open); `DisplayMade::
+/// Verified` is built in the shell only in `make`'s `Show { warning: false }` arm on the created
+/// window; none of these names is renamed (`as`); (6) its `fill_and_show` hands the secret only
+/// to the form and the form only to `show_secret_window`; (7) every item of yw-engine `src`
+/// (testkit and test modules included) whose signature, alias, field or head names
+/// `DisplaySecret` is one of [`DISPLAY_SECRET_ITEMS`]: no `pub` fn or trait method returns it, no
+/// alias names it, no signature takes it as `&mut`, and the one trait method a shell implements
+/// that is given it by value is `fill_and_show`. Before S5-1 the composition
+/// `display_window_handoff` called the engine's `pub` hand-off `hand_display_secret(serial,
+/// DisplayCheck::Verified)`, which returned the secret, and testkit's
+/// `WalletTestExt::take_display_secret` was a second `pub` way to it.
+///
+/// 2026-11-24 (S5-1 review): the rules count names ([`word_sites`]), not call shapes; before,
+/// they matched `.open_display_window(`, `DisplayHostfor` and `DisplayMade::Verified(` and
+/// listed the fns that return a `DisplaySecret`, so a production host behind `use … DisplayHost
+/// as Dh`, a `let v = DisplayMade::Verified; v(window)` and an `open_display_window::<H>(` call
+/// passed them all, as did a `pub type` alias of `DisplaySecret` or a `&mut Option<DisplaySecret>`
+/// out-parameter. The scanner is tried on made-up code ([`word_sites_on_made_up_code`]).
 #[expect(
     clippy::too_many_lines,
     reason = "seven rules of the display secret's one way, each with its count"
 )]
 fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
     let squeeze = |text: &str| -> String { text.split_whitespace().collect() };
-    // (1) The secret's move: only the wallet's `open_display_window` takes or drops it (and the
-    // drop takes it to wipe it). A call on any receiver counts (a method call `x.call(` or a path
-    // call `X::call(`; 2026-11-23, S4d E2 review).
-    let calls_it = |body: &str, call: &str| {
-        body.contains(&format!(".{call}")) || body.contains(&format!("::{call}"))
-    };
     let all = production_code();
-    let mut moves = 0;
-    for src in &all {
-        for (name, body) in fn_blocks(src) {
-            let body = normalized(body);
-            for call in ["take_display_secret(", "drop_display_secret("] {
-                if calls_it(&body, call) {
-                    moves += 1;
-                    assert!(
-                        name == "open_display_window"
-                            || (name == "drop_display_secret" && call == "take_display_secret("),
-                        "{}: fn {name} calls {call}",
-                        src.file
-                    );
-                }
-            }
-        }
-    }
+    let sites_of = |word: &str| -> Vec<String> {
+        all.iter()
+            .flat_map(|src| {
+                word_sites(&src.code, word)
+                    .into_iter()
+                    .map(move |site| format!("{}: {site}", src.file))
+            })
+            .collect()
+    };
+    let testkit_raw = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../yw-engine/src/testkit.rs"),
+    )
+    .unwrap();
+    let testkit = code_only(&testkit_raw);
+    // (1) The secret's move: only the wallet's `open_display_window` names the take or the drop
+    // (and the drop names the take, to wipe it; the take names the session's own take). By name:
+    // a call on any receiver, a path call, a fn value (2026-11-24, S5-1 review; before, a method
+    // or path call `x.call(`/`X::call(`, 2026-11-23, S4d E2 review).
     assert_eq!(
-        moves, 3,
-        "the open's take and drop, and the drop's take (wallet `open_display_window`)"
+        sites_of("take_display_secret"),
+        [
+            "yw-engine/src/wallet/mod.rs: fn take_display_secret",
+            "yw-engine/src/wallet/mod.rs: fn drop_display_secret",
+            "yw-engine/src/wallet/mod.rs: fn open_display_window",
+        ],
+        "the open's take and the drop's"
     );
+    assert_eq!(
+        sites_of("drop_display_secret"),
+        [
+            "yw-engine/src/wallet/mod.rs: fn drop_display_secret",
+            "yw-engine/src/wallet/mod.rs: fn open_display_window",
+        ],
+        "the open's drop"
+    );
+    assert_eq!(
+        sites_of("take_display"),
+        [
+            "yw-engine/src/wallet/mod.rs: fn take_display_secret",
+            "yw-engine/src/wallet/secret_session.rs: fn take_display",
+        ],
+        "the session's take, named by the wallet's take only"
+    );
+    for word in [
+        "take_display_secret",
+        "drop_display_secret",
+        "take_display",
+        "hand_display_secret",
+    ] {
+        assert!(
+            word_sites(&testkit, word).is_empty(),
+            "testkit names {word}"
+        );
+    }
     // (2) The wallet's order: the guard, the host's `make`, the take for a verified window only,
     // the clock, the host's `fill_and_show` with the secret by value; on an unverified window the
     // wipe, then the window's drop. No other host call.
@@ -2869,67 +2910,48 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
         1,
         "the secret goes to the host once"
     );
-    // (3) Its callers: the composition (production) and testkit's shell model once.
-    let callers: Vec<String> = all
+    // (3)–(5) The trait, its answer, the open and the Windows host, by name: every occurrence in
+    // production code (every scanned crate) and in testkit stands at a listed site, and none is
+    // renamed. A second host, a caller (a call in any form, a fn value) or a built `DisplayMade`
+    // anywhere else, an alias of one of these names or a `use` of them in another file is a new
+    // site.
+    let found: Vec<String> = DISPLAY_WORDS
         .iter()
-        .flat_map(|src| {
-            fn_blocks(src)
+        .flat_map(|word| {
+            sites_of(word)
                 .into_iter()
-                .filter(|(_, body)| calls_it(&normalized(body), "open_display_window("))
-                .map(move |(name, _)| format!("{}:{name}", src.file))
+                .map(move |site| format!("{word} @ {site}"))
         })
         .collect();
-    assert_eq!(callers, ["yw-app/src/app.rs:open_display_composed"]);
-    let testkit_raw = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../yw-engine/src/testkit.rs"),
-    )
-    .unwrap();
-    let testkit = normalized(&code_only(&testkit_raw));
-    let count = |pattern: &str| testkit.matches(pattern).count();
     assert_eq!(
-        (
-            count(".open_display_window("),
-            count("wallet.open_display_window(self, serial, kind, step, timeout_note, lang)"),
-            count("::open_display_window("),
-        ),
-        (1, 1, 0),
-        "testkit's shell model: one open, with itself as the host"
+        found, DISPLAY_SITES,
+        "the display open's names in production code"
     );
-    for call in [
-        "take_display_secret(",
-        "drop_display_secret(",
-        "hand_display_secret(",
-    ] {
-        assert_eq!(count(call), 0, "testkit names {call}");
-    }
-    // (4) The hosts: one non-test impl outside yw-engine, none in yw-engine's production code,
-    // and testkit's `RecordingShell` (test code, kept out of production by
-    // `testkit_is_named_only_by_tests`).
-    let impls: Vec<String> = all
+    let found: Vec<String> = DISPLAY_WORDS
         .iter()
-        .flat_map(|src| {
-            let code = squeeze(&src.code);
-            code.match_indices("DisplayHostfor")
-                .map(|(at, _)| {
-                    let rest = &code[at + "DisplayHostfor".len()..];
-                    let target: String = rest.chars().take_while(|&c| c != '{').collect();
-                    format!("{}:{target}", src.file)
-                })
-                .collect::<Vec<_>>()
+        .flat_map(|word| {
+            word_sites(&testkit, word)
+                .into_iter()
+                .map(move |site| format!("{word} @ {site}"))
         })
         .collect();
-    assert_eq!(impls, ["yw-app/src/app.rs:WinDisplayHost<'_>"]);
     assert_eq!(
-        squeeze(&code_only(&testkit_raw))
-            .matches("DisplayHostfor")
+        found, TESTKIT_DISPLAY_SITES,
+        "the display open's names in testkit"
+    );
+    assert_eq!(
+        normalized(&testkit)
+            .matches("wallet.open_display_window(self, serial, kind, step, timeout_note, lang)")
             .count(),
         1,
-        "testkit: one DisplayHost"
+        "testkit's shell model: its one open, with itself as the host"
     );
-    assert!(
-        squeeze(&code_only(&testkit_raw)).contains("implDisplayHostforRecordingShell{"),
-        "testkit's DisplayHost is RecordingShell"
-    );
+    for word in DISPLAY_WORDS.iter().chain(&["DisplaySecret"]) {
+        for src in &all {
+            assert_eq!(renames(&src.code, word), 0, "{}: {word} as", src.file);
+        }
+        assert_eq!(renames(&testkit, word), 0, "testkit: {word} as");
+    }
     let app = src_of(&all, "yw-app/src/app.rs");
     assert!(
         squeeze(&app.code).contains(
@@ -2938,24 +2960,8 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
         ),
         "WinDisplayHost borrows the shell's main window, weak self and window record only"
     );
-    // (5) `DisplayMade::Verified(` in the shell: only `WinDisplayHost::make`'s verified arm on
-    // the created window; in yw-engine's production code only `open_display_window`'s match.
-    let mut verified = Vec::new();
-    for src in &all {
-        for (name, body) in fn_blocks(src) {
-            let body = squeeze(body);
-            for _ in body.matches("DisplayMade::Verified(") {
-                verified.push(format!("{}:{name}", src.file));
-            }
-        }
-    }
-    assert_eq!(
-        verified,
-        [
-            "yw-app/src/app.rs:make",
-            "yw-engine/src/wallet/mod.rs:open_display_window"
-        ]
-    );
+    // (5) `DisplayMade::Verified` in the shell: only `WinDisplayHost::make`'s verified arm on the
+    // created window (the sites above put every `DisplayMade` of the shell in that `make`).
     let make = fn_blocks(app)
         .into_iter()
         .filter(|(name, _)| name == "make")
@@ -2967,6 +2973,12 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
             "(CaptureDecision::Show{warning:false},Ok(window))=>DisplayMade::Verified(window),"
         ),
         "the verified arm is Show without the warning on the created window"
+    );
+    assert_eq!(
+        make[0].matches("Verified").count(),
+        1,
+        "one verified arm: {}",
+        make[0]
     );
     // (6) The secret goes only into the form, and the form only into the window record.
     let fill = fn_blocks(app)
@@ -2983,10 +2995,11 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
         ],
         "WinDisplayHost::fill_and_show"
     );
-    // (7) No `pub` fn or trait method of yw-engine (every `src` file, testkit and test modules
-    // included) returns a `DisplaySecret`: each fn whose return type names it is `pub(crate)`.
+    // (7) Every item of yw-engine (every `src` file, testkit and test modules included) that names
+    // `DisplaySecret` outside a fn body and a `use` is listed: no `pub` way returns it, no alias
+    // or field hands it out, no signature takes it as `&mut`.
     let engine = Path::new(env!("CARGO_MANIFEST_DIR")).join("../yw-engine/src");
-    let mut returners = Vec::new();
+    let mut items = Vec::new();
     let mut stack = vec![engine.clone()];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).unwrap() {
@@ -2999,25 +3012,38 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
                 continue;
             }
             let code = code_only(&std::fs::read_to_string(&path).unwrap());
-            for (name, prefix) in display_secret_returners(&code) {
-                let rel = path
-                    .strip_prefix(&engine)
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                returners.push(format!("{rel}:{name}:{prefix}"));
+            let rel = path
+                .strip_prefix(&engine)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            assert_eq!(
+                renames(&code, "DisplaySecret"),
+                0,
+                "{rel}: DisplaySecret as"
+            );
+            for item in display_secret_items(&code) {
+                items.push(format!("{rel}: {item}"));
             }
         }
     }
-    returners.sort();
+    items.sort();
     assert_eq!(
-        returners,
-        [
-            "wallet/mod.rs:take_display_secret:pub(crate)",
-            "wallet/secret_session.rs:take_display:pub(crate)",
-        ],
-        "every fn that returns a DisplaySecret is crate-private"
+        items, DISPLAY_SECRET_ITEMS,
+        "the items of yw-engine that name a DisplaySecret"
     );
+    for item in DISPLAY_SECRET_ITEMS {
+        let (_, site) = item.split_once(": ").unwrap_or_default();
+        assert!(!site.contains("&mut"), "{item}: a &mut DisplaySecret");
+        assert!(
+            !site.ends_with(" returns") || site.starts_with("pub(crate) "),
+            "{item}: returns a DisplaySecret and is not crate-private"
+        );
+        assert!(
+            !site.starts_with("pub ") && !site.contains("type "),
+            "{item}: a pub item or an alias"
+        );
+    }
     // The composition: only `App::drain` calls it.
     let effects = src_of(files, "yw-app/src/app_effects.rs");
     let drain = fn_bodies(effects, "drain");
@@ -3028,66 +3054,322 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
             && drain.contains("effect=>self.apply(effect),"),
         "the drain hands a display open to the composition: {drain}"
     );
-    let callers = files
-        .iter()
-        .flat_map(|src| {
-            fn_blocks(src)
-                .into_iter()
-                .map(move |(name, body)| (src, name, body))
-        })
-        .filter(|(_, _, body)| body.contains("self.open_display_composed("))
-        .map(|(src, name, _)| format!("{}:{name}", src.file))
-        .collect::<Vec<_>>();
-    assert_eq!(callers, ["yw-app/src/app_effects.rs:drain"]);
+    assert_eq!(
+        sites_of("open_display_composed"),
+        [
+            "yw-app/src/app.rs: fn open_display_composed",
+            "yw-app/src/app_effects.rs: fn drain",
+        ],
+        "only the drain names the composition"
+    );
 }
 
-/// The fns of `code` (comments and literals blanked) whose return type names `DisplaySecret`, as
-/// (name, the words before `fn` on its line: its visibility) (2026-11-24, S5-1). A trait method
-/// has no visibility word, so it never passes as `pub(crate)`.
-fn display_secret_returners(code: &str) -> Vec<(String, String)> {
-    let bytes = code.as_bytes();
-    let mut found = Vec::new();
-    for (at, _) in code.match_indices("fn ") {
-        if at > 0 && is_ident(bytes[at - 1]) {
+/// The names of the display open that [`the_display_secret_moves_only_in_the_composition`]
+/// counts (2026-11-24, S5-1 review).
+const DISPLAY_WORDS: [&str; 4] = [
+    "DisplayHost",
+    "DisplayMade",
+    "open_display_window",
+    "WinDisplayHost",
+];
+
+/// Every occurrence of [`DISPLAY_WORDS`] in production code, as `word @ file: site`
+/// ([`word_sites`]; 2026-11-24, S5-1 review): the `use` lines of the shell's `app.rs` and the
+/// wallet; the trait and its answer; the wallet's open; the Windows host's struct, impl header and
+/// `make` (its signature and its four arms); the composition's one open, with that host.
+const DISPLAY_SITES: [&str; 21] = [
+    "DisplayHost @ yw-app/src/app.rs: use yw_engine::secret::{DisplayHost,DisplayMade,DisplaySecret,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
+    "DisplayHost @ yw-app/src/app.rs: item implDisplayHostforWinDisplayHost<'_>{",
+    "DisplayHost @ yw-engine/src/secret/mod.rs: item pubtraitDisplayHost{",
+    "DisplayHost @ yw-engine/src/wallet/mod.rs: use crate::secret::{DisplayHost,DisplayMade,DisplaySecret,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
+    "DisplayHost @ yw-engine/src/wallet/mod.rs: fn open_display_window",
+    "DisplayMade @ yw-app/src/app.rs: use yw_engine::secret::{DisplayHost,DisplayMade,DisplaySecret,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
+    "DisplayMade @ yw-app/src/app.rs: fn make",
+    "DisplayMade @ yw-app/src/app.rs: fn make",
+    "DisplayMade @ yw-app/src/app.rs: fn make",
+    "DisplayMade @ yw-app/src/app.rs: fn make",
+    "DisplayMade @ yw-app/src/app.rs: fn make",
+    "DisplayMade @ yw-engine/src/secret/mod.rs: item pubenumDisplayMade<W>{",
+    "DisplayMade @ yw-engine/src/secret/mod.rs: fn make",
+    "DisplayMade @ yw-engine/src/wallet/mod.rs: use crate::secret::{DisplayHost,DisplayMade,DisplaySecret,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
+    "DisplayMade @ yw-engine/src/wallet/mod.rs: fn open_display_window",
+    "DisplayMade @ yw-engine/src/wallet/mod.rs: fn open_display_window",
+    "open_display_window @ yw-app/src/app.rs: fn open_display_composed",
+    "open_display_window @ yw-engine/src/wallet/mod.rs: fn open_display_window",
+    "WinDisplayHost @ yw-app/src/app.rs: fn open_display_composed",
+    "WinDisplayHost @ yw-app/src/app.rs: item structWinDisplayHost<'a>{",
+    "WinDisplayHost @ yw-app/src/app.rs: item implDisplayHostforWinDisplayHost<'_>{",
+];
+
+/// The same in testkit (always compiled, kept out of production by
+/// `testkit_is_named_only_by_tests`): its `use` line, `RecordingShell::apply`'s one open with
+/// itself as the host, and its `DisplayHost` impl (2026-11-24, S5-1 review).
+const TESTKIT_DISPLAY_SITES: [&str; 6] = [
+    "DisplayHost @ use crate::secret::{DisplayHost,DisplayMade,SecretEffect,SecretStep}",
+    "DisplayHost @ item implDisplayHostforRecordingShell{",
+    "DisplayMade @ use crate::secret::{DisplayHost,DisplayMade,SecretEffect,SecretStep}",
+    "DisplayMade @ fn make",
+    "DisplayMade @ fn make",
+    "open_display_window @ fn apply",
+];
+
+/// Every item of yw-engine `src` that names `DisplaySecret` outside a fn body and a `use`, as
+/// `file: site` ([`display_secret_items`]; 2026-11-24, S5-1 review): the type and its `Debug`;
+/// the secret session's private field; the crate-private take and hold of the session and the
+/// wallet; the wallet's crate-private opens, which take a secret in; the trait method
+/// `DisplayHost::fill_and_show`, which a shell implements and the wallet gives the secret to by
+/// value (and testkit's `RecordingShell`'s impl of it); testkit's test steps that give a test's
+/// own secret to the wallet (`WalletTestExt::hold_display_secret`, `open_display`).
+const DISPLAY_SECRET_ITEMS: [&str; 15] = [
+    "secret/mod.rs: fn fill_and_show takes secret:DisplaySecret",
+    "secret/mod.rs: item implcore::fmt::DebugforDisplaySecret{",
+    "secret/mod.rs: item pubstructDisplaySecret{",
+    "testkit.rs: fn fill_and_show takes secret:DisplaySecret",
+    "testkit.rs: fn hold_display_secret takes display:DisplaySecret",
+    "testkit.rs: fn hold_display_secret takes display:DisplaySecret",
+    "testkit.rs: fn open_display takes display:DisplaySecret",
+    "testkit.rs: fn open_display takes display:DisplaySecret",
+    "wallet/mod.rs: fn open_display_with takes display:DisplaySecret",
+    "wallet/mod.rs: pub(crate) fn open_display takes display:DisplaySecret",
+    "wallet/mod.rs: pub(crate) fn open_display_then takes display:DisplaySecret",
+    "wallet/mod.rs: pub(crate) fn take_display_secret returns",
+    "wallet/secret_session.rs: item display:Option<DisplaySecret>,",
+    "wallet/secret_session.rs: pub(crate) fn hold_display takes display:DisplaySecret",
+    "wallet/secret_session.rs: pub(crate) fn take_display returns",
+];
+
+/// Where each occurrence of the name `word` stands in `code` (comments and literals blanked), in
+/// order (2026-11-24, S5-1 review): `use <the statement>` in a `use` statement, `fn <name>` in a
+/// fn's signature or body (the innermost fn), else `item <its line>` (whitespace removed in
+/// both). By name, not by call shape: a turbofish call `f::<H>(`, a fn value
+/// `let v = DisplayMade::Verified;`, a rename `use … as` or an alias names it too.
+fn word_sites(code: &str, word: &str) -> Vec<String> {
+    let squeeze = |text: &str| -> String { text.split_whitespace().collect() };
+    let uses: Vec<(usize, usize)> = code
+        .match_indices("use ")
+        .filter(|&(at, _)| at == 0 || !is_ident(code.as_bytes()[at - 1]))
+        .map(|(at, _)| (at, code[at..].find(';').map_or(code.len(), |n| at + n)))
+        .collect();
+    let spans = fn_spans(code);
+    let mut sites = Vec::new();
+    for (at, token) in ident_tokens(code) {
+        if token != word {
             continue;
         }
-        let rest = &code[at..];
-        let end = rest.find(['{', ';']).unwrap_or(rest.len());
-        let Some((_, returns)) = rest[..end].split_once("->") else {
+        if let Some(&(start, end)) = uses.iter().find(|&&(start, end)| start <= at && at < end) {
+            sites.push(format!("use {}", squeeze(&code[start + "use".len()..end])));
+        } else if let Some(span) = spans
+            .iter()
+            .filter(|span| span.start <= at && at <= span.end)
+            .max_by_key(|span| span.start)
+        {
+            sites.push(format!("fn {}", span.name));
+        } else {
+            let start = code[..at].rfind('\n').map_or(0, |n| n + 1);
+            let end = code[at..].find('\n').map_or(code.len(), |n| at + n);
+            sites.push(format!("item {}", squeeze(&code[start..end])));
+        }
+    }
+    sites
+}
+
+/// How many times `code` renames the name `word` (`word as …`, 2026-11-24, S5-1 review).
+fn renames(code: &str, word: &str) -> usize {
+    ident_tokens(code)
+        .into_iter()
+        .filter(|&(at, token)| {
+            token == word && starts_with_word(code[at + word.len()..].trim_start(), "as")
+        })
+        .count()
+}
+
+/// One `fn` of a source: its name, where `fn` stands, where its signature ends (the body's `{`
+/// or the `;` of a declaration) and where it ends.
+struct FnSpan {
+    name: String,
+    start: usize,
+    open: usize,
+    end: usize,
+}
+
+/// Every `fn` item of `code` (comments and literals blanked; not a `fn(…)` pointer type)
+/// (2026-11-24, S5-1 review).
+fn fn_spans(code: &str) -> Vec<FnSpan> {
+    let bytes = code.as_bytes();
+    let tokens = ident_tokens(code);
+    let mut spans = Vec::new();
+    for (index, &(at, token)) in tokens.iter().enumerate() {
+        if token != "fn" {
+            continue;
+        }
+        let Some(&(name_at, name)) = tokens.get(index + 1) else {
             continue;
         };
-        if !returns.contains("DisplaySecret") {
+        if !code[at + "fn".len()..name_at].trim().is_empty() {
             continue;
         }
-        let name: String = rest["fn ".len()..]
-            .chars()
-            .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
-            .collect();
-        let line = code[..at].rfind('\n').map_or(0, |n| n + 1);
-        let prefix = code[line..at]
-            .trim()
-            .trim_end_matches("const")
-            .trim()
-            .to_owned();
-        found.push((name, prefix));
+        let mut depth = 0_i32;
+        let mut stop = None;
+        for (offset, &byte) in bytes.iter().enumerate().skip(name_at) {
+            match byte {
+                b'(' | b'[' => depth += 1,
+                b')' | b']' => depth -= 1,
+                b'{' | b';' if depth == 0 => {
+                    stop = Some(offset);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let Some(open) = stop else {
+            continue;
+        };
+        let end = if bytes[open] == b'{' {
+            close_of(bytes, open)
+        } else {
+            open
+        };
+        spans.push(FnSpan {
+            name: name.to_owned(),
+            start: at,
+            open,
+            end,
+        });
     }
-    found
+    spans
 }
 
-/// [`display_secret_returners`] on made-up code: it finds `pub`, trait and crate-private ones.
+/// The items of `code` (comments and literals blanked) that name `DisplaySecret` outside a fn
+/// body and a `use` statement, in order (2026-11-24, S5-1 review; before, the fns whose return
+/// type names it): `<visibility> fn <name> returns` for a return type, `<visibility> fn <name>
+/// takes <the parameter>` for a parameter (whitespace removed; the visibility is the words
+/// before `fn` on its line, none for a trait method), else `item <its line>` (whitespace removed:
+/// a type, an impl, a field, an alias, a bound).
+fn display_secret_items(code: &str) -> Vec<String> {
+    const WORD: &str = "DisplaySecret";
+    let squeeze = |text: &str| -> String { text.split_whitespace().collect() };
+    let bytes = code.as_bytes();
+    let uses: Vec<(usize, usize)> = code
+        .match_indices("use ")
+        .filter(|&(at, _)| at == 0 || !is_ident(bytes[at - 1]))
+        .map(|(at, _)| (at, code[at..].find(';').map_or(code.len(), |n| at + n)))
+        .collect();
+    let spans = fn_spans(code);
+    let mut items = Vec::new();
+    for (at, token) in ident_tokens(code) {
+        if token != WORD || uses.iter().any(|&(start, end)| start <= at && at < end) {
+            continue;
+        }
+        let span = spans
+            .iter()
+            .filter(|span| span.start <= at && at <= span.end)
+            .max_by_key(|span| span.start);
+        match span {
+            // In a fn's body: built or held there, not handed out by its signature.
+            Some(span) if at > span.open => {}
+            Some(span) => {
+                let line = code[..span.start].rfind('\n').map_or(0, |n| n + 1);
+                let visibility = code[line..span.start].trim();
+                let visibility = if visibility.is_empty() {
+                    String::new()
+                } else {
+                    format!("{visibility} ")
+                };
+                if code[span.start..at].contains("->") {
+                    items.push(format!("{visibility}fn {} returns", span.name));
+                } else {
+                    // The parameter: back to its `(` or `,`, on to its `,` or `)`.
+                    let mut depth = 0_i32;
+                    let mut start = at;
+                    while start > span.start {
+                        match bytes[start - 1] {
+                            b')' | b']' => depth += 1,
+                            b'(' | b'[' | b',' if depth == 0 => break,
+                            b'(' | b'[' => depth -= 1,
+                            _ => {}
+                        }
+                        start -= 1;
+                    }
+                    let mut depth = 0_i32;
+                    let mut end = at;
+                    while end < span.open {
+                        match bytes[end] {
+                            b'(' | b'[' => depth += 1,
+                            b')' | b']' | b',' if depth == 0 => break,
+                            b')' | b']' => depth -= 1,
+                            _ => {}
+                        }
+                        end += 1;
+                    }
+                    items.push(format!(
+                        "{visibility}fn {} takes {}",
+                        span.name,
+                        squeeze(&code[start..end])
+                    ));
+                }
+            }
+            None => {
+                let start = code[..at].rfind('\n').map_or(0, |n| n + 1);
+                let end = code[at..].find('\n').map_or(code.len(), |n| at + n);
+                items.push(format!("item {}", squeeze(&code[start..end])));
+            }
+        }
+    }
+    items
+}
+
+/// [`word_sites`], [`renames`] and [`display_secret_items`] on made-up code: they find a
+/// renamed trait, a fn value, a turbofish call, an alias and an out-parameter (2026-11-24, S5-1
+/// review: the forms that passed the call-shape rules before).
 #[test]
-fn display_secret_returners_on_made_up_code() {
+fn word_sites_on_made_up_code() {
+    let evil = "use yw_engine::secret::DisplayHost as Dh;\n\
+                impl Dh for EvilHost {\n\
+                    fn make(&mut self) -> Made {\n\
+                        let v = DisplayMade::Verified;\n\
+                        v(())\n\
+                    }\n\
+                }\n\
+                fn evil_take(app: &mut App) {\n\
+                    app.wallet.open_display_window::<EvilHost>(&mut h, 1);\n\
+                    let f = Wallet::open_display_window;\n\
+                }\n";
     assert_eq!(
-        display_secret_returners(
+        word_sites(evil, "DisplayHost"),
+        ["use yw_engine::secret::DisplayHostasDh"]
+    );
+    assert_eq!(renames(evil, "DisplayHost"), 1);
+    assert_eq!(renames(evil, "DisplayMade"), 0);
+    assert_eq!(word_sites(evil, "DisplayMade"), ["fn make"]);
+    assert_eq!(
+        word_sites(evil, "open_display_window"),
+        ["fn evil_take", "fn evil_take"]
+    );
+    assert_eq!(
+        word_sites(
+            "pub struct H<'a> { w: &'a DisplayHost }\nfn p(f: fn(u8) -> u8) { DisplayHost }",
+            "DisplayHost"
+        ),
+        ["item pubstructH<'a>{w:&'aDisplayHost}", "fn p"]
+    );
+    assert_eq!(
+        display_secret_items(
             "pub fn a() -> DisplaySecret { x }\n    pub(crate) const fn b(&self) -> \
              Option<DisplaySecret> { x }\n    fn c(&mut self) -> Option<&DisplaySecret>;\n\
-             fn d(s: DisplaySecret) -> u8 { 0 }\n pub fn e() -> Vec<DisplaySecret> { v }"
+             fn d(s: DisplaySecret, n: u8) -> u8 { let k: DisplaySecret = s; 0 }\n\
+             pub fn e(out: &mut Option<DisplaySecret>) {}\n\
+             pub type Leak = DisplaySecret;\n\
+             pub fn f(g: impl FnOnce(DisplaySecret)) {}\n\
+             use crate::secret::DisplaySecret;\n"
         ),
         [
-            ("a".to_owned(), "pub".to_owned()),
-            ("b".to_owned(), "pub(crate)".to_owned()),
-            ("c".to_owned(), String::new()),
-            ("e".to_owned(), "pub".to_owned()),
+            "pub fn a returns",
+            "pub(crate) const fn b returns",
+            "fn c returns",
+            "fn d takes s:DisplaySecret",
+            "pub fn e takes out:&mutOption<DisplaySecret>",
+            "item pubtypeLeak=DisplaySecret;",
+            "pub fn f takes DisplaySecret",
         ]
     );
 }
@@ -3388,7 +3670,31 @@ fn wallet_chains(body: &str) -> Vec<(Vec<String>, bool)> {
             names.push(text[start..stop].to_owned());
             end = stop;
         }
-        let called = text[end..].trim_start().starts_with('(');
+        // 2026-11-24 (S5-1 review): a turbofish call `self.wallet.f::<H>(` is a call too;
+        // before, only `(` right after the name counted, so it passed as no call at all.
+        let mut rest = text[end..].trim_start();
+        if let Some(generics) = rest.strip_prefix("::").map(str::trim_start)
+            && generics.starts_with('<')
+        {
+            let mut depth = 0_i32;
+            let mut close = generics.len();
+            for (at, byte) in generics.bytes().enumerate() {
+                match byte {
+                    b'<' => depth += 1,
+                    b'>' if at > 0 && generics.as_bytes()[at - 1] == b'-' => {}
+                    b'>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = at + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            rest = generics[close..].trim_start();
+        }
+        let called = rest.starts_with('(');
         found.push((names, called));
     }
     found
@@ -3529,6 +3835,23 @@ fn wallet_chains_on_made_up_code() {
             ),
             (vec!["idle".to_owned(), "input".to_owned()], true),
         ]
+    );
+    // 2026-11-24 (S5-1 review): a turbofish call is a call; a fn value given the whole wallet
+    // is the whole wallet ([`whole_wallet`]).
+    assert_eq!(
+        wallet_chains(
+            "{ self.wallet.open_display_window::<EvilHost>(&mut h, 1); \
+             self.wallet.f :: < Vec<Box<dyn Fn() -> u8>> > (x); self.wallet.g::<u8>; }"
+        ),
+        [
+            (vec!["open_display_window".to_owned()], true),
+            (vec!["f".to_owned()], true),
+            (vec!["g".to_owned()], false),
+        ]
+    );
+    assert_eq!(
+        whole_wallet("{ let f = Wallet::open_display_window; f(&mut self.wallet, &mut h); }"),
+        ["self.wallet"]
     );
 }
 
