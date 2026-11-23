@@ -2767,6 +2767,13 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
     // 2026-11-23 (S4d E1, preflight O-3): the shell's composition calls the engine's hand-off
     // `hand_display_secret` (a verified window's take, any other's drop), which alone calls the
     // crate-private take and drop (before, the composition called those two itself).
+    // 2026-11-23 (S4d E2 review): a call on any receiver counts (a method call `x.call(` or a
+    // path call `X::call(`); before, only `self.`/`self.wallet.`, so a call through a local
+    // binding (`let w = &mut self.wallet; w.hand_display_secret(..)`) was not seen. The one
+    // exception is testkit's test-only shell model, checked below.
+    let calls_it = |body: &str, call: &str| {
+        body.contains(&format!(".{call}")) || body.contains(&format!("::{call}"))
+    };
     let mut handoffs = 0;
     for src in files {
         for (name, body) in fn_blocks(src) {
@@ -2776,7 +2783,7 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
                 "drop_display_secret(",
                 "hand_display_secret(",
             ] {
-                if body.contains(&format!("self.{call}")) {
+                if calls_it(&body, call) {
                     handoffs += 1;
                     assert!(
                         (name == "display_window_handoff" && call == "hand_display_secret(")
@@ -2794,6 +2801,40 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
     assert_eq!(
         handoffs, 4,
         "the composition's hand-off, the hand-off's take and drop, and the drop's take"
+    );
+    // The named exception (2026-11-23, S4d E2 review): `yw_engine::testkit` (test code, not in
+    // `files`; `testkit_is_named_only_by_tests` keeps it out of production) calls the hand-off
+    // once, in its shell model with `Verified` for a window it made, and wipes the secret at
+    // once; and its `WalletTestExt` wraps the crate-private take once for the engine's tests.
+    let testkit = normalized(&code_only(
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../yw-engine/src/testkit.rs"),
+        )
+        .unwrap(),
+    ));
+    let count = |pattern: &str| testkit.matches(pattern).count();
+    assert_eq!(
+        (
+            count(".hand_display_secret("),
+            count(".hand_display_secret(serial, DisplayCheck::Verified)"),
+            count("::hand_display_secret("),
+        ),
+        (1, 1, 0),
+        "testkit's model: one verified hand-off"
+    );
+    assert_eq!(
+        (
+            count(".take_display_secret("),
+            count("Self::take_display_secret(self, serial)"),
+            count("::take_display_secret("),
+        ),
+        (0, 1, 1),
+        "testkit: the test extension's one wrapper of the take"
+    );
+    assert_eq!(
+        count("drop_display_secret("),
+        0,
+        "testkit drops no display secret itself"
     );
     let effects = src_of(files, "yw-app/src/app_effects.rs");
     let drain = fn_bodies(effects, "drain");

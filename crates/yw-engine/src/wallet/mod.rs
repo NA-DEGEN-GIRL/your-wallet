@@ -2559,6 +2559,12 @@ impl Wallet {
     /// composition `display_window_handoff` calls it, right after its own read-back, is the
     /// source check `the_display_secret_moves_only_in_the_composition`; the behaviour is pinned
     /// by the `s4_secret` goldens.
+    ///
+    /// 2026-11-23 (S4d E2 review): one other caller, test-only: the shell model of
+    /// `testkit::RecordingShell` (S4d E2) takes the secret with `Verified` for a window it made
+    /// for the open, unshown session and wipes it at once; `testkit_is_named_only_by_tests`
+    /// keeps testkit out of production, and the source check names it as its one exception
+    /// (any receiver, not only `self.`).
     #[must_use]
     pub fn hand_display_secret(
         &mut self,

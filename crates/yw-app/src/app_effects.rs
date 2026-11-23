@@ -674,4 +674,59 @@ pub(crate) mod deferred {
         keep(false);
         settle(app);
     }
+
+    /// The check of a line a deferred-difference table lists (2026-11-23, S4d E2 review; plan
+    /// stop rule 9): the deferred run's `generated` line differs from the golden's `committed`
+    /// line only in its column `column` (the one ` | ` field that starts with `column` and a
+    /// space), which is the table's `expected` byte for byte and the committed column's `,` items
+    /// reordered (the same multiset); every other column, the state columns, is the golden's
+    /// byte for byte. `None` when that holds; else what does not. Before this review a listed
+    /// line was checked only to differ, so a final-state change on it would have passed.
+    pub(crate) fn listed_difference(
+        generated: &str,
+        committed: &str,
+        column: &str,
+        expected: &str,
+    ) -> Option<String> {
+        if generated == committed {
+            return Some("listed but no longer differs".to_owned());
+        }
+        let generated: Vec<&str> = generated.split(" | ").collect();
+        let committed: Vec<&str> = committed.split(" | ").collect();
+        if generated.len() != committed.len() {
+            return Some("not the golden's columns".to_owned());
+        }
+        let prefix = format!("{column} ");
+        let items = |field: &str| {
+            let mut items: Vec<String> = field
+                .strip_prefix(&prefix)
+                .unwrap_or_default()
+                .split(',')
+                .map(str::to_owned)
+                .collect();
+            items.sort();
+            items
+        };
+        let mut seen = 0;
+        for (generated, committed) in generated.iter().zip(&committed) {
+            if committed.starts_with(&prefix) {
+                seen += 1;
+                if *generated != expected {
+                    return Some(format!(
+                        "column `{column}` is not the listed one: {generated}"
+                    ));
+                }
+                if items(generated) != items(committed) {
+                    return Some(format!(
+                        "column `{column}` is not the golden's reordered: {generated} / {committed}"
+                    ));
+                }
+            } else if generated != committed {
+                return Some(format!(
+                    "a column other than `{column}` differs: {generated} / {committed}"
+                ));
+            }
+        }
+        (seen != 1).then(|| format!("{seen} columns `{column}`"))
+    }
 }

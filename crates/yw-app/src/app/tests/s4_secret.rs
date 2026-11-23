@@ -612,13 +612,18 @@ fn secret_sessions_run_headless() {
     }
 }
 
-/// The lines of a deferred run that differ from the secret goldens, as `(scenario, step, reason)`
-/// (2026-11-23, S4d E2; plan §3.7, D-25, stop rule 9). Every other line is the golden's byte for
-/// byte; a listed line must differ (the list stays exact).
+/// The lines of a deferred run that differ from the secret goldens, as `(scenario, step, column,
+/// the deferred column, reason)` (2026-11-23, S4d E2; plan §3.7, D-25, stop rule 9). Every other
+/// line is the golden's byte for byte; a listed line must differ, and (2026-11-23, S4d E2
+/// review; before, it was checked only to differ) only in its named column, which is the listed
+/// text byte for byte and the golden's items reordered, every other column equal
+/// (`deferred::listed_difference`).
 #[cfg(debug_assertions)]
-const SECRET_DEFERRED_DIFFERENCES: [(&str, &str, &str); 1] = [(
+const SECRET_DEFERRED_DIFFERENCES: [(&str, &str, &str, &str, &str); 1] = [(
     "lock_end_session",
     "lock",
+    "ops",
+    "ops wait:shutdown:5000,close:W06:left=0,clear-clip:exit,approval-close:shown",
     "the order of the ops log only (the line's state columns are the golden's): \
      `App::shutdown`, the Windows shell's composition, drains the lock's effects (the secret \
      close, the clip clear at exit, the approval close) before its own 5 s wait for the key \
@@ -660,8 +665,8 @@ fn record_headless_deferred(table: &[(&str, Scenario)]) -> (String, Vec<String>,
 }
 
 /// The lines of `generated` that differ from `committed` and are not listed in
-/// [`SECRET_DEFERRED_DIFFERENCES`], and the listed ones that no longer differ (both must be
-/// empty); the two texts must have the same scenarios and steps, line for line.
+/// [`SECRET_DEFERRED_DIFFERENCES`], and the listed ones that no longer differ or differ in more
+/// than their listed column (both must be empty); the two texts must have the same scenarios and steps, line for line.
 #[cfg(debug_assertions)]
 fn deferred_findings(what: &str, generated: &str, committed: &str) -> Vec<String> {
     let head = |line: &str| line.split(" | ").next().unwrap_or_default().to_owned();
@@ -678,18 +683,68 @@ fn deferred_findings(what: &str, generated: &str, committed: &str) -> Vec<String
         let line_head = head(generated);
         let listed = SECRET_DEFERRED_DIFFERENCES
             .iter()
-            .any(|(scenario, step, _)| line_head == format!("{scenario} {step}"));
-        if listed && generated == committed {
-            findings.push(format!(
-                "{what}: {line_head} is listed but no longer differs"
-            ));
-        } else if !listed && generated != committed {
+            .find(|(scenario, step, ..)| line_head == format!("{scenario} {step}"));
+        if let Some((_, _, column, expected, _)) = listed {
+            if let Some(finding) = crate::app_effects::deferred::listed_difference(
+                generated, committed, column, expected,
+            ) {
+                findings.push(format!("{what}: {line_head}: {finding}"));
+            }
+        } else if generated != committed {
             findings.push(format!(
                 "{what}: not listed:\n  generated: {generated}\n  committed: {committed}"
             ));
         }
     }
     findings
+}
+
+/// The listed-line check of the deferred runs passes only the listed column's reorder and refuses
+/// every other difference (2026-11-23, S4d E2 review; critique A-20: a check that cannot fail
+/// proves nothing).
+#[test]
+fn the_listed_line_check_refuses_every_other_difference() {
+    use crate::app_effects::deferred::listed_difference;
+    let golden = "s lock | t=+0 | ops a,b,c | key Lock | mode Locked";
+    let listed = "ops c,a,b";
+    assert_eq!(
+        listed_difference(
+            "s lock | t=+0 | ops c,a,b | key Lock | mode Locked",
+            golden,
+            "ops",
+            listed
+        ),
+        None
+    );
+    for generated in [
+        // No longer differs.
+        golden,
+        // A state column changed with the listed reorder.
+        "s lock | t=+0 | ops c,a,b | key - | mode Locked",
+        "s lock | t=+0 | ops c,a,b | key Lock | mode Unlocked",
+        // Another reorder than the listed one.
+        "s lock | t=+0 | ops b,a,c | key Lock | mode Locked",
+        // An item lost or added.
+        "s lock | t=+0 | ops c,a | key Lock | mode Locked",
+        "s lock | t=+0 | ops c,a,b,d | key Lock | mode Locked",
+        // A column more.
+        "s lock | t=+0 | ops c,a,b | key Lock | mode Locked | x",
+    ] {
+        assert!(
+            listed_difference(generated, golden, "ops", listed).is_some(),
+            "{generated}"
+        );
+    }
+    // The listed text itself must be the golden's items reordered.
+    assert!(
+        listed_difference(
+            "s lock | t=+0 | ops c,a,d | key Lock | mode Locked",
+            golden,
+            "ops",
+            "ops c,a,d"
+        )
+        .is_some()
+    );
 }
 
 /// The secret sessions headless under the deferred reply schedule (2026-11-23, S4d E2; gate test

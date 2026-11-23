@@ -3976,10 +3976,13 @@ fn run(name: &str) {
     );
 }
 
-/// The lines of a deferred run that differ from the golden, as `(step, reason)` per scenario
-/// (2026-11-23, S4d E2; plan §3.7, D-25, stop rule 9). Every other line of every scenario is the
-/// golden's byte for byte; a listed line must differ (the list stays exact).
-const DEFERRED_DIFFERENCES: [(&str, &str, &str); 0] = [];
+/// The lines of a deferred run that differ from the golden, as `(scenario, step, column, the
+/// deferred column, reason)` (2026-11-23, S4d E2; plan §3.7, D-25, stop rule 9). Every other line
+/// of every scenario is the golden's byte for byte; a listed line must differ, and (2026-11-23,
+/// S4d E2 review; before, it was checked only to differ) only in its named column, which is the
+/// listed text byte for byte and the golden's items reordered, every other column equal
+/// (`deferred::listed_difference`).
+const DEFERRED_DIFFERENCES: [(&str, &str, &str, &str, &str); 0] = [];
 
 /// Removes the deferred schedule when it drops (also when the scenario panics).
 struct DeferredRun;
@@ -4008,7 +4011,8 @@ fn step_of(line: &str) -> &str {
 /// Runs scenario `name` headless under the deferred reply schedule (2026-11-23, S4d E2;
 /// [`crate::app_effects::deferred`]: every entry's effects applied after it returned, the answers
 /// after the batch) and checks it against `headless.txt`: the same steps, every line equal but
-/// those [`DEFERRED_DIFFERENCES`] lists for `name` (each of which must differ), and the last line
+/// those [`DEFERRED_DIFFERENCES`] lists for `name` (each of which must differ, in its listed
+/// column only), and the last line
 /// (the final state) equal unless it is listed.
 fn run_deferred(name: &str) {
     let (_, scenario, _) = SCENARIOS
@@ -4043,18 +4047,19 @@ fn run_deferred(name: &str) {
             &committed
         )
     );
-    let listed: Vec<&str> = DEFERRED_DIFFERENCES
-        .iter()
-        .filter(|(scenario, ..)| *scenario == name)
-        .map(|(_, step, _)| *step)
-        .collect();
     let mut unlisted = Vec::new();
     for (generated, committed) in generated.iter().zip(&committed) {
-        let listed_here = listed.contains(&step_of(generated));
-        if listed_here {
-            assert_ne!(
-                generated, committed,
-                "{name}: a listed deferred difference no longer differs"
+        let listed_here = DEFERRED_DIFFERENCES
+            .iter()
+            .find(|(scenario, step, ..)| *scenario == name && *step == step_of(generated));
+        if let Some((_, step, column, expected, _)) = listed_here {
+            let finding = crate::app_effects::deferred::listed_difference(
+                generated, committed, column, expected,
+            );
+            assert!(
+                finding.is_none(),
+                "{name} {step}: a listed deferred difference: {}",
+                finding.unwrap_or_default()
             );
         } else if generated != committed {
             unlisted.push(format!(

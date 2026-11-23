@@ -375,8 +375,10 @@ fn a_lock_before_the_shell_ran_drops_the_steps_kept_for_the_open() {
 /// The `Suspend` lock (spec/04 §5.3, critique A-2): on Windows the composition drains between
 /// the lock's halves, so `AwaitKeyLock` is applied before the mode, the screen and `KeyJob::Load`
 /// change; the deferred schedule applies nothing inside the entry, so the wait comes after them
-/// (an Android shell has no such wait). The lock's secret, clip and approval steps keep their
-/// order before the wait under both schedules; the final state is the same.
+/// (an Android shell has no such wait). The lock's clip and approval steps keep their order
+/// before the wait under both schedules (2026-11-23, S4d E2 review: asserted for `Immediate`
+/// too — there the composition's mid-lock drain applies all three before the second half); the
+/// final state is the same.
 #[test]
 fn the_suspend_wait_comes_after_the_lock_under_the_deferred_schedule() {
     let mut finals = Vec::new();
@@ -387,7 +389,8 @@ fn the_suspend_wait_comes_after_the_lock_under_the_deferred_schedule() {
         let _ = shell.take_log();
         let vault_present = wallet.lock_steps(LockReason::Suspend);
         shell.drain(&mut wallet);
-        let waited_before_the_mode = shell.take_log().iter().any(|name| name == "wait");
+        let mut log = shell.take_log();
+        let waited_before_the_mode = log.iter().any(|name| name == "wait");
         assert_eq!(
             waited_before_the_mode,
             schedule == Schedule::Immediate,
@@ -396,24 +399,29 @@ fn the_suspend_wait_comes_after_the_lock_under_the_deferred_schedule() {
         assert!(matches!(wallet.mode, AppMode::Unlocked { .. }));
         wallet.lock_after_wait(vault_present);
         shell.end_entry(&mut wallet);
-        let log = shell.take_log();
-        if schedule == Schedule::Deferred {
-            let order: Vec<&str> = log
-                .iter()
-                .map(String::as_str)
-                .filter(|name| ["clear-clip", "close#1", "wait"].contains(name))
-                .collect();
-            assert_eq!(order, ["clear-clip", "close#1", "wait"], "{log:?}");
-        }
+        log.extend(shell.take_log());
+        let order: Vec<&str> = log
+            .iter()
+            .map(String::as_str)
+            .filter(|name| ["clear-clip", "close#1", "wait"].contains(name))
+            .collect();
+        assert_eq!(
+            order,
+            ["clear-clip", "close#1", "wait"],
+            "{schedule:?}: {log:?}"
+        );
         assert_eq!(wallet.mode, AppMode::Locked);
         finals.push(state(&wallet));
     }
     assert_eq!(finals[0], finals[1], "the same final state");
 }
 
-/// A lock in a later entry closes the shown window as `Rejected` under both schedules (spec/04
-/// §3.7, AGENTS.md §6 "locking closes it as Rejected"): the flow ends, the queue is empty, the
-/// close is the lock's last approval effect. Nothing here approves.
+/// A lock in a later entry closes the shown window under both schedules (spec/04 §3.7): the
+/// flow ends, the queue is empty, the window's close is applied. Nothing here approves.
+/// 2026-11-23 (S4d E2 review): this app-source item has no answer that shows its outcome, so
+/// "as `Rejected`" (AGENTS.md §6) is not observed here; it is pinned under both schedules by the
+/// headless golden line `lock_shortcut_while_shown ctrl-l` (the dApp request answered 4001),
+/// which `run_deferred` reproduces under the deferred schedule.
 #[test]
 fn a_lock_closes_the_shown_window_under_both_schedules() {
     let mut finals = Vec::new();

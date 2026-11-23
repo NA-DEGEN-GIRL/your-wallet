@@ -267,7 +267,9 @@ fn an_input_open_answered_after_a_lock_makes_nothing() {
 }
 
 /// Critique A-21 under both schedules: a submission that arrives for a session the lock ended is
-/// dropped (its buffer wiped where it is dropped) and starts no key job.
+/// dropped (its buffer wiped where it is dropped) and starts no key job — with no session open,
+/// and (2026-11-23, S4d E2 review) while a new session is open: the late password never reaches
+/// the window opened after it (the Android schedule's risk), which stays open and unchanged.
 #[test]
 fn a_late_submission_is_dropped_under_both_schedules() {
     for schedule in [Schedule::Immediate, Schedule::Deferred] {
@@ -297,6 +299,28 @@ fn a_late_submission_is_dropped_under_both_schedules() {
         });
         let (open, _) = session(&wallet).unwrap_or_default();
         assert_ne!(open, serial, "{schedule:?}: a fresh serial");
+        // The ended session's serial while the new one is open: dropped, no key job, the new
+        // session still open, shown and unsubmitted.
+        let before = (session(&wallet), wallet.secret_purpose());
+        shell.entry(&mut wallet, |wallet| {
+            wallet.on_secret_action(
+                serial,
+                SecretAction::Submit(Submission {
+                    values: vec![Zeroizing::new(b"made-up password".to_vec())],
+                    checkbox: false,
+                }),
+            );
+        });
+        assert!(
+            key_jobs(&wallet).is_empty(),
+            "{schedule:?}: no key job for the late serial"
+        );
+        assert_eq!(
+            (session(&wallet), wallet.secret_purpose()),
+            before,
+            "{schedule:?}: the new session unchanged"
+        );
+        assert_eq!(before.0, Some((open, true)), "{schedule:?}: open and shown");
         shell.entry(&mut wallet, |wallet| {
             wallet.on_secret_action(
                 open,
