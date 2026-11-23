@@ -108,8 +108,10 @@ Expected hosts and why:
 | The user's LLM endpoint (e.g. OpenAI, Anthropic, OpenRouter, a local Ollama/LM Studio) | `crates/yw-engine/src/explain/config.rs`, spec/06 §2 | Only when the optional AI explanation is turned on (off by default, D21). Zero calls when off |
 | Block explorers (Etherscan, Solscan, mempool.space, …) | `crates/yw-engine/src/explorer.rs` | Never fetched by the app. Opened in the default browser only when the user clicks `탐색기에서 열기` (open in explorer) |
 
-The grep also prints `T_EXPLORER_RULES` in `crates/yw-app/src/ui/screens_explorer.rs`: a Korean help-text constant
-with an example explorer link, not a contacted host.
+The grep also prints `SITE` in `crates/yw-app/src/ui/tour_secrets.rs` (`https://app.example`): the example origin of
+the dev-only `#[ignore]` windowed secret characterization, on the reserved `.example` domain and never contacted.
+(2026-11-23: before, this line named `T_EXPLORER_RULES` in `crates/yw-app/src/ui/screens_explorer.rs`; since the UI
+language step that explorer help text is a catalogue entry and the grep no longer prints it.)
 
 Build time only (not the wallet): `static.rust-lang.org` (rustup toolchain), `crates.io` (crates pinned by checksum),
 and winget sources if the user accepts installing tools.
