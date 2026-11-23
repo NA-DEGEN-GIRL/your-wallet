@@ -10,7 +10,8 @@
 //! the order of the code it came from (the deadline before `replace_content`, `connect_selected`
 //! after it, `submitting` before any dispatch). `issued` is the one handle `consume` and `reject`
 //! use. The module names no window type: it moves to yw-engine with the flow at S4d (source check
-//! S3 in `app_approval_input_tests.rs`). Not the send flows of `yw_engine::flow`.
+//! S3 in `app_approval_input_tests.rs`; 2026-11-23: moved at S4d E1). Not the send flows of
+//! `yw_engine::flow`.
 //!
 //! 2026-11-19 (S4 B5): every flow carries the [`ShownId`] of its window, allocated when it opens,
 //! and the width class the shell reported (`Cmd::ApprovalOpened`, then each A01 `WM_SIZE` /

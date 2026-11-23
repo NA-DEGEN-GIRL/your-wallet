@@ -1,6 +1,6 @@
 # 11. Hyperliquid HyperCore — 잔액과 전송 (D34, 2026-11-06)
 
-- 상태: 구현(yw-core `hypercore`, yw-engine `hypercore`(2026-11-17 [15] §11.4 S2 전 yw-app), yw-app `app_hypercore`·`ui::screens_hypercore`). 실제 자산 수동 확인만 남음(`docs/acceptance/hypercore-20261106.md`).
+- 상태: 구현(yw-core `hypercore`, yw-engine `hypercore`(2026-11-17 [15] §11.4 S2 전 yw-app), yw-app `app_hypercore`·`ui::screens_hypercore`). (2026-11-23 [15](15-android.md) §11.4 S4d E1부터 `app_hypercore`는 yw-engine `wallet::app_hypercore`; 화면 `ui::screens_hypercore`는 yw-app.) 실제 자산 수동 확인만 남음(`docs/acceptance/hypercore-20261106.md`).
 - 범위: 같은 secp256k1 EVM 계정 주소의 HyperCore(Hyperliquid L1) **잔액 보기**와 **사용자 서명 전송**(USDC·현물 토큰 보내기, 현물↔선물 이동, Arbitrum 출금, HyperEVM↔HyperCore 이동). **거래(주문·취소·레버리지·API 지갑 승인)는 범위 밖**이다. dApp(app.hyperliquid.xyz 등)이 요청하는 `eth_signTypedData_v4`는 구조화해 보이되(§7) 지갑이 직접 만들지 않는다.
 - 의존성 추가 없음. 서명은 기존 EVM 키 경로(파생·가져온 키·YubiKey, [03] §4, [10] §6)의 typed-data 서명 그대로다.
 
@@ -58,7 +58,7 @@
 
 ## 5. 이 지갑의 작업 (S-HC, [04] §2.23)
 
-화면 문구는 앱 언어를 따른다(2026-11-14, [14]; 카탈로그 `yw_app::ui::screens_hypercore::text`·`yw_app::app_hypercore::text`). 아래 따옴표 문구는 한국어 / 영어다.
+화면 문구는 앱 언어를 따른다(2026-11-14, [14]; 카탈로그 `yw_app::ui::screens_hypercore::text`·`yw_app::app_hypercore::text`) (2026-11-23 [15](15-android.md) §11.4 S4d E1부터 지갑 카탈로그 `yw_app::app_hypercore::text`는 `yw_engine::wallet::app_hypercore::text`, [14](14-language.md) §5). 아래 따옴표 문구는 한국어 / 영어다.
 
 1. `보내기(Core)` / `Send (Core)`: 자산 라디오 — `USDC — 선물(perp) 잔액` / `USDC — perp balance` → `usdSend`, 현물 토큰 → `spotSend`. 받는 주소는 EVM 보내기와 같은 검사([04] §2.15: 형식·체크섬·0 주소 거부, 주소록·내 계정 표시, 주소 오염(앞뒤 같은 주소) → `주소 전체를 직접 확인했습니다` / `I checked the whole address myself` 체크 필요). 받는 주소가 HyperEVM 시스템 주소(`0x20…` + index, `0x2222…2222`)이면 보내기·출금 모두 거부하고 `HyperEVM으로 이동` / `Move to HyperEVM`을 안내한다(2026-11-07). 금액 ≤ 출금 가능(perp `withdrawable`) / 현물 `total − hold`(잔액과 같은 단위 — `weiDecimals` — 로 비교; HyperEVM 이동의 금액은 더 적은 자릿수로 입력받아 환산).
 2. `현물↔선물 이동` / `Spot↔perp`: 방향 라디오, 금액 ≤ 현물 USDC(→ 선물) / `withdrawable`(→ 현물). 받는 주소 없음.

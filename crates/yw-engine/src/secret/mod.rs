@@ -12,7 +12,8 @@
 //! `approval::flow::OpenOutcome`) and a secret window's close. The purpose of a window (yw-app
 //! `app::Purpose`) and the session that holds it (yw-app `secret_session::SecretSession`) stay in
 //! yw-app until the wallet state moves (S4d); the display windows' open and the form operations
-//! become effects in S4 P7b.
+//! become effects in S4 P7b. 2026-11-23 (S4 end, spec/15 §11.4 S4): both moved with the wallet
+//! at S4d E1 (`wallet::Purpose`, `wallet::secret_session`).
 //!
 //! 2026-11-20 (spec/15 §11.4 S4 P7b): [`SecretEffect::OpenDisplay`] (W08/W09; the secret is not
 //! in it — the shell gets it from the wallet's session only after it verified the new window's
@@ -286,7 +287,8 @@ pub enum SecretEffect {
         /// review, spec/15 §11.4 S4): the logic picks the text, where plan §3.6 sketched a flag
         /// the shell resolves; like `step`'s texts (also in `OpenInput`) it becomes a catalogue
         /// key before an `Effect` has to round-trip through the yw-json codec or the Android
-        /// shell (S4d E2).
+        /// shell (S4d E2). 2026-11-23 (S4 end, spec/15 §18 29): S4d E2 serialises no effect, so
+        /// the key comes with the A-phase codec (spec/15 §18 8).
         timeout_note: Option<&'static str>,
         /// The language the window draws its texts in.
         lang: Lang,

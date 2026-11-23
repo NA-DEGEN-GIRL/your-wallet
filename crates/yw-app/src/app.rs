@@ -376,8 +376,9 @@ impl core::ops::Deref for App {
 /// an `App`; production code reaches the wallet's state only through its entries — `Cmd`s
 /// (`App::dispatch`, the drain's answers), the typed in-process entries (a worker's result, a
 /// secret window's action, the `rpc.json` plan), the shell's compositions (lock, shutdown,
-/// the display window's secret) and the other named wallet steps of shell code that S4d/S5 turns
-/// into `Cmd`s or answers (2026-11-22 ZC review: before, this last way was left out), each
+/// the display window's secret) and the other named wallet steps of shell code that S5 turns
+/// into `Cmd`s or answers (2026-11-23, S4 end: S4d kept them; was "S4d/S5"; 2026-11-22 ZC
+/// review: before, this last way was left out), each
 /// `self.wallet.<fn>(` listed with its reason in the source check
 /// `the_shell_writes_wallet_state_only_through_entries`. Before W15 every build had it.
 #[cfg(test)]

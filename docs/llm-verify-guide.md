@@ -101,7 +101,7 @@ Expected hosts and why:
 
 | Host | Where configured | When contacted |
 |---|---|---|
-| The user's RPC (QuickNode, Alchemy or any `https://` URL) | Entered by the user; URL templates in `crates/yw-engine/src/apikeys.rs` and `crates/yw-app/src/app_rpc_import.rs`; stored DPAPI-encrypted | Balances, fees, simulation, sending |
+| The user's RPC (QuickNode, Alchemy or any `https://` URL) | Entered by the user; URL templates in `crates/yw-engine/src/apikeys.rs` and the `rpc.json` import (`crates/yw-app/src/app_rpc_import.rs` reads the file; its URL checks are in `crates/yw-engine/src/wallet/app_rpc_plan.rs` since 2026-11-23); stored DPAPI-encrypted | Balances, fees, simulation, sending |
 | `mempool.space` (Esplora) | `crates/yw-core/src/btc/mod.rs`, `crates/yw-engine/src/settings.rs`; changeable in 설정 → Bitcoin | Bitcoin address lookups and broadcast (keyless) |
 | `api.hyperliquid.xyz`, `api.hyperliquid-testnet.xyz` | `crates/yw-core/src/hypercore/mod.rs` | HyperCore balances and user-signed transfers |
 | `relay.walletconnect.org` (wss), `verify.walletconnect.org` | `crates/yw-core/src/walletconnect/mod.rs`, `crates/yw-engine/src/walletconnect/verify.rs` | Only when WalletConnect is used with the user's own Reown Project ID (no default ID) |
@@ -126,9 +126,12 @@ Expected:
 
 - First command: no output (whole words only; without `-w`, `ClassEntry` in `crates/yw-win/src/ui/window.rs` matches
   "sentry").
-- Second command: two comments about the app **excluding itself** from Windows Error Reporting at start-up: a doc
-  comment in `crates/yw-app/src/app.rs` and the banner shown if that fails, in `crates/yw-app/src/ui/screens.rs`.
-- Third command: the actual call in `crates/yw-win/src/process.rs`, plus comments in `crates/yw-app/src/app.rs`.
+- Second command: lines about the app **excluding itself** from Windows Error Reporting at start-up: a doc comment
+  in `crates/yw-engine/src/wallet/mod.rs`, the banner text shown if that fails, in `crates/yw-engine/src/wallet/text.rs`,
+  and a reason string in a source-check test, `crates/yw-app/src/app/tests/s4_results.rs` (since 2026-11-23, when the
+  wallet state moved to yw-engine; before, `crates/yw-app/src/app.rs` and `crates/yw-app/src/ui/screens.rs`).
+- Third command: the actual call in `crates/yw-win/src/process.rs`, plus comments in `crates/yw-app/src/app.rs` and
+  `crates/yw-engine/src/wallet/mod.rs`.
 
 ### 1.4 The extension makes no network requests
 
@@ -238,7 +241,7 @@ Nothing is signed without a decision in the app's own window. Files to read:
 | Click-jacking defences: 1 s arm delay, focus starts on `거부` (Reject), High risk needs the checkbox "위 경고를 모두 확인했습니다" (I checked all warnings above) + 2 s hold of `승인` (Approve), injected Enter never approves, always-on-top, 120 s expiry | `crates/yw-engine/src/approval/interaction.rs` (the Win32 message mapping is `crates/yw-app/src/ui/approval_input.rs`: trusted input read only by `TrustedSignals`, the pure `map_msg`/`map_key`; since 2026-11-19), spec/04 §3 |
 | EVM risk rules (E01–E43) and Blocked rules | `crates/yw-core/src/evm/risk/rules.rs`, spec/03 §10 |
 | Solana dApp transactions (parser, ALT, decode, diff, display, sign; rules X01–X19) | `crates/yw-core/src/sol/dapp/`, spec/07 §20 |
-| App glue for the approval window: issuing, re-simulation, `consume`, the `KeyJob::SignEvm` job | `crates/yw-app/src/app_approval.rs` (signing runs on the key worker, `crates/yw-engine/src/workers/key.rs`; before 2026-11-17 S2 E3 in yw-app). Since 2026-11-19 the shown approval's gate and issued request live in `crates/yw-app/src/approval_flow.rs` (`ApprovalFlow`, its methods are the only gate writers) and the pure decisions in `crates/yw-engine/src/approval/flow.rs` |
+| App glue for the approval window: issuing, re-simulation, `consume`, the `KeyJob::SignEvm` job | `crates/yw-engine/src/wallet/app_approval.rs`, the flow half (issuing, re-simulation, the one production `consume` in `consume_and_sign`; since 2026-11-23, before in `crates/yw-app/src/app_approval.rs`, which keeps the window half: painting and the Win32 messages). Signing runs on the key worker, `crates/yw-engine/src/workers/key.rs` (before 2026-11-17 S2 E3 in yw-app). The shown approval's gate and issued request live in `crates/yw-engine/src/wallet/approval_flow.rs` (`ApprovalFlow`, its methods are the only gate writers; since 2026-11-19, in yw-app until 2026-11-23) and the pure decisions in `crates/yw-engine/src/approval/flow.rs` |
 | EVM post-sign check: re-encode, strict decode, signer recovery must equal the account | `crates/yw-core/src/evm/sign/mod.rs` |
 | dApp method allowlist and error codes | `crates/yw-core/src/policy`, spec/05 §3 and §5, [dapp-integration.md](dapp-integration.md) |
 

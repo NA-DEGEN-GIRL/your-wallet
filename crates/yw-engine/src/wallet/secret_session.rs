@@ -7,7 +7,7 @@
 //! every end of that window: refused or failed open, close, cancel, time-out, lock. The shell's
 //! window record (`App::secret`: serial, window, form) holds no purpose. Every field is private;
 //! these methods are the only writers. The struct stays in yw-app (it holds the yw-app
-//! `Purpose`) until the wallet state moves to yw-engine (S4d).
+//! `Purpose`) until the wallet state moves to yw-engine (S4d; 2026-11-23: moved at S4d E1).
 //!
 //! 2026-11-20 (S4 P7a2): a session may carry one step the logic takes when the shell reports its
 //! window shown ([`AfterShown`]): W12 reads the card's PIN counters then. Before, the handler

@@ -2868,7 +2868,8 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 /// the wallet's entries: a `Cmd` (`on_cmd`), the outbox (`next_effect`), the typed in-process
 /// entries of what may hold a secret (a worker's event, a secret window's action, the display
 /// secret's move, the `rpc.json` plan), the shell's compositions around its own waits (lock,
-/// shutdown) and the named wallet steps of shell code that S4d/S5 turns into `Cmd`s or answers.
+/// shutdown) and the named wallet steps of shell code that S5 turns into `Cmd`s or answers
+/// (2026-11-23, S4 end: S4d kept them; was "S4d/S5").
 const SHELL_WALLET_CALLS: [(&str, &str, &str); 46] = [
     (
         "dispatch",

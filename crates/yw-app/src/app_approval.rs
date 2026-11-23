@@ -1707,7 +1707,9 @@ impl App {
             // `MoveFocus`, `AiExpand`) act on the shown window and flow, not on the window that
             // got the message. Windows cannot reach the difference (an ended window gets no
             // message while effects are applied at once); recorded in spec/15 §11.4 (B6 review)
-            // for P10/S4d, which make a deferred schedule.
+            // for P10/S4d, which make a deferred schedule. 2026-11-23 (S4 end): still so; S4d E2's
+            // deferred schedule sends no message to an ended window, so S5 or the Android shell
+            // decides (spec/04 §3.4).
             Step::AnyWindow(reply) => {
                 if self.evm.approval.is_none() {
                     return Some(reply);
@@ -1881,6 +1883,7 @@ impl App {
             // `Tick` that ends the request (`Expire`) and opens the next one's window is followed
             // by this tail on the new flow, as before B6; moving it behind the id check would
             // change that order, so it stays here until P10/S4d (spec/15 §11.4, B6 review).
+            // 2026-11-23 (S4 end): it stayed through S4; S5 or the Android shell decides.
             // 2026-11-20 (S4 P10b): each of its two calls into the flow is drained before the
             // next step, as when `emit` applied each effect at once.
             // 2026-11-22 (S4c W15): the two calls are the wallet's own fns, named on the wallet
