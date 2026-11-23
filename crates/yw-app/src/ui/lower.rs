@@ -10,7 +10,10 @@
 //! 2026-11-24 (spec/15 §11.4 S5-2): created, with its debug count [`Lowered::press_mismatch`]: a
 //! drawn press whose control id maps back to another press (a row past its id span, S3 C10–C12)
 //! is counted, never panicked on; the census and the windowed form test assert 0 once the screens
-//! build the model (S5-4). Until then nothing in production lowers.
+//! build the model (S5-4). Until then nothing in production lowers. (2026-11-24 S5-2 review:) a
+//! credential edit's text never reaches the Windows list either: the model's builders drop it,
+//! and one set on the model `Ctl` afterwards is wiped, lowered empty and counted in
+//! [`Lowered::cred_text`], which S5-4 asserts 0 with `press_mismatch`.
 
 use yw_engine::screen::model::{self, Act, CtlKind, Style};
 use yw_win::ui::controls::{ButtonStyle, ControlKind};
@@ -28,6 +31,9 @@ pub struct Lowered {
     /// Drawn presses whose control id does not map back to the same control's press
     /// ([`yw_engine::cmd::Press::same_control`]: a check box's state ignored).
     pub press_mismatch: u32,
+    /// Credential edits that came with text (only by setting `text` after a builder, which
+    /// drops it); lowered with empty text, the text wiped.
+    pub cred_text: u32,
 }
 
 /// Lowers `items` into the Windows item list.
@@ -37,11 +43,13 @@ pub fn lower(items: Vec<model::Item>) -> Lowered {
         // No window: a check box's press maps back with the state `None`, as drawn.
         controls: ControlSet::default(),
         press_mismatch: 0,
+        cred_text: 0,
     };
     let items = items.into_iter().map(|item| lowering.item(item)).collect();
     Lowered {
         items,
         press_mismatch: lowering.press_mismatch,
+        cred_text: lowering.cred_text,
     }
 }
 
@@ -63,6 +71,7 @@ pub const fn button_style(style: Style) -> ButtonStyle {
 struct Lowering {
     controls: ControlSet,
     press_mismatch: u32,
+    cred_text: u32,
 }
 
 impl Lowering {
@@ -96,6 +105,15 @@ impl Lowering {
             tip,
             fit,
         } = ctl;
+        let text = if matches!(act, Act::Cred(_)) {
+            if !text.is_empty() {
+                self.cred_text = self.cred_text.saturating_add(1);
+            }
+            drop(yw_core::secret::Zeroizing::new(text));
+            String::new()
+        } else {
+            text
+        };
         Ctl {
             id: self.id(act),
             kind: match kind {
@@ -337,7 +355,7 @@ mod tests {
             },
         ];
         let lowered = lower(model);
-        assert_eq!(lowered.press_mismatch, 0);
+        assert_eq!((lowered.press_mismatch, lowered.cred_text), (0, 0));
         assert_eq!(lowered.items, windows);
         assert_eq!(format!("{:?}", lowered.items), format!("{windows:?}"));
     }
@@ -362,5 +380,36 @@ mod tests {
             Item::Menu(vec![Ctl::button(Press::Core(CorePress::Lock), "ok")]),
         ]);
         assert_eq!(lowered.press_mismatch, 1);
+    }
+    /// A credential edit whose text was set on the model after its builder is lowered with
+    /// empty text and counted (2026-11-24 S5-2 review): no credential text reaches the Windows
+    /// list or its `Debug` (which the census hashes).
+    #[test]
+    fn a_credential_text_never_reaches_the_windows_list() {
+        let given = "not-a-real-key-7f3a";
+        let mut cred = Ctl::edit(CredField::LlmKey, given, 200, true, 256);
+        assert!(cred.text.is_empty(), "the builder drops it");
+        cred.text = given.to_owned();
+        let lowered = lower(vec![Item::LabeledRow(
+            "key".to_owned(),
+            vec![
+                cred,
+                Ctl::edit(EditField::CoreRename, "name", 200, false, 32),
+            ],
+        )]);
+        assert_eq!(lowered.cred_text, 1);
+        assert!(!format!("{:?}", lowered.items).contains(given));
+        let key = cmd_table::cred_id_of(CredField::LlmKey);
+        let rename = cmd_table::edit_id_of(EditField::CoreRename);
+        assert_eq!(
+            lowered.items,
+            vec![win::Item::LabeledRow(
+                "key".to_owned(),
+                vec![
+                    win::Ctl::edit(key, "", 200, true, 256),
+                    win::Ctl::edit(rename, "name", 200, false, 32),
+                ],
+            )]
+        );
     }
 }

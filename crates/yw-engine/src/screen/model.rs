@@ -3,7 +3,9 @@
 //! lines, list rows, label and value), status bands, rows of controls, a hold area, structure
 //! (gaps, cards, steps, badges) and a QR payload. A control names what it does ([`Act`]: a
 //! [`Press`] or a field), never a platform control id, window handle, pixel or secret text; a
-//! credential edit is an [`Act::Cred`] with empty text.
+//! credential edit is an [`Act::Cred`] with empty text: every builder drops the text it is given
+//! for one (2026-11-24 S5-2 review: before, only the callers kept it empty), and the Windows
+//! lowering blanks and counts one whose `text` was set afterwards (yw-app `ui::lower`).
 //!
 //! 2026-11-24 (spec/15 §11.3, §11.4 S5-2): created, one kind per kind of the Windows
 //! `ui::main_window::Item` with the same payloads and the same control builder API, so the Windows
@@ -130,7 +132,7 @@ pub struct Ctl {
     pub act: Act,
     /// Kind.
     pub kind: CtlKind,
-    /// Label / initial text (empty for a credential edit).
+    /// Label / initial text (empty for a credential edit: the builders drop it).
     pub text: String,
     /// Width in DIP (0 = from the label).
     pub width: i32,
@@ -153,11 +155,19 @@ pub struct Ctl {
 }
 
 impl Ctl {
+    /// Every builder ends here. A credential edit's text never enters the model (spec/15 §11.3;
+    /// 2026-11-24 S5-2 review: before, `Ctl::edit(CredField::…, "x", …)` kept `x`, and `Debug`
+    /// printed it).
     fn new(act: Act, kind: CtlKind, text: &str) -> Self {
+        let text = if matches!(act, Act::Cred(_)) {
+            String::new()
+        } else {
+            text.to_owned()
+        };
         Self {
             act,
             kind,
-            text: text.to_owned(),
+            text,
             width: 0,
             enabled: true,
             checked: None,
@@ -518,6 +528,28 @@ mod tests {
         assert_eq!(
             Ctl::button(press, "b").readonly().kind,
             CtlKind::Button(Style::Secondary)
+        );
+    }
+
+    /// A credential's text never enters the model, whatever a builder is given (2026-11-24 S5-2
+    /// review), so the model's `Debug` cannot print it; other edits keep theirs.
+    #[test]
+    fn a_credential_edit_never_holds_text() {
+        let given = "not-a-real-key-7f3a";
+        for cred in [
+            Ctl::edit(CredField::LlmKey, given, 200, true, 256),
+            Ctl::edit(CredField::LlmKey, given, 200, false, 256).readonly(),
+            Ctl::button(CredField::LlmKey, given),
+            Ctl::check(CredField::LlmKey, given, true),
+            Ctl::radio(CredField::LlmKey, given, true, true),
+            Ctl::tab(CredField::LlmKey, given, true),
+        ] {
+            assert!(cred.text.is_empty());
+            assert!(!format!("{cred:?}").contains(given));
+        }
+        assert_eq!(
+            Ctl::edit(EditField::CoreRename, given, 200, false, 32).text,
+            given
         );
     }
 }
