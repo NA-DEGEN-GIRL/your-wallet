@@ -8,9 +8,9 @@ use yw_core::lang::Text;
 use yw_core::vault::FileKind;
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use yw_engine::errors::ErrorCode;
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::wallet::app_sidecar::{JournalHold, RESET_WATCH_SECS, SendChain, text};
 use yw_engine::wallet::{AppMode, Confirm, Screen};
 

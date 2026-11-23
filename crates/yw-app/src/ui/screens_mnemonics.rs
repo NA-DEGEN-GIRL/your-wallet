@@ -5,8 +5,8 @@
 use yw_core::lang::Text;
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::wallet::AppMode;
 use yw_engine::wallet::app_mnemonics::text as mn_text;
 

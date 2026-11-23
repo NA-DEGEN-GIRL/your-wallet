@@ -293,6 +293,10 @@ impl Census {
             }
         };
         let items = format!("{:?}", app.items());
+        // 2026-11-24 (S5-4): the screen model's lowering drew every press at a control id that
+        // maps back to it, and no credential edit with text (`App::press_mismatch`).
+        #[cfg(debug_assertions)]
+        assert_eq!(app.press_mismatch.get(), 0, "press mismatches");
         let banners = format!("{:?}", app.banners);
         if let Some(kept) = self.debug.borrow_mut().as_mut() {
             kept.extend([items.clone(), banners.clone()]);

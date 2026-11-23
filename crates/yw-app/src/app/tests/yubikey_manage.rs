@@ -484,10 +484,12 @@ fn english_yubikey_screens_have_no_korean() {
     h.pump();
     let mut items = Vec::new();
     h.app.yk_settings_section(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, "list (empty)");
     h.app.on_command(yk::ENROL_START);
     let mut items = Vec::new();
     h.app.yk_wizard_screen(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, "plan");
     // The shared key and its warning, then back to Bitcoin.
     h.app.on_command(pgp_id(
@@ -496,6 +498,7 @@ fn english_yubikey_screens_have_no_korean() {
     ));
     let mut items = Vec::new();
     h.app.yk_wizard_screen(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, "plan (shared key)");
     assert!(super::has_text(
         &items,
@@ -510,6 +513,7 @@ fn english_yubikey_screens_have_no_korean() {
     yk_pump(&mut h, &mut seen);
     let mut items = Vec::new();
     h.app.yk_wizard_screen(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, "confirm");
     assert!(all_text(&items).iter().any(|text| text == BIP84_0));
     h.app.on_command(yk::SAME_ACK);
@@ -517,6 +521,7 @@ fn english_yubikey_screens_have_no_korean() {
     yk_pump(&mut h, &mut seen);
     let mut items = Vec::new();
     h.app.yk_wizard_screen(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, "credentials");
     h.app.on_command(yk::IMPORT);
     h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[ADMIN]);
@@ -525,15 +530,18 @@ fn english_yubikey_screens_have_no_korean() {
     h.app.on_command(yk::PIN_GUIDE);
     let mut items = Vec::new();
     h.app.yk_wizard_screen(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, "result");
     h.app.on_command(yk::PINS_SEPARATE);
     let mut items = Vec::new();
     h.app.yk_pin_items(8_900_031, &mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, "PIN card (one at a time)");
     finish_result(&mut h, yk::FINISH);
     yk_pump(&mut h, &mut seen);
     let mut items = Vec::new();
     h.app.yk_settings_section(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, "list");
     assert!(super::has_text(
         &items,
@@ -542,17 +550,20 @@ fn english_yubikey_screens_have_no_korean() {
     h.app.on_command(yk::RESLOT_BASE);
     let mut items = Vec::new();
     h.app.yk_settings_section(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, "re-slot");
     h.app.on_command(yk::MANAGE_CANCEL);
     h.app.on_command(yk::CLEAR_BASE);
     let mut items = Vec::new();
     h.app.yk_settings_section(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, "clear");
     h.app.on_command(yk::MANAGE_CANCEL);
     // Korean is the catalogue's Korean.
     h.app.settings.language = Lang::Ko;
     let mut items = Vec::new();
     h.app.yk_settings_section(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert!(super::has_text(
         &items,
         crate::ui::screens_yubikey::text::YK_LIST.ko

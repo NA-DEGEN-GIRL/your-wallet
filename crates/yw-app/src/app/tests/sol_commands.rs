@@ -111,6 +111,7 @@ fn scan_rows_past_the_fortieth_keep_their_own_action() {
     // Every rendered scan button maps back to its own row, never to an account radio.
     let mut items = Vec::new();
     app.sol_scan_screen(&mut items);
+    let items = crate::ui::lower::lowered(items);
     let buttons: Vec<Ctl> = controls(&items)
         .into_iter()
         .filter(|ctl| ids::scan_action(ctl.id).is_some())
@@ -161,6 +162,7 @@ fn scan_moves_go_to_a_primary_standard_account() {
     let hardware = hardware_selected(&mut app);
     let mut items = Vec::new();
     app.sol_scan_screen(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert!(items.iter().any(|item| matches!(
         item,
         Item::Field(label, value) if label == "옮겨 받을 계정" && value.starts_with("Solana 1 ·")
@@ -189,6 +191,7 @@ fn scan_moves_go_to_a_primary_standard_account() {
     app.meta.as_mut().unwrap().sol_accounts.clear();
     let mut items = Vec::new();
     app.sol_scan_screen(&mut items);
+    let items = crate::ui::lower::lowered(items);
     let text = yw_engine::wallet::app_sol::SOL_SCAN_NO_TARGET_TEXT;
     assert!(
         items
@@ -222,7 +225,7 @@ fn english_sol_and_zec_screens_have_no_korean() {
         app.sol_settings_section(&mut items);
         app.sol_scan_screen(&mut items);
         app.zec_main_screen(&mut items);
-        items
+        crate::ui::lower::lowered(items)
     };
     let mut app = scanned_app();
     app.show_advanced = true;

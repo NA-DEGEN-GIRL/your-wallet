@@ -632,6 +632,7 @@ fn site_rows_disconnect_the_grant_they_were_drawn_for_and_page() {
     };
     let mut items = Vec::new();
     app.sites_screen(&mut items);
+    let items = crate::ui::lower::lowered(items);
     let drawn = keys(&app);
     assert_eq!(drawn.len(), ids::SITES_PAGE_ROWS);
     assert_eq!(drawn[0], "https://s0.example");

@@ -9,7 +9,6 @@ use yw_core::evm::display::format_address;
 use yw_core::lang::Lang;
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use crate::ui::qr::RECEIVE_SHARED_ADDRESS_NOTE;
 use yw_engine::badge::Badge;
 use yw_engine::badge::custom_chain_badge;
@@ -20,6 +19,7 @@ use yw_engine::meta::BookChain;
 use yw_engine::network::NetworkId;
 use yw_engine::screen::Tone;
 use yw_engine::screen::facts::{PipeStatus, ScreenFacts};
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::screen::{ActivityRowView, EvmQrKind};
 use yw_engine::token_view::RowPlace;
 use yw_engine::wallet::AppMode;

@@ -374,6 +374,7 @@ fn english_explorer_chain_and_site_texts() {
     app.explorer_settings_card(&mut items);
     app.open_chain_form(None);
     app.chain_edit_screen(&mut items);
+    let items = crate::ui::lower::lowered(items);
     let mut texts = Vec::new();
     strings(&items, &mut texts);
     assert!(texts.len() > 20, "{texts:?}");

@@ -14,12 +14,21 @@
 //! credential edit's text never reaches the Windows list either: the model's builders drop it,
 //! and one set on the model `Ctl` afterwards is wiped, lowered empty and counted in
 //! [`Lowered::cred_text`], which S5-4 asserts 0 with `press_mismatch`.
+//!
+//! 2026-11-24 (spec/15 §11.4 S5-4): the screens build the model (`App::screen_model`) and
+//! [`App::items`] lowers it here — the Windows list the census hashes, `layout`, `paint` and
+//! `ControlSet::sync` consume, value for value the list the screens built before. The screens
+//! name their controls by id at first (the transitional `Act::Legacy`, drawn as that id) and by
+//! press or field family by family after. Both counts go to `App::press_mismatch` (debug builds),
+//! which the census asserts 0 at every observation.
 
 use yw_engine::screen::model::{self, Act, CtlKind, Style};
 use yw_win::ui::controls::{ButtonStyle, ControlKind};
 
+use crate::app::App;
 use crate::ui::cmd_table;
 use crate::ui::main_window::{ControlSet, Ctl, Face, Item};
+use crate::ui::screens::RECEIVE_IDS;
 use crate::ui::screens_reset;
 use crate::ui::theme;
 
@@ -51,6 +60,68 @@ pub fn lower(items: Vec<model::Item>) -> Lowered {
         press_mismatch: lowering.press_mismatch,
         cred_text: lowering.cred_text,
     }
+}
+
+impl App {
+    /// The current screen as the Windows item list: the neutral screen model
+    /// ([`App::screen_model`], built by the screens) lowered here (2026-11-24, spec/15 §11.4
+    /// S5-4; before, the screens built this list themselves, `ui::screens`). A drawn press that
+    /// maps back to another control and a credential edit that came with text are counted in
+    /// `App::press_mismatch` (debug builds; the census asserts 0). Then, as before, an
+    /// unverified passphrase's `받기` and `주소 복사` controls are turned off and the copy just
+    /// made says so at its own control.
+    #[must_use]
+    pub fn items(&self) -> Vec<Item> {
+        let lowered = lower(self.screen_model());
+        #[cfg(debug_assertions)]
+        self.press_mismatch.set(
+            self.press_mismatch
+                .get()
+                .saturating_add(lowered.press_mismatch)
+                .saturating_add(lowered.cred_text),
+        );
+        let mut items = lowered.items;
+        if self.passphrase_unverified() {
+            disable_receive(&mut items);
+        }
+        // The copy just made says so at its own control (2026-11-12, `Wallet::copy_text`).
+        // 2026-11-20 (S4 P6): the mark holds the press; its control id is the table's.
+        if let Some(copied) = self.copied {
+            crate::ui::main_window::mark_copied(
+                self.settings.language,
+                &mut items,
+                cmd_table::id_of(copied.anchor),
+                copied.address,
+            );
+        }
+        items
+    }
+}
+
+/// Turns off every `받기` and `주소 복사` control in `items` (unverified-passphrase sessions;
+/// 2026-11-24 S5-4: from `ui::screens`, unchanged).
+fn disable_receive(items: &mut [Item]) {
+    for item in items {
+        match item {
+            Item::Row(ctls) | Item::LabeledRow(_, ctls) | Item::Toolbar(_, ctls) => {
+                for ctl in ctls.iter_mut().filter(|ctl| RECEIVE_IDS.contains(&ctl.id)) {
+                    ctl.enabled = false;
+                }
+            }
+            Item::CopyLine { value, .. } if RECEIVE_IDS.contains(&value.id) => {
+                value.enabled = false;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Tests: the Windows item list of `items` (tests that call a screen builder directly; 2026-11-24,
+/// S5-4).
+#[cfg(test)]
+#[must_use]
+pub fn lowered(items: Vec<model::Item>) -> Vec<Item> {
+    lower(items).items
 }
 
 /// The button style of `style`.
@@ -87,6 +158,8 @@ impl Lowering {
             }
             Act::Field(field) => cmd_table::edit_id_of(field),
             Act::Cred(field) => cmd_table::cred_id_of(field),
+            // Transitional (S5-4 only): the id the screen named, drawn as it was.
+            Act::Legacy(id) => id,
         }
     }
 

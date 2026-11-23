@@ -3,7 +3,7 @@
 //! `app_hidden`, which keeps the rows (`Wallet::hidden_rows`), the presses and their texts.
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::wallet::Wallet;
 use yw_engine::wallet::app_hidden::{Family, text};
 

@@ -5,8 +5,8 @@
 //! `연결 해제` and `모든 WalletConnect 세션 끊기`.
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::walletconnect::VerifyStatus;
 
 /// Control ids (16,000–16,099; the whole map is `ui::command_ids`).

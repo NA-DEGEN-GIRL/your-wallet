@@ -11,7 +11,6 @@ use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::display::format_address;
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_accounts::{AccountCard, AccountItem, SelectedLine};
 use yw_core::lang::{Lang, Text};
 use yw_engine::apikeys::{KeyName, mask_url, template_entry};
@@ -23,6 +22,7 @@ use yw_engine::screen::SettingsSection;
 use yw_engine::screen::Tone;
 use yw_engine::screen::address::AddressKind;
 use yw_engine::screen::facts::ScreenFacts;
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::settings::{LogLevel, RpcTemplate};
 use yw_engine::wallet::{AppMode, CREATE_STEPS, Confirm, IMPORT_STEPS, Screen, TestState};
 
@@ -714,23 +714,6 @@ pub fn receive_address_row(lang: Lang, shown: &str, copy: u16, actions: Vec<Ctl>
     }
 }
 
-/// Turns off every `받기` and `주소 복사` control in `items` (unverified-passphrase sessions).
-fn disable_receive(items: &mut [Item]) {
-    for item in items {
-        match item {
-            Item::Row(ctls) | Item::LabeledRow(_, ctls) | Item::Toolbar(_, ctls) => {
-                for ctl in ctls.iter_mut().filter(|ctl| RECEIVE_IDS.contains(&ctl.id)) {
-                    ctl.enabled = false;
-                }
-            }
-            Item::CopyLine { value, .. } if RECEIVE_IDS.contains(&value.id) => {
-                value.enabled = false;
-            }
-            _ => {}
-        }
-    }
-}
-
 /// The `vault.ywv` facts line (review L17): generation and last write time, so a file swapped
 /// for an older copy is noticeable.
 #[must_use]
@@ -1100,9 +1083,9 @@ pub const fn settings_elsewhere(lang: Lang, section: SettingsSection) -> Option<
 
 /// The items of the current screen.
 impl App {
-    /// Builds the current screen.
+    /// Builds the current screen as the neutral screen model (spec/15 §11.3).
     #[must_use]
-    pub fn items(&self) -> Vec<Item> {
+    pub fn screen_model(&self) -> Vec<Item> {
         let lang = self.settings.language;
         let mut items = Vec::new();
         if self.screen == Screen::Main {
@@ -1171,19 +1154,6 @@ impl App {
             Screen::KeyStartAddress(view) => self.key_start_address(view, &mut items),
             Screen::YubiKey => self.yk_wizard_screen(&mut items),
             Screen::YubiKeyWalletIntro => self.yk_wallet_intro(&mut items),
-        }
-        if self.passphrase_unverified() {
-            disable_receive(&mut items);
-        }
-        // The copy just made says so at its own control (2026-11-12, `Wallet::copy_text`).
-        // 2026-11-20 (S4 P6): the mark holds the press; its control id is the table's.
-        if let Some(copied) = self.copied {
-            crate::ui::main_window::mark_copied(
-                lang,
-                &mut items,
-                crate::ui::cmd_table::id_of(copied.anchor),
-                copied.address,
-            );
         }
         items
     }

@@ -10,10 +10,10 @@
 //! display-only (address poisoning, spec/07 §12.3).
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, GLYPH_LINK, GLYPH_OPEN, GLYPH_SAVE, Item};
 use yw_core::lang::Lang;
 use yw_engine::explorer::ExplorerNet;
 use yw_engine::screen::address::{AddressKind, own_address_spans};
+use yw_engine::screen::model::{Ctl, GLYPH_LINK, GLYPH_OPEN, GLYPH_SAVE, Item};
 
 /// Command ids (18,400–18,659; the whole map is `ui::command_ids`).
 pub mod ids {

@@ -31,6 +31,18 @@ pub enum Act {
     Field(EditField),
     /// A masked credential edit (its text is never in the model).
     Cred(CredField),
+    /// Transitional (2026-11-24, spec/15 §11.4 S5-4 only): a Windows control id, which the
+    /// Windows lowering draws as that id. The screens flipped to this model with their ids as
+    /// they were, and name a press or a field family by family; the last S5-4 commit removes
+    /// this variant and [`From<u16>`] (as S3 D3 removed `Press::Legacy`).
+    Legacy(u16),
+}
+
+/// Transitional (2026-11-24, S5-4 only; see [`Act::Legacy`]).
+impl From<u16> for Act {
+    fn from(id: u16) -> Self {
+        Self::Legacy(id)
+    }
 }
 
 impl From<Press> for Act {

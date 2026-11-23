@@ -10,9 +10,9 @@ use yw_core::keyimport::ImportChain;
 use yw_core::lang::{Lang, Text};
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens::steps;
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::wallet::app_btc::BtcCtx;
 use yw_engine::wallet::app_keys::{KEY_START_STEPS, KeyStartView};
 

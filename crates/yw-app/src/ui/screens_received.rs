@@ -18,9 +18,9 @@ use yw_core::lang::Lang;
 use yw_core::sol::SolAddress;
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use yw_engine::received::{Incoming, RecvChain};
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::{Ctl, Item};
 
 /// Command ids of the received history (17,800–18,399; spec/04 §2.6, `ui::command_ids`).
 pub mod ids {
@@ -397,7 +397,7 @@ impl App {
             .map(|id| {
                 Ctl::icon(
                     id + 1,
-                    crate::ui::main_window::GLYPH_OPEN,
+                    yw_engine::screen::model::GLYPH_OPEN,
                     crate::ui::screens_links::T_EXPLORER_OPEN.get(self.settings.language),
                 )
             });

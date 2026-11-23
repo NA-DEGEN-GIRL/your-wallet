@@ -6,8 +6,8 @@ use yw_core::hypercore::{HcNetwork, WITHDRAW_FEE_USDC};
 use yw_core::lang::Lang;
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::wallet::app_hypercore::{HcAsset, HcFormKind};
 
 /// Command ids (13,450–13,499).

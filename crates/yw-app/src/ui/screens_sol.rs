@@ -16,12 +16,12 @@ use yw_core::sol::token::TokenHolding;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SplAllowEntry};
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_accounts::{AccountCard, AccountItem, SelectedLine};
 use yw_engine::badge::Badge;
 use yw_engine::meta::{BookChain, Tab};
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::wallet::app_book::{BookTarget, PromptPlace};
 use yw_engine::wallet::app_sol::SolAccountId;
 use yw_engine::wallet::{AppMode, Wallet};

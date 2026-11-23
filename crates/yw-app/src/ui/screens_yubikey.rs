@@ -13,9 +13,9 @@ use yw_core::yubikey::record::HwKeyRecord;
 use yw_core::zec::ZecNetwork;
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use text as t;
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::wallet::AppMode;
 use yw_engine::wallet::app_yubikey::text as yk;
 use yw_engine::wallet::app_yubikey::{

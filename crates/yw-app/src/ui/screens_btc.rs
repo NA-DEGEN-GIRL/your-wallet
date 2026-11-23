@@ -12,13 +12,13 @@ use yw_core::btc::{BtcMeta, BtcNetwork, FeeRate, Sats, Txid, encode_address};
 use yw_core::lang::{Lang, Text};
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use yw_engine::apikeys::KeyName;
 use yw_engine::badge::Badge;
 use yw_engine::btc::work::FeeQuote;
 use yw_engine::errors::ErrorCode;
 use yw_engine::meta::BookChain;
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::settings::BtcIndexer;
 use yw_engine::text::grouped;
 use yw_engine::wallet::app_book::{BookTarget, PromptPlace};

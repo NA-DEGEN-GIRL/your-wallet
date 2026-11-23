@@ -19,9 +19,9 @@
 //! code names them); the card is drawn here.
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_links::PickerEntry;
 use yw_engine::screen::AccountSource;
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::screen::text::{SOURCE_EVM_KEY, SOURCE_IMPORTED, SOURCE_WORDS};
 use yw_engine::wallet::app_hidden::Family;
 

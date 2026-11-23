@@ -45,6 +45,7 @@ fn english_key_start_screens() {
         app.keys.start.chain = chain;
         let mut items = Vec::new();
         app.key_start_intro(&mut items);
+        let items = crate::ui::lower::lowered(items);
         assert_english(&items, &[]);
         assert!(has_text(
             &items,
@@ -54,6 +55,7 @@ fn english_key_start_screens() {
     app.settings.language = Lang::Ko;
     let mut items = Vec::new();
     app.key_start_intro(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert!(has_text(
         &items,
         crate::ui::screens_keys::text::KEY_START_BACKUP.ko
@@ -99,6 +101,7 @@ fn english_recovery_phrase_section() {
     }
     let mut items = Vec::new();
     app.mn_settings_section(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, &labels);
     assert!(has_text(
         &items,
@@ -111,6 +114,7 @@ fn english_recovery_phrase_section() {
     app.mn.add_pick = true;
     let mut items = Vec::new();
     app.mn_pick_row(&mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, &labels);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -131,6 +135,7 @@ fn english_side_file_overlays_and_notices() {
         let mut items = Vec::new();
         app.meta_overlay(&mut items);
         app.journal_overlay(&mut items);
+        let items = crate::ui::lower::lowered(items);
         assert_english(&items, &[]);
     }
     app.sidecar.journal_closed = true;
@@ -138,6 +143,7 @@ fn english_side_file_overlays_and_notices() {
     let mut items = Vec::new();
     app.journal_closed_items(&mut items);
     app.journal_send_items(yw_engine::wallet::app_sidecar::SendChain::Sol, &mut items);
+    let items = crate::ui::lower::lowered(items);
     assert_english(&items, &[]);
     assert!(has_text(
         &items,

@@ -9,11 +9,11 @@ use yw_core::lang::Lang;
 use yw_core::zec::{ZecKeySource, ZecNetwork, format_zec, format_zec_and_zats};
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_accounts::AccountItem;
 use yw_engine::badge::Badge;
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::settings::ZecIndexer;
 use yw_engine::wallet::AppMode;
 use yw_engine::zec::rpc::ZecRpcError;

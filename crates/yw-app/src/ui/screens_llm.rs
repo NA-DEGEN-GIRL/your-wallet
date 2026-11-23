@@ -4,7 +4,6 @@
 //! and the privacy notice overlay shown when enabling.
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
 use yw_engine::apikeys::KeyName;
 use yw_engine::explain::config::DraftNotes;
 use yw_engine::explain::config::{
@@ -12,6 +11,7 @@ use yw_engine::explain::config::{
 };
 use yw_engine::explain::{ReasoningEffort, ResponseFormatMode};
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::{Ctl, Item};
 
 /// Command ids of the AI section (10,000–10,099; the whole map is `ui::command_ids`).
 pub mod ids {

@@ -113,7 +113,7 @@ fn shown(app: &App, card: bool) -> Vec<Item> {
     } else {
         app.hc_screen(&mut items);
     }
-    items
+    crate::ui::lower::lowered(items)
 }
 
 fn banners(items: &[Item]) -> Vec<(String, Tone)> {

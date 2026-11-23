@@ -179,7 +179,7 @@ yw-app/src/app/tests/s3_census.rs const EDIT_IDS cef47137e1217c41 mutable
 yw-app/src/app/tests/s3_census.rs const MASKED 980e9977cd0e5bff mutable
 yw-app/src/app/tests/s3_census.rs const SKIPPED 1fce95d34b5e9687 mutable
 yw-app/src/app/tests/s3_census.rs struct Census bdec54fb58ac452f mutable
-yw-app/src/app/tests/s3_census.rs impl Census 828af85387903066 mutable
+yw-app/src/app/tests/s3_census.rs impl Census f9914d734031dffe mutable
 yw-app/src/app/tests/s3_census.rs struct Seen 1946e68569be6866 mutable
 yw-app/src/app/tests/s3_census.rs impl Seen dc1d586829b57109 mutable
 yw-app/src/app/tests/s3_census.rs impl DropforCensus 692f66a11f09c9dc mutable

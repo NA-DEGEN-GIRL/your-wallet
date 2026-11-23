@@ -15,8 +15,8 @@ use yw_core::yubikey::record::{HwKeyRecord, RecordedSlot};
 use yw_core::lang::Lang;
 
 use crate::app::App;
-use crate::ui::main_window::Item;
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::Item;
 use yw_engine::screen::{LastBalance, RemovedAccount};
 
 /// The fixed texts of the removal block (spec/14).
@@ -169,9 +169,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{LastBalance, RemovedAccount, T_BALANCE_SCOPE, T_BALANCE_UNKNOWN, removed_items};
-    use crate::ui::main_window::Item;
     use yw_core::lang::{Lang, has_hangul};
     use yw_engine::screen::Tone;
+    use yw_engine::screen::model::Item;
 
     /// The English block: every text but the (data) label is free of Hangul.
     #[test]

@@ -3,10 +3,10 @@
 
 use crate::app::App;
 use crate::app_extension::{CHROME_EXTENSIONS_URL, ExtensionStatus};
-use crate::ui::main_window::{Ctl, Item};
 use yw_core::lang::Lang;
 use yw_engine::screen::Tone;
 use yw_engine::screen::facts::ScreenFacts;
+use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::wallet::AppMode;
 use yw_engine::wallet::app_reset::RESET_PHRASE;
 use yw_engine::wallet_files::FOLDER_PREFIX;
@@ -423,7 +423,6 @@ impl App {
             text::HOLD_TO_RESET.get(lang).to_owned()
         };
         items.push(Item::Hold {
-            id: ids::RESET_HOLD,
             label,
             progress: self.reset.progress,
             enabled: self.reset.phrase_ok,
@@ -604,6 +603,7 @@ mod tests {
         app.extension_link(&mut items);
         app.wait_stalled(&mut items);
         App::reset_link(Lang::En, &mut items, "help");
+        let items = crate::ui::lower::lowered(items);
         let texts = fixed_texts(&items);
         assert!(texts.iter().any(|text| text == "Reset wallet"), "{texts:?}");
         for text in &texts {

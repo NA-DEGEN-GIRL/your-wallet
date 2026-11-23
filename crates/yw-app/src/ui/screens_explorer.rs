@@ -3,9 +3,9 @@
 //! button rows other screens add next to a hash or an address. The logic is `app_explorer`.
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, GLYPH_OPEN, Item};
 use yw_engine::explorer::{ExplorerNet, LinkKind, TEMPLATE_MAX_BYTES};
 use yw_engine::screen::Tone;
+use yw_engine::screen::model::{Ctl, GLYPH_OPEN, Item};
 
 /// Command ids (17,200–17,709; the whole map is `ui::command_ids`).
 pub mod ids {

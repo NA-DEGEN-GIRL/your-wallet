@@ -300,6 +300,11 @@ pub struct App {
     /// differed, and credential units that differed from the handler's own read. Tests assert 0.
     #[cfg(debug_assertions)]
     pub(crate) form_mismatch: core::cell::Cell<u32>,
+    /// Debug builds (2026-11-24, spec/15 §11.4 S5-4): drawn presses whose control id maps back
+    /// to another control's press and credential edits that came with text, counted by the
+    /// lowering of the screen model (`App::items`, `ui::lower::Lowered`). The census asserts 0.
+    #[cfg(debug_assertions)]
+    pub(crate) press_mismatch: core::cell::Cell<u32>,
     /// Tests (debug builds): every credential read as (the id of the press being handled,
     /// field) (2026-11-20, S4 P6: `cmd_table::id_of(last_press)`; before, `self.command`).
     #[cfg(all(test, debug_assertions))]
@@ -627,6 +632,8 @@ impl App {
             controls: ControlSet::default(),
             #[cfg(debug_assertions)]
             form_mismatch: core::cell::Cell::new(0),
+            #[cfg(debug_assertions)]
+            press_mismatch: core::cell::Cell::new(0),
             #[cfg(all(test, debug_assertions))]
             cred_reads: Vec::new(),
             #[cfg(debug_assertions)]
