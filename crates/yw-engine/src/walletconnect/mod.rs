@@ -17,6 +17,8 @@ pub mod verify;
 pub mod worker;
 
 #[cfg(test)]
+mod qr_round_trip;
+#[cfg(test)]
 mod tests;
 
 use yw_core::approval::{

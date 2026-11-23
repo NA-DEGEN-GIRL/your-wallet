@@ -1,5 +1,7 @@
 //! UI modules (spec/04 §1.8): the main window layout and screens, secret windows W01–W10, the
-//! approval window's input map, the receive QR and the theme. The A01 window itself is
+//! approval window's input map, the receive QR and the theme. Since 2026-11-24 (spec/15 §11.4
+//! S5-2) also `lower`, the neutral screen model (`yw_engine::screen::model`) lowered into the main
+//! window's item list. The A01 window itself is
 //! `crate::app_approval`; the approval interaction/queue rules, the A01 content model, the text
 //! layout and the secret input buffers are yw-engine's (below).
 //!
@@ -13,6 +15,7 @@
 pub mod approval_input;
 pub mod cmd_table;
 pub mod command_ids;
+pub mod lower;
 pub mod main_window;
 pub mod qr;
 pub mod removed;

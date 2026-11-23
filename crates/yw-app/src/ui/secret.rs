@@ -1900,9 +1900,9 @@ impl SecretForm {
             let shown = yw_core::evm::address::parse_address(address)
                 .map_or_else(|_| address.clone(), yw_core::evm::Address::to_checksum);
             let rect = Rect::new(margin, y, width, px(26));
-            let spans = crate::ui::theme::own_address_spans(
+            let spans = yw_engine::screen::address::own_address_spans(
                 &shown,
-                crate::ui::theme::AddressKind::Evm,
+                yw_engine::screen::address::AddressKind::Evm,
                 false,
             );
             if !crate::ui::theme::paint_spans(dc, fonts, &spans, rect, theme::TEXT, theme::FOCUS) {

@@ -830,7 +830,7 @@ impl App {
                     items.push(crate::ui::screens::own_address_row(
                         self.settings.language,
                         &address,
-                        crate::ui::theme::AddressKind::Zcash,
+                        yw_engine::screen::address::AddressKind::Zcash,
                         ids::CARD_COPY,
                         !self.passphrase_unverified(),
                         self.explorer_address_icon(
@@ -1050,7 +1050,7 @@ impl App {
                             row,
                         ),
                         &to,
-                        crate::ui::theme::AddressKind::Zcash,
+                        yw_engine::screen::address::AddressKind::Zcash,
                         Vec::new(),
                     );
                 }

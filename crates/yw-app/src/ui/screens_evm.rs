@@ -757,7 +757,7 @@ impl App {
                         index,
                     ),
                     &address.to_checksum(),
-                    crate::ui::theme::AddressKind::Evm,
+                    yw_engine::screen::address::AddressKind::Evm,
                     save.into_iter().collect(),
                 );
             }
@@ -964,7 +964,7 @@ impl App {
                 .filter(|offset| *offset < ids::TOKEN_COPY_SPAN)
                 .map(|offset| ids::TOKEN_COPY_BASE.saturating_add(offset)),
             &row.address.to_checksum(),
-            crate::ui::theme::AddressKind::Evm,
+            yw_engine::screen::address::AddressKind::Evm,
             buttons,
         );
     }

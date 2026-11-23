@@ -21,8 +21,9 @@ const build = [{ kind: "build", target: null }];
 /**
  * A workspace whose closures are exactly the allowlists: yw-core links its runtime crates and
  * builds with its build-only ones; yw-engine links yw-core, yw-json and yw-platform (and through
- * yw-core, its crates); yw-win links windows-* and yw-platform; yw-app links qrcodegen and the
- * five local crates; yw-host links yw-json and yw-win (and through yw-win, yw-platform).
+ * yw-core, its crates) and qrcodegen (2026-11-24, S5-2: before, yw-app linked it directly); yw-win
+ * links windows-* and yw-platform; yw-app links the five local crates (and through yw-engine,
+ * qrcodegen); yw-host links yw-json and yw-win (and through yw-win, yw-platform).
  */
 function baseline() {
   const packages = [];
@@ -66,7 +67,7 @@ function baseline() {
   edge(localId("yw-win"), localId("yw-platform"), normal);
   for (const local of ["yw-core", "yw-json", "yw-platform"]) edge(localId("yw-engine"), localId(local), normal);
   for (const local of ["yw-core", "yw-engine", "yw-json", "yw-platform", "yw-win"]) edge(localId("yw-app"), localId(local), normal);
-  edge(localId("yw-app"), registryId("qrcodegen", "1.8.0"), normal);
+  edge(localId("yw-engine"), registryId("qrcodegen", "1.8.0"), normal);
   for (const local of ["yw-json", "yw-win"]) edge(localId("yw-host"), localId(local), normal);
   return {
     meta: {
@@ -91,7 +92,10 @@ test("a graph equal to the allowlists passes", () => {
   assert.ok(result.ok.includes("yw-platform deps check OK: 0 crates (x86_64-pc-windows-msvc)"));
   const coreCount = result.ok.find((line) => line.startsWith("yw-core deps check OK: "));
   assert.ok(coreCount !== undefined);
-  assert.ok(result.ok.includes(coreCount.replace("yw-core", "yw-engine")), "yw-engine reaches exactly yw-core's crates");
+  const count = (line) => Number(line.split(": ")[1].split(" ")[0]);
+  const engineCount = result.ok.find((line) => line.startsWith("yw-engine deps check OK: "));
+  assert.ok(engineCount !== undefined);
+  assert.equal(count(engineCount), count(coreCount) + 1, "yw-engine reaches yw-core's crates and qrcodegen");
   assert.ok(result.listing.some((row) => row.startsWith("yw-core\tbuild\tcc=1.4.2\t")));
 });
 
@@ -151,9 +155,24 @@ test("forbidden features, foreign sources, proc-macros and unreviewed build scri
 
 test("an allowlisted crate that is no longer reached must be pruned", () => {
   const { meta, node } = baseline();
-  const app = node(localId("yw-app"));
-  app.deps = app.deps.filter((dep) => dep.pkg !== registryId("qrcodegen", "1.8.0"));
-  assert.deepEqual(run(meta).errors, ["yw-app: qrcodegen=1.8.0 allowlisted but not reached (prune or fix phase)"]);
+  const engine = node(localId("yw-engine"));
+  engine.deps = engine.deps.filter((dep) => dep.pkg !== registryId("qrcodegen", "1.8.0"));
+  assert.deepEqual(run(meta).errors, [
+    "yw-engine: qrcodegen=1.8.0 allowlisted but not reached (prune or fix phase)",
+    "yw-app: qrcodegen=1.8.0 allowlisted but not reached (prune or fix phase)",
+  ]);
+});
+
+test("yw-app reaches qrcodegen only through yw-engine (2026-11-24, S5-2)", () => {
+  const { meta, edge } = baseline();
+  edge(localId("yw-app"), registryId("qrcodegen", "1.8.0"), normal);
+  const { errors, ok } = run(meta);
+  assert.deepEqual(errors, ["yw-app -> qrcodegen=1.8.0: direct dependency not allowed (only through yw-engine)"]);
+  assert.ok(!ok.some((line) => line.startsWith("yw-app ")));
+  // A build-only direct edge is refused too.
+  const second = baseline();
+  second.edge(localId("yw-app"), registryId("qrcodegen", "1.8.0"), build);
+  assert.ok(run(second.meta).errors.includes("yw-app -> qrcodegen=1.8.0: direct dependency not allowed (only through yw-engine)"));
 });
 
 test("local crates outside the policy, unknown members and missing members", () => {

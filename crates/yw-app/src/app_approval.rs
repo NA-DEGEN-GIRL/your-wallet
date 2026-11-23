@@ -386,7 +386,7 @@ impl Builder<'_, '_> {
         // An address line (whole or in the display model's 4-character groups) is laid out
         // whole; `draw_line` emphasizes its ends (2026-11-12, spec/04 §3.3).
         let whole = (role == FontRole::Mono)
-            .then(|| crate::ui::theme::whole_address(text))
+            .then(|| yw_engine::screen::address::whole_address(text))
             .flatten();
         let text = whole.as_ref().map_or(text, |(address, _)| address.as_str());
         let height = line_height(self.dc, self.fonts, role);
@@ -671,8 +671,8 @@ fn build_layout(
                 };
                 builder.gap(2);
                 let has_address = value.split('\n').any(|line| {
-                    crate::ui::theme::address_with_notes(line).is_some()
-                        || (!*mono && crate::ui::theme::whole_address(line).is_some())
+                    yw_engine::screen::address::address_with_notes(line).is_some()
+                        || (!*mono && yw_engine::screen::address::whole_address(line).is_some())
                 });
                 if has_address {
                     // Addresses on their own lines of a text field (the SPL mint and token
@@ -680,12 +680,15 @@ fn build_layout(
                     // its notes (`0x… [일반 계정(EOA)]`) is drawn whole with the notes on the
                     // next line (spec/04 §3.3, 2026-11-14).
                     for line in value.split('\n') {
-                        if let Some((address, notes)) = crate::ui::theme::address_with_notes(line) {
+                        if let Some((address, notes)) =
+                            yw_engine::screen::address::address_with_notes(line)
+                        {
                             builder.text(address, FontRole::Mono, theme::TEXT, x, w);
                             builder.text(notes, FontRole::Body, theme::TEXT, x, w);
                             continue;
                         }
-                        let line_role = if crate::ui::theme::whole_address(line).is_some() {
+                        let line_role = if yw_engine::screen::address::whole_address(line).is_some()
+                        {
                             FontRole::Mono
                         } else {
                             role
@@ -790,7 +793,7 @@ fn draw_line(
     widths: &HashMap<(FontRole, char), i32>,
 ) {
     if line.font == FontRole::Mono
-        && let Some(spans) = crate::ui::theme::address_spans(&line.text)
+        && let Some(spans) = yw_engine::screen::address::address_spans(&line.text)
     {
         let rect = Rect::new(
             line.x,
@@ -1969,12 +1972,13 @@ impl App {
                 // (spec/04 §3.3, 2026-11-12); an address with notes (`0x… [내 계정: 계정 1]`)
                 // too, the notes on the next row (2026-11-14).
                 let mut pieces: Vec<(String, FontRole)> = Vec::with_capacity(2);
-                if let Some((address, notes)) = crate::ui::theme::address_with_notes(line) {
-                    if let Some((address, _)) = crate::ui::theme::whole_address(address) {
+                if let Some((address, notes)) = yw_engine::screen::address::address_with_notes(line)
+                {
+                    if let Some((address, _)) = yw_engine::screen::address::whole_address(address) {
                         pieces.push((address, FontRole::Mono));
                     }
                     pieces.push((notes.to_owned(), FontRole::Body));
-                } else if let Some((address, _)) = crate::ui::theme::whole_address(line) {
+                } else if let Some((address, _)) = yw_engine::screen::address::whole_address(line) {
                     pieces.push((address, FontRole::Mono));
                 } else {
                     pieces.push((line.to_owned(), FontRole::Body));
@@ -2115,7 +2119,7 @@ impl App {
             );
             dc.set_text_color(header_text);
             let emphasized = *role == FontRole::Mono
-                && crate::ui::theme::address_spans(value).is_some_and(|spans| {
+                && yw_engine::screen::address::address_spans(value).is_some_and(|spans| {
                     crate::ui::theme::paint_spans(
                         &mut dc,
                         fonts,

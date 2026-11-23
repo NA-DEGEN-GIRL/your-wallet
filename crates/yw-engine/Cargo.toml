@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+qrcodegen.workspace = true
 yw-core.workspace = true
 yw-json.workspace = true
 yw-platform.workspace = true

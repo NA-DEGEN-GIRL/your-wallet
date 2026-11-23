@@ -12,11 +12,28 @@
 //! files moved here unchanged, with their texts (catalogue [`text`]): the banner [`Tone`] and its
 //! tag words (was yw-app `ui::main_window::Tone`; its colors stay in the shell,
 //! `ui::main_window::tone_colors`), the receive QR choice [`EvmQrKind`] and its payloads (was
-//! `ui::qr`; the `qrcodegen` encoding and painting stay there), the removal block's
+//! `ui::qr`; the `qrcodegen` encoding and painting stayed there until 2026-11-24 S5-2, which moved
+//! the encoding to [`qr`]), the removal block's
 //! [`RemovedAccount`] and [`LastBalance`] (was `ui::removed`), an account's key source
 //! [`AccountSource`] with the card roles and source words (was `ui::screens_accounts`), the EVM
 //! activity row [`ActivityRowView`] (was `ui::screens_evm`) and the main window timer period
 //! [`MAIN_TIMER_MS`] (was `shell_msg`). Before, the wallet named them in those shell modules.
+//!
+//! 2026-11-24 (spec/15 §11.3, §11.4 S5-2): `screen.rs` became this folder, with the neutral screen
+//! model (spec/15 §11.3) the screens are going to build: [`model`] (the item and control kinds,
+//! one per kind of the Windows `ui::main_window::Item`, a control naming its [`crate::cmd::Press`]
+//! or field instead of a control id; Windows lowers it into its own item list, yw-app
+//! `ui::lower`), [`facts`] (the shell facts a screen asks, [`facts::ScreenFacts`], and the
+//! platform flags that only narrow what is drawn, [`facts::PlatformFlags`]), [`address`] (how an
+//! address line is cut into its emphasized spans; was yw-app `ui::theme`, unchanged) and [`qr`]
+//! (the receive QR's module matrix over `qrcodegen`, ECC Medium; was yw-app `ui::qr::encode`, so
+//! both platforms draw the same modules, spec/15 §4.1). The screens still build the Windows list
+//! until S5-4; the painting stays in the shell.
+
+pub mod address;
+pub mod facts;
+pub mod model;
+pub mod qr;
 
 use yw_core::evm::address::Address;
 use yw_core::lang::Lang;

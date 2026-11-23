@@ -280,7 +280,7 @@ impl App {
         &self,
         network: impl Into<ExplorerNet>,
         address: &str,
-        kind: crate::ui::theme::AddressKind,
+        kind: yw_engine::screen::address::AddressKind,
         copy: u16,
         enabled: bool,
         card: u16,

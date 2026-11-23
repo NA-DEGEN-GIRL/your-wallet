@@ -1268,7 +1268,7 @@ impl App {
                         index,
                     ),
                     &row.counterparty,
-                    crate::ui::theme::AddressKind::Bitcoin,
+                    yw_engine::screen::address::AddressKind::Bitcoin,
                     save.into_iter().collect(),
                 );
             }
@@ -1502,7 +1502,7 @@ impl App {
             items.push(crate::ui::screens::own_address_row(
                 self.settings.language,
                 &address,
-                crate::ui::theme::AddressKind::Bitcoin,
+                yw_engine::screen::address::AddressKind::Bitcoin,
                 ids::CARD_COPY,
                 true,
                 self.explorer_address_icon(
@@ -2282,7 +2282,6 @@ mod tests {
     };
     use crate::app::{App, Paths};
     use crate::ui::main_window::{Ctl, Item};
-    use crate::ui::theme::address_spans;
     use yw_core::lang::Lang;
     use yw_engine::apikeys::ApiKeys;
     use yw_engine::errors::ErrorCode;
@@ -2291,6 +2290,7 @@ mod tests {
     use yw_engine::network::{BtcNet, NetworkId};
     use yw_engine::screen::SettingsSection;
     use yw_engine::screen::Tone;
+    use yw_engine::screen::address::address_spans;
     use yw_engine::settings::Settings;
     use yw_engine::wallet::app_btc::{BTC_IMPORT_NOTE, BTC_MAX_ACTIVITY_ROWS, BtcFeeChoice};
     use yw_engine::wallet::app_sol::ReviewBlocker;

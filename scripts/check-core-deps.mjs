@@ -25,7 +25,8 @@ cc=1.4.2:b find-msvc-tools=0.1.10:b shlex=2.0.1:b version_check=0.9.5:b`);
 const CORE_SOL = table(`ed25519-dalek=2.2.0:n ed25519=2.2.3:n signature=2.2.0:n curve25519-dalek=4.1.3:n
 rustc_version=0.4.1:b semver=1.0.28:b`);
 const WIN = table(`windows-sys=0.61.2:n windows-link=0.2.1:n`);
-const APP = table(`qrcodegen=1.8.0:n`);
+// 2026-11-24(spec/15 §4.1, §11.4 S5-2): 화면 모델의 QR과 함께 yw-app에서 yw-engine으로 옮겼다(전 이름 APP).
+const QR = table(`qrcodegen=1.8.0:n`);
 
 const CORE = { ...CORE_EVM, ...(PHASES.has("sol") ? CORE_SOL : {}) };
 export const POLICY = {
@@ -34,9 +35,11 @@ export const POLICY = {
   // 2026-11-17: yw-platform(의존성 0) 추가. yw-host는 yw-win을 거쳐 링크한다.
   "yw-platform": { allow: {}, local: [] },
   // 2026-11-17(spec/15 §11.4 S2): yw-engine은 yw-core 폐포만(yw-win·windows-sys 없음).
-  "yw-engine": { allow: CORE, local: ["yw-core", "yw-json", "yw-platform"] },
+  // 2026-11-24(S5-2): 그리고 qrcodegen(화면 모델의 QR, spec/15 §4.1).
+  "yw-engine": { allow: { ...CORE, ...QR }, local: ["yw-core", "yw-json", "yw-platform"] },
   "yw-win": { allow: WIN, local: ["yw-platform"] },
-  "yw-app": { allow: { ...CORE, ...WIN, ...APP }, local: ["yw-core", "yw-engine", "yw-json", "yw-platform", "yw-win"] },
+  // indirect: 폐포에는 있어도 직접 의존하면 안 되는 크레이트(2026-11-24 S5-2: qrcodegen은 yw-engine을 거쳐서만, spec.md D5).
+  "yw-app": { allow: { ...CORE, ...WIN, ...QR }, local: ["yw-core", "yw-engine", "yw-json", "yw-platform", "yw-win"], indirect: ["qrcodegen"] },
   "yw-host": { allow: WIN, local: ["yw-json", "yw-platform", "yw-win"] },
 };
 export const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);
@@ -84,6 +87,10 @@ export function checkMetadata(meta) {
         if (kinds.includes(null)) queue.push([d.pkg, mode]);
         if (kinds.includes("build")) queue.push([d.pkg, "b"]);
       }
+    }
+    for (const d of nodes.get(rootId).deps) {
+      const p = pkgs.get(d.pkg);
+      if ((policy.indirect ?? []).includes(p.name)) errors.push(`${root} -> ${key(p)}: direct dependency not allowed (only through yw-engine)`);
     }
     const reached = new Set();
     for (const [id, mode] of seen) {

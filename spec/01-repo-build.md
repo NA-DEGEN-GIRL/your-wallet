@@ -117,9 +117,9 @@ crates/
   yw-engine/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, catalogues.rs, errors.rs, text.rs, network.rs, logging.rs(형식·수준·`LogSink`),
                               yubikey.rs(`CardSource`·카드 작업, [10](10-yubikey.md)), wallet_files.rs, secure_field.rs, badge.rs,
                               approval/{mod.rs, interaction.rs, text.rs, layout.rs, flow.rs(2026-11-19 S4 B3: 순수 승인 흐름 판단과 창 ↔ 흐름 형식)},
-                              settings.rs, apikeys.rs(평문 형식), app_store.rs(앱 데이터 폴더 trait `AppStore`, 2026-11-20 S4 P1), services.rs(선택 네트워크 작업자의 플랫폼 공장 `Services`·`WcPlatform`, 2026-11-20 S4 P2), secret/{mod.rs, text.rs}(비밀 창 종류·흐름 단계·창 효과 `SecretEffect`와 비밀 창 문구, 2026-11-20 S4 P7a1; 표시 창 열기·양식 조작 `SecretFormOp`·클립 지우기 효과, 2026-11-20 S4 P7b), screen.rs(설정 구역 `SettingsSection`·스크롤 기억 자리 `ScrollPlace`·화면 진입 위치 `EnteredAt`, 셸과 논리가 함께 쓰는 평범한 자료, 2026-11-20 S4 P10a), explorer.rs, token_view.rs, meta.rs, hypercore.rs,
+                              settings.rs, apikeys.rs(평문 형식), app_store.rs(앱 데이터 폴더 trait `AppStore`, 2026-11-20 S4 P1), services.rs(선택 네트워크 작업자의 플랫폼 공장 `Services`·`WcPlatform`, 2026-11-20 S4 P2), secret/{mod.rs, text.rs}(비밀 창 종류·흐름 단계·창 효과 `SecretEffect`와 비밀 창 문구, 2026-11-20 S4 P7a1; 표시 창 열기·양식 조작 `SecretFormOp`·클립 지우기 효과, 2026-11-20 S4 P7b), screen/{mod.rs(설정 구역 `SettingsSection`·스크롤 기억 자리 `ScrollPlace`·화면 진입 위치 `EnteredAt`, 셸과 논리가 함께 쓰는 평범한 자료, 2026-11-20 S4 P10a; 2026-11-24 S5-2 전에는 screen.rs), model.rs(중립 화면 모델), facts.rs(`ScreenFacts`·`PlatformFlags`), address.rs(주소 강조 구간), qr.rs(QR 모듈 행렬, `qrcodegen`), 2026-11-24 S5-2}, explorer.rs, token_view.rs, meta.rs, hypercore.rs,
                               explain/, rpc/{mod.rs, evm.rs}, flow/evm/, sol/, btc/, zec/, received/,
-                              walletconnect/{mod.rs, engine.rs, store.rs, verify.rs, qr_decode.rs, worker.rs, tests.rs},
+                              walletconnect/{mod.rs, engine.rs, store.rs, verify.rs, qr_decode.rs, qr_round_trip.rs(시험, 2026-11-24 S5-2), worker.rs, tests.rs},
                               browser/{mod.rs, chain_params.rs, dispatch.rs, envelope.rs, grants.rs, params.rs, read.rs}, events.rs,
                               workers/{mod.rs, journal.rs, journal_btc.rs, journal_zec.rs, rpc.rs, key.rs, key/{mnemonics.rs, platform.rs, yubikey.rs, yubikey/*}},
                               approval/view.rs, testkit.rs(시험 도우미, 문서 숨김; 2026-11-23 S4d E1부터 yw-app 시험이 지갑의 크레이트 안 단계에 닿는 `WalletTestExt`·`FlowTestExt`·`SessionTestExt`도), wallet/{mod.rs(`Wallet`과 그 형·핵심 처리기, 2026-11-23 S4d E1에 yw-app `app/wallet.rs`에서 옮김), text.rs, app_*.rs(처리기 묶음마다, `app_approval.rs`는 승인 흐름 반쪽), approval_flow.rs, secret_session.rs, lock.rs}(지갑, 2026-11-23 S4d E1에 yw-app에서 옮김, [15] §11.4 S4), probe.rs(지갑 코드의 시험 관찰점, 문서 숨김; 받는 쪽은 yw-app 시험 이음새만 단다, 2026-11-23 S4d E0b),
@@ -137,7 +137,7 @@ crates/
                   explain_transport.rs(LLM `WinHTTP` 전송, 2026-11-17; 2026-11-20 S4 P2부터 `Services::llm`인 `llm_factory`),
                   explorer_launcher.rs(`explorer.exe`로 링크·폴더 열기 `Launcher`, 2026-11-22 S4d E0c에 `app_explorer`에서 옮김),
                   wc_platform.rs(`WalletConnect`의 Windows 플랫폼 `WsConnector`·`WinWcPlatform`, 2026-11-22 S4d E0c에 `app_walletconnect`에서 옮김),
-                  ui/{main_window, screens/*, approval_input(승인 창의 신뢰 입력 표본 `TrustedSignals`·순수 메시지 지도 `map_msg`/`map_key`·`ApprovalInput`을 만드는 `window_input`, 2026-11-19 S4 B2·B6; 표 시험 approval_input_tests), secret, qr, theme, cmd_table(컨트롤 id → `Cmd` 표, 2026-11-18 S3; 같은 날 B5부터 편집 칸 id ↔ `EditField`/`CredField`와 누름 입력 `capture`), tour_forms(창 있는 폼 시험, 개발 전용 `#[ignore]`, 2026-11-18 S3 B5), tour_secrets(창 있는 비밀 창 특성화, 개발 전용 `#[ignore]`, 2026-11-18 S4 A7)}.rs},
+                  ui/{main_window, lower(중립 화면 모델 → `main_window::Item`, 2026-11-24 S5-2), screens/*, approval_input(승인 창의 신뢰 입력 표본 `TrustedSignals`·순수 메시지 지도 `map_msg`/`map_key`·`ApprovalInput`을 만드는 `window_input`, 2026-11-19 S4 B2·B6; 표 시험 approval_input_tests), secret, qr, theme, cmd_table(컨트롤 id → `Cmd` 표, 2026-11-18 S3; 같은 날 B5부터 편집 칸 id ↔ `EditField`/`CredField`와 누름 입력 `capture`), tour_forms(창 있는 폼 시험, 개발 전용 `#[ignore]`, 2026-11-18 S3 B5), tour_secrets(창 있는 비밀 창 특성화, 개발 전용 `#[ignore]`, 2026-11-18 S4 A7)}.rs},
                   app/{secret_seam.rs, tests/{s3_census.rs, s3_census/*.txt, s4_frozen.rs, s4_flow/{flow, lifecycle, input, reentry, headless, frozen-tests, frozen-helpers}.txt, s4_secret.rs(기록 비밀 호스트와 창 없는 비밀 세션 시험, 2026-11-20 S4 P8), s4_results.rs(소스 검사 S5: 효과를 낸 뒤 그 결과를 읽지 않음, 2026-11-20 S4 P9), s4_secret/{secret, lock}.txt}}}
                   (S3·S4 특성화 시험과 골든, `cfg(test)`, [09](09-testing.md) §2.1; 2026-11-20 S4a 끝 Z-a에 적음)
                   (배치 [04](04-app-ui.md) §1.8, EVM 모듈 이름 [03](03-evm.md) §0; 2026-11-17 S2: errors·text·network·logging(형식)·
@@ -264,8 +264,9 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 - 2026-11-21 S4 W4에서 더한 것([15](15-android.md) §11.4 S4, [04](04-app-ui.md) §1.3): `effect`에 `Effect::ScrollTop` — 화면은 그대로 두고 주 화면의 스크롤 위치만 맨 위로(S14 줄 `편집`; 기억한 위치·휠 미끄러짐은 그대로, 답 없음). 전에는 `App::on_book_row`가 셸의 위치를 직접 썼다. `Debug`는 이름만 보인다. (2026-11-21 주인 결정: 이 변형을 받아들였다 — 사전 조사가 주인 승인을 요구한 `Effect` 확장인데 W4가 승인 전에 더했으므로 [15] §18 20으로 물었고, S4c 둘째 묶음에서 닫았다.)
 - 2026-11-22 S4 W14a에서 더한 것([15](15-android.md) §11.4 S4, [04](04-app-ui.md) §1.3·§3.5): `approval::flow::ApprovalEffect`에 `RepaintAi { shown, body_only }` — AI 설명 패널의 상태가 바뀌면 AI 본문과 승인 창을, 요청이 기다리는 동안 1초마다 AI 본문만 다시 그리게 한다(답 없음). 전에는 AI 설명의 흐름 fn `ai_after`·`ai_tick`이 창을 직접 무효화했다. `Debug`는 번호·플래그만 보인다. (주인 상시 결정(2026-11-21): 권고안 — 사전 조사가 `Effect` 확장에 주인 승인을 요구하므로 [15] §18 23에 적고 닫았다.)
 - 2026-11-22 S4c W15에서 더한 것([15](15-android.md) §11.4 S4·§18 25, [04](04-app-ui.md) §1.3·§5.1; 2026-11-22 S4c 끝 Z-c에 이 목록에 적음, 전에는 W15가 [04] §1.3에만 적었다): `cmd`에 셸의 평범한 자료 진입 `Cmd::Activate`(두 번째 실행, Windows `WM_YW_ACTIVATE`), `Cmd::Input`(앱 창의 키·버튼 입력, 유휴 시계)과 `Cmd::Tick { now_ms, part: TickPart }`(주 타이머의 지갑 몫 하나, `TickPart::{Idle, Wait, ResetHold, Copied, Evm, HyperCore, Sol, Btc, Zec, Received, ReadsDue}`; 셸이 몫마다 보내고 몫마다 비운다). 잠금·종료·작업자 사건은 `Cmd`가 아니다 — 잠금과 종료는 지갑 절반과 셸 합성이고, 작업자 사건은 비밀이 실릴 수 있어 yw-app의 형식 있는 진입 `Wallet::worker_event`로 들어간다. `Debug`는 이름, 시각과 몫만 보인다.
-- 2026-11-22 S4d E0a에서 옮긴 것([15](15-android.md) §11.4 S4, [14](14-language.md) §5): 지갑 코드가 yw-app 셸 파일에서 가져다 쓰던 타입·문구·순수 도우미가 엔진으로 왔다(뜻은 그대로). `screen`에 띠 색조 `Tone`과 꼬리표 문구(색은 yw-app `ui::main_window::tone_colors`에 남는다), 받기 QR 선택 `EvmQrKind`와 `evm_payload`·`evm_receive_payload`(`qrcodegen` 부호화·그리기는 yw-app `ui::qr`), 지우는 계정 블록의 자료 `RemovedAccount`·`LastBalance`, 계정 출처 `AccountSource`와 `evm_card_role`·`sol_card_role`·`btc_card_role`·출처 문구, EVM 활동 줄 `ActivityRowView`, 주 타이머 주기 `MAIN_TIMER_MS`(전에는 yw-app `shell_msg`)와 새 카탈로그 `screen::text`. `secret`에 W08·S22의 2초 누르기 `HoldGate`·`BACKUP_ACK_HOLD_MS`, W08/W09가 보일 비밀의 그릇 `DisplaySecret`(`Debug`는 `[REDACTED]`, 효과·`Cmd`에는 들지 않는다)과 T-BACKUP-FAIL `backup_retry_text`. `meta`에 `rollback_text`, `wallet_files`에 초기화 폴더 시각 `stamp`, `text`에 4자 묶음 `grouped`, `badge`에 `custom_chain_badge`, `approval::flow`에 `is_release`, `explain::config`에 `DraftNotes`. 제출 값 `Submission`은 S4d E1까지 yw-app `ui::secret`에 남는다(얼린 도우미가 그 경로를 부른다). (E1에 `yw_engine::secret::Submission`으로 옮겼다.)
+- 2026-11-22 S4d E0a에서 옮긴 것([15](15-android.md) §11.4 S4, [14](14-language.md) §5): 지갑 코드가 yw-app 셸 파일에서 가져다 쓰던 타입·문구·순수 도우미가 엔진으로 왔다(뜻은 그대로). `screen`에 띠 색조 `Tone`과 꼬리표 문구(색은 yw-app `ui::main_window::tone_colors`에 남는다), 받기 QR 선택 `EvmQrKind`와 `evm_payload`·`evm_receive_payload`(`qrcodegen` 부호화·그리기는 yw-app `ui::qr`; 2026-11-24 S5-2부터 부호화는 `screen::qr`), 지우는 계정 블록의 자료 `RemovedAccount`·`LastBalance`, 계정 출처 `AccountSource`와 `evm_card_role`·`sol_card_role`·`btc_card_role`·출처 문구, EVM 활동 줄 `ActivityRowView`, 주 타이머 주기 `MAIN_TIMER_MS`(전에는 yw-app `shell_msg`)와 새 카탈로그 `screen::text`. `secret`에 W08·S22의 2초 누르기 `HoldGate`·`BACKUP_ACK_HOLD_MS`, W08/W09가 보일 비밀의 그릇 `DisplaySecret`(`Debug`는 `[REDACTED]`, 효과·`Cmd`에는 들지 않는다)과 T-BACKUP-FAIL `backup_retry_text`. `meta`에 `rollback_text`, `wallet_files`에 초기화 폴더 시각 `stamp`, `text`에 4자 묶음 `grouped`, `badge`에 `custom_chain_badge`, `approval::flow`에 `is_release`, `explain::config`에 `DraftNotes`. 제출 값 `Submission`은 S4d E1까지 yw-app `ui::secret`에 남는다(얼린 도우미가 그 경로를 부른다). (E1에 `yw_engine::secret::Submission`으로 옮겼다.)
 - 2026-11-23 S4d E0b–E4에서 더한 것([15](15-android.md) §11.4 S4·§18 27·28, 계획 D-22; 2026-11-23 S4 끝 Z-d에 이 목록에 적음): `wallet` — 지갑 상태 `Wallet`과 그 형(`AppMode`·`Screen`·`Purpose` 등), 처리기 묶음 `wallet::app_*`, 승인 흐름의 반쪽 `wallet::app_approval`, 게이트를 쓰는 유일한 곳 `wallet::approval_flow::ApprovalFlow`, 비밀 세션 `wallet::secret_session`, 잠금 판단 `wallet::lock`, 지갑 문구 `wallet::text`(E1에 yw-app에서 옮김; 창 반쪽과 셸은 yw-app). 가시성: 셸·렌더가 읽는 것은 `pub`, yw-app 시험만 부르는 지갑 단계와 필드는 `pub(crate)`이고 시험은 `testkit`의 시험 트레이트로 닿는다(2026-11-23 S4d 마지막 검토, [15] §18 28·31: 전에는 `#[doc(hidden)] pub`이었다 — 남은 `#[doc(hidden)] pub`은 얼어 있는 시험이 필드로 쓰는 `rpc_tx`·`lock_epoch`·`last_press`, 디버그 검사의 `cred_misses`·`take_cred_log`·`cred_fingerprint`, 문구 상수·순수 fn·`AfterOpen`이다. 2026-11-23 S5-0, [15] §18 31 (가): `rpc_tx`·`lock_epoch`·`last_press`도 `pub(crate)`이고 시험은 `WalletTestExt::{set_rpc_tx, lock_epoch, last_press}`로 닿는다; 디버그 검사의 셋은 셸의 `cred_check`가 읽어 `pub`으로 남고, 문구 상수·순수 fn·`AfterOpen`은 S5-5에서 좁힌다), 동의·비밀 단계(`card_begin`·`dispatch_evm_sign`·`*_consumed`·`consume_and_sign`·`take_display_secret`, 2026-11-23 마지막 검토부터 `Approved` 없이 동의·누르기를 끝내는 `connect_approved`·`chain_connect_approved`·`reset_execute`·`mn_hold_complete`·`yk_hold_complete`·`yk_open_card_secret` 등)와 `Approved`·`ApprovalStore`·PIN을 쥔 자리, 비밀 세션·가져오기·백업 확인 버퍼는 크레이트 안(`pub(crate)`·비공개)이다. 셸이 쓰는 지갑 API: `Wallet::new`, 진입 `on_cmd`·`worker_event`·`on_secret_action`·`on_rpc_json_read`, 대기열 `next_effect`·`queued_effects`, 표시 비밀 넘김 `hand_display_secret(serial, DisplayCheck)`과 그 앞의 확인 `secret_unshown`(2026-11-24 S5-1, [15] §18 30 (나): 넘김은 `open_display_window(host, …)`와 셸 트레이트 `secret::DisplayHost`(`make`·`fill_and_show`)이고 그 안에서 확인한다; 비밀을 돌려주는 `pub` fn·트레이트 메서드는 없다), 잠금·종료의 지갑 절반, 그리고 `SHELL_WALLET_CALLS`에 까닭과 함께 적힌 이름 있는 단계. `probe`(문서 숨김, E0b): 지갑 코드의 시험 관찰점(종류·플래그·개수만), 받는 쪽은 yw-app 시험 이음새만 단다(`the_probe_is_installed_only_by_tests`). `testkit`(E1·E2): yw-app 시험이 크레이트 안 단계에 닿는 `WalletTestExt`·`FlowTestExt`·`SessionTestExt`·`CardStepTestExt`(2026-11-23 마지막 검토)·`StoreProbe`·`pending_dapp_sign`·`secret_session`과 두 응답 일정의 `RecordingShell`(`Schedule`, `ShellHost`) — 늘 컴파일되는 `pub`이라 운영 코드는 원천 검사 `testkit_is_named_only_by_tests`와 S7 `approval_capability_is_engine_only`가 막는다. (2026-11-23 S5-0, [15] §18 31 (다): 두 원천 검사는 yw-app·yw-engine만이 아니라 `crates/` 아래 모든 크레이트에서 엔진 없는 목록 `NO_ENGINE_CRATES`(yw-core, yw-host, yw-json, yw-platform, yw-win)만 빼고 읽고, S7은 yw-engine 밖의 모든 크레이트를 셸 코드로 본다; `every_engine_dependent_crate_is_scanned`가 그 목록의 크레이트가 어느 의존성 표에도 yw-engine을 적지 않았는지 확인하므로, 새 셸 크레이트는 더하는 날부터 검사된다. 2026-11-23 S5-0 검토: 루트 `[workspace] members`가 모두 `crates/<폴더>`여야 하고, 루트 `[workspace.dependencies]`가 yw-engine에 붙인 다른 키 이름도 yw-engine 의존으로 센다.)
+- 2026-11-24 S5-2에서 더한 것([15](15-android.md) §4.1·§11.3·§11.4 S5): `screen`이 폴더가 되었다(`screen.rs` → `screen/mod.rs`, 내용 그대로). `screen::model` — 중립 화면 모델: 항목 `Item`(Windows `ui::main_window::Item`의 종류마다 하나, 같은 내용; S22 누르기 영역 `Hold`는 id 없음)과 컨트롤 `Ctl`(무엇을 하는지 `Act::{Press, Field, Cred}` — 컨트롤 id·창 핸들·픽셀·비밀 문자열 없음, 자격 정보 칸은 빈 글; 종류 `CtlKind`, 버튼 모양 `Style`, 그림 `Face`, 기호 `GLYPH_*`; 만드는 함수는 Windows와 같은 이름), `screen::facts` — 화면이 셸에 묻는 읽기 전용 사실 trait `ScreenFacts`(현지 시각, 데이터 폴더, `rpc.json` 있음, 확장 폴더, 파이프 상태 `PipeStatus`, 버전 줄, 플래그)와 좁히기만 하는 `PlatformFlags`(`secret_copy`·`secret_word_paste`·`rpc_json_import`·`browser_extension`·`open_folders`; `WINDOWS`는 모두 켬, 승인 게이트는 읽지 않는다), `screen::address` — 주소 강조 구간(`address_kind`·`whole_address`·`address_with_notes`·`address_spans`·`own_address_spans`·`AddressKind`·`OWN_ADDRESS_ENDS`, yw-app `ui::theme`에서 그대로 옮김; GDI 그리기 `paint_spans`는 yw-app), `screen::qr` — 받기 QR의 모듈 행렬 `QrMatrix`와 `encode`(`qrcodegen` ECC Medium, yw-app `ui::qr::encode`에서 옮김; 레이아웃·그리기는 yw-app `ui::qr`), `cmd::Press::without_check`·`same_control`(체크 상태를 뺀 같은 컨트롤 비교). yw-app `ui::lower`가 모델을 `main_window::Item`으로 한 대 한으로 내린다(id는 `cmd_table`의 표, 디버그 수 `press_mismatch`); 화면 코드는 S5-4까지 Windows 목록을 그대로 만든다. 디코더 왕복 시험은 `walletconnect::qr_round_trip`(시험 전용)으로 돌아왔다.
 - 옮기는 중의 겉면(transitional facade): yw-app `lib.rs`는 `pub use yw_engine::{errors, logging, network, text, wallet_files, yubikey};`, `ui/mod.rs`는 `pub use yw_engine::approval; pub use yw_engine::approval::{interaction, layout as text_layout, text as approval_text}; pub use yw_engine::secure_field;`로 옛 `crate::…` 경로를 그대로 둔다. E2는 `lib.rs`에 `pub use yw_engine::{apikeys, btc, explain, explorer, flow, hypercore, meta, received, rpc, settings, sol, token_view, zec};`, `ui/mod.rs`에 `pub use yw_engine::badge;`를 더했다. E3는 `lib.rs`에 `pub use yw_engine::{events, walletconnect, workers};`, `ui/mod.rs`에 `pub use yw_engine::approval::view as approval_view;`를 더했고, `browser/mod.rs`는 `pub use yw_engine::browser::*; pub mod server;`인 겉면 모듈이다(`server.rs`의 `super::` 경로가 그대로 풀린다). E2–E3 사이에는 `walletconnect/mod.rs`도 `pub use yw_engine::walletconnect::*; pub mod worker;`인 겉면 모듈이었다. 시험 시계 `StdClock`(`cfg(test)`)은 두 사용처(디스패처·작업자 시험)와 함께 yw-engine `browser`에 있고, 벽시계는 고정한 날(2026-11-17T00:00:00Z)에 지난 시간을 더한 값이다(E3: 그 전에는 `SystemTime::now()`, §5.1 엔진 clippy가 막는다). S4에서 겉면을 없앤다(2026-11-18 S3 끝: 처음에는 "S3–S4에서"였다. S3은 겉면을 그대로 두었다 — 재수출을 더하지도 빼지도 않았고, S3 코드는 `yw_engine::{cmd, effect, form}`을 직접 부른다). (2026-11-23 S4d E3a: yw-app `src`는 겉면을 더 쓰지 않고 `yw_engine::…`(`crate::ui::text_layout` → `yw_engine::approval::layout`, `crate::browser::…` → `yw_engine::browser::…` 등)를 직접 부른다. 남은 사용처는 F-A에 얼린 시험의 몸체(`frozen-tests.txt`, 바뀌지 않음)와 `tests/`뿐이고, 겉면 모듈과 `tests/`의 경로는 E3b가 줄인다. 그 전에는 yw-app 코드 대부분이 옛 경로를 썼다.) (2026-11-23 S4d E3b: `tests/`(통합 시험)와 바이너리 `src/main.rs`도 `yw_engine::…`를 직접 부르고, 겉면은 F-A에 얼린 시험 몸체가 부르는 항목만 남았다 — `lib.rs`의 `#[doc(hidden)] pub use yw_engine::{btc, errors, events, meta, workers};`(`tests/btc_app_flow.rs`와 `app/tests/chain_sites.rs`의 A-4 시험)와 `#[cfg(test)] pub(crate) use yw_engine::{flow, network, sol, yubikey};`(A-4 시험만), `ui/mod.rs`의 `#[doc(hidden)]` `approval`·`approval_view`. `browser/mod.rs`는 다시 내보내지 않고 `pub mod server;`만 둔다. 소스 검사 `the_kept_facade_is_named_only_by_frozen_tests`(`app/tests/s4_results.rs`)가 얼린 시험 몸체 밖의 사용과 쓰이지 않는 항목을 막는다. 남은 항목은 S4 얼림이 끝난 뒤 첫 커밋에서 없앤다. 2026-11-23 E3b 검토: 이 검사는 `ui::` 바로 뒤의 `{ … }` 묶음과 묶음 안의 묶음도 읽고(그 전에는 `use yw_app::ui::{approval::…};`를 놓쳤다), 얼린 시험을 이름만이 아니라 (지금 파일, fn) 쌍으로 맞추며(F-A 경로 `app_chain_sites.rs`의 A-4 시험은 W0부터 `app/tests/chain_sites.rs`), 남은 항목마다 꼴(`#[doc(hidden)] pub` 또는 `#[cfg(test)] pub(crate)`)을 확인하고, yw-app `src`의 다른 공개 yw-engine 재수출은 목록 `OTHER_ENGINE_REEXPORTS`(E1의 시험 경로 shim과 `store`의 재설정 이름)만 허락한다.) (2026-11-23 S5-0, [15] §18 28: S4 얼림이 끝난 뒤 첫 커밋에서 남은 겉면 항목과 E1의 시험 경로 shim(`app.rs`의 `AppMode`·`Purpose`·`Wallet`·`TestState`, `lib.rs`의 `app_browser`·`app_btc`·`app_card`·`app_evm`·`app_sol_dapp` 모듈, `app_chain_sites.rs`의 glob)을 모두 없앴다. 얼린 시험 몸통은 `yw_engine::…`를 부르고, 검사는 `the_s2_facade_and_test_shims_are_gone`이 되어 어디서도 그 경로를 부르지 않고 `lib.rs`·`ui/mod.rs`가 yw-engine을 다시 내보내지 않으며 다른 공개 재수출은 `store`의 둘뿐임을 확인한다.)
 - 단위 시험은 파일과 함께 옮겼다(`cargo test -p yw-engine`). 엔진만 쓰는 통합 시험도 `crates/yw-engine/tests/`에서 `yw_engine::` 경로로 돈다(2026-11-17 S2 T1: 그 전에는 yw-app `tests/`에서 겉면을 거쳐 돌았다). 공용 도우미 `tests/common/`·`tests/btc_support/`와 고정 파일 `tests/fixtures/`도 yw-engine에 있고, 그것을 쓰는 yw-app 통합 시험은 `#[path = "../../yw-engine/tests/common/mod.rs"] mod common;`처럼 그 파일을 포함한다(dev-dependency가 고정이라 시험 도우미 crate를 따로 두지 않는다). 도우미는 yw-engine·yw-core·yw-json·yw-platform 경로만 쓴다. 배치는 [09](09-testing.md) §2.1.
 
@@ -276,12 +277,12 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 | yw-core | yw-json | §3.3 단계 목록 | lib |
 | yw-json | 없음 | 없음 | lib |
 | yw-platform | 없음 | 없음 | lib |
-| yw-engine | yw-core, yw-json, yw-platform | 없음 | lib |
+| yw-engine | yw-core, yw-json, yw-platform | qrcodegen(2026-11-24 S5-2) | lib |
 | yw-win | yw-platform | windows-sys | lib |
-| yw-app | yw-core, yw-engine, yw-json, yw-platform, yw-win | qrcodegen | bin (`#![windows_subsystem = "windows"]`) |
+| yw-app | yw-core, yw-engine, yw-json, yw-platform, yw-win | 없음(2026-11-24 S5-2 전에는 qrcodegen; 이제 yw-engine을 거쳐서만) | bin (`#![windows_subsystem = "windows"]`) |
 | yw-host | yw-json, yw-win (yw-win을 거쳐 yw-platform) | 없음 | bin (콘솔 서브시스템) |
 
-2026-11-17: yw-platform 행을 더했다. 그 전에는 yw-win의 로컬 의존이 없었다. 2026-11-17 S2: yw-engine 행을 더했고 yw-app이 yw-engine에 의존한다.
+2026-11-17: yw-platform 행을 더했다. 그 전에는 yw-win의 로컬 의존이 없었다. 2026-11-17 S2: yw-engine 행을 더했고 yw-app이 yw-engine에 의존한다. 2026-11-24 S5-2([15] §4.1): `qrcodegen`을 화면 모델의 QR과 함께 yw-app의 직접 의존에서 yw-engine의 직접 의존으로 옮겼다. yw-app은 yw-engine을 거쳐서만 쓰고, 직접 의존하면 검사가 실패한다(§4.2 `indirect`).
 
 yw-app·yw-host는 창·OS 호출이 없는 로직을 `lib.rs`에 두고 `tests/`로 시험하며 `main.rs`는 진입만 한다([09](09-testing.md) §2.1). 모든 멤버: `[dev-dependencies]` 금지, `build.rs` 금지(예외: yw-app은 실행 파일 링크 인자만 출력하는 `build.rs`를 [04](04-app-ui.md)가 필요로 할 때 둘 수 있다. 허용되는 링크 인자는 manifest 포함(`/MANIFEST:EMBED`·`/MANIFESTINPUT:`)과 커밋된 Win32 리소스 파일 `crates/yw-app/icons/yw-app.res`(앱 아이콘, link.exe가 cvtres로 변환)뿐이다. `build.rs`는 무엇도 컴파일·생성·다운로드하지 않는다. `.res`는 `scripts/make-icons.mjs`가 만들고 check.ps1 icons 단계가 커밋본과 같은지 확인한다).
 
@@ -376,8 +377,8 @@ debug = false
 | yw-core | argon2, blake2(Zcash, [12] §6.1), chacha20poly1305, curve25519-dalek(M7), ed25519-dalek(M7), getrandom, hkdf, hmac, pbkdf2, ripemd, secp256k1, sha2, sha3, subtle, zeroize(서드파티 15), yw-json |
 | yw-json | 없음(빈 `[dependencies]`) |
 | yw-platform | 없음(빈 `[dependencies]`) |
-| yw-engine | yw-core, yw-json, yw-platform(2026-11-17 S2) |
-| yw-app | qrcodegen, yw-core, yw-engine, yw-json, yw-platform, yw-win |
+| yw-engine | qrcodegen(2026-11-24 S5-2), yw-core, yw-json, yw-platform(2026-11-17 S2) |
+| yw-app | yw-core, yw-engine, yw-json, yw-platform, yw-win(2026-11-24 S5-2 전에는 qrcodegen도) |
 | yw-host | yw-json, yw-win |
 
 ```toml
@@ -419,12 +420,12 @@ windows-sys feature 추가·삭제는 크레이트 수를 바꾸지 않지만 yw
 | **빌드 전용 4** | cc=1.4.2 find-msvc-tools=0.1.10 shlex=2.0.1 version_check=0.9.5 |
 | Solana 추가(M7) 런타임 4 + 빌드 2 | ed25519-dalek=2.2.0 ed25519=2.2.3 signature=2.2.0 curve25519-dalek=4.1.3 / rustc_version=0.4.1 semver=1.0.28 |
 | yw-win | windows-sys=0.61.2 windows-link=0.2.1 |
-| yw-app 추가 | qrcodegen=1.8.0 |
+| yw-app 추가 | 없음(qrcodegen=1.8.0은 yw-engine을 거쳐 폐포에만; 2026-11-24 S5-2 전에는 직접) |
 | yw-json | 없음 |
 | yw-platform | 없음 |
-| yw-engine | yw-core와 같음(yw-core를 거쳐서만, 2026-11-17 S2) |
+| yw-engine | yw-core와 같음(yw-core를 거쳐서만, 2026-11-17 S2) + qrcodegen=1.8.0(직접, 2026-11-24 S5-2) |
 
-- 검사 결과(확인함): EVM 단계 yw-core 34, yw-json 0, yw-win 2, yw-app 37, yw-host 2. Solana 단계 yw-core 40, yw-app 43. Bitcoin 단계(M8)는 추가 크레이트가 없다(D5). yw-platform 0(2026-11-17, 로컬 크레이트는 세지 않으므로 다른 수는 그대로). yw-engine 40(2026-11-17 S2, yw-core와 같다).
+- 검사 결과(확인함): EVM 단계 yw-core 34, yw-json 0, yw-win 2, yw-app 37, yw-host 2. Solana 단계 yw-core 40, yw-app 43. Bitcoin 단계(M8)는 추가 크레이트가 없다(D5). yw-platform 0(2026-11-17, 로컬 크레이트는 세지 않으므로 다른 수는 그대로). yw-engine 40(2026-11-17 S2, yw-core와 같다), 2026-11-24 S5-2부터 41(qrcodegen; yw-app은 43 그대로).
 - `build.rs` 허용: generic-array, getrandom, secp256k1-sys (+M7 curve25519-dalek). proc-macro는 어느 단계에서도 0개.
 - 출처는 crates.io만. 라이선스: MIT/Apache-2.0, CC0-1.0(secp256k1, secp256k1-sys), BSD-3-Clause(subtle), MIT(generic-array, qrcodegen).
 - 2026-10-24 기준 RustSec advisory-db(커밋 21d909e)와 OSV에서 위 버전에 열린 권고 없음. curve25519-dalek 4.1.3은 RUSTSEC-2024-0344 수정판이므로 `=4.1.3`을 직접 고정한다(4.2.0은 yank).
@@ -804,7 +805,8 @@ cc=1.4.2:b find-msvc-tools=0.1.10:b shlex=2.0.1:b version_check=0.9.5:b`);
 const CORE_SOL = table(`ed25519-dalek=2.2.0:n ed25519=2.2.3:n signature=2.2.0:n curve25519-dalek=4.1.3:n
 rustc_version=0.4.1:b semver=1.0.28:b`);
 const WIN = table(`windows-sys=0.61.2:n windows-link=0.2.1:n`);
-const APP = table(`qrcodegen=1.8.0:n`);
+// 2026-11-24(spec/15 §4.1, §11.4 S5-2): 화면 모델의 QR과 함께 yw-app에서 yw-engine으로 옮겼다(전 이름 APP).
+const QR = table(`qrcodegen=1.8.0:n`);
 
 const CORE = { ...CORE_EVM, ...(PHASES.has("sol") ? CORE_SOL : {}) };
 export const POLICY = {
@@ -813,9 +815,11 @@ export const POLICY = {
   // 2026-11-17: yw-platform(의존성 0) 추가. yw-host는 yw-win을 거쳐 링크한다.
   "yw-platform": { allow: {}, local: [] },
   // 2026-11-17(spec/15 §11.4 S2): yw-engine은 yw-core 폐포만(yw-win·windows-sys 없음).
-  "yw-engine": { allow: CORE, local: ["yw-core", "yw-json", "yw-platform"] },
+  // 2026-11-24(S5-2): 그리고 qrcodegen(화면 모델의 QR, spec/15 §4.1).
+  "yw-engine": { allow: { ...CORE, ...QR }, local: ["yw-core", "yw-json", "yw-platform"] },
   "yw-win": { allow: WIN, local: ["yw-platform"] },
-  "yw-app": { allow: { ...CORE, ...WIN, ...APP }, local: ["yw-core", "yw-engine", "yw-json", "yw-platform", "yw-win"] },
+  // indirect: 폐포에는 있어도 직접 의존하면 안 되는 크레이트(2026-11-24 S5-2: qrcodegen은 yw-engine을 거쳐서만, spec.md D5).
+  "yw-app": { allow: { ...CORE, ...WIN, ...QR }, local: ["yw-core", "yw-engine", "yw-json", "yw-platform", "yw-win"], indirect: ["qrcodegen"] },
   "yw-host": { allow: WIN, local: ["yw-json", "yw-platform", "yw-win"] },
 };
 export const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);
@@ -863,6 +867,10 @@ export function checkMetadata(meta) {
         if (kinds.includes(null)) queue.push([d.pkg, mode]);
         if (kinds.includes("build")) queue.push([d.pkg, "b"]);
       }
+    }
+    for (const d of nodes.get(rootId).deps) {
+      const p = pkgs.get(d.pkg);
+      if ((policy.indirect ?? []).includes(p.name)) errors.push(`${root} -> ${key(p)}: direct dependency not allowed (only through yw-engine)`);
     }
     const reached = new Set();
     for (const [id, mode] of seen) {
@@ -917,7 +925,7 @@ if (invokedPath !== undefined && resolve(invokedPath) === resolve(fileURLToPath(
 }
 ```
 
-`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 여러 루트(2026-11-17 `yw-platform`을 더해 여섯, S2에서 `yw-engine`을 더해 일곱)·단계·멤버 규칙으로 확장한 것이다. 검사 본체는 `checkMetadata(meta)`(가져와도 CLI는 실행되지 않는다)이고, `scripts/check-core-deps.test.mjs`가 허용 목록과 정확히 같은 합성 그래프(통과)와 위반 종류별 변형(허용 목록 밖·빌드 전용의 런타임 링크·dev-dependency·자체 build.rs·금지 feature·crates.io 밖 출처·proc-macro·검토 안 된 build.rs·도달하지 않는 허용 항목·허용 안 된 로컬 크레이트·정책 없는/없는 멤버)과 `--metadata` CLI의 종료 코드 0·1·2를 cargo 없이 시험한다(script-test 단계).
+`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 여러 루트(2026-11-17 `yw-platform`을 더해 여섯, S2에서 `yw-engine`을 더해 일곱)·단계·멤버 규칙으로 확장한 것이다. 검사 본체는 `checkMetadata(meta)`(가져와도 CLI는 실행되지 않는다)이고, `scripts/check-core-deps.test.mjs`가 허용 목록과 정확히 같은 합성 그래프(통과)와 위반 종류별 변형(허용 목록 밖·빌드 전용의 런타임 링크·dev-dependency·자체 build.rs·금지 feature·crates.io 밖 출처·proc-macro·검토 안 된 build.rs·도달하지 않는 허용 항목·허용 안 된 로컬 크레이트·정책 없는/없는 멤버·폐포에만 허용된 크레이트의 직접 의존(2026-11-24 S5-2: yw-app → qrcodegen))과 `--metadata` CLI의 종료 코드 0·1·2를 cargo 없이 시험한다(script-test 단계).
 
 ### 4.3 `scripts/privacy-scan.mjs` 변경
 

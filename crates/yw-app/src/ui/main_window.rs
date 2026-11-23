@@ -81,20 +81,23 @@ pub struct Ctl {
     pub fit: Vec<String>,
 }
 
+// 2026-11-24 (spec/15 §11.4 S5-2): the symbols are the screen model's (`yw_engine::screen::model`),
+// the same code points; the screens name them here until they build that model (S5-4).
+
 /// Symbol of a copy action (Segoe UI Symbol U+29C9 TWO JOINED SQUARES).
-pub const GLYPH_COPY: &str = "\u{29C9}";
+pub const GLYPH_COPY: &str = yw_engine::screen::model::GLYPH_COPY;
 /// Symbol of "open in the browser" (U+2197 NORTH EAST ARROW).
-pub const GLYPH_OPEN: &str = "\u{2197}";
+pub const GLYPH_OPEN: &str = yw_engine::screen::model::GLYPH_OPEN;
 /// Symbol of "copy the explorer link" (U+1F517 LINK SYMBOL, monochrome in Segoe UI Symbol).
-pub const GLYPH_LINK: &str = "\u{1F517}";
+pub const GLYPH_LINK: &str = yw_engine::screen::model::GLYPH_LINK;
 /// Symbol of "save to the address book" (U+2606 WHITE STAR).
-pub const GLYPH_SAVE: &str = "\u{2606}";
+pub const GLYPH_SAVE: &str = yw_engine::screen::model::GLYPH_SAVE;
 /// A closed drop-down (U+25BE BLACK DOWN-POINTING SMALL TRIANGLE).
-pub const GLYPH_DOWN: &str = "\u{25BE}";
+pub const GLYPH_DOWN: &str = yw_engine::screen::model::GLYPH_DOWN;
 /// An open drop-down (U+25B4 BLACK UP-POINTING SMALL TRIANGLE).
-pub const GLYPH_UP: &str = "\u{25B4}";
+pub const GLYPH_UP: &str = yw_engine::screen::model::GLYPH_UP;
 /// The selected entry of a drop-down, and a copy just made (U+2713 CHECK MARK).
-pub const GLYPH_CHECK: &str = "\u{2713}";
+pub const GLYPH_CHECK: &str = yw_engine::screen::model::GLYPH_CHECK;
 
 /// The fixed texts of the main-window renderer (spec/14).
 pub mod text {
@@ -618,14 +621,14 @@ fn columns(room: i32, advance: i32) -> usize {
 
 /// A mono line's text and spans: an address (whole or in the older 4-character groups) becomes
 /// the whole address with its ends emphasized (2026-11-12, spec/04 §3.3,
-/// `ui::theme::address_spans`); any other text is kept as it is, without spans.
+/// `yw_engine::screen::address::address_spans`); any other text is kept as it is, without spans.
 fn address_line(text: &str, font: FontRole) -> (String, Vec<(String, bool)>) {
     match (font == FontRole::Mono)
-        .then(|| crate::ui::theme::whole_address(text))
+        .then(|| yw_engine::screen::address::whole_address(text))
         .flatten()
     {
         Some((address, kind)) => {
-            let spans = crate::ui::theme::own_address_spans(&address, kind, false);
+            let spans = yw_engine::screen::address::own_address_spans(&address, kind, false);
             (address, spans)
         }
         None => (text.to_owned(), Vec::new()),
@@ -1518,7 +1521,7 @@ impl Layouter<'_> {
         }
         let value_w = self.frame.w.saturating_sub(value_x).max(self.px(40));
         let mono = value.starts_with("0x")
-            || crate::ui::theme::whole_address(value).is_some()
+            || yw_engine::screen::address::whole_address(value).is_some()
             || value.starts_with("m/");
         let font = if mono { FontRole::Mono } else { FontRole::Body };
         let (value, spans) = address_line(value, font);
@@ -1549,7 +1552,7 @@ impl Layouter<'_> {
 
     fn qr(&mut self, payload: &str, dpi: u32) {
         let available = self.frame.w.min(self.px(420));
-        let geometry = crate::ui::qr::encode(payload)
+        let geometry = yw_engine::screen::qr::encode(payload)
             .and_then(|code| crate::ui::qr::layout(code.size(), dpi, available));
         match geometry {
             Some(geometry) => {
@@ -1828,7 +1831,7 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
         if *y >= bottom {
             continue;
         }
-        if let Some(code) = crate::ui::qr::encode(payload) {
+        if let Some(code) = yw_engine::screen::qr::encode(payload) {
             let geometry = crate::ui::qr::QrLayout {
                 symbol_modules: code.size(),
                 total_modules: code
@@ -2428,6 +2431,7 @@ impl ControlSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yw_engine::screen::address::{AddressKind, own_address_spans};
 
     /// The old and the new middle of a changed control list, as index ranges.
     fn middles(old: &[Ctl], new: &[Ctl]) -> (core::ops::Range<usize>, core::ops::Range<usize>) {
@@ -2595,9 +2599,9 @@ mod tests {
                 value: Ctl::value(
                     6,
                     "주소 복사",
-                    crate::ui::theme::own_address_spans(
+                    own_address_spans(
                         "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646",
-                        crate::ui::theme::AddressKind::Evm,
+                        AddressKind::Evm,
                         false,
                     ),
                 ),
@@ -2666,8 +2670,7 @@ mod tests {
         let measure = |_: &str, _: FontRole, _: i32| 20;
         let width = |text: &str| i32::try_from(text.len()).unwrap_or(0).saturating_mul(7);
         let address = "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646";
-        let spans =
-            crate::ui::theme::own_address_spans(address, crate::ui::theme::AddressKind::Evm, false);
+        let spans = own_address_spans(address, AddressKind::Evm, false);
         let line = Item::CopyLine {
             value: Ctl::value(7, "주소 복사", spans.clone()),
             actions: vec![
@@ -2745,8 +2748,7 @@ mod tests {
         let measure = |_: &str, _: FontRole, _: i32| 20;
         let width = |text: &str| i32::try_from(text.len()).unwrap_or(0).saturating_mul(7);
         let address = "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646";
-        let spans =
-            crate::ui::theme::own_address_spans(address, crate::ui::theme::AddressKind::Evm, false);
+        let spans = own_address_spans(address, AddressKind::Evm, false);
         let items = vec![
             Item::CopyLine {
                 value: Ctl::value(7, "주소 복사", spans.clone()),

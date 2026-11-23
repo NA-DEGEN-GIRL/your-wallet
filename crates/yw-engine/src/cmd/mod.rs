@@ -546,12 +546,115 @@ impl Press {
             | Self::YkConnect(_) => false,
         }
     }
+
+    /// The press with the state of its check box set to `None` (every other press unchanged):
+    /// what a screen draws for that control, whose state is read only when it is clicked
+    /// (2026-11-24, spec/15 §11.4 S5-2: the screen model's controls; the Windows lowering
+    /// compares a drawn press with the one its control id maps back to, the state ignored).
+    #[must_use]
+    pub const fn without_check(self) -> Self {
+        match self {
+            Self::Book(BookPress::Verified(_)) => Self::Book(BookPress::Verified(None)),
+            Self::Book(BookPress::Favorite(_)) => Self::Book(BookPress::Favorite(None)),
+            Self::Book(BookPress::FormAck(_)) => Self::Book(BookPress::FormAck(None)),
+            Self::Book(BookPress::PromptAck(_)) => Self::Book(BookPress::PromptAck(None)),
+            Self::Core(CorePress::MismatchCheck(_)) => Self::Core(CorePress::MismatchCheck(None)),
+            Self::Core(CorePress::CopyToggle(_)) => Self::Core(CorePress::CopyToggle(None)),
+            Self::Core(CorePress::LocalhostToggle(_)) => {
+                Self::Core(CorePress::LocalhostToggle(None))
+            }
+            Self::Core(CorePress::AutolaunchToggle(_)) => {
+                Self::Core(CorePress::AutolaunchToggle(None))
+            }
+            Self::Core(CorePress::OverwriteCheck(_)) => Self::Core(CorePress::OverwriteCheck(None)),
+            Self::Evm(EvmPress::SendAck(_)) => Self::Evm(EvmPress::SendAck(None)),
+            Self::Evm(EvmPress::TokenHideZero(_)) => Self::Evm(EvmPress::TokenHideZero(None)),
+            Self::Evm(EvmPress::RepinCheck(_)) => Self::Evm(EvmPress::RepinCheck(None)),
+            Self::Llm(LlmPress::Enable(_)) => Self::Llm(LlmPress::Enable(None)),
+            Self::Llm(LlmPress::NoticeCheck(_)) => Self::Llm(LlmPress::NoticeCheck(None)),
+            Self::Received(ReceivedPress::Toggle { chain, .. }) => {
+                Self::Received(ReceivedPress::Toggle {
+                    chain,
+                    checked: None,
+                })
+            }
+            Self::Reset(ResetPress::SettingsCheck(_)) => {
+                Self::Reset(ResetPress::SettingsCheck(None))
+            }
+            Self::Sidecar(SidecarPress::ResetAck(_)) => Self::Sidecar(SidecarPress::ResetAck(None)),
+            other => other,
+        }
+    }
+
+    /// Whether `self` and `other` are the same control's press (the state of a check box
+    /// ignored, [`Self::without_check`]).
+    #[must_use]
+    pub fn same_control(self, other: Self) -> bool {
+        self.without_check() == other.without_check()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::form::{CredField, CredUnits};
+
+    /// 2026-11-24 (S5-2): a check box's press without its state, every other press unchanged.
+    #[test]
+    fn without_check_clears_only_a_check_boxs_state() {
+        for (pressed, drawn) in [
+            (
+                Press::Book(BookPress::Verified(Some(true))),
+                Press::Book(BookPress::Verified(None)),
+            ),
+            (
+                Press::Core(CorePress::CopyToggle(Some(false))),
+                Press::Core(CorePress::CopyToggle(None)),
+            ),
+            (
+                Press::Evm(EvmPress::SendAck(Some(true))),
+                Press::Evm(EvmPress::SendAck(None)),
+            ),
+            (
+                Press::Llm(LlmPress::NoticeCheck(Some(true))),
+                Press::Llm(LlmPress::NoticeCheck(None)),
+            ),
+            (
+                Press::Received(ReceivedPress::Toggle {
+                    chain: RecvChain::Btc,
+                    checked: Some(true),
+                }),
+                Press::Received(ReceivedPress::Toggle {
+                    chain: RecvChain::Btc,
+                    checked: None,
+                }),
+            ),
+            (
+                Press::Reset(ResetPress::SettingsCheck(Some(true))),
+                Press::Reset(ResetPress::SettingsCheck(None)),
+            ),
+            (
+                Press::Sidecar(SidecarPress::ResetAck(Some(false))),
+                Press::Sidecar(SidecarPress::ResetAck(None)),
+            ),
+        ] {
+            assert_eq!(pressed.without_check(), drawn);
+            assert!(pressed.same_control(drawn) && drawn.same_control(pressed));
+        }
+        let lock = Press::Core(CorePress::Lock);
+        assert_eq!(lock.without_check(), lock);
+        assert!(!lock.same_control(Press::Core(CorePress::Exit)));
+        assert!(
+            !Press::Received(ReceivedPress::Toggle {
+                chain: RecvChain::Btc,
+                checked: None,
+            })
+            .same_control(Press::Received(ReceivedPress::Toggle {
+                chain: RecvChain::Zec,
+                checked: None,
+            }))
+        );
+    }
 
     /// 2026-11-21 (S4 W1): S22's hold area commands print their name and the time only.
     #[test]

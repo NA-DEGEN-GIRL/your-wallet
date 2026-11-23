@@ -770,7 +770,7 @@ impl App {
             items.push(crate::ui::screens::own_address_row(
                 self.settings.language,
                 &text,
-                crate::ui::theme::AddressKind::Solana,
+                yw_engine::screen::address::AddressKind::Solana,
                 ids::COPY_ADDRESS,
                 true,
                 self.explorer_address_icon(
@@ -1057,7 +1057,7 @@ impl App {
                 row,
             ),
             &shown,
-            crate::ui::theme::AddressKind::Solana,
+            yw_engine::screen::address::AddressKind::Solana,
             save.into_iter().collect(),
         );
     }
@@ -1117,7 +1117,7 @@ impl App {
                 self.settings.language,
                 Self::sol_token_copy_id(index),
                 &entry.mint.to_base58(),
-                crate::ui::theme::AddressKind::Solana,
+                yw_engine::screen::address::AddressKind::Solana,
                 row,
             );
         }
@@ -1152,7 +1152,7 @@ impl App {
                         self.settings.language,
                         Self::sol_token_copy_id(index),
                         &entry.mint.to_base58(),
-                        crate::ui::theme::AddressKind::Solana,
+                        yw_engine::screen::address::AddressKind::Solana,
                         Self::sol_token_hide_button(lang, index, true),
                     );
                 }

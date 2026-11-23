@@ -3106,7 +3106,9 @@ fn walletconnect_file_press_takes_the_shell_image() {
 /// A 24-bit bottom-up BMP of `text` as a QR code (ECC medium, 4 px modules, 4-module quiet zone,
 /// black on white); an empty `text` gives a white picture of the same size as one for "".
 fn qr_bmp(text: &str) -> Vec<u8> {
-    let code = qrcodegen::QrCode::encode_text(text, qrcodegen::QrCodeEcc::Medium).unwrap();
+    // 2026-11-24 (S5-2): the engine's encoder (the same `qrcodegen` call, ECC Medium); yw-app no
+    // longer names `qrcodegen`.
+    let code = yw_engine::screen::qr::encode(text).unwrap();
     let modules = code.size() + 8;
     let width = usize::try_from(modules * 4).unwrap();
     let row = (width * 3).div_ceil(4) * 4;
@@ -3127,7 +3129,7 @@ fn qr_bmp(text: &str) -> Vec<u8> {
         let start = file.len();
         for x in 0..width {
             let mx = i32::try_from(x / 4).unwrap() - 4;
-            let dark = !text.is_empty() && code.get_module(mx, my);
+            let dark = !text.is_empty() && code.module(mx, my);
             let value = if dark { 0 } else { 255 };
             file.extend_from_slice(&[value; 3]);
         }

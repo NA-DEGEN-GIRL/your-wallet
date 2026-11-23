@@ -13,7 +13,6 @@ use yw_core::evm::display::format_address;
 use crate::app::App;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_accounts::{AccountCard, AccountItem, SelectedLine};
-use crate::ui::theme::AddressKind;
 use yw_core::lang::{Lang, Text};
 use yw_engine::apikeys::{KeyName, mask_url, template_entry};
 use yw_engine::errors::ErrorCode;
@@ -22,6 +21,7 @@ use yw_engine::network::NetworkId;
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::SettingsSection;
 use yw_engine::screen::Tone;
+use yw_engine::screen::address::AddressKind;
 use yw_engine::settings::{LogLevel, RpcTemplate};
 use yw_engine::wallet::{AppMode, CREATE_STEPS, Confirm, IMPORT_STEPS, Screen, TestState};
 
@@ -658,7 +658,7 @@ pub const RECEIVE_IDS: [u16; 8] = [
 
 /// The account cards' address line (2026-11-11, spec/04 §2.6): the user's own address without
 /// spaces, the 4 characters after its prefix and the last 4 emphasized
-/// (`ui::theme::own_address_spans`), on a flat button whose click copies it (`copy`, off when
+/// (`yw_engine::screen::address::own_address_spans`), on a flat button whose click copies it (`copy`, off when
 /// `enabled` is not; the `주소 복사` of before), then `explorer` — the ↗ icon
 /// `탐색기에서 주소 보기` (`App::explorer_address_icon`) when the network has an address page —
 /// at the right end. Recipient checks (approval, send, receive) keep the grouped form of §3.3.
@@ -675,7 +675,7 @@ pub fn own_address_row(
         value: Ctl::value(
             copy,
             crate::ui::screens_links::T_ADDRESS_COPY.get(lang),
-            crate::ui::theme::own_address_spans(address, kind, false),
+            yw_engine::screen::address::own_address_spans(address, kind, false),
         )
         .enabled(enabled),
         actions: explorer.into_iter().collect(),
@@ -683,14 +683,14 @@ pub fn own_address_row(
 }
 
 /// The receive screens' and the address book's address line (S12, 2026-11-12): the address
-/// whole with its ends emphasized like every address (§3.3, `ui::theme::address_spans`; `shown`
+/// whole with its ends emphasized like every address (§3.3, `yw_engine::screen::address::address_spans`; `shown`
 /// may still be the older grouped form) on the flat copy button — the `주소 복사` button under
 /// the address of before; the command still copies the address itself — and `actions`
 /// (Bitcoin's `새 주소`) at the right end.
 #[must_use]
 pub fn receive_address_row(lang: Lang, shown: &str, copy: u16, actions: Vec<Ctl>) -> Item {
-    let spans =
-        crate::ui::theme::address_spans(shown).unwrap_or_else(|| vec![(shown.to_owned(), false)]);
+    let spans = yw_engine::screen::address::address_spans(shown)
+        .unwrap_or_else(|| vec![(shown.to_owned(), false)]);
     Item::CopyLine {
         value: Ctl::value(
             copy,

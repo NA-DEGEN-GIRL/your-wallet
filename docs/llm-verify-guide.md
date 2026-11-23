@@ -276,9 +276,9 @@ Per-crate allowlist: `scripts/check-core-deps.mjs`, object `POLICY`:
 | `yw-core` | RustCrypto hashes/MACs/KDFs, secp256k1, argon2, chacha20poly1305, ed25519/curve25519, getrandom, zeroize, subtle and their closure; local `yw-json` |
 | `yw-json` | nothing |
 | `yw-platform` | nothing |
-| `yw-engine` | exactly yw-core's crates (through yw-core); local `yw-core`, `yw-json`, `yw-platform` — never `yw-win` or `windows-sys` |
+| `yw-engine` | yw-core's crates (through yw-core) plus `qrcodegen` 1.8.0 (the screen model's QR, since 2026-11-24); local `yw-core`, `yw-json`, `yw-platform` — never `yw-win` or `windows-sys` |
 | `yw-win` | `windows-sys` 0.61.2 / `windows-link`; local `yw-platform` |
-| `yw-app` | the above plus `qrcodegen` 1.8.0; local `yw-engine` too |
+| `yw-app` | the above (`qrcodegen` only through `yw-engine`, never directly); local `yw-engine` too |
 | `yw-host` | `yw-json` and `yw-win` only (and `yw-platform` through `yw-win`) |
 
 Build scripts are allowed only for `generic-array`, `getrandom`, `secp256k1-sys`, `curve25519-dalek` and yw-app's own
