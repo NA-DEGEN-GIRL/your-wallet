@@ -126,11 +126,12 @@ pub fn yubikey_wallet(
 // imports a trait can call its methods; production code never names `testkit` (source check
 // `testkit_is_named_only_by_tests`, which reads yw-app and yw-engine; 2026-11-23, S4d E4: and S7
 // `approval_capability_is_engine_only`, which also keeps the consent names, `Approved`,
-// `ApprovalStore` and `consume` out of yw-app's code). The review also found that E1 had added two accessors beyond the preflight's
-// recommendations that handed out the store itself (`&mut ApprovalStore`, from which `consume`
-// makes an `Approved`) and the secret session slot (`&mut Option<SecretSession>`); they are
-// replaced by [`StoreProbe`], which returns outcomes only, and by four setup steps that only put
-// state in. Still, an `Approved` is made only by an `ApprovalStore`'s `consume` (yw-core).
+// `ApprovalStore`, `consume` and the approval carriers out of yw-app's code). The review also
+// found that E1 had added two accessors beyond the preflight's recommendations that handed out
+// the store itself (`&mut ApprovalStore`, from which `consume` makes an `Approved`) and the
+// secret session slot (`&mut Option<SecretSession>`); they are replaced by [`StoreProbe`], which
+// returns outcomes only, and by four setup steps that only put state in. Still, an `Approved` is
+// made only by an `ApprovalStore`'s `consume` (yw-core).
 
 use yw_core::approval::{
     ApprovalDraft, ApprovalError, ApprovalId, ApprovalRequest, ApprovalStore, Approved,

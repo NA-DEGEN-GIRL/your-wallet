@@ -5182,11 +5182,27 @@ fn names_the_store_module(code: &str, after: usize) -> bool {
     starts_with_word(rest, "store")
 }
 
+/// The keywords that, right before a variant owner's name, make that name something of yw-app's
+/// own (2026-11-23, S4 E4 review): `use yw_core::approval as QueueOutcome;` or `mod
+/// InteractionStatus { … }` would let `QueueOutcome::Approved` name the consent token.
+const OWNER_RENAMES: [&str; 7] = ["as", "mod", "type", "enum", "struct", "union", "trait"];
+
+/// The identifier right before offset `at` in `code` (after blanks), if any.
+fn word_before(code: &str, at: usize) -> &str {
+    let before = code[..at].trim_end();
+    let start = before
+        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .map_or(0, |n| n + 1);
+    &before[start..]
+}
+
 /// The names in `code` (comments and strings blanked) that would give it the approval
 /// capability, with their offsets: the type `Approved` (not a variant,
 /// [`is_approved_variant`]), `ApprovalStore`, `consume`, a path to `approval::store`, a
-/// `consumed`/`*_consumed` fn, the consent steps `steps`, the `KeyJob`/`KeyOutcome` variants
-/// that carry an `Approved` (`carriers`) and the [`TEST_ENTRIES`].
+/// `consumed`/`*_consumed` fn, the consent steps `steps`, the approval carriers `carriers`
+/// (the `KeyJob`/`KeyOutcome` variants and the other yw-engine types and aliases that carry an
+/// `Approved`, [`approval_carriers`]), the [`TEST_ENTRIES`], and (2026-11-23, S4 E4 review) a
+/// variant owner made yw-app's own ([`OWNER_RENAMES`]).
 fn capability_names(
     code: &str,
     steps: &BTreeSet<String>,
@@ -5195,24 +5211,26 @@ fn capability_names(
     let mut found = Vec::new();
     for (at, token) in ident_tokens(code) {
         let hit = match token {
-            "Approved" => !is_approved_variant(code, at),
-            "ApprovalStore" | "consume" => true,
-            "approval" => names_the_store_module(code, at + token.len()),
-            _ => {
-                token == "consumed"
-                    || token.ends_with("_consumed")
-                    || steps.contains(token)
-                    || carriers.contains(token)
-                    || TEST_ENTRIES.contains(&token)
+            "Approved" => (!is_approved_variant(code, at)).then(|| token.to_owned()),
+            "ApprovalStore" | "consume" => Some(token.to_owned()),
+            "approval" => {
+                names_the_store_module(code, at + token.len()).then(|| "approval::store".to_owned())
             }
+            owner if APPROVED_VARIANT_OWNERS.contains(&owner) => {
+                let keyword = word_before(code, at);
+                OWNER_RENAMES
+                    .contains(&keyword)
+                    .then(|| format!("{keyword} {owner}"))
+            }
+            _ => (token == "consumed"
+                || token.ends_with("_consumed")
+                || steps.contains(token)
+                || carriers.contains(token)
+                || TEST_ENTRIES.contains(&token))
+            .then(|| token.to_owned()),
         };
-        if hit {
-            let name = if token == "approval" {
-                "approval::store"
-            } else {
-                token
-            };
-            found.push((at, name.to_owned()));
+        if let Some(name) = hit {
+            found.push((at, name));
         }
     }
     found
@@ -5288,39 +5306,248 @@ fn leading_ident(text: &str) -> String {
         .collect()
 }
 
-/// Whether `item` names the type `Approved` (not a variant, [`is_approved_variant`]) or
-/// `ApprovalStore`.
-fn names_an_approval(item: &str) -> bool {
-    ident_tokens(item).into_iter().any(|(at, token)| {
-        (token == "Approved" && !is_approved_variant(item, at)) || token == "ApprovalStore"
-    })
+/// The approval types themselves: the consent token and the store that makes it.
+const APPROVAL_TYPES: [&str; 2] = ["Approved", "ApprovalStore"];
+
+/// The job enums whose own variants [`approval_carriers`] lists (and yw-app's code does not
+/// name) instead of the enum: yw-app's shell moves their values between the wallet and the key
+/// worker, so the enums themselves stay nameable.
+const JOB_ENUMS: [&str; 2] = ["KeyJob", "KeyOutcome"];
+
+/// The approval words of `extra` with [`APPROVAL_TYPES`] (`with_store`) or `Approved` only.
+fn approval_words(extra: &BTreeSet<String>, with_store: bool) -> BTreeSet<String> {
+    let mut words = extra.clone();
+    for word in APPROVAL_TYPES {
+        if with_store || word == "Approved" {
+            words.insert(word.to_owned());
+        }
+    }
+    words
 }
 
-/// The variants of the enums of `src` that carry an `Approved` (`SignEvm`, `CardUnused`, …).
-fn approval_carriers(src: &Src) -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
-    for block in &src.blocks {
-        let block_head = normalized(head(&src.code, block.open));
-        if !block_head.split_whitespace().any(|word| word == "enum") {
-            continue;
+/// What a type definition is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TypeKind {
+    Struct,
+    Enum,
+    Alias,
+}
+
+/// One type definition of scanned code ([`type_defs`]): a `struct` or `enum` with a body (its
+/// fields or variants, [`body_items`]) or a `type` alias with a right-hand side (one item).
+struct TypeDef<'a> {
+    name: String,
+    kind: TypeKind,
+    items: Vec<&'a str>,
+}
+
+/// Every type definition of `src` ([`TypeDef`]); a unit struct, an alias without a right-hand
+/// side (a trait's associated type) and `r#type` are left out.
+fn type_defs(src: &Src) -> Vec<TypeDef<'_>> {
+    let code = &src.code;
+    let bytes = code.as_bytes();
+    let mut defs = Vec::new();
+    for (keyword, kind) in [
+        ("struct ", TypeKind::Struct),
+        ("enum ", TypeKind::Enum),
+        ("type ", TypeKind::Alias),
+    ] {
+        for (at, _) in code.match_indices(keyword) {
+            if at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'#') {
+                continue;
+            }
+            let name = leading_ident(code[at + keyword.len()..].trim_start());
+            if name.is_empty() {
+                continue;
+            }
+            let items = if kind == TypeKind::Alias {
+                let Some(eq) = code[at..].find(['=', ';', '{']).map(|n| at + n) else {
+                    continue;
+                };
+                if bytes[eq] != b'=' {
+                    continue;
+                }
+                let end = code[eq..].find(';').map_or(code.len(), |n| eq + n);
+                vec![code[eq + 1..end].trim()]
+            } else {
+                let Some(open) = code[at..].find(['{', '(', ';']).map(|n| at + n) else {
+                    continue;
+                };
+                if bytes[open] == b';' {
+                    continue;
+                }
+                body_items(code, open)
+            };
+            defs.push(TypeDef { name, kind, items });
         }
-        for variant in body_items(&src.code, block.open) {
-            if names_an_approval(variant) {
-                found.insert(leading_ident(variant));
+    }
+    defs
+}
+
+/// Whether `item` of a `kind` definition names one of `words` as a type: an enum item's first
+/// token is its variant's own name, and `Approved` after `QueueOutcome::` or
+/// `InteractionStatus::` is a variant ([`is_approved_variant`]).
+fn item_names(item: &str, kind: TypeKind, words: &BTreeSet<String>) -> bool {
+    ident_tokens(item)
+        .into_iter()
+        .enumerate()
+        .any(|(index, (at, token))| {
+            !(kind == TypeKind::Enum && index == 0)
+                && words.contains(token)
+                && !(token == "Approved" && is_approved_variant(item, at))
+        })
+}
+
+/// The name of `item` of a `kind` definition: a field's or a variant's name (a tuple field's
+/// leading type), or `type` for an alias's right-hand side.
+fn item_name(item: &str, kind: TypeKind) -> String {
+    if kind == TypeKind::Alias {
+        return "type".to_owned();
+    }
+    leading_ident(
+        item.strip_prefix("pub(crate)")
+            .or_else(|| item.strip_prefix("pub(super)"))
+            .or_else(|| item.strip_prefix("pub"))
+            .unwrap_or(item)
+            .trim_start(),
+    )
+}
+
+/// The type aliases of `files` that stand for an approval type ([`APPROVAL_TYPES`]), directly
+/// or through another such alias (2026-11-23, S4 E4 review): `pub type T = Box<Approved>;`
+/// would hide the type from [`takes_approval_by_value`] and [`approval_holders`], which take
+/// these names too. The signer aliases (`SolSigner`, `BtcSigner`, …, `dyn FnMut` steps that
+/// take an `Approved`) are among them.
+fn approval_aliases(files: &[&Src]) -> BTreeSet<String> {
+    let defs: Vec<TypeDef<'_>> = files.iter().flat_map(|src| type_defs(src)).collect();
+    let mut aliases = BTreeSet::new();
+    loop {
+        let words = approval_words(&aliases, true);
+        let grown: BTreeSet<String> = defs
+            .iter()
+            .filter(|def| {
+                def.kind == TypeKind::Alias
+                    && def
+                        .items
+                        .iter()
+                        .any(|item| item_names(item, def.kind, &words))
+            })
+            .map(|def| def.name.clone())
+            .collect();
+        if grown.len() == aliases.len() {
+            return aliases;
+        }
+        aliases = grown;
+    }
+}
+
+/// What yw-engine's code outside the wallet carries an `Approved` (or the `ApprovalStore`) in
+/// ([`approval_carriers`]).
+#[derive(Default, Debug)]
+struct Carriers {
+    /// The [`JOB_ENUMS`] variants that hold one themselves or in a struct or alias that does
+    /// (`SignEvm`, `CardUnused`, …): yw-app's code names none.
+    variants: BTreeSet<String>,
+    /// Every other type or alias that holds one, directly or through another such type, with
+    /// the items (fields, variants; `type` for an alias) that do: `ZecKeyJob` (`Sign`,
+    /// `SignCard`), the signer aliases, …. yw-app's code names none of these types.
+    types: BTreeMap<String, BTreeSet<String>>,
+    /// The [`JOB_ENUMS`] variants that hold one only inside such an enum, with that enum
+    /// (`Zec`, `ZecKeyJob`): taking the `Approved` out (or putting one in) names the enum's
+    /// variant, so the enum is barred and the variant may stay nameable.
+    nested: BTreeSet<(String, String)>,
+}
+
+impl Carriers {
+    /// The names yw-app's code must not use: the variants and the types.
+    fn barred(&self) -> BTreeSet<String> {
+        let mut barred = self.variants.clone();
+        barred.extend(self.types.keys().cloned());
+        barred
+    }
+}
+
+/// The approval carriers of `files` (2026-11-23, S4 E4 review; before, only the variants of
+/// `events.rs`'s enums that named `Approved` themselves, which missed `KeyJob::Zec`'s
+/// `ZecKeyJob::Sign`/`SignCard`): every type and alias that holds an approval type
+/// ([`APPROVAL_TYPES`]) or another carrier, to a fixed point that does not pass through the
+/// [`JOB_ENUMS`] (yw-app's code names those; it names none of their carrying variants instead).
+fn approval_carriers(files: &[&Src]) -> Carriers {
+    let defs: Vec<TypeDef<'_>> = files.iter().flat_map(|src| type_defs(src)).collect();
+    let mut words = approval_words(&BTreeSet::new(), true);
+    loop {
+        let before = words.len();
+        for def in &defs {
+            if !JOB_ENUMS.contains(&def.name.as_str())
+                && def
+                    .items
+                    .iter()
+                    .any(|item| item_names(item, def.kind, &words))
+            {
+                words.insert(def.name.clone());
+            }
+        }
+        if words.len() == before {
+            break;
+        }
+    }
+    let enums: BTreeSet<String> = defs
+        .iter()
+        .filter(|def| def.kind == TypeKind::Enum && words.contains(&def.name))
+        .map(|def| def.name.clone())
+        .filter(|name| !JOB_ENUMS.contains(&name.as_str()))
+        .collect();
+    let direct: BTreeSet<String> = words.difference(&enums).cloned().collect();
+    let mut carriers = Carriers::default();
+    for def in &defs {
+        for item in def
+            .items
+            .iter()
+            .filter(|item| item_names(item, def.kind, &words))
+        {
+            let name = item_name(item, def.kind);
+            if !JOB_ENUMS.contains(&def.name.as_str()) {
+                carriers
+                    .types
+                    .entry(def.name.clone())
+                    .or_default()
+                    .insert(name);
+            } else if item_names(item, def.kind, &direct) {
+                carriers.variants.insert(name);
+            } else {
+                for (_, token) in ident_tokens(item).into_iter().skip(1) {
+                    if enums.contains(token) {
+                        carriers.nested.insert((name.clone(), token.to_owned()));
+                    }
+                }
             }
         }
     }
-    found
+    carriers
 }
 
-/// Whether the fn signature `sig` takes or returns an `Approved` by value (`Approved`,
-/// `Box<Approved>`, `Option<Box<Approved>>`, …), not only a reference to one.
-fn takes_approval_by_value(sig: &str) -> bool {
-    sig.match_indices("Approved").any(|(at, word)| {
-        let bytes = sig.as_bytes();
-        if (at > 0 && is_ident(bytes[at - 1]))
-            || bytes.get(at + word.len()).is_some_and(|&b| is_ident(b))
-        {
+/// The return type of the fn signature `sig` (after its parameters' `->`), or nothing.
+fn return_type(sig: &str) -> &str {
+    let bytes = sig.as_bytes();
+    let mut depth = 0_i32;
+    for (at, &byte) in bytes.iter().enumerate() {
+        match byte {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b'-' if depth == 0 && bytes.get(at + 1) == Some(&b'>') => return &sig[at + 2..],
+            _ => {}
+        }
+    }
+    ""
+}
+
+/// Whether the fn signature `sig` takes or returns an `Approved` (or one of `words`, its
+/// aliases, 2026-11-23 S4 E4 review) by value (`Approved`, `Box<Approved>`,
+/// `Option<Box<Approved>>`, …), not only a reference to one.
+fn takes_approval_by_value(sig: &str, words: &BTreeSet<String>) -> bool {
+    let words = approval_words(words, false);
+    ident_tokens(sig).into_iter().any(|(at, token)| {
+        if !words.contains(token) {
             return false;
         }
         let mut before: String = sig[..at].split_whitespace().collect();
@@ -5348,11 +5575,14 @@ struct WalletFnHead {
 
 /// Every fn of yw-engine's wallet (`yw-engine/src/wallet/`, production code) with its head.
 fn wallet_fn_heads(files: &[Src]) -> Vec<WalletFnHead> {
+    fn_heads(files, |file| file.starts_with("yw-engine/src/wallet/"))
+}
+
+/// Every fn with a body of the files of `files` that `keep` keeps, with its head (2026-11-23,
+/// S4 E4 review: also yw-engine outside its wallet, [`assert_engine_side`]).
+fn fn_heads(files: &[Src], keep: impl Fn(&str) -> bool) -> Vec<WalletFnHead> {
     let mut found = Vec::new();
-    for src in files
-        .iter()
-        .filter(|src| src.file.starts_with("yw-engine/src/wallet/"))
-    {
+    for src in files.iter().filter(|src| keep(&src.file)) {
         let impls: Vec<(usize, usize)> = src
             .blocks
             .iter()
@@ -5389,7 +5619,11 @@ fn wallet_fn_heads(files: &[Src]) -> Vec<WalletFnHead> {
 /// The fields of yw-engine's wallet types that hold an `Approved` or an `ApprovalStore`: (type,
 /// field, whether the field is `pub`), for brace structs and tuple structs, and for enums
 /// (a variant is `pub` with a `pub enum`).
-fn approval_holders(files: &[Src]) -> Vec<(String, String, bool)> {
+///
+/// 2026-11-23 (S4 E4 review): also a field of an alias of either (`words`,
+/// [`approval_aliases`]), and an enum's variant name is not read as a type.
+fn approval_holders(files: &[Src], words: &BTreeSet<String>) -> Vec<(String, String, bool)> {
+    let words = approval_words(words, true);
     let mut found = Vec::new();
     for src in files
         .iter()
@@ -5412,22 +5646,20 @@ fn approval_holders(files: &[Src]) -> Vec<(String, String, bool)> {
                 let enum_public = code[line_start..at]
                     .split_whitespace()
                     .any(|word| word == "pub");
+                let kind = if keyword == "enum " {
+                    TypeKind::Enum
+                } else {
+                    TypeKind::Struct
+                };
                 for item in body_items(code, open) {
-                    if names_an_approval(item) {
+                    if item_names(item, kind, &words) {
                         let public = if keyword == "enum " {
                             enum_public
                         } else {
                             item.strip_prefix("pub")
                                 .is_some_and(|rest| rest.starts_with(char::is_whitespace))
                         };
-                        let field = leading_ident(
-                            item.strip_prefix("pub(crate)")
-                                .or_else(|| item.strip_prefix("pub(super)"))
-                                .or_else(|| item.strip_prefix("pub"))
-                                .unwrap_or(item)
-                                .trim_start(),
-                        );
-                        found.push((name.clone(), field, public));
+                        found.push((name.clone(), item_name(item, kind), public));
                     }
                 }
             }
@@ -5446,25 +5678,42 @@ fn approval_holders(files: &[Src]) -> Vec<(String, String, bool)> {
 ///   `ApprovalStore`, `consume` (in any call form) or path to `yw_core::approval::store`;
 /// - consent step: an `impl Wallet` fn that takes an `Approved` (found in the engine, so a new
 ///   one is covered), [`CONSENT_STEPS`], or any `consumed`/`*_consumed` fn;
-/// - `KeyJob`/`KeyOutcome` variant that carries an `Approved` (`SignEvm`, `CardUnused`, …,
-///   found in `events.rs`), so the shell cannot take one out of a worker's event or send one;
-/// - yw-engine test entry ([`TEST_ENTRIES`]).
+/// - approval carrier ([`approval_carriers`], found in yw-engine outside its wallet): a
+///   `KeyJob`/`KeyOutcome` variant that carries an `Approved` (`SignEvm`, `CardUnused`, …), or
+///   any other type or alias that carries one, directly or nested (`ZecKeyJob`, whose `Sign` and
+///   `SignCard` hold one inside `KeyJob::Zec`; the signer aliases), so the shell cannot take one
+///   out of a worker's event or a queued job, or put one in a job, by name;
+/// - yw-engine test entry ([`TEST_ENTRIES`]);
+/// - variant owner made yw-app's own ([`OWNER_RENAMES`]: `use … as QueueOutcome`).
 ///
-/// In yw-engine's wallet every fn that takes or returns an `Approved` by value, the consent
-/// steps among them, is `pub(crate)` or private (but [`PUB_APPROVAL_FNS`]), and every field that
-/// holds an `Approved` or the `ApprovalStore` is not `pub` ([`APPROVAL_HOLDERS`]). The wallet
-/// holds exactly the one `consume` of [`the_only_consume_is_wallet_code`]. The check finds what
-/// it looks for (over 50 yw-app files, the named takers, holders and carriers, the variant
-/// owners, A-20) and its readers fail on made-up code
-/// (`approval_capability_names_on_made_up_code`,
-/// `approval_takers_holders_and_carriers_on_made_up_code`).
+/// In yw-engine's wallet every fn that takes or returns an `Approved` (or an alias of one,
+/// [`approval_aliases`]) by value, the consent steps among them, is `pub(crate)` or private (but
+/// [`PUB_APPROVAL_FNS`]), and every field that holds an `Approved` or the `ApprovalStore` is not
+/// `pub` ([`APPROVAL_HOLDERS`]); outside the wallet no `pub` fn returns an `Approved` or a
+/// carrier by value. The wallet holds exactly the one `consume` of
+/// [`the_only_consume_is_wallet_code`]. The check finds what it looks for (over 50 yw-app files,
+/// the named takers, holders and carriers, the variant owners, A-20) and its readers fail on
+/// made-up code (`approval_capability_names_on_made_up_code`,
+/// `approval_takers_holders_and_carriers_on_made_up_code`, `approval_carriers_on_made_up_code`).
+///
+/// 2026-11-23 (S4 E4 review): before, the carriers were read from `events.rs` alone, as the
+/// variants that named `Approved` themselves (13); `KeyJob::Zec(Box<ZecKeyJob>)` names no
+/// `Approved`, so yw-app's code could pop a `KeyJob::Zec` from the key queue and take the
+/// `Approved` out of `ZecKeyJob::Sign` unseen (a mutation probe in `app_effects.rs` passed).
+/// Now every yw-engine type outside the wallet is read, to a fixed point ([`Carriers`]), aliases
+/// are resolved, and a renamed variant owner is refused.
 #[test]
 fn approval_capability_is_engine_only() {
     let files = production_code();
+    let engine: Vec<&Src> = files
+        .iter()
+        .filter(|src| src.file.starts_with("yw-engine/"))
+        .collect();
+    let aliases = approval_aliases(&engine);
     let heads = wallet_fn_heads(&files);
     let takers: BTreeSet<String> = heads
         .iter()
-        .filter(|head| head.of_wallet && takes_approval_by_value(&head.sig))
+        .filter(|head| head.of_wallet && takes_approval_by_value(&head.sig, &aliases))
         .map(|head| head.name.clone())
         .collect();
     for name in NAMED_APPROVAL_TAKERS {
@@ -5482,11 +5731,27 @@ fn approval_capability_is_engine_only() {
         );
         steps.insert(name.to_owned());
     }
-    assert_engine_side(&files, &heads, &steps);
-    let carriers = approval_carriers(src_of(&files, "yw-engine/src/events.rs"));
+    assert_engine_side(&files, &heads, &steps, &aliases);
+    let outside: Vec<&Src> = engine
+        .iter()
+        .copied()
+        .filter(|src| !src.file.starts_with("yw-engine/src/wallet/"))
+        .collect();
+    let carriers = approval_carriers(&outside);
+    assert_carriers_found(&carriers, &aliases);
+    let mut barred = carriers.barred();
+    barred.extend(aliases.iter().cloned());
+    let mut leaks = Vec::new();
+    for head in fn_heads(&files, |file| {
+        file.starts_with("yw-engine/") && !file.starts_with("yw-engine/src/wallet/")
+    }) {
+        if head.public && takes_approval_by_value(return_type(&head.sig), &barred) {
+            leaks.push(format!("{}:{}", head.file, head.name));
+        }
+    }
     assert!(
-        carriers.contains("SignEvm") && carriers.contains("CardUnused") && carriers.len() >= 13,
-        "the variants that carry an Approved: {carriers:?}"
+        leaks.is_empty(),
+        "pub fns outside the wallet that return an Approved or a carrier: {leaks:?}"
     );
     let app: Vec<&Src> = files
         .iter()
@@ -5495,7 +5760,7 @@ fn approval_capability_is_engine_only() {
     assert!(app.len() > 50, "{} yw-app files scanned", app.len());
     let mut found = Vec::new();
     for src in app {
-        for (at, name) in capability_names(&src.code, &steps, &carriers) {
+        for (at, name) in capability_names(&src.code, &steps, &barred) {
             found.push(format!("{}:{} {name}", src.file, line_at(&src.code, at)));
         }
     }
@@ -5506,16 +5771,56 @@ fn approval_capability_is_engine_only() {
     );
 }
 
+/// The carriers [`approval_carriers`] must find (A-20; 2026-11-23, S4 E4 review): the
+/// `KeyJob`/`KeyOutcome` variants that hold an `Approved` (13: the twelve `Sign*` jobs and
+/// `CardUnused`), `ZecKeyJob` with exactly its `Sign` and `SignCard` inside `KeyJob::Zec` (15
+/// carrying variants in all), and the signer aliases among `aliases`.
+fn assert_carriers_found(carriers: &Carriers, aliases: &BTreeSet<String>) {
+    assert!(
+        carriers.variants.contains("SignEvm")
+            && carriers.variants.contains("CardUnused")
+            && carriers.variants.len() >= 13,
+        "the variants that carry an Approved: {carriers:?}"
+    );
+    let zec: BTreeSet<String> = ["Sign", "SignCard"].map(str::to_owned).into();
+    assert_eq!(
+        carriers.types.get("ZecKeyJob"),
+        Some(&zec),
+        "ZecKeyJob carries an Approved: {carriers:?}"
+    );
+    assert!(
+        carriers.variants.len() + zec.len() >= 15,
+        "15 carrying variants: {carriers:?}"
+    );
+    assert!(
+        carriers
+            .nested
+            .contains(&("Zec".to_owned(), "ZecKeyJob".to_owned())),
+        "KeyJob::Zec carries ZecKeyJob: {carriers:?}"
+    );
+    for alias in ["SolSigner", "BtcSigner", "ZecSigner"] {
+        assert!(
+            aliases.contains(alias) && carriers.types.contains_key(alias),
+            "{alias} takes an Approved: {aliases:?}"
+        );
+    }
+}
+
 /// The engine half of [`approval_capability_is_engine_only`]: the consent steps `steps` and
-/// every wallet fn that takes or returns an `Approved` by value are not `pub` (but
-/// [`PUB_APPROVAL_FNS`]); the holders are found and not `pub`; the variant owners have the
-/// variant; the wallet holds one `consume`, in `consume_and_sign`.
-fn assert_engine_side(files: &[Src], heads: &[WalletFnHead], steps: &BTreeSet<String>) {
+/// every wallet fn that takes or returns an `Approved` (or one of its `aliases`) by value are
+/// not `pub` (but [`PUB_APPROVAL_FNS`]); the holders are found and not `pub`; the variant owners
+/// have the variant; the wallet holds one `consume`, in `consume_and_sign`.
+fn assert_engine_side(
+    files: &[Src],
+    heads: &[WalletFnHead],
+    steps: &BTreeSet<String>,
+    aliases: &BTreeSet<String>,
+) {
     assert!(heads.len() > 900, "{} wallet fns", heads.len());
     let mut public = Vec::new();
     for head in heads {
         let consent = head.of_wallet && steps.contains(&head.name);
-        if head.public && (consent || takes_approval_by_value(&head.sig)) {
+        if head.public && (consent || takes_approval_by_value(&head.sig, aliases)) {
             public.push((head.file.as_str(), head.name.as_str()));
         }
     }
@@ -5524,7 +5829,7 @@ fn assert_engine_side(files: &[Src], heads: &[WalletFnHead], steps: &BTreeSet<St
         .map(|&(file, name, _)| (file, name))
         .collect();
     assert_eq!(public, allowed, "pub wallet fns that take an Approved");
-    let holders = approval_holders(files);
+    let holders = approval_holders(files, aliases);
     for (ty, field) in APPROVAL_HOLDERS {
         assert!(
             holders.iter().any(|(t, f, _)| t == ty && f == field),
@@ -5586,7 +5891,7 @@ fn approval_capability_names_on_made_up_code() {
         .into_iter()
         .map(str::to_owned)
         .collect();
-    let carriers: BTreeSet<String> = ["SignEvm", "CardUnused"]
+    let carriers: BTreeSet<String> = ["SignEvm", "CardUnused", "ZecKeyJob"]
         .into_iter()
         .map(str::to_owned)
         .collect();
@@ -5623,6 +5928,25 @@ fn approval_capability_names_on_made_up_code() {
         ),
         ("use yw_engine::testkit::WalletTestExt;", "testkit"),
         ("let p: StoreProbe<'_> = w.evm_store_mut();", "StoreProbe"),
+        // 2026-11-23 (S4 E4 review): the nested carrier and the renamed variant owners.
+        (
+            "if let Some((_, KeyJob::Zec(job))) = queue.pop() { \
+             if let yw_engine::workers::journal::zec::ZecKeyJob::Sign { approved, .. } = *job {} }",
+            "ZecKeyJob",
+        ),
+        (
+            "use yw_engine::workers::journal::zec::ZecKeyJob::*;",
+            "ZecKeyJob",
+        ),
+        ("use yw_core::approval as QueueOutcome;", "as QueueOutcome"),
+        (
+            "use yw_core::approval::{self as InteractionStatus};",
+            "as InteractionStatus",
+        ),
+        (
+            "mod QueueOutcome { pub use yw_core::approval::*; }",
+            "mod QueueOutcome",
+        ),
     ] {
         let found = capability_names(&code_only(code), &steps, &carriers);
         assert!(
@@ -5639,14 +5963,22 @@ fn approval_capability_names_on_made_up_code() {
         "use yw_engine::approval::{QueueOutcome, QueueSource};",
         "let s = \"Approved consume card_begin testkit\"; // ApprovalStore",
         "self.wallet.card_begins(); self.wallet.on_cmd(cmd);",
+        "if let Some((_, KeyJob::Zec(job))) = queue.pop() { queue.push(KeyJob::Lock); }",
+        "use yw_engine::approval::QueueOutcome as Outcome; match o { Outcome::Rejected => {} }",
     ] {
         let found = capability_names(&code_only(code), &steps, &carriers);
         assert!(found.is_empty(), "{code}: {found:?}");
     }
 }
 
+/// The set of `names`.
+fn set_of(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|name| (*name).to_owned()).collect()
+}
+
 #[test]
 fn approval_takers_holders_and_carriers_on_made_up_code() {
+    let none = BTreeSet::new();
     for sig in [
         "fn f(&mut self, approved: Approved)",
         "fn f(a: yw_core::approval::Approved, b: u8)",
@@ -5654,7 +5986,7 @@ fn approval_takers_holders_and_carriers_on_made_up_code() {
         "fn f() -> Result<(), Box<Approved>>",
         "fn f(a: &u8) -> Option<yw_core::approval::Approved>",
     ] {
-        assert!(takes_approval_by_value(sig), "{sig}");
+        assert!(takes_approval_by_value(sig, &none), "{sig}");
     }
     for sig in [
         "fn f(a: &Approved)",
@@ -5662,9 +5994,17 @@ fn approval_takers_holders_and_carriers_on_made_up_code() {
         "fn f<'a>(a: &'a Approved)",
         "fn f(a: &mut Approved)",
         "fn f(o: QueueOutcome, a: ApprovedX)",
+        "fn f(a: Held)",
     ] {
-        assert!(!takes_approval_by_value(sig), "{sig}");
+        assert!(!takes_approval_by_value(sig, &none), "{sig}");
     }
+    // 2026-11-23 (S4 E4 review): an alias of the type is the type.
+    let held = set_of(&["Held"]);
+    assert!(takes_approval_by_value("fn f(a: Held)", &held));
+    assert!(takes_approval_by_value("pub fn f() -> Option<Held>", &held));
+    assert!(!takes_approval_by_value("fn f(a: &Held)", &held));
+    assert_eq!(return_type("fn f(a: Held) -> u8"), " u8");
+    assert_eq!(return_type("fn f(g: impl Fn(u8) -> Held)"), "");
     let src = Src::new(
         "yw-engine/src/wallet/made_up.rs".to_owned(),
         code_only(
@@ -5673,32 +6013,85 @@ pub struct B(pub(crate) ApprovalStore);
 enum C { Held(Approved), Empty }
 pub enum D { Sign { approved: Box<Approved> } }
 struct E;
-pub struct F { pub(crate) store: ApprovalStore, pub shown: u64 }",
+pub struct F { pub(crate) store: ApprovalStore, pub shown: u64 }
+pub type Held = Box<yw_core::approval::Approved>;
+pub type Again<'a> = Option<Held>;
+pub enum Status { Approved, Rejected }
+pub struct G { pub kept: Again<'static>, pub status: Status }",
         ),
     );
+    let aliases = approval_aliases(&[&src]);
+    assert_eq!(aliases, set_of(&["Again", "Held"]));
     assert_eq!(
-        approval_holders(std::slice::from_ref(&src)),
+        approval_holders(std::slice::from_ref(&src), &aliases),
         [
             ("A".to_owned(), "approved".to_owned(), true),
             ("B".to_owned(), "ApprovalStore".to_owned(), false),
             ("F".to_owned(), "store".to_owned(), false),
+            ("G".to_owned(), "kept".to_owned(), true),
             ("C".to_owned(), "Held".to_owned(), false),
             ("D".to_owned(), "Sign".to_owned(), true),
         ]
     );
+}
+
+/// [`approval_carriers`] on made-up code (2026-11-23, S4 E4 review): a nested enum, a struct
+/// and an alias that carry an `Approved`, to a fixed point that stops at the job enums.
+#[test]
+fn approval_carriers_on_made_up_code() {
     let events = Src::new(
         "yw-engine/src/events.rs".to_owned(),
         code_only(
             "pub enum KeyJob { Lock, SignEvm { ticket: u64, approved: Box<Approved> }, \
-             #[doc(hidden)] Gone(Box<Approved>, u8), Load { a: Result<(), u8> } }",
+             #[doc(hidden)] Gone(Box<Approved>, u8), Load { a: Result<(), u8> }, \
+             Zec(Box<crate::workers::journal::zec::NestJob>), Wrapped(Wrap), Aliased(Token) }
+pub enum KeyOutcome { Done, Back(Box<NestJob>, u8) }
+pub struct KeyQueue { jobs: Vec<KeyJob> }
+pub struct Wrap { pub approved: Token }",
         ),
     );
+    let nest = Src::new(
+        "yw-engine/src/workers/journal_zec.rs".to_owned(),
+        code_only(
+            "pub enum NestJob { Public { n: u8 }, Sign { approved: Box<Approved> }, \
+             SignCard(Box<Token>, u8) }
+pub type Token = Approved;
+pub type Signer<'a> = dyn FnMut(&Vault, Approved) -> u8 + 'a;
+pub enum QueueOutcome { Approved, Rejected }
+pub struct Plain { pub n: u8 }",
+        ),
+    );
+    let carriers = approval_carriers(&[&events, &nest]);
     assert_eq!(
-        approval_carriers(&events),
-        ["Gone".to_owned(), "SignEvm".to_owned()]
+        carriers.variants,
+        set_of(&["Aliased", "Gone", "SignEvm", "Wrapped"])
+    );
+    assert_eq!(
+        carriers.types.keys().cloned().collect::<BTreeSet<_>>(),
+        set_of(&["NestJob", "Signer", "Token", "Wrap"])
+    );
+    assert_eq!(
+        carriers.types.get("NestJob"),
+        Some(&set_of(&["Sign", "SignCard"]))
+    );
+    assert_eq!(
+        carriers.nested,
+        [("Back", "NestJob"), ("Zec", "NestJob")]
             .into_iter()
+            .map(|(variant, ty)| (variant.to_owned(), ty.to_owned()))
             .collect::<BTreeSet<_>>()
     );
+    let barred = carriers.barred();
+    for name in [
+        "KeyJob",
+        "KeyOutcome",
+        "KeyQueue",
+        "Zec",
+        "QueueOutcome",
+        "Plain",
+    ] {
+        assert!(!barred.contains(name), "{name} is barred: {barred:?}");
+    }
 }
 
 /// The secret form's actions split at `on_secret_action` (2026-11-22, S4c W12, preflight critic
