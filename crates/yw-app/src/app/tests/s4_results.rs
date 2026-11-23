@@ -82,8 +82,11 @@ const ENGINE_TEST_FILES: [&str; 3] = ["explain/tests.rs", "testkit.rs", "walletc
 
 /// Whether `rel` (a `/` path under a crate's `src`) is test code. 2026-11-23 (spec/15 §11.4 S5-0,
 /// §18 31 (다)): by crate; a crate other than yw-app and yw-engine (a new shell crate, scanned
-/// since S5-0) has the test files `card_pcsc`'s scans skip: a `tests.rs`, a file under a `tests`
-/// folder or a `*_tests.rs`.
+/// since S5-0) has the test files `card_pcsc::tests::production_sources` skips: a `tests.rs` or a
+/// file under a `tests` folder. 2026-11-23 (S5-0 review): not a `*_tests.rs` by its name alone
+/// (before, also those), so a production module named so (`jni_tests.rs`) is not left out; such a
+/// crate's `#[cfg(test)]` `*_tests.rs` files need an arm of their own here, as yw-app's and
+/// yw-engine's have.
 fn is_test_file(krate: &str, rel: &str) -> bool {
     match krate {
         "yw-engine" => ENGINE_TEST_FILES.contains(&rel) || rel.ends_with("_tests.rs"),
@@ -98,7 +101,6 @@ fn is_test_file(krate: &str, rel: &str) -> bool {
                 || rel.ends_with("/tests.rs")
                 || rel.starts_with("tests/")
                 || rel.contains("/tests/")
-                || rel.ends_with("_tests.rs")
         }
     }
 }

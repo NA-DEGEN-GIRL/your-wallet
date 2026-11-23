@@ -223,23 +223,126 @@ pub(crate) mod tests {
         roots
     }
 
+    /// The key of a TOML key line or dotted key (`engine`, `engine.workspace`, `"engine"`), or
+    /// the last part of a table header after its `dependencies.` (`engine` of
+    /// `[dependencies.engine]`); `None` for a line with no `=` or a header with nothing after it.
+    fn toml_key(line: &str) -> Option<String> {
+        let key = if line.starts_with('[') {
+            let inner = line.trim_matches(['[', ']']);
+            inner.rsplit_once("dependencies.")?.1
+        } else {
+            line.split_once('=')?.0
+        };
+        let first = key.trim().split('.').next().unwrap_or("");
+        let first = first.trim().trim_matches('"').trim_matches('\'');
+        (!first.is_empty()).then(|| first.to_owned())
+    }
+
+    /// The keys of the root `[workspace.dependencies]` (its inline entries and its
+    /// `[workspace.dependencies.<key>]` tables) whose entry names yw-engine: by key, by
+    /// `package = "yw-engine"` or by a path that ends in `yw-engine` (2026-11-23, S5-0 review: a
+    /// workspace-level rename, `engine = { package = "yw-engine", … }`, that a member names as
+    /// `engine.workspace = true`). Comments are not read.
+    fn workspace_engine_keys(root: &str) -> Vec<String> {
+        let mut keys: Vec<String> = Vec::new();
+        let mut section = String::new();
+        let mut table_key: Option<String> = None;
+        for line in root.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.starts_with('[') {
+                section = line.to_owned();
+                table_key = if line.starts_with("[workspace.dependencies.") {
+                    toml_key(line)
+                } else {
+                    None
+                };
+                if let Some(key) = &table_key
+                    && (key.contains("yw-engine") || key.contains("yw_engine"))
+                    && !keys.contains(key)
+                {
+                    keys.push(key.clone());
+                }
+                continue;
+            }
+            let key = if section == "[workspace.dependencies]" {
+                toml_key(line)
+            } else {
+                table_key.clone()
+            };
+            if let Some(key) = key
+                && (line.contains("yw-engine") || line.contains("yw_engine"))
+                && !keys.contains(&key)
+            {
+                keys.push(key);
+            }
+        }
+        keys.sort();
+        keys
+    }
+
+    /// The root `[workspace] members` paths (one line or several).
+    fn workspace_members(root: &str) -> Vec<String> {
+        let mut members = Vec::new();
+        let mut in_workspace = false;
+        let mut in_members = false;
+        for line in root.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.starts_with('[') && !in_members {
+                in_workspace = line == "[workspace]";
+                continue;
+            }
+            let list = if in_members {
+                line
+            } else if in_workspace
+                && let Some((key, value)) = line.split_once('=')
+                && key.trim() == "members"
+            {
+                in_members = true;
+                value.trim_start().trim_start_matches('[')
+            } else {
+                continue;
+            };
+            let (list, closed) = match list.split_once(']') {
+                Some((before, _)) => (before, true),
+                None => (list, false),
+            };
+            members.extend(
+                list.split(',')
+                    .map(|item| item.trim().trim_matches('"').trim_matches('\''))
+                    .filter(|item| !item.is_empty())
+                    .map(str::to_owned),
+            );
+            if closed {
+                in_members = false;
+            }
+        }
+        members
+    }
+
     /// Whether `manifest` (a `Cargo.toml`) names yw-engine in a dependency table: any table whose
     /// header holds `dependencies` (`[dependencies]`, `[dev-dependencies]`,
     /// `[build-dependencies]`, `[target.'cfg(…)'.dependencies]`, `[dependencies.yw-engine]`, …),
-    /// by its key or by a `package = "yw-engine"` rename (2026-11-23, S5-0, critic C4). Comments
-    /// are not read.
-    fn names_engine_dependency(manifest: &str) -> bool {
+    /// by its key or by a `package = "yw-engine"` rename (2026-11-23, S5-0, critic C4), or by a
+    /// key of `engine_keys`, the root's yw-engine entries of [`workspace_engine_keys`]
+    /// (`engine.workspace = true`, `engine = { workspace = true }`, `[dependencies.engine]`;
+    /// 2026-11-23, S5-0 review). Comments are not read.
+    fn names_engine_dependency(manifest: &str, engine_keys: &[String]) -> bool {
+        let names_engine = |line: &str| {
+            line.contains("yw-engine")
+                || line.contains("yw_engine")
+                || toml_key(line).is_some_and(|key| engine_keys.contains(&key))
+        };
         let mut in_dependencies = false;
         for line in manifest.lines() {
             let line = line.split('#').next().unwrap_or("").trim();
             if line.starts_with('[') {
                 in_dependencies = line.contains("dependencies");
-                if in_dependencies && (line.contains("yw-engine") || line.contains("yw_engine")) {
+                if in_dependencies && names_engine(line) {
                     return true;
                 }
                 continue;
             }
-            if in_dependencies && (line.contains("yw-engine") || line.contains("yw_engine")) {
+            if in_dependencies && names_engine(line) {
                 return true;
             }
         }
@@ -251,25 +354,52 @@ pub(crate) mod tests {
     /// `crates/` and names yw-engine in none of its dependency tables, and every other crate there
     /// (yw-app and yw-engine today) is a [`source_roots`] root and in
     /// `s4_results::production_code`. A crate that starts to depend on yw-engine fails here until
-    /// it leaves the no-engine list, and then it is scanned.
+    /// it leaves the no-engine list, and then it is scanned. 2026-11-23 (S5-0 review): every root
+    /// `[workspace] members` path is `crates/<dir>` and the members are exactly the crates under
+    /// `crates/`, so a member added elsewhere (`android/…`) fails here instead of going unscanned;
+    /// and a member that names yw-engine through a renamed `[workspace.dependencies]` key counts.
     #[test]
     fn every_engine_dependent_crate_is_scanned() {
         let crates = crates_dir();
+        let root = std::fs::read_to_string(crates.parent().unwrap().join("Cargo.toml")).unwrap();
+        let engine_keys = workspace_engine_keys(&root);
+        assert!(
+            engine_keys.iter().any(|key| key == "yw-engine"),
+            "{engine_keys:?}"
+        );
         for name in NO_ENGINE_CRATES {
             let manifest = std::fs::read_to_string(crates.join(name).join("Cargo.toml"));
             assert!(manifest.is_ok(), "{name} is a crate under crates/");
             assert!(
-                !names_engine_dependency(&manifest.unwrap()),
+                !names_engine_dependency(&manifest.unwrap(), &engine_keys),
                 "{name} names yw-engine in a dependency table: scan it (NO_ENGINE_CRATES)"
             );
         }
-        let all: Vec<String> = std::fs::read_dir(&crates)
+        let mut all: Vec<String> = std::fs::read_dir(&crates)
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .filter(|path| path.join("Cargo.toml").is_file())
             .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
+        all.sort();
         assert!(all.len() >= 7, "{all:?}");
+        let mut members: Vec<String> = workspace_members(&root)
+            .iter()
+            .map(|member| {
+                let dir = member.replace('\\', "/");
+                let dir = dir.trim_end_matches('/').strip_prefix("crates/");
+                assert!(
+                    dir.is_some_and(|dir| !dir.is_empty() && !dir.contains(['/', '*', '?'])),
+                    "workspace member {member} is not crates/<dir>: the source scans read crates/ only"
+                );
+                dir.unwrap_or_default().to_owned()
+            })
+            .collect();
+        members.sort();
+        assert_eq!(
+            members, all,
+            "the workspace members are the crates under crates/"
+        );
         let scanned = scanned_crates();
         let roots = source_roots();
         for name in &all {
@@ -315,10 +445,55 @@ pub(crate) mod tests {
                 false,
             ),
             ("[features]\nyw-engine = []\n", false),
+            // 2026-11-23 (S5-0 review): a key the root renames to yw-engine.
+            ("[dependencies]\nengine.workspace = true\n", true),
+            ("[dependencies]\nengine = { workspace = true }\n", true),
+            (
+                "[target.'cfg(target_os=\"android\")'.dependencies]\nengine.workspace = true\n",
+                true,
+            ),
+            ("[dependencies.engine]\nworkspace = true\n", true),
+            ("[dependencies]\nengines.workspace = true\n", false),
+            ("[features]\nengine = []\n", false),
         ];
+        let engine_keys = ["engine".to_owned(), "yw-engine".to_owned()];
         for (manifest, expected) in cases {
-            assert_eq!(names_engine_dependency(manifest), expected, "{manifest}");
+            assert_eq!(
+                names_engine_dependency(manifest, &engine_keys),
+                expected,
+                "{manifest}"
+            );
         }
+        assert!(!names_engine_dependency(
+            "[dependencies]\nengine.workspace = true\n",
+            &["yw-engine".to_owned()]
+        ));
+    }
+
+    /// [`workspace_engine_keys`] and [`workspace_members`] on made-up root manifests (they can
+    /// fail; 2026-11-23, S5-0 review).
+    #[test]
+    fn workspace_keys_and_members_on_made_up_roots() {
+        let root = "[workspace]\nmembers = [\n  \"crates/yw-core\", # core\n  \"android/yw-android\",\n]\n\
+            exclude = [\"fuzz\"]\n\
+            [workspace.dependencies]\n\
+            yw-core = { path = \"crates/yw-core\" }\n\
+            engine = { package = \"yw-engine\", path = \"crates/yw-engine\" }\n\
+            other.path = \"x/yw-engine\"\n\
+            # quiet = { package = \"yw-engine\" }\n\
+            [workspace.dependencies.core2]\npackage = \"yw-engine\"\n\
+            [workspace.dependencies.plain]\npath = \"crates/yw-json\"\n\
+            [workspace.lints.rust]\nyw-engine = \"deny\"\n";
+        assert_eq!(workspace_engine_keys(root), ["core2", "engine", "other"]);
+        assert_eq!(
+            workspace_members(root),
+            ["crates/yw-core", "android/yw-android"]
+        );
+        assert_eq!(
+            workspace_members("[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n"),
+            ["crates/a", "crates/b"]
+        );
+        assert!(workspace_members("[package]\nmembers = [\"crates/a\"]\n").is_empty());
     }
 
     /// Every `.rs` under `dir`, test code included.
