@@ -314,8 +314,8 @@ fn offset(id: u16, base: u16, span: u16) -> Option<u16> {
 }
 
 /// `YYYY-MM-DD HH:MM` in local time (UTC with a suffix if the conversion fails).
-fn local_time(unix_ms: u64) -> String {
-    let wall = yw_win::time::local_wall_ms(unix_ms);
+fn local_time(facts: &dyn yw_engine::screen::facts::ScreenFacts, unix_ms: u64) -> String {
+    let wall = facts.local_wall_ms(unix_ms);
     let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
@@ -1019,7 +1019,7 @@ impl App {
             items.push(Item::Text(text::ROW.fill(
                 lang,
                 [
-                    &local_time(record.signed_at_ms),
+                    &local_time(&self.facts(), record.signed_at_ms),
                     &format_zec(record.amount),
                     &state,
                 ],

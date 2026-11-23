@@ -2,13 +2,14 @@
 //! T-WAIT-STALLED (a wait past `app_reset::WAIT_TIMEOUT_MS`).
 
 use crate::app::App;
-use crate::app_extension::{CHROME_EXTENSIONS_URL, expected_dir, extension_dir};
-use crate::store::reset::FOLDER_PREFIX;
+use crate::app_extension::{CHROME_EXTENSIONS_URL, ExtensionStatus};
 use crate::ui::main_window::{Ctl, Item};
 use yw_core::lang::Lang;
 use yw_engine::screen::Tone;
+use yw_engine::screen::facts::ScreenFacts;
 use yw_engine::wallet::AppMode;
 use yw_engine::wallet::app_reset::RESET_PHRASE;
+use yw_engine::wallet_files::FOLDER_PREFIX;
 
 /// Command ids (block 13,400–13,449, `ui::command_ids`).
 pub mod ids {
@@ -382,7 +383,7 @@ impl App {
             text::MOVE_TO.get(lang).to_owned(),
             format!(
                 "{}\\{FOLDER_PREFIX}{}",
-                self.paths.data.display(),
+                self.facts().data_dir(),
                 text::STAMP_PLACEHOLDER.get(lang)
             ),
         ));
@@ -434,6 +435,28 @@ impl App {
         items.push(Item::CardEnd);
     }
 
+    /// The S23 status. 2026-11-24 (spec/15 §11.4 S5-3): render code, moved here from
+    /// `app_extension.rs` (it reads only wallet state).
+    #[must_use]
+    pub fn extension_status(&self) -> ExtensionStatus {
+        if self
+            .browser
+            .as_ref()
+            .is_some_and(|browser| browser.connections > 0)
+        {
+            return ExtensionStatus::Connected;
+        }
+        if !matches!(self.mode, AppMode::Unlocked { .. }) || self.meta.is_none() {
+            return ExtensionStatus::Unknown;
+        }
+        let (sol, btc) = self.chain_grants();
+        if self.browser_grants().is_empty() && sol.is_empty() && btc.is_empty() {
+            ExtensionStatus::Never
+        } else {
+            ExtensionStatus::ConnectedBefore
+        }
+    }
+
     /// S23.
     pub(crate) fn extension_screen(&self, items: &mut Vec<Item>) {
         let lang = self.settings.language;
@@ -461,43 +484,49 @@ impl App {
         items.push(Item::Help(text::EXT_UPDATE.get(lang).to_owned()));
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some(text::EXT_FOLDER.get(lang).to_owned())));
-        let found = extension_dir();
+        let found = self.facts().extension_dir();
         if let Some(dir) = &found {
-            items.push(Item::Mono(dir.display().to_string()));
+            items.push(Item::Mono(dir.clone()));
         } else {
             items.push(Item::Banner(
                 yw_engine::wallet::text::T_EXT_MISSING.get(lang).to_owned(),
                 Tone::Warn,
             ));
-            if let Some(expected) = expected_dir() {
+            if let Some(expected) = self.facts().expected_extension_dir() {
                 items.push(Item::Field(
                     text::EXT_EXPECTED.get(lang).to_owned(),
-                    expected.display().to_string(),
+                    expected,
                 ));
             }
         }
         // The folder picker takes the copied path (2026-11-10): copying is the main step.
-        items.push(Item::Row(vec![
+        let mut row = vec![
             Ctl::primary(ids::EXT_COPY_PATH, text::EXT_COPY_PATH.get(lang))
                 .enabled(found.is_some()),
             Ctl::button(
                 ids::EXT_COPY_URL,
                 &text::EXT_COPY_URL.fill(lang, [CHROME_EXTENSIONS_URL]),
             ),
-            Ctl::link(ids::EXT_OPEN_FOLDER, text::EXT_OPEN_FOLDER.get(lang))
-                .enabled(found.is_some()),
-        ]));
+        ];
+        if self.facts().flags().open_folders {
+            row.push(
+                Ctl::link(ids::EXT_OPEN_FOLDER, text::EXT_OPEN_FOLDER.get(lang))
+                    .enabled(found.is_some()),
+            );
+        }
+        items.push(Item::Row(row));
         items.push(Item::Help(text::EXT_CHROME_BLOCKS.get(lang).to_owned()));
         items.push(Item::CardEnd);
     }
 
     /// The `Chrome 확장 설치` link of S08 and S13 while no extension has connected.
     pub(crate) fn extension_link(&self, items: &mut Vec<Item>) {
-        use crate::app_extension::ExtensionStatus;
-        if matches!(
-            self.extension_status(),
-            ExtensionStatus::Never | ExtensionStatus::Unknown
-        ) {
+        if self.facts().flags().browser_extension
+            && matches!(
+                self.extension_status(),
+                ExtensionStatus::Never | ExtensionStatus::Unknown
+            )
+        {
             items.push(Item::Row(vec![Ctl::link(
                 ids::EXT_OPEN,
                 text::EXT_LINK.get(self.settings.language),

@@ -153,8 +153,8 @@ pub mod ids {
     }
 }
 
-fn local_time(unix_ms: u64) -> String {
-    let wall = yw_win::time::local_wall_ms(unix_ms);
+fn local_time(facts: &dyn yw_engine::screen::facts::ScreenFacts, unix_ms: u64) -> String {
+    let wall = facts.local_wall_ms(unix_ms);
     let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..19).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
@@ -432,7 +432,7 @@ impl App {
                     .unwrap_or_default();
                 items.push(Item::Text(format!(
                     "{} · {} · {}{to}",
-                    local_time(row.nonce),
+                    local_time(&self.facts(), row.nonce),
                     yw_core::hypercore::text::kind_name(lang, row.kind),
                     row.amount
                 )));

@@ -403,7 +403,7 @@ fn english_explorer_chain_and_site_texts() {
     lines.push(crate::ui::screens_evm::browser_status_text(
         Lang::En,
         None,
-        None,
+        yw_engine::screen::facts::PipeStatus::default(),
     ));
     lines.push(yw_engine::explorer::TemplateError::Placeholder(LinkKind::Tx).text_in(Lang::En));
     lines.push(app.unlock_pending_text().unwrap_or_default());

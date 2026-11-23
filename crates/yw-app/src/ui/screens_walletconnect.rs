@@ -139,9 +139,9 @@ pub mod text {
     }
 }
 
-fn local_time(seconds: u64) -> String {
+fn local_time(facts: &dyn yw_engine::screen::facts::ScreenFacts, seconds: u64) -> String {
     let unix_ms = seconds.saturating_mul(1_000);
-    let local = yw_win::time::local_wall_ms(unix_ms);
+    let local = facts.local_wall_ms(unix_ms);
     let text = yw_engine::logging::format_utc(local.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if local.is_some() {
@@ -320,11 +320,11 @@ impl App {
             ));
             items.push(Item::Field(
                 text::CREATED.get(lang).to_owned(),
-                local_time(session.created),
+                local_time(&self.facts(), session.created),
             ));
             items.push(Item::Field(
                 text::EXPIRY.get(lang).to_owned(),
-                local_time(session.expiry),
+                local_time(&self.facts(), session.expiry),
             ));
             // Under the times, before the accounts — where the site cards have it (2026-11-12).
             if let Some(id) = u16::try_from(rows.len())

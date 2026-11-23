@@ -18,19 +18,14 @@
 //!   right after an import it moves to the top and recommends deleting the file, and
 //!   `rpc.json 지우기…` deletes it after a confirmation (a link is not followed or deleted).
 
-use core::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use yw_core::lang::Text;
 use yw_core::secret::Zeroizing;
 use yw_win::file::read_limited_no_reparse;
 
 use crate::app::App;
-use crate::ui::main_window::{Ctl, Item};
-use yw_engine::apikeys::KeyName;
 use yw_engine::cmd::RpcImportPress;
 use yw_engine::network::NetworkId;
-use yw_engine::screen::Tone;
 use yw_engine::settings::Settings;
 use yw_engine::wallet::app_rpc_plan::{DeleteError, ImportError, ImportPlan, plan_from_bytes};
 
@@ -255,86 +250,10 @@ impl App {
     }
 }
 
-impl App {
-    /// The `rpc.json에서 가져오기` card of settings → 네트워크(RPC) ([`RpcImportUi::on_top`]):
-    /// shown only when the file exists or a plan waits for confirmation.
-    pub(crate) fn rpc_import_section(&self, items: &mut Vec<Item>) {
-        use crate::ui::screens::ids;
-        let lang = self.settings.language;
-        let t = |entry: Text| entry.get(lang).to_owned();
-        let Some(plan) = self.rpc_import.plan.as_ref() else {
-            if rpc_json_path().is_some_and(|path| path.is_file()) {
-                items.push(Item::CardStart(Some(t(text::CARD_TITLE))));
-                if !self.rpc_import.imported {
-                    items.push(Item::Help(t(text::CARD_HELP)));
-                    items.push(Item::Help(t(text::JSON_PLAINTEXT)));
-                }
-                if self.rpc_import.confirm_delete {
-                    items.push(Item::Banner(t(text::JSON_DELETE_CONFIRM), Tone::Warn));
-                    items.push(Item::Row(vec![
-                        Ctl::danger(ids::RPC_JSON_DELETE_CONFIRM, text::DELETE.get(lang)),
-                        Ctl::button(ids::RPC_JSON_DELETE_CANCEL, text::CANCEL.get(lang)),
-                    ]));
-                } else {
-                    if self.rpc_import.imported {
-                        items.push(Item::Banner(t(text::JSON_LEFT), Tone::Warn));
-                    }
-                    items.push(Item::Row(vec![
-                        Ctl::button(ids::RPC_IMPORT, text::IMPORT_BUTTON.get(lang)),
-                        Ctl::button(ids::RPC_JSON_DELETE, text::DELETE_FILE.get(lang)),
-                    ]));
-                }
-                items.push(Item::CardEnd);
-            }
-            return;
-        };
-        items.push(Item::CardStart(Some(t(text::CONFIRM_TITLE))));
-        let mut list = t(text::CONFIRM_LEAD);
-        let mut existing = 0_usize;
-        for entry in &plan.entries {
-            let has = self.apikeys.has(KeyName::Rpc(entry.network));
-            if has {
-                existing = existing.saturating_add(1);
-            }
-            let _ = write!(
-                list,
-                "\n· {} ({}) — {} …/****{}{}",
-                self.network_name(entry.network),
-                entry.network,
-                entry.provider.label(lang),
-                if has { text::HAS_ADDRESS.get(lang) } else { "" },
-                if plan.quicknode.is_some() && !entry.fits_template {
-                    text::OFF_TEMPLATE.get(lang)
-                } else {
-                    ""
-                },
-            );
-        }
-        self.push_rejected(&mut list, plan);
-        items.push(Item::Text(list));
-        if plan.quicknode.is_some() {
-            items.push(Item::Help(t(text::SAME_ENDPOINT)));
-        }
-        if existing > 0 {
-            items.push(Item::Banner(
-                text::EXISTING.fill(lang, [&existing.to_string()]),
-                Tone::Warn,
-            ));
-            items.push(Item::Row(vec![
-                Ctl::button(ids::RPC_IMPORT_OVERWRITE, text::OVERWRITE.get(lang)),
-                Ctl::button(ids::RPC_IMPORT_FILL, text::FILL_EMPTY.get(lang)),
-                Ctl::button(ids::RPC_IMPORT_CANCEL, text::CANCEL.get(lang)),
-            ]));
-        } else {
-            items.push(Item::Row(vec![
-                Ctl::button(ids::RPC_IMPORT_OVERWRITE, text::IMPORT.get(lang)),
-                Ctl::button(ids::RPC_IMPORT_CANCEL, text::CANCEL.get(lang)),
-            ]));
-        }
-        items.push(Item::Help(t(text::SAVE_NOTE)));
-        items.push(Item::CardEnd);
-    }
-}
+// 2026-11-24 (spec/15 §11.4 S5-3): the card's render builder `rpc_import_section` moved to
+// `ui/screens.rs`; it asks whether the file is there through `App::facts()`
+// (`screen_facts::WinFacts::rpc_json_present`, which calls [`rpc_json_path`] and `is_file` as
+// the builder did here). Its texts stay in [`text`] until the builders move (S5-5).
 
 #[cfg(test)]
 mod tests {

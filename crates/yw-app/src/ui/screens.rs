@@ -22,6 +22,7 @@ use yw_engine::screen::AccountSource;
 use yw_engine::screen::SettingsSection;
 use yw_engine::screen::Tone;
 use yw_engine::screen::address::AddressKind;
+use yw_engine::screen::facts::ScreenFacts;
 use yw_engine::settings::{LogLevel, RpcTemplate};
 use yw_engine::wallet::{AppMode, CREATE_STEPS, Confirm, IMPORT_STEPS, Screen, TestState};
 
@@ -589,10 +590,12 @@ pub fn no_endpoint_text(lang: Lang, network: &str) -> String {
     text::NO_ENDPOINT.fill(lang, [network])
 }
 
-/// `HH:MM` in local time (UTC with a suffix if the conversion fails).
+/// `HH:MM` in local time (UTC with a suffix if the conversion fails). 2026-11-24 (spec/15
+/// §11.4 S5-3): the local time is the shell's answer [`ScreenFacts::local_wall_ms`] (before,
+/// `yw_win::time::local_wall_ms` here; the same call answers it on Windows).
 #[must_use]
-pub fn local_hh_mm(unix_ms: u64) -> String {
-    let wall = yw_win::time::local_wall_ms(unix_ms);
+pub fn local_hh_mm(facts: &dyn ScreenFacts, unix_ms: u64) -> String {
+    let wall = facts.local_wall_ms(unix_ms);
     let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let time = text.get(11..16).unwrap_or("--:--").to_owned();
     if wall.is_some() {
@@ -605,8 +608,13 @@ pub fn local_hh_mm(unix_ms: u64) -> String {
 /// The line under a balance read successfully: "블록 N 기준 · HH:MM 갱신" (EVM) or
 /// "HH:MM 갱신" (no block number).
 #[must_use]
-pub fn balance_read_text(lang: Lang, block: Option<u64>, at_unix_ms: Option<u64>) -> String {
-    let when = at_unix_ms.map(|at| text::UPDATED_AT.fill(lang, [&local_hh_mm(at)]));
+pub fn balance_read_text(
+    facts: &dyn ScreenFacts,
+    lang: Lang,
+    block: Option<u64>,
+    at_unix_ms: Option<u64>,
+) -> String {
+    let when = at_unix_ms.map(|at| text::UPDATED_AT.fill(lang, [&local_hh_mm(facts, at)]));
     match (block, when) {
         (Some(block), Some(when)) => text::AT_BLOCK_WHEN.fill(lang, [&block.to_string(), &when]),
         (Some(block), None) => text::AT_BLOCK.fill(lang, [&block.to_string()]),
@@ -619,10 +627,15 @@ pub fn balance_read_text(lang: Lang, block: Option<u64>, at_unix_ms: Option<u64>
 /// from — "블록 N 기준 · HH:MM 이후 갱신 실패" (EVM), "HH:MM 이후 갱신 실패" (no block number).
 /// Why it failed is the network card's band.
 #[must_use]
-pub fn balance_stale_text(lang: Lang, block: Option<u64>, at_unix_ms: Option<u64>) -> String {
+pub fn balance_stale_text(
+    facts: &dyn ScreenFacts,
+    lang: Lang,
+    block: Option<u64>,
+    at_unix_ms: Option<u64>,
+) -> String {
     let since = at_unix_ms.map_or_else(
         || text::UPDATE_FAILED.get(lang).to_owned(),
-        |at| text::UPDATE_FAILED_SINCE.fill(lang, [&local_hh_mm(at)]),
+        |at| text::UPDATE_FAILED_SINCE.fill(lang, [&local_hh_mm(facts, at)]),
     );
     match block {
         Some(block) => text::AT_BLOCK_WHEN.fill(lang, [&block.to_string(), &since]),
@@ -721,8 +734,13 @@ fn disable_receive(items: &mut [Item]) {
 /// The `vault.ywv` facts line (review L17): generation and last write time, so a file swapped
 /// for an older copy is noticeable.
 #[must_use]
-pub fn vault_file_text(lang: Lang, generation: u64, written_unix_ms: u64) -> String {
-    let wall = yw_win::time::local_wall_ms(written_unix_ms);
+pub fn vault_file_text(
+    facts: &dyn ScreenFacts,
+    lang: Lang,
+    generation: u64,
+    written_unix_ms: u64,
+) -> String {
+    let wall = facts.local_wall_ms(written_unix_ms);
     let text = yw_engine::logging::format_utc(wall.unwrap_or(written_unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     let when = if wall.is_some() {
@@ -1186,14 +1204,19 @@ impl App {
                 text::LEFTOVER.get(lang).to_owned(),
                 Tone::Warn,
             ));
-            items.push(Item::Mono(self.paths.data.display().to_string()));
-            items.push(Item::Row(vec![
-                Ctl::button(ids::OPEN_DATA_FOLDER, text::OPEN_FOLDER.get(lang)),
-                Ctl::link(
-                    crate::ui::screens_reset::ids::RESET_OPEN,
-                    text::LEFTOVER_MOVE.get(lang),
-                ),
-            ]));
+            items.push(Item::Mono(self.facts().data_dir()));
+            let mut row = Vec::new();
+            if self.facts().flags().open_folders {
+                row.push(Ctl::button(
+                    ids::OPEN_DATA_FOLDER,
+                    text::OPEN_FOLDER.get(lang),
+                ));
+            }
+            row.push(Ctl::link(
+                crate::ui::screens_reset::ids::RESET_OPEN,
+                text::LEFTOVER_MOVE.get(lang),
+            ));
+            items.push(Item::Row(row));
         }
         // Two groups (2026-11-08): start something new, or bring back a wallet already used;
         // all five ways are on the first view of the default window.
@@ -1347,7 +1370,12 @@ impl App {
             text::LOCKED_AUTO_LOCK.fill(lang, [&self.settings.auto_lock_minutes.to_string()]),
         ));
         if let Some((generation, written)) = self.guard.vault_file {
-            items.push(Item::Muted(vault_file_text(lang, generation, written)));
+            items.push(Item::Muted(vault_file_text(
+                &self.facts(),
+                lang,
+                generation,
+                written,
+            )));
         }
         if self.unlock_failed && self.prev_on_disk && self.mode == AppMode::Locked {
             // spec/02 §6.3: a damaged key section is indistinguishable from a wrong password.
@@ -1496,7 +1524,7 @@ impl App {
                 text::DONE_SET_RPC.get(lang),
             )]));
         }
-        if crate::app_rpc_import::rpc_json_path().is_some_and(|path| path.is_file()) {
+        if self.facts().flags().rpc_json_import && self.facts().rpc_json_present() {
             items.push(Item::Row(vec![Ctl::link(
                 ids::DONE_RPC_JSON,
                 text::DONE_RPC_JSON.get(lang),
@@ -1566,13 +1594,15 @@ impl App {
     fn done_dapp_items(&self, items: &mut Vec<Item>) {
         let lang = self.settings.language;
         items.push(Item::Subtitle(text::DONE_DAPP_TITLE.get(lang).to_owned()));
-        items.push(Item::Text(
-            text::CHROME_EXTENSION_STATUS.fill(lang, [self.extension_status().text_in(lang)]),
-        ));
-        items.push(Item::Row(vec![Ctl::button(
-            crate::ui::screens_reset::ids::EXT_OPEN,
-            text::HOW_TO_INSTALL.get(lang),
-        )]));
+        if self.facts().flags().browser_extension {
+            items.push(Item::Text(
+                text::CHROME_EXTENSION_STATUS.fill(lang, [self.extension_status().text_in(lang)]),
+            ));
+            items.push(Item::Row(vec![Ctl::button(
+                crate::ui::screens_reset::ids::EXT_OPEN,
+                text::HOW_TO_INSTALL.get(lang),
+            )]));
+        }
         items.push(Item::Text(format!(
             "WalletConnect: {}",
             if self.settings.walletconnect_project.is_empty() {
@@ -1688,16 +1718,18 @@ impl App {
         }
         items.push(Item::Field(
             text::DATA_FOLDER.get(lang).to_owned(),
-            self.paths.data.display().to_string(),
+            self.facts().data_dir(),
         ));
         let mut row = Vec::new();
         if prev {
             row.push(Ctl::primary(ids::RECOVER, text::RECOVERY_RESTORE.get(lang)));
         }
-        row.push(Ctl::button(
-            ids::OPEN_DATA_FOLDER,
-            text::OPEN_FOLDER.get(lang),
-        ));
+        if self.facts().flags().open_folders {
+            row.push(Ctl::button(
+                ids::OPEN_DATA_FOLDER,
+                text::OPEN_FOLDER.get(lang),
+            ));
+        }
         row.push(Ctl::button(ids::EXIT, text::EXIT.get(lang)));
         items.push(Item::Row(row));
         items.push(Item::CardEnd);
@@ -1748,6 +1780,7 @@ impl App {
                 // 읽지 못했습니다" under a balance).
                 items.push(Item::DisplayMuted(self.native_text(chain_id, &value)));
                 items.push(Item::Help(balance_stale_text(
+                    &self.facts(),
                     lang,
                     block,
                     state.and_then(|state| state.updated_unix_ms),
@@ -1757,6 +1790,7 @@ impl App {
                 items.push(Item::Display(self.native_text(chain_id, &value)));
                 if let Some(block) = block {
                     items.push(Item::Help(balance_read_text(
+                        &self.facts(),
                         lang,
                         Some(block),
                         state.and_then(|state| state.updated_unix_ms),
@@ -2165,12 +2199,14 @@ impl App {
             self.backup_card_rows(unlocked, public, items);
         }
         items.push(Item::Help(text::SECRETS_KEY_NOTE.get(lang).to_owned()));
-        items.push(Item::Row(vec![Ctl::check(
-            ids::COPY_TOGGLE,
-            text::ALLOW_COPY.get(lang),
-            self.settings.allow_secret_copy,
-        )]));
-        items.push(Item::Help(text::ALLOW_COPY_HELP.get(lang).to_owned()));
+        if self.facts().flags().secret_copy {
+            items.push(Item::Row(vec![Ctl::check(
+                ids::COPY_TOGGLE,
+                text::ALLOW_COPY.get(lang),
+                self.settings.allow_secret_copy,
+            )]));
+            items.push(Item::Help(text::ALLOW_COPY_HELP.get(lang).to_owned()));
+        }
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some(
             text::PASSWORD_TITLE.get(lang).to_owned(),
@@ -2187,7 +2223,12 @@ impl App {
             text::FILE_PROTECTION_TITLE.get(lang).to_owned(),
         )));
         if let Some((generation, written)) = self.guard.vault_file {
-            items.push(Item::Text(vault_file_text(lang, generation, written)));
+            items.push(Item::Text(vault_file_text(
+                &self.facts(),
+                lang,
+                generation,
+                written,
+            )));
         }
         items.push(Item::Help(if self.guard.wer_unprotected {
             yw_engine::wallet::text::T_WER_UNPROTECTED
@@ -2230,15 +2271,14 @@ impl App {
         let lang = self.settings.language;
         // A pending rpc.json import review stays first (it waits for a decision), and so does the
         // advice to delete the plaintext file right after an import.
-        if self.rpc_import.on_top() {
+        let rpc_json = self.facts().flags().rpc_json_import;
+        if rpc_json && self.rpc_import.on_top() {
             self.rpc_import_section(items);
         }
         items.push(Item::CardStart(Some(
             text::RPC_PROVIDER_TITLE.get(lang).to_owned(),
         )));
-        if !self.rpc_import.on_top()
-            && crate::app_rpc_import::rpc_json_path().is_some_and(|path| path.is_file())
-        {
+        if rpc_json && !self.rpc_import.on_top() && self.facts().rpc_json_present() {
             items.push(Item::Text(text::RPC_JSON_FOUND.get(lang).to_owned()));
         }
         items.push(Item::Help(text::RPC_PROVIDER_HELP.get(lang).to_owned()));
@@ -2406,9 +2446,93 @@ impl App {
             items.push(Item::CardEnd);
         }
         // The developer import's button last: most owners set RPC with the provider card above.
-        if !self.rpc_import.on_top() {
+        if rpc_json && !self.rpc_import.on_top() {
             self.rpc_import_section(items);
         }
+    }
+
+    /// The `rpc.json에서 가져오기` card of settings → 네트워크(RPC)
+    /// ([`yw_engine::wallet::app_rpc_plan::RpcImportUi::on_top`]): shown only when the file
+    /// exists or a plan waits for confirmation. 2026-11-24 (spec/15
+    /// §11.4 S5-3): render code, moved here from `app_rpc_import.rs`; whether the file is there
+    /// is the shell's answer [`ScreenFacts::rpc_json_present`] (before, `rpc_json_path()` and
+    /// `is_file` here; the same probe answers it on Windows). Its texts stay in
+    /// `app_rpc_import::text` until the builders move (S5-5).
+    pub(crate) fn rpc_import_section(&self, items: &mut Vec<Item>) {
+        use crate::app_rpc_import::text;
+        let lang = self.settings.language;
+        let t = |entry: Text| entry.get(lang).to_owned();
+        let Some(plan) = self.rpc_import.plan.as_ref() else {
+            if self.facts().rpc_json_present() {
+                items.push(Item::CardStart(Some(t(text::CARD_TITLE))));
+                if !self.rpc_import.imported {
+                    items.push(Item::Help(t(text::CARD_HELP)));
+                    items.push(Item::Help(t(text::JSON_PLAINTEXT)));
+                }
+                if self.rpc_import.confirm_delete {
+                    items.push(Item::Banner(t(text::JSON_DELETE_CONFIRM), Tone::Warn));
+                    items.push(Item::Row(vec![
+                        Ctl::danger(ids::RPC_JSON_DELETE_CONFIRM, text::DELETE.get(lang)),
+                        Ctl::button(ids::RPC_JSON_DELETE_CANCEL, text::CANCEL.get(lang)),
+                    ]));
+                } else {
+                    if self.rpc_import.imported {
+                        items.push(Item::Banner(t(text::JSON_LEFT), Tone::Warn));
+                    }
+                    items.push(Item::Row(vec![
+                        Ctl::button(ids::RPC_IMPORT, text::IMPORT_BUTTON.get(lang)),
+                        Ctl::button(ids::RPC_JSON_DELETE, text::DELETE_FILE.get(lang)),
+                    ]));
+                }
+                items.push(Item::CardEnd);
+            }
+            return;
+        };
+        items.push(Item::CardStart(Some(t(text::CONFIRM_TITLE))));
+        let mut list = t(text::CONFIRM_LEAD);
+        let mut existing = 0_usize;
+        for entry in &plan.entries {
+            let has = self.apikeys.has(KeyName::Rpc(entry.network));
+            if has {
+                existing = existing.saturating_add(1);
+            }
+            let _ = write!(
+                list,
+                "\n· {} ({}) — {} …/****{}{}",
+                self.network_name(entry.network),
+                entry.network,
+                entry.provider.label(lang),
+                if has { text::HAS_ADDRESS.get(lang) } else { "" },
+                if plan.quicknode.is_some() && !entry.fits_template {
+                    text::OFF_TEMPLATE.get(lang)
+                } else {
+                    ""
+                },
+            );
+        }
+        self.push_rejected(&mut list, plan);
+        items.push(Item::Text(list));
+        if plan.quicknode.is_some() {
+            items.push(Item::Help(t(text::SAME_ENDPOINT)));
+        }
+        if existing > 0 {
+            items.push(Item::Banner(
+                text::EXISTING.fill(lang, [&existing.to_string()]),
+                Tone::Warn,
+            ));
+            items.push(Item::Row(vec![
+                Ctl::button(ids::RPC_IMPORT_OVERWRITE, text::OVERWRITE.get(lang)),
+                Ctl::button(ids::RPC_IMPORT_FILL, text::FILL_EMPTY.get(lang)),
+                Ctl::button(ids::RPC_IMPORT_CANCEL, text::CANCEL.get(lang)),
+            ]));
+        } else {
+            items.push(Item::Row(vec![
+                Ctl::button(ids::RPC_IMPORT_OVERWRITE, text::IMPORT.get(lang)),
+                Ctl::button(ids::RPC_IMPORT_CANCEL, text::CANCEL.get(lang)),
+            ]));
+        }
+        items.push(Item::Help(t(text::SAVE_NOTE)));
+        items.push(Item::CardEnd);
     }
 
     /// The RPC list's numbers over the networks that have an address: `(with an address,
@@ -2502,20 +2626,23 @@ impl App {
 
     fn other_section(&self, items: &mut Vec<Item>) {
         let lang = self.settings.language;
-        items.push(Item::CardStart(Some(
-            text::EXTENSION_TITLE.get(lang).to_owned(),
-        )));
-        items.push(Item::Text(self.extension_status().text_in(lang).to_owned()));
-        items.push(Item::Help(
-            crate::ui::screens_reset::T_EXT_COMPAT_SHORT
-                .get(lang)
-                .to_owned(),
-        ));
-        items.push(Item::Row(vec![Ctl::button(
-            crate::ui::screens_reset::ids::EXT_OPEN,
-            text::EXTENSION_OPEN.get(lang),
-        )]));
-        items.push(Item::CardEnd);
+        let flags = self.facts().flags();
+        if flags.browser_extension {
+            items.push(Item::CardStart(Some(
+                text::EXTENSION_TITLE.get(lang).to_owned(),
+            )));
+            items.push(Item::Text(self.extension_status().text_in(lang).to_owned()));
+            items.push(Item::Help(
+                crate::ui::screens_reset::T_EXT_COMPAT_SHORT
+                    .get(lang)
+                    .to_owned(),
+            ));
+            items.push(Item::Row(vec![Ctl::button(
+                crate::ui::screens_reset::ids::EXT_OPEN,
+                text::EXTENSION_OPEN.get(lang),
+            )]));
+            items.push(Item::CardEnd);
+        }
         items.push(Item::CardStart(Some("WalletConnect".to_owned())));
         items.push(Item::Help(text::WC_HELP.get(lang).to_owned()));
         items.push(Item::Field(
@@ -2531,31 +2658,35 @@ impl App {
             text::WC_OPEN_SITES.get(lang),
         )]));
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some(
-            text::BROWSER_LINK_TITLE.get(lang).to_owned(),
-        )));
-        items.push(Item::Help(text::BROWSER_LINK_HELP.get(lang).to_owned()));
-        items.push(Item::Row(vec![Ctl::check(
-            ids::AUTOLAUNCH_TOGGLE,
-            text::AUTOLAUNCH.get(lang),
-            self.settings.browser_auto_launch,
-        )]));
-        items.push(Item::Help(text::AUTOLAUNCH_HELP.get(lang).to_owned()));
-        items.push(Item::Row(vec![Ctl::check(
-            ids::LOCALHOST_TOGGLE,
-            text::LOCALHOST.get(lang),
-            self.settings.allow_localhost_dapps,
-        )]));
-        items.push(Item::Help(text::LOCALHOST_HELP.get(lang).to_owned()));
-        items.push(Item::CardEnd);
+        if flags.browser_extension {
+            items.push(Item::CardStart(Some(
+                text::BROWSER_LINK_TITLE.get(lang).to_owned(),
+            )));
+            items.push(Item::Help(text::BROWSER_LINK_HELP.get(lang).to_owned()));
+            items.push(Item::Row(vec![Ctl::check(
+                ids::AUTOLAUNCH_TOGGLE,
+                text::AUTOLAUNCH.get(lang),
+                self.settings.browser_auto_launch,
+            )]));
+            items.push(Item::Help(text::AUTOLAUNCH_HELP.get(lang).to_owned()));
+            items.push(Item::Row(vec![Ctl::check(
+                ids::LOCALHOST_TOGGLE,
+                text::LOCALHOST.get(lang),
+                self.settings.allow_localhost_dapps,
+            )]));
+            items.push(Item::Help(text::LOCALHOST_HELP.get(lang).to_owned()));
+            items.push(Item::CardEnd);
+        }
         items.push(Item::CardStart(Some(
             text::DIAGNOSTICS_TITLE.get(lang).to_owned(),
         )));
         items.push(Item::Help(text::DIAGNOSTICS_HELP.get(lang).to_owned()));
-        items.push(Item::Row(vec![Ctl::button(
-            ids::OPEN_LOG_FOLDER,
-            text::OPEN_LOG_FOLDER.get(lang),
-        )]));
+        if flags.open_folders {
+            items.push(Item::Row(vec![Ctl::button(
+                ids::OPEN_LOG_FOLDER,
+                text::OPEN_LOG_FOLDER.get(lang),
+            )]));
+        }
         if self.show_advanced {
             let level = self.settings.log_level;
             items.push(Item::LabeledRow(
@@ -2574,19 +2705,22 @@ impl App {
         items.push(Item::CardStart(Some(
             text::ABOUT_TITLE.get(lang).to_owned(),
         )));
-        // The installed commit says which build runs (2026-11-10, `build_info`).
+        // The installed commit says which build runs (2026-11-10, `build_info`; 2026-11-24 S5-3:
+        // the line is the shell's answer, `ScreenFacts::version_text`).
         items.push(Item::Field(
             text::VERSION.get(lang).to_owned(),
-            crate::build_info::version_text(lang, self.install_commit.as_deref()),
+            self.facts().version_text(lang),
         ));
         items.push(Item::Field(
             text::DATA_FOLDER.get(lang).to_owned(),
-            self.paths.data.display().to_string(),
+            self.facts().data_dir(),
         ));
-        items.push(Item::Row(vec![Ctl::button(
-            ids::OPEN_DATA_FOLDER,
-            text::OPEN_FOLDER.get(lang),
-        )]));
+        if flags.open_folders {
+            items.push(Item::Row(vec![Ctl::button(
+                ids::OPEN_DATA_FOLDER,
+                text::OPEN_FOLDER.get(lang),
+            )]));
+        }
         items.push(Item::Field(
             text::SHORTCUTS.get(lang).to_owned(),
             text::SHORTCUTS_TEXT.get(lang).to_owned(),

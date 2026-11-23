@@ -8130,3 +8130,201 @@ fn facade_uses_on_made_up_code() {
         "btc/meta, flow, network, zec; not the private sol"
     );
 }
+
+/// Whether `file` (a `crate/src/path` of [`production_code`]) is render code (2026-11-24, spec/15
+/// §11.4 S5-3): `ui/screens*.rs` with their text and sub-modules, and `ui/removed.rs`.
+fn is_render_file(file: &str) -> bool {
+    file.strip_prefix("yw-app/src/ui/")
+        .is_some_and(|rel| rel.starts_with("screens") || rel == "removed.rs")
+}
+
+/// The yw-app paths outside `crate::ui` that render code still names (2026-11-24, S5-3, S5 plan
+/// critic C7), each moving with the builders in S5-5: the `impl App` target, the shell
+/// catalogue's `T_PASSWORD_OLD_COPIES` (settings → 보안), S23's status type and the Chrome page
+/// address (`app_extension`), and the `rpc.json` card's texts (`app_rpc_import::text`). The data
+/// folder's reset prefix is the engine's (`yw_engine::wallet_files::FOLDER_PREFIX`, was
+/// `crate::store::reset`'s re-export).
+const RENDER_SHELL_PATHS: [&str; 4] = [
+    "crate::app::App",
+    "crate::app::T_PASSWORD_OLD_COPIES",
+    "crate::app_extension::{CHROME_EXTENSIONS_URL,ExtensionStatus}",
+    "crate::app_rpc_import::text",
+];
+
+/// Words render code never names (S5-3): the Windows crate, the shell's folders and pipe host,
+/// file and process probes. The facts are asked through `ScreenFacts` (`self.facts()`).
+const RENDER_BANNED_WORDS: [&str; 11] = [
+    "yw_win",
+    "paths",
+    "PipeHost",
+    "is_file",
+    "is_dir",
+    "metadata",
+    "symlink_metadata",
+    "read_dir",
+    "current_exe",
+    "temp_dir",
+    "var_os",
+];
+
+/// What `code` (blanked as [`production_code`] leaves it) reaches of the shell other than through
+/// its facts: `word <w>` for a [`RENDER_BANNED_WORDS`] word, `std <path>` for a `std` path,
+/// `macro <m>!` for `env!`/`option_env!`/`include_str!`/`include_bytes!`, `field .pipe` for the
+/// shell's pipe field (not the fact `.pipe()`), `super super` for a path out of `ui`, and
+/// `path <p>` for every `crate::` path outside `crate::ui` (a `{…}` group squeezed).
+fn render_shell_reach(code: &str) -> Vec<String> {
+    let bytes = code.as_bytes();
+    let mut found = Vec::new();
+    for word in RENDER_BANNED_WORDS {
+        if has_word(code, word) {
+            found.push(format!("word {word}"));
+        }
+    }
+    for (at, _) in code.match_indices("std") {
+        if (at == 0 || !is_ident(bytes[at - 1]))
+            && bytes.get(at + 3).is_none_or(|&b| !is_ident(b))
+            && code[at + 3..].trim_start().starts_with("::")
+        {
+            let path: String = code[at..]
+                .chars()
+                .take_while(|&c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+                .collect();
+            found.push(format!("std {path}"));
+        }
+    }
+    for name in ["env", "option_env", "include_str", "include_bytes"] {
+        for (at, _) in code.match_indices(name) {
+            if (at == 0 || !is_ident(bytes[at - 1]))
+                && code[at + name.len()..].trim_start().starts_with('!')
+            {
+                found.push(format!("macro {name}!"));
+            }
+        }
+    }
+    for (at, _) in code.match_indices(".pipe") {
+        let after = &code[at + ".pipe".len()..];
+        if !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+            && !after.trim_start().starts_with('(')
+        {
+            found.push("field .pipe".to_owned());
+        }
+    }
+    if code
+        .split_whitespace()
+        .collect::<String>()
+        .contains("super::super")
+    {
+        found.push("super super".to_owned());
+    }
+    for (at, _) in code.match_indices("crate") {
+        if at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'$') {
+            continue;
+        }
+        let tail = &code[at..];
+        let mut path: String = tail
+            .chars()
+            .take_while(|&c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+            .collect();
+        if !path.starts_with("crate::") {
+            continue;
+        }
+        if path.ends_with("::")
+            && let Some(open) = tail.find('{')
+        {
+            let close = close_of(tail.as_bytes(), open);
+            path.extend(tail[open..=close].chars().filter(|c| !c.is_whitespace()));
+        }
+        if !path.starts_with("crate::ui::") {
+            found.push(format!("path {path}"));
+        }
+    }
+    found
+}
+
+/// spec/15 §11.4 S5-3 (2026-11-24; S5 plan §6 S5-3, critic C7): render code asks the shell only
+/// through `ScreenFacts`. In the render files ([`is_render_file`], production code only) nothing
+/// names `yw_win`, a `std` path, `env!`, the shell's `paths`/`pipe`/`PipeHost`, a file or process
+/// probe, or a yw-app path outside `crate::ui` but the [`RENDER_SHELL_PATHS`] (each still named,
+/// so the list stays exact); and the facts are asked (`self.facts()`). Before S5-3 the local
+/// times called `yw_win::time::local_wall_ms`, the data folder was `self.paths.data`, the
+/// `rpc.json` probe `rpc_json_path().is_some_and(|p| p.is_file())`, the extension folder
+/// `app_extension::{extension_dir, expected_dir}`, the S10 status line read `self.pipe`, and the
+/// version line was `build_info::version_text`.
+#[test]
+fn render_asks_the_shell_only_through_facts() {
+    let files = production_code();
+    let render: Vec<&Src> = files
+        .iter()
+        .filter(|src| is_render_file(&src.file))
+        .collect();
+    assert_eq!(
+        render.len(),
+        27,
+        "the render files moved: review this check"
+    );
+    let mut findings = Vec::new();
+    let mut named = BTreeSet::new();
+    let mut asks = 0_usize;
+    for src in &render {
+        for finding in render_shell_reach(&src.code) {
+            match finding.strip_prefix("path ") {
+                Some(path) if RENDER_SHELL_PATHS.contains(&path) => {
+                    named.insert(path.to_owned());
+                }
+                _ => findings.push(format!("{}: {finding}", src.file)),
+            }
+        }
+        asks += src.code.matches("self.facts()").count();
+    }
+    assert!(
+        findings.is_empty(),
+        "render code reaches the shell: {findings:#?}"
+    );
+    assert_eq!(
+        named,
+        RENDER_SHELL_PATHS
+            .iter()
+            .map(|&path| path.to_owned())
+            .collect::<BTreeSet<_>>(),
+        "a listed path is no longer named: drop it"
+    );
+    assert!(asks >= 20, "the facts are asked ({asks})");
+}
+
+/// [`render_shell_reach`] on made-up code (2026-11-24, S5-3): it finds each way out and passes
+/// the facts and `crate::ui` paths.
+#[test]
+fn render_shell_reach_on_made_up_code() {
+    let code = code_only(concat!(
+        "use crate::app_extension as e;\nuse crate::app::App;\n",
+        "use crate::app_extension::{ CHROME_EXTENSIONS_URL, extension_dir };\n",
+        "fn a(app: &App) { let _ = yw_win::time::local_wall_ms(1); let _ = &app.paths.data; }\n",
+        "fn b(app: &App) { let _ = app.pipe.as_ref(); let _ = app.facts().pipe(); }\n",
+        "fn c() { let _ = crate::build_info::version_text(); let _ = ::std::env::var(1); }\n",
+        "fn d() { let _ = env!(1); let _ = super::super::app_rpc_import::x(); }\n",
+        "fn e(p: &P) { let _ = p.is_file(); let _ = crate::ui::screens::ids::A; }\n",
+        "// yw_win and self.paths in a comment\n",
+    ));
+    assert_eq!(
+        render_shell_reach(&code),
+        [
+            "word yw_win",
+            "word paths",
+            "word is_file",
+            "std std::env::var",
+            "macro env!",
+            "field .pipe",
+            "super super",
+            "path crate::app_extension",
+            "path crate::app::App",
+            "path crate::app_extension::{CHROME_EXTENSIONS_URL,extension_dir}",
+            "path crate::build_info::version_text",
+        ]
+    );
+    let clean = code_only(concat!(
+        "use crate::app::App;\n",
+        "fn g(app: &App) -> u64 { app.facts().local_wall_ms(1).unwrap_or(0) }\n",
+        "fn h(pipe: PipeStatus) -> bool { pipe.server && crate::ui::x() }\n",
+    ));
+    assert_eq!(render_shell_reach(&clean), ["path crate::app::App"]);
+}

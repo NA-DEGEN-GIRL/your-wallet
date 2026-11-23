@@ -519,8 +519,8 @@ pub mod ids {
     }
 }
 
-fn local_time(unix_ms: u64) -> String {
-    let wall = yw_win::time::local_wall_ms(unix_ms);
+fn local_time(facts: &dyn yw_engine::screen::facts::ScreenFacts, unix_ms: u64) -> String {
+    let wall = facts.local_wall_ms(unix_ms);
     let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
@@ -710,6 +710,7 @@ impl App {
                     // The earlier value, dimmed, and since when (2026-11-12, like EVM).
                     items.push(Item::DisplayMuted(Wallet::sol_text(lamports)));
                     items.push(Item::Help(crate::ui::screens::balance_stale_text(
+                        &self.facts(),
                         self.settings.language,
                         None,
                         self.sol.balance_at.get(&cluster).copied(),
@@ -718,6 +719,7 @@ impl App {
                 (Some(lamports), None) => {
                     items.push(Item::Display(Wallet::sol_text(lamports)));
                     let read = crate::ui::screens::balance_read_text(
+                        &self.facts(),
                         self.settings.language,
                         None,
                         self.sol.balance_at.get(&cluster).copied(),
@@ -960,7 +962,7 @@ impl App {
             // The status at the end of the first line (2026-11-12: a line of its own before).
             items.push(Item::Text(format!(
                 "{} · {} · {} · {}",
-                local_time(record.signed_at_ms),
+                local_time(&self.facts(), record.signed_at_ms),
                 from,
                 title,
                 self.sol_record_status(&record)
@@ -979,7 +981,7 @@ impl App {
                 }
                 items.push(Item::Text(format!(
                     "{} · {} · {} · {}",
-                    local_time(entry.time_unix_ms),
+                    local_time(&self.facts(), entry.time_unix_ms),
                     self.sol_label(&entry.account),
                     entry.title,
                     status_word(lang, &entry.status)

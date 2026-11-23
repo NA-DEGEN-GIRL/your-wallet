@@ -196,8 +196,8 @@ pub fn dropped_line(lang: Lang, count: usize) -> String {
     text::DROPPED.fill(lang, [&count.to_string()])
 }
 
-fn local_time(unix_ms: u64) -> String {
-    let wall = yw_win::time::local_wall_ms(unix_ms);
+fn local_time(facts: &dyn yw_engine::screen::facts::ScreenFacts, unix_ms: u64) -> String {
+    let wall = facts.local_wall_ms(unix_ms);
     let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
@@ -351,7 +351,7 @@ impl App {
                 Some(block) => text::WHEN_BLOCK.fill(lang, [&block.to_string()]),
                 None => text::WHEN_UNKNOWN.get(lang).to_owned(),
             },
-            local_time,
+            |unix_ms| local_time(&self.facts(), unix_ms),
         );
         items.push(Item::Text(
             text::ROW.fill(lang, [&when, &entry.amount, &entry.symbol]),

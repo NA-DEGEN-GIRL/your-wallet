@@ -59,9 +59,9 @@ pub mod ids {
 }
 
 /// `YYYY-MM-DD HH:MM` in local time (spec/04 §2.6); UTC with a suffix if the conversion fails.
-fn local_time(unix_secs: u64) -> String {
+fn local_time(facts: &dyn yw_engine::screen::facts::ScreenFacts, unix_secs: u64) -> String {
     let unix_ms = unix_secs.saturating_mul(1_000);
-    let wall = yw_win::time::local_wall_ms(unix_ms);
+    let wall = facts.local_wall_ms(unix_ms);
     let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
@@ -89,7 +89,7 @@ impl App {
                     self.reset_elapsed(RESET_WATCH_SECS, self.clock.now_unix_ms() / 1_000)
                 {
                     items.push(Item::Banner(
-                        text::BTC_RESET.fill(lang, [&local_time(at)]),
+                        text::BTC_RESET.fill(lang, [&local_time(&self.facts(), at)]),
                         Tone::HighRisk,
                     ));
                     items.push(Item::Row(vec![Ctl::check(
@@ -103,7 +103,7 @@ impl App {
         };
         if let Some(JournalHold::Wait(until)) = self.journal_hold(chain) {
             items.push(Item::Banner(
-                text::RESET_WAIT.fill(lang, [name, &local_time(until)]),
+                text::RESET_WAIT.fill(lang, [name, &local_time(&self.facts(), until)]),
                 Tone::Warn,
             ));
         }

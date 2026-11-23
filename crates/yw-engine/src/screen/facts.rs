@@ -3,11 +3,13 @@
 //!
 //! 2026-11-24 (spec/15 §11.3, §11.4 S5-2): created. Until S5-3 the Windows screens still read
 //! these facts themselves (local time through `yw_win::time`, the data folder, the `rpc.json`
-//! probe, the extension folder, the pipe state, the version line); S5-3 makes them ask
-//! [`ScreenFacts`] instead. A fact never carries a secret or an RPC URL: the folders are the
-//! display strings the screens show today. Windows answers each fact when asked (so the number
-//! and timing of its file probes stay those of today); Android will answer from values its shell
-//! pushed before the screen is built (no upward call, spec/15 §3.2).
+//! probe, the extension folder, the pipe state, the version line). 2026-11-24 (S5-3): they ask
+//! [`ScreenFacts`] instead, at the same points (yw-app `screen_facts::WinFacts`, `App::facts`;
+//! source check `render_asks_the_shell_only_through_facts`), and the Windows-only items they
+//! draw are guarded by [`PlatformFlags`]. A fact never carries a secret or an RPC URL: the
+//! folders are the display strings the screens show today. Windows answers each fact when asked
+//! (so the number and timing of its file probes stay those of today); Android will answer from
+//! values its shell pushed before the screen is built (no upward call, spec/15 §3.2).
 
 use crate::errors::ErrorCode;
 
@@ -77,8 +79,10 @@ pub trait ScreenFacts {
     fn rpc_json_present(&self) -> bool;
     /// The Chrome extension folder found next to the app (`None`: none found).
     fn extension_dir(&self) -> Option<String>;
-    /// Where the extension folder is expected (shown when none was found).
-    fn expected_extension_dir(&self) -> String;
+    /// Where the extension folder is expected (shown when none was found; `None`: not known,
+    /// nothing is shown). 2026-11-24 (S5-3): an `Option`, as the Windows answer always was (S5-2
+    /// declared a `String`).
+    fn expected_extension_dir(&self) -> Option<String>;
     /// The named-pipe server's state.
     fn pipe(&self) -> PipeStatus;
     /// The version line of `정보` (version and install record) in `lang`.

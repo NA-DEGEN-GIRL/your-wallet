@@ -7245,20 +7245,79 @@ fn english_core_screens_have_no_korean() {
     check(&app, "S09");
     // The helpers the chain screens share.
     for text in [
-        crate::ui::screens::balance_read_text(Lang::En, Some(7), Some(0)),
-        crate::ui::screens::balance_stale_text(Lang::En, Some(7), None),
+        crate::ui::screens::balance_read_text(&app.facts(), Lang::En, Some(7), Some(0)),
+        crate::ui::screens::balance_stale_text(&app.facts(), Lang::En, Some(7), None),
         crate::ui::screens::no_endpoint_text(Lang::En, "Base"),
         yw_engine::secret::backup_retry_text(Lang::En, [1, 2, 3, 4], true),
         yw_engine::meta::rollback_text(Lang::En, 3, 2),
-        crate::ui::screens::vault_file_text(Lang::En, 3, 0),
+        crate::ui::screens::vault_file_text(&app.facts(), Lang::En, 3, 0),
     ] {
         assert!(!has_hangul(&text), "{text}");
     }
     // Korean stays as it was.
     assert_eq!(
-        crate::ui::screens::balance_read_text(Lang::Ko, Some(7), None),
+        crate::ui::screens::balance_read_text(&app.facts(), Lang::Ko, Some(7), None),
         "블록 7 기준"
     );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// spec/15 §11.4 S5-3 (2026-11-24): the render builders ask the shell's file facts
+/// (`ScreenFacts`, yw-app `screen_facts::WinFacts`) exactly where they probed the files before,
+/// so a render probes as often as before: settings → 네트워크(RPC) twice (the "found" line and the
+/// import card at the bottom; once while the card is on top), S08 once (its `rpc.json` link), S23
+/// the extension folder once (and where it is expected only when none was found), no other screen
+/// any. The seams point both files into this test's own folder.
+#[test]
+fn render_probes_the_files_only_where_it_did() {
+    use crate::screen_facts::ASKED;
+    use yw_engine::screen::SettingsSection;
+    let (mut app, dir) = unlocked_app("facts-probes", false);
+    crate::app_rpc_import::TEST_RPC_JSON
+        .with(|path| *path.borrow_mut() = Some(dir.join("rpc.json")));
+    crate::app_extension::TOUR_EXTENSION_DIR
+        .with(|path| *path.borrow_mut() = Some(dir.join("extension")));
+    let asked = |app: &App| {
+        ASKED.with(|asked| asked.borrow_mut().clear());
+        let _ = app.items();
+        ASKED.with(core::cell::RefCell::take)
+    };
+    let network = Screen::Settings(SettingsSection::Network);
+    for present in [false, true] {
+        if present {
+            std::fs::write(dir.join("rpc.json"), b"{}").unwrap();
+        }
+        for (screen, expected) in [
+            (Screen::Main, &[][..]),
+            (
+                network.clone(),
+                &["rpc_json_present", "rpc_json_present"][..],
+            ),
+            (Screen::Settings(SettingsSection::Security), &[][..]),
+            (Screen::Settings(SettingsSection::Other), &[][..]),
+            (Screen::Done, &["rpc_json_present"][..]),
+            (Screen::Extension, &["extension_dir"][..]),
+            (Screen::Locked, &[][..]),
+        ] {
+            app.screen = screen.clone();
+            assert_eq!(
+                asked(&app),
+                expected,
+                "{screen:?}, rpc.json there: {present}"
+            );
+        }
+        // An import just finished: its card is on top, and only it probes.
+        app.rpc_import.imported = true;
+        app.screen = network.clone();
+        assert_eq!(
+            asked(&app),
+            ["rpc_json_present"],
+            "card on top, rpc.json there: {present}"
+        );
+        app.rpc_import.imported = false;
+    }
+    crate::app_rpc_import::TEST_RPC_JSON.with(|path| *path.borrow_mut() = None);
+    crate::app_extension::TOUR_EXTENSION_DIR.with(|path| *path.borrow_mut() = None);
     let _ = std::fs::remove_dir_all(dir);
 }
 

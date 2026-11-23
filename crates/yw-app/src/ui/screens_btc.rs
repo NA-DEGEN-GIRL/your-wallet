@@ -604,8 +604,8 @@ fn network_banners(lang: Lang, net: BtcNetwork, items: &mut Vec<Item>) {
 }
 
 /// `YYYY-MM-DD HH:MM` in local time (spec/04 §2.6); UTC with a suffix if the conversion fails.
-fn local_time(unix_ms: u64) -> String {
-    let wall = yw_win::time::local_wall_ms(unix_ms);
+fn local_time(facts: &dyn yw_engine::screen::facts::ScreenFacts, unix_ms: u64) -> String {
+    let wall = facts.local_wall_ms(unix_ms);
     let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
@@ -1222,7 +1222,7 @@ impl App {
             // The status at the end of the first line (2026-11-12: a line of its own before).
             items.push(Item::Text(format!(
                 "{} · {} · {} · {}",
-                local_time(row.time_unix_ms),
+                local_time(&self.facts(), row.time_unix_ms),
                 self.btc_active_label(ctx),
                 row.title,
                 row.status

@@ -31,6 +31,8 @@ pub mod explain_transport;
 // 2026-11-22 (S4d E0c): `explorer.exe` for links and folders (was `app_explorer::Launcher`).
 pub mod explorer_launcher;
 pub mod log_file;
+// 2026-11-24 (spec/15 §11.4 S5-3): the Windows `ScreenFacts` the render builders ask.
+pub mod screen_facts;
 pub mod shell_msg;
 pub mod store;
 pub mod system_clock;

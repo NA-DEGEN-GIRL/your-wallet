@@ -141,28 +141,10 @@ pub fn expected_dir() -> Option<PathBuf> {
     exe.parent().map(|dir| dir.join("extension"))
 }
 
+// 2026-11-24 (spec/15 §11.4 S5-3): `App::extension_status` (render code that reads only wallet
+// state) moved to `ui/screens_reset.rs`, and the screens ask the folders through `App::facts()`
+// (`screen_facts::WinFacts` calls `extension_dir`/`expected_dir` here).
 impl App {
-    /// The S23 status.
-    #[must_use]
-    pub fn extension_status(&self) -> ExtensionStatus {
-        if self
-            .browser
-            .as_ref()
-            .is_some_and(|browser| browser.connections > 0)
-        {
-            return ExtensionStatus::Connected;
-        }
-        if !matches!(self.mode, AppMode::Unlocked { .. }) || self.meta.is_none() {
-            return ExtensionStatus::Unknown;
-        }
-        let (sol, btc) = self.chain_grants();
-        if self.browser_grants().is_empty() && sol.is_empty() && btc.is_empty() {
-            ExtensionStatus::Never
-        } else {
-            ExtensionStatus::ConnectedBefore
-        }
-    }
-
     /// `Chrome 확장 설치` links (S08, S13, settings). 2026-11-22 (S4c W15): the shell's (its way
     /// back, `ext`, is shell state); the screen change is the wallet's `set_screen`, named on
     /// the wallet (non-test builds have no `DerefMut`).

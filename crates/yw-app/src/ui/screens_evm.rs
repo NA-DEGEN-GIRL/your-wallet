@@ -19,6 +19,7 @@ use yw_engine::logging::format_utc;
 use yw_engine::meta::BookChain;
 use yw_engine::network::NetworkId;
 use yw_engine::screen::Tone;
+use yw_engine::screen::facts::{PipeStatus, ScreenFacts};
 use yw_engine::screen::{ActivityRowView, EvmQrKind};
 use yw_engine::token_view::RowPlace;
 use yw_engine::wallet::AppMode;
@@ -38,8 +39,8 @@ fn chain_add_row(lang: Lang, items: &mut Vec<Item>) {
 }
 
 /// `YYYY-MM-DD HH:MM` in local time (spec/04 §2.6); UTC with a suffix if the conversion fails.
-fn format_local(unix_ms: u64) -> String {
-    let wall = yw_win::time::local_wall_ms(unix_ms);
+fn format_local(facts: &dyn ScreenFacts, unix_ms: u64) -> String {
+    let wall = facts.local_wall_ms(unix_ms);
     let text = format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
@@ -459,27 +460,25 @@ impl App {
 /// are attached together; a dispatcher with no pipe end (tests) reads E-PIPE-001, as a
 /// dispatcher with no server and no recorded failure did before. 2026-11-22 (S4d E0c): moved
 /// from `app_browser::status_text` (render code: it reads the shell's `PipeHost`).
+/// 2026-11-24 (spec/15 §11.4 S5-3): the pipe facts are the shell's answer
+/// [`ScreenFacts::pipe`] (before, the `PipeHost` itself; no `PipeHost` read as no server and no
+/// recorded failure, as the default [`PipeStatus`] does).
 #[must_use]
 pub fn browser_status_text(
     lang: yw_core::lang::Lang,
     browser: Option<&yw_engine::wallet::app_browser::BrowserUi>,
-    pipe: Option<&crate::browser::server::PipeHost>,
+    pipe: PipeStatus,
 ) -> String {
     match (browser, pipe) {
-        (Some(browser), Some(pipe)) if pipe.server.is_some() => match browser.connections {
+        (Some(browser), pipe) if pipe.server => match browser.connections {
             0 => yw_engine::wallet::app_browser::text::STATUS_NONE
                 .get(lang)
                 .to_owned(),
             count => yw_engine::wallet::app_browser::text::STATUS_CONNECTED
                 .fill(lang, [&count.to_string()]),
         },
-        (Some(_), pipe) => yw_engine::wallet::app_browser::text::STATUS_UNAVAILABLE.fill(
-            lang,
-            [pipe
-                .and_then(|pipe| pipe.error)
-                .unwrap_or(ErrorCode::Pipe001)
-                .code()],
-        ),
+        (Some(_), pipe) => yw_engine::wallet::app_browser::text::STATUS_UNAVAILABLE
+            .fill(lang, [pipe.error.unwrap_or(ErrorCode::Pipe001).code()]),
         (None, _) => yw_engine::wallet::app_browser::text::STATUS_UNAVAILABLE
             .fill(lang, [ErrorCode::Pipe001.code()]),
     }
@@ -492,7 +491,7 @@ impl App {
         let chain_id = self.settings.evm_chain_id;
         let network = NetworkId::Eip155(chain_id);
         let lang = self.settings.language;
-        let browser = browser_status_text(lang, self.browser.as_ref(), self.pipe.as_ref());
+        let browser = browser_status_text(lang, self.browser.as_ref(), self.facts().pipe());
         let rpc = if !self.apikeys.has(yw_engine::apikeys::KeyName::Rpc(network)) {
             text::RPC_NO_ADDRESS.get(lang)
         } else if let Some(kind) = self.evm.blocked(chain_id) {
@@ -728,7 +727,7 @@ impl App {
             // 2026-11-22 (S4d E0c): the local time is formatted here, not in `activity_rows`.
             items.push(Item::Text(format!(
                 "{} · {} · {}",
-                format_local(row.time_unix_ms),
+                format_local(&self.facts(), row.time_unix_ms),
                 row.head,
                 row.status
             )));

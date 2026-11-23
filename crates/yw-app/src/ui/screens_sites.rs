@@ -120,8 +120,8 @@ fn page_nav(lang: Lang, items: &mut Vec<Item>, total: usize, pages: usize, shown
     items.push(Item::Row(nav));
 }
 
-fn local_time(unix_ms: u64) -> String {
-    let local = yw_win::time::local_wall_ms(unix_ms);
+fn local_time(facts: &dyn yw_engine::screen::facts::ScreenFacts, unix_ms: u64) -> String {
+    let local = facts.local_wall_ms(unix_ms);
     let text = yw_engine::logging::format_utc(local.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if local.is_some() {
@@ -271,7 +271,7 @@ impl App {
             ));
             items.push(Item::Field(
                 text::CONNECTED_AT.get(lang).to_owned(),
-                local_time(site.granted_at_unix_ms),
+                local_time(&self.facts(), site.granted_at_unix_ms),
             ));
             items.extend(page.button(&site.origin, Family::Evm));
             for (index, account) in site.accounts.iter().enumerate() {
@@ -329,7 +329,7 @@ impl App {
             ));
             items.push(Item::Field(
                 text::CONNECTED_AT.get(lang).to_owned(),
-                local_time(grant.granted_at_unix_ms),
+                local_time(&self.facts(), grant.granted_at_unix_ms),
             ));
             items.extend(page.button(&grant.origin, Family::Solana));
             items.push(Item::Help(
@@ -364,7 +364,7 @@ impl App {
             ));
             items.push(Item::Field(
                 text::CONNECTED_AT.get(lang).to_owned(),
-                local_time(grant.granted_at_unix_ms),
+                local_time(&self.facts(), grant.granted_at_unix_ms),
             ));
             items.extend(page.button(&grant.origin, Family::Bitcoin));
             for entry in &grant.addresses {
