@@ -8,6 +8,7 @@ use yw_core::lang::Text;
 use yw_core::vault::FileKind;
 
 use crate::app::App;
+use yw_engine::cmd::{CorePress, SidecarPress};
 use yw_engine::errors::ErrorCode;
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
@@ -93,7 +94,7 @@ impl App {
                         Tone::HighRisk,
                     ));
                     items.push(Item::Row(vec![Ctl::check(
-                        ids::RESET_ACK,
+                        SidecarPress::ResetAck(None),
                         text::BTC_RESET_ACK.get(lang),
                         self.sidecar.reset_ack,
                     )]));
@@ -127,7 +128,7 @@ impl App {
             Tone::Blocked,
         ));
         items.push(Item::Row(vec![Ctl::button(
-            ids::JOURNAL_REOPEN,
+            SidecarPress::JournalReopen,
             text::SHOW_CHOICES.get(lang),
         )]));
     }
@@ -140,7 +141,7 @@ impl App {
 
     fn advanced_link(&self, items: &mut Vec<Item>) {
         items.push(Item::Row(vec![Ctl::link(
-            ids::ADVANCED,
+            SidecarPress::Advanced,
             if self.sidecar.advanced {
                 text::ADVANCED_HIDE
             } else {
@@ -152,7 +153,6 @@ impl App {
 
     /// The meta overlay (`Confirm::SidecarCorrupt`).
     pub(crate) fn meta_overlay(&self, items: &mut Vec<Item>) {
-        use crate::ui::screens::ids as core;
         let prev = self.store.prev_exists(FileKind::Meta);
         let newer = self.sidecar.meta_newer;
         let lang = self.settings.language;
@@ -171,8 +171,8 @@ impl App {
         self.refusal_items(items);
         if newer {
             items.push(Item::Row(vec![
-                Ctl::primary(ids::SIDECAR_CLOSE, text::CLOSE_UNCHANGED.get(lang)),
-                Ctl::button(core::LOCK, text::LOCK.get(lang)),
+                Ctl::primary(SidecarPress::Close, text::CLOSE_UNCHANGED.get(lang)),
+                Ctl::button(CorePress::Lock, text::LOCK.get(lang)),
             ]));
             self.advanced_link(items);
             if !self.sidecar.advanced {
@@ -188,16 +188,19 @@ impl App {
         let mut row = Vec::new();
         if prev {
             row.push(if newer {
-                Ctl::button(core::SIDECAR_PREV, text::USE_PREV.get(lang))
+                Ctl::button(CorePress::SidecarPrev, text::USE_PREV.get(lang))
             } else {
-                Ctl::primary(core::SIDECAR_PREV, text::USE_PREV.get(lang))
+                Ctl::primary(CorePress::SidecarPrev, text::USE_PREV.get(lang))
             });
         }
-        row.push(Ctl::danger(core::SIDECAR_FRESH, text::QUARANTINE.get(lang)));
+        row.push(Ctl::danger(
+            CorePress::SidecarFresh,
+            text::QUARANTINE.get(lang),
+        ));
         if !newer {
             items.push(Item::Help(t(text::META_CLOSE)));
             row.push(Ctl::button(
-                ids::SIDECAR_CLOSE,
+                SidecarPress::Close,
                 text::CLOSE_UNCHANGED.get(lang),
             ));
         }
@@ -207,7 +210,6 @@ impl App {
 
     /// The journal overlay (`Confirm::JournalCorrupt`).
     pub(crate) fn journal_overlay(&self, items: &mut Vec<Item>) {
-        use crate::ui::screens::ids as core;
         let newer = self.sidecar.journal_newer;
         let lang = self.settings.language;
         let t = |entry: Text| entry.get(lang).to_owned();
@@ -225,23 +227,23 @@ impl App {
         self.refusal_items(items);
         if newer {
             items.push(Item::Row(vec![
-                Ctl::primary(core::CONFIRM_NO, text::CLOSE_SENDS_STOP.get(lang)),
-                Ctl::button(core::LOCK, text::LOCK.get(lang)),
+                Ctl::primary(CorePress::ConfirmNo, text::CLOSE_SENDS_STOP.get(lang)),
+                Ctl::button(CorePress::Lock, text::LOCK.get(lang)),
             ]));
             self.advanced_link(items);
             if self.sidecar.advanced {
                 items.push(Item::Banner(t(text::NEWER_ADVANCED), Tone::HighRisk));
                 items.push(Item::Banner(t(text::JOURNAL_RESET), Tone::HighRisk));
                 items.push(Item::Row(vec![Ctl::danger(
-                    core::CONFIRM_YES,
+                    CorePress::ConfirmYes,
                     text::QUARANTINE.get(lang),
                 )]));
             }
         } else {
             items.push(Item::Banner(t(text::JOURNAL_RESET), Tone::HighRisk));
             items.push(Item::Row(vec![
-                Ctl::danger(core::CONFIRM_YES, text::QUARANTINE.get(lang)),
-                Ctl::button(core::CONFIRM_NO, text::CLOSE_SENDS_STOP.get(lang)),
+                Ctl::danger(CorePress::ConfirmYes, text::QUARANTINE.get(lang)),
+                Ctl::button(CorePress::ConfirmNo, text::CLOSE_SENDS_STOP.get(lang)),
             ]));
         }
         items.push(Item::CardEnd);

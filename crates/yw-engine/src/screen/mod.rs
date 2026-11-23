@@ -34,6 +34,7 @@ pub mod address;
 pub mod facts;
 pub mod model;
 pub mod qr;
+pub mod rows;
 
 use yw_core::evm::address::Address;
 use yw_core::lang::Lang;

@@ -58,6 +58,8 @@
 
 (2026-11-23, [15] §11.4 S5-0, 주인 상시 결정(2026-11-21): 권고안 — S5 계획 검토 C6, O-13) 위 E1 기록과 달리 yw-app 목록의 `yw_app::app::text`는 E1부터 엔진의 `yw_engine::wallet::text::ALL`을 가리켰다. 그래서 아래 `yw_app::app::text` 표는 지갑 문구 47개를 `yw_engine::wallet::text` 표와 겹쳐 실었고, 셸만 쓰는 여섯 개(`T_CLIP_CLEARED_LATE`·`T_PASSWORD_OLD_COPIES`·`PASTE_CLEARED`·`PASTE_EDGE_SPACE`·`COPY_OFF`·`COPIED_SECRET`)는 어느 표에도 없었다. S5-0부터 yw-app 목록은 셸 자신의 블록 `crate::app::text::ALL`을 가리키고, 표는 그 여섯 개다. 문구는 그대로다. 아래 표는 그대로 `print_spec14_tables` 출력이다.
 
+(2026-11-24, [15] §11.4 S5-4) 화면이 컨트롤 id 대신 누름으로 컨트롤을 찾게 되면서 복사 표시(`mark_copied`)가 중립 화면 모델로 옮겼고, 그 문구 셋도 함께 옮겼다: `T_COPIED`·`T_COPIED_ADDRESS`·`T_PASTE_CHECK`는 `yw_app::ui::main_window::text`에서 새 엔진 카탈로그 `yw_engine::screen::model::text`로(S5 계획 검토 C6: 엔진의 실제 경로로 등록). 문구와 항목 이름은 그대로이고, `yw_app::ui::main_window::text`에는 Windows 배치의 `QR_TOO_NARROW`만 남는다. 아래 표는 그대로 `print_spec14_tables` 출력이다.
+
 <!-- 아래 표는 print_spec14_tables 출력이다. -->
 
 <!-- catalogue: yw_core::evm::risk (rules) -->
@@ -1626,6 +1628,14 @@
 | RPC_OK | RPC 주소가 작동합니다. ({0}, {1}) | The RPC address works. ({0}, {1}) |
 | GENESIS_MATCH | genesis 일치 | genesis matches |
 
+<!-- catalogue: yw_engine::screen::model::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| T_COPIED | 복사됨 | Copied |
+| T_COPIED_ADDRESS | 복사됨 · 붙여넣은 뒤 전체 확인 | Copied · check it whole after pasting |
+| T_PASTE_CHECK | 붙여넣은 뒤 전체 확인 | Check it whole after pasting |
+
 <!-- catalogue: yw_engine::screen::text -->
 
 | 이름 | 한국어 | English |
@@ -2634,9 +2644,6 @@
 
 | 이름 | 한국어 | English |
 |---|---|---|
-| T_COPIED | 복사됨 | Copied |
-| T_COPIED_ADDRESS | 복사됨 · 붙여넣은 뒤 전체 확인 | Copied · check it whole after pasting |
-| T_PASTE_CHECK | 붙여넣은 뒤 전체 확인 | Check it whole after pasting |
 | QR_TOO_NARROW | 창을 넓히면 QR이 표시됩니다 | Widen the window to show the QR code |
 
 <!-- catalogue: yw_app::ui::qr::text -->

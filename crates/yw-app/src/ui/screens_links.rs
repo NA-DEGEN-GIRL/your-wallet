@@ -11,6 +11,7 @@
 
 use crate::app::App;
 use yw_core::lang::Lang;
+use yw_engine::cmd::Press;
 use yw_engine::explorer::ExplorerNet;
 use yw_engine::screen::address::{AddressKind, own_address_spans};
 use yw_engine::screen::model::{Ctl, GLYPH_LINK, GLYPH_OPEN, GLYPH_SAVE, Item};
@@ -49,15 +50,6 @@ pub mod ids {
     const _: () = assert!(SOL_TO_BASE + SOL_TO_SPAN <= BTC_TO_BASE);
     const _: () = assert!(BTC_TO_BASE + BTC_TO_SPAN <= ZEC_TO_BASE);
     const _: () = assert!(ZEC_TO_BASE + ZEC_TO_SPAN <= 18_660);
-
-    /// Row `row`'s id of a list starting at `base` (`None` past `span`).
-    #[must_use]
-    pub fn row_id(base: u16, span: u16, row: usize) -> Option<u16> {
-        u16::try_from(row)
-            .ok()
-            .filter(|offset| *offset < span)
-            .map(|offset| base + offset)
-    }
 
     /// The row of `id` in a list starting at `base` (`None` outside it).
     #[must_use]
@@ -142,7 +134,7 @@ pub use text::{T_ADDRESS_COPY, T_EXPLORER_COPY, T_EXPLORER_OPEN, T_HASH_COPY, T_
 pub fn push_hash_line(
     items: &mut Vec<Item>,
     lang: Lang,
-    copy: Option<u16>,
+    copy: Option<Press>,
     hash: &str,
     actions: Vec<Ctl>,
 ) {
@@ -171,7 +163,7 @@ pub fn short_hash(hash: &str) -> String {
 pub fn push_address_line(
     items: &mut Vec<Item>,
     lang: Lang,
-    copy: Option<u16>,
+    copy: Option<Press>,
     address: &str,
     kind: AddressKind,
     actions: Vec<Ctl>,
@@ -187,14 +179,14 @@ pub fn push_address_line(
 
 fn push_value_line(
     items: &mut Vec<Item>,
-    copy: Option<u16>,
+    copy: Option<Press>,
     label: &str,
     spans: Vec<(String, bool)>,
     actions: Vec<Ctl>,
 ) {
-    if let Some(id) = copy {
+    if let Some(press) = copy {
         items.push(Item::CopyLine {
-            value: Ctl::value(id, label, spans),
+            value: Ctl::value(press, label, spans),
             actions,
         });
         return;
@@ -210,16 +202,16 @@ fn push_value_line(
 
 /// The `☆ 이 주소 저장` icon.
 #[must_use]
-pub fn save_icon(lang: Lang, id: u16) -> Ctl {
-    Ctl::icon(id, GLYPH_SAVE, T_SAVE_ADDRESS.get(lang))
+pub fn save_icon(lang: Lang, press: impl Into<Press>) -> Ctl {
+    Ctl::icon(press.into(), GLYPH_SAVE, T_SAVE_ADDRESS.get(lang))
 }
 
 /// One entry of an account drop-down: its id, label, whether it is the selected account, and
 /// whether it may be chosen now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickerEntry {
-    /// The entry's command id (the radio id of before).
-    pub id: u16,
+    /// The entry's press (the radio's of before; 2026-11-24 S5-4: its control id before).
+    pub press: Press,
     /// `계정 2 · YubiKey: 메인·백업`, `가져온 계정 1 · 가져온 키` … (2026-11-15,
     /// `App::account_item_labels`).
     pub label: String,
@@ -237,10 +229,10 @@ impl App {
         &self,
         network: impl Into<ExplorerNet>,
         hash: &str,
-        ids: Option<(u16, u16)>,
+        presses: Option<(Press, Press)>,
     ) -> Vec<Ctl> {
         let lang = self.settings.language;
-        match ids {
+        match presses {
             Some((open, copy)) if self.explorer_tx_url(network, hash).is_some() => vec![
                 Ctl::icon(open, GLYPH_OPEN, T_EXPLORER_OPEN.get(lang)),
                 Ctl::icon(copy, GLYPH_LINK, T_EXPLORER_COPY.get(lang)),
@@ -257,13 +249,17 @@ impl App {
     pub fn push_account_picker(
         &self,
         items: &mut Vec<Item>,
-        picker: u16,
+        picker: Press,
         entries: &[PickerEntry],
         usable: bool,
     ) {
         let lang = self.settings.language;
-        // 2026-11-20 (S4 P6): the open drop-down is held as its button's press.
-        let open = usable && self.account_menu.map(crate::ui::cmd_table::id_of) == Some(picker);
+        // 2026-11-20 (S4 P6): the open drop-down is held as its button's press. 2026-11-24
+        // (S5-4): compared by press (before, by `cmd_table::id_of` with the button's id).
+        let open = usable
+            && self
+                .account_menu
+                .is_some_and(|menu| menu.same_control(picker));
         let selected = entries
             .iter()
             .find(|entry| entry.selected)
@@ -281,16 +277,11 @@ impl App {
                 entries
                     .iter()
                     .map(|entry| {
-                        Ctl::entry(entry.id, &entry.label, entry.selected).enabled(entry.enabled)
+                        Ctl::entry(entry.press, &entry.label, entry.selected).enabled(entry.enabled)
                     })
                     .collect(),
             ));
         }
-    }
-
-    /// Whether `id` is the selector of a drop-down (an account one or S10's network one).
-    pub(crate) fn is_picker_button(id: u16) -> bool {
-        ids::FIXED.contains(&id) || id == crate::ui::screens_evm::ids::NETWORK_PICKER
     }
 }
 

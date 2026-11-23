@@ -11,6 +11,7 @@ use yw_core::lang::{Lang, Text};
 
 use crate::app::App;
 use crate::ui::screens::steps;
+use yw_engine::cmd::{CorePress, KeysPress, Press, YkConnectPress, YkPress, ZecPress};
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::wallet::app_btc::BtcCtx;
@@ -246,7 +247,7 @@ fn script_radios(lang: Lang, selected: ScriptType) -> Item {
             .enumerate()
             .map(|(index, script)| {
                 Ctl::radio(
-                    ids::script_id(script),
+                    KeysPress::Script(script),
                     &script_choice_label(lang, script),
                     script == selected,
                     index == 0,
@@ -269,19 +270,19 @@ impl App {
             t(text::CHAIN),
             vec![
                 Ctl::radio(
-                    ids::START_CHAIN_EVM,
+                    KeysPress::StartChainEvm,
                     text::EVM_RADIO.get(lang),
                     flow.chain == ImportChain::Evm,
                     true,
                 ),
                 Ctl::radio(
-                    ids::START_CHAIN_SOL,
+                    KeysPress::StartChainSol,
                     "Solana",
                     flow.chain == ImportChain::Sol,
                     false,
                 ),
                 Ctl::radio(
-                    ids::START_CHAIN_BTC,
+                    KeysPress::StartChainBtc,
                     "Bitcoin",
                     flow.chain == ImportChain::Btc,
                     false,
@@ -299,11 +300,8 @@ impl App {
         items.push(Item::Help(t(text::NO_ADD_ACCOUNT)));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::START_NEXT, text::START.get(lang)),
-            Ctl::button(
-                crate::ui::screens::ids::INTRO_CANCEL,
-                text::CANCEL.get(lang),
-            ),
+            Ctl::primary(KeysPress::StartNext, text::START.get(lang)),
+            Ctl::button(CorePress::IntroCancel, text::CANCEL.get(lang)),
         ]));
     }
 
@@ -344,19 +342,19 @@ impl App {
         items.push(Item::CardEnd);
         items.push(Item::Banner(t(text::KEY_START_BACKUP), Tone::Warn));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::START_CORRECT, text::CORRECT.get(lang)),
-            Ctl::button(ids::START_WRONG, text::WRONG.get(lang)),
+            Ctl::primary(KeysPress::StartCorrect, text::CORRECT.get(lang)),
+            Ctl::button(KeysPress::StartWrong, text::WRONG.get(lang)),
         ]));
         items.push(Item::Help(t(text::WRONG_HELP)));
     }
 
     /// A chain tab without any account in a key-only wallet.
     pub fn no_accounts_card(&self, chain: ImportChain, items: &mut Vec<Item>) {
-        let import_id = match chain {
-            ImportChain::Evm => crate::ui::screens::ids::IMPORT_KEY,
-            ImportChain::Sol => ids::SOL_IMPORT,
-            ImportChain::Btc => ids::BTC_IMPORT_NEXT,
-            ImportChain::Zec => crate::ui::screens_zec::ids::IMPORT,
+        let import: Press = match chain {
+            ImportChain::Evm => CorePress::ImportKey.into(),
+            ImportChain::Sol => KeysPress::SolImport.into(),
+            ImportChain::Btc => KeysPress::BtcImportNext.into(),
+            ImportChain::Zec => ZecPress::Import.into(),
         };
         let lang = self.settings.language;
         let t = |entry: Text| entry.get(lang).to_owned();
@@ -374,17 +372,11 @@ impl App {
         }
         let unlocked = matches!(self.mode, yw_engine::wallet::AppMode::Unlocked { .. });
         items.push(Item::Row(vec![
-            Ctl::primary(import_id, text::IMPORT_KEY.get(lang)).enabled(self.can_import(chain)),
-            Ctl::button(
-                crate::ui::screens_yubikey::ids::ENROL_START,
-                text::ENROL_YUBIKEY.get(lang),
-            )
-            .enabled(unlocked && self.card.records.len() < yw_core::yubikey::plan::MAX_CARDS),
-            Ctl::button(
-                crate::ui::screens_yubikey::ids::CONNECT_START,
-                text::CONNECT_YUBIKEY.get(lang),
-            )
-            .enabled(unlocked && self.card.records.len() < yw_core::yubikey::plan::MAX_CARDS),
+            Ctl::primary(import, text::IMPORT_KEY.get(lang)).enabled(self.can_import(chain)),
+            Ctl::button(YkPress::EnrolStart, text::ENROL_YUBIKEY.get(lang))
+                .enabled(unlocked && self.card.records.len() < yw_core::yubikey::plan::MAX_CARDS),
+            Ctl::button(YkConnectPress::Start, text::CONNECT_YUBIKEY.get(lang))
+                .enabled(unlocked && self.card.records.len() < yw_core::yubikey::plan::MAX_CARDS),
         ]));
         // Every account of the tab hidden (a `YubiKey` wallet): the way back is here too.
         let family = match chain {
@@ -414,10 +406,10 @@ impl App {
             };
             return (
                 vec![
-                    Ctl::button(ids::BTC_REVEAL, text::SHOW_KEY.get(lang))
+                    Ctl::button(KeysPress::BtcReveal, text::SHOW_KEY.get(lang))
                         .compact()
                         .enabled(unlocked),
-                    Ctl::danger(ids::BTC_REMOVE, text::DELETE.get(lang))
+                    Ctl::danger(KeysPress::BtcRemove, text::DELETE.get(lang))
                         .compact()
                         .enabled(unlocked && self.can_remove_imported()),
                 ],
@@ -429,7 +421,7 @@ impl App {
             // not a vault record, so there is nothing to delete.
             return (
                 vec![
-                    Ctl::button(ids::BTC_REVEAL, text::SHOW_KEY.get(lang))
+                    Ctl::button(KeysPress::BtcReveal, text::SHOW_KEY.get(lang))
                         .compact()
                         .enabled(unlocked),
                 ],
@@ -449,7 +441,7 @@ impl App {
     pub fn btc_import_action(&self) -> Option<Ctl> {
         (!self.keys.btc_import_open).then(|| {
             Ctl::button(
-                ids::BTC_IMPORT,
+                KeysPress::BtcImport,
                 text::IMPORT_KEY.get(self.settings.language),
             )
             .compact()
@@ -471,9 +463,9 @@ impl App {
         items.push(script_radios(lang, self.keys.btc_script));
         items.push(Item::Help(t(text::BTC_SCRIPT)));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::BTC_IMPORT_NEXT, text::NEXT_KEY.get(lang))
+            Ctl::primary(KeysPress::BtcImportNext, text::NEXT_KEY.get(lang))
                 .enabled(self.can_import(ImportChain::Btc)),
-            Ctl::button(ids::BTC_IMPORT_CANCEL, text::CANCEL.get(lang)),
+            Ctl::button(KeysPress::BtcImportCancel, text::CANCEL.get(lang)),
         ]));
     }
 }

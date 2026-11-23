@@ -464,6 +464,46 @@ pub enum Press {
     YkConnect(YkConnectPress),
 }
 
+/// A family's press is a [`Press`] (2026-11-24, spec/15 §11.4 S5-4: the screen model names its
+/// controls by press, `screen::model::Act`).
+macro_rules! family_presses {
+    ($($family:ident => $variant:ident),* $(,)?) => {
+        $(
+            impl From<$family> for Press {
+                fn from(press: $family) -> Self {
+                    Self::$variant(press)
+                }
+            }
+        )*
+    };
+}
+
+family_presses! {
+    CorePress => Core,
+    ReceivedPress => Received,
+    SitesPress => Sites,
+    LlmPress => Llm,
+    WcPress => Wc,
+    HiddenPress => Hidden,
+    SidecarPress => Sidecar,
+    ExplorerPress => Explorer,
+    LinksPress => Links,
+    BookPress => Book,
+    ResetPress => Reset,
+    ExtPress => Ext,
+    KeysPress => Keys,
+    RpcImportPress => RpcImport,
+    MnPress => Mn,
+    HcPress => Hc,
+    ZecPress => Zec,
+    SolPress => Sol,
+    BtcPress => Btc,
+    EvmPress => Evm,
+    YkPress => Yk,
+    YkManagePress => YkManage,
+    YkConnectPress => YkConnect,
+}
+
 impl Press {
     /// The chain whose received-history list a card's `새로고침` press also reads now, before the
     /// card's own handler runs (spec/04 §2.6). A chain family adds its `새로고침` arm when it

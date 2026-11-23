@@ -3,7 +3,9 @@
 //! `app_hidden`, which keeps the rows (`Wallet::hidden_rows`), the presses and their texts.
 
 use crate::app::App;
+use yw_engine::cmd::{HiddenPress, Row};
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::screen::rows;
 use yw_engine::wallet::Wallet;
 use yw_engine::wallet::app_hidden::{Family, text};
 
@@ -77,10 +79,22 @@ impl App {
         if rows.is_empty() {
             return;
         }
-        let (toggle, base, span) = match family {
-            Family::Evm => (ids::EVM_TOGGLE, ids::EVM_ROW_BASE, ids::ROW_SPAN),
-            Family::Sol => (ids::SOL_TOGGLE, ids::SOL_ROW_BASE, ids::ROW_SPAN),
-            Family::Btc => (ids::BTC_TOGGLE, ids::BTC_ROW_BASE, ids::BTC_ROW_SPAN),
+        let (toggle, unhide, span): (_, fn(Row) -> HiddenPress, _) = match family {
+            Family::Evm => (
+                HiddenPress::EvmToggle,
+                HiddenPress::EvmUnhide,
+                rows::HIDDEN_ROWS,
+            ),
+            Family::Sol => (
+                HiddenPress::SolToggle,
+                HiddenPress::SolUnhide,
+                rows::HIDDEN_ROWS,
+            ),
+            Family::Btc => (
+                HiddenPress::BtcToggle,
+                HiddenPress::BtcUnhide,
+                rows::HIDDEN_BTC_ROWS,
+            ),
         };
         let lang = self.settings.language;
         let open = self.hidden_open;
@@ -128,7 +142,7 @@ impl App {
                 items.push(Item::Help(text::LAST_READ.fill(lang, [&balance])));
             }
             items.push(Item::Row(vec![Ctl::button(
-                base.saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                unhide(Row(u16::try_from(row).unwrap_or(u16::MAX))),
                 text::UNHIDE.get(lang),
             )]));
         }

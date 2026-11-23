@@ -28,7 +28,6 @@ use yw_win::ui::controls::{ButtonStyle, ControlKind};
 use crate::app::App;
 use crate::ui::cmd_table;
 use crate::ui::main_window::{ControlSet, Ctl, Face, Item};
-use crate::ui::screens::RECEIVE_IDS;
 use crate::ui::screens_reset;
 use crate::ui::theme;
 
@@ -67,9 +66,9 @@ impl App {
     /// ([`App::screen_model`], built by the screens) lowered here (2026-11-24, spec/15 §11.4
     /// S5-4; before, the screens built this list themselves, `ui::screens`). A drawn press that
     /// maps back to another control and a credential edit that came with text are counted in
-    /// `App::press_mismatch` (debug builds; the census asserts 0). Then, as before, an
-    /// unverified passphrase's `받기` and `주소 복사` controls are turned off and the copy just
-    /// made says so at its own control.
+    /// `App::press_mismatch` (debug builds; the census asserts 0). (The first S5-4 commit turned
+    /// off an unverified passphrase's receive controls and marked the copy just made here, on
+    /// the lowered list by control id; since the second the screen model does both by press.)
     #[must_use]
     pub fn items(&self) -> Vec<Item> {
         let lowered = lower(self.screen_model());
@@ -80,39 +79,7 @@ impl App {
                 .saturating_add(lowered.press_mismatch)
                 .saturating_add(lowered.cred_text),
         );
-        let mut items = lowered.items;
-        if self.passphrase_unverified() {
-            disable_receive(&mut items);
-        }
-        // The copy just made says so at its own control (2026-11-12, `Wallet::copy_text`).
-        // 2026-11-20 (S4 P6): the mark holds the press; its control id is the table's.
-        if let Some(copied) = self.copied {
-            crate::ui::main_window::mark_copied(
-                self.settings.language,
-                &mut items,
-                cmd_table::id_of(copied.anchor),
-                copied.address,
-            );
-        }
-        items
-    }
-}
-
-/// Turns off every `받기` and `주소 복사` control in `items` (unverified-passphrase sessions;
-/// 2026-11-24 S5-4: from `ui::screens`, unchanged).
-fn disable_receive(items: &mut [Item]) {
-    for item in items {
-        match item {
-            Item::Row(ctls) | Item::LabeledRow(_, ctls) | Item::Toolbar(_, ctls) => {
-                for ctl in ctls.iter_mut().filter(|ctl| RECEIVE_IDS.contains(&ctl.id)) {
-                    ctl.enabled = false;
-                }
-            }
-            Item::CopyLine { value, .. } if RECEIVE_IDS.contains(&value.id) => {
-                value.enabled = false;
-            }
-            _ => {}
-        }
+        lowered.items
     }
 }
 

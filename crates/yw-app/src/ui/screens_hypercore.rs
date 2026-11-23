@@ -6,8 +6,11 @@ use yw_core::hypercore::{HcNetwork, WITHDRAW_FEE_USDC};
 use yw_core::lang::Lang;
 
 use crate::app::App;
+use yw_engine::cmd::{ExplorerPress, HcPress};
+use yw_engine::form::EditField;
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::screen::rows;
 use yw_engine::wallet::app_hypercore::{HcAsset, HcFormKind};
 
 /// Command ids (13,450–13,499).
@@ -167,13 +170,13 @@ fn local_time(facts: &dyn yw_engine::screen::facts::ScreenFacts, unix_ms: u64) -
 fn network_row(lang: Lang, network: HcNetwork) -> Item {
     Item::Row(vec![
         Ctl::radio(
-            ids::NET_MAINNET,
+            HcPress::NetMainnet,
             text::MAINNET.get(lang),
             network == HcNetwork::Mainnet,
             true,
         ),
         Ctl::radio(
-            ids::NET_TESTNET,
+            HcPress::NetTestnet,
             text::TESTNET.get(lang),
             network == HcNetwork::Testnet,
             false,
@@ -296,7 +299,7 @@ impl App {
             ))),
         ));
         items.push(Item::Row(vec![Ctl::link(
-            ids::EXPAND,
+            HcPress::Expand,
             text::EXPAND.get(lang),
         )]));
         items.push(Item::CardEnd);
@@ -326,7 +329,7 @@ impl App {
         ));
         if foldable {
             items.push(Item::Row(vec![Ctl::link(
-                ids::COLLAPSE,
+                HcPress::Collapse,
                 text::COLLAPSE.get(lang),
             )]));
         }
@@ -391,14 +394,14 @@ impl App {
             items.push(Item::Banner(error.clone(), Tone::Warn));
         }
         items.push(Item::Row(vec![
-            Ctl::button(ids::OPEN_SEND, text::SEND_CORE.get(lang)),
-            Ctl::button(ids::OPEN_CLASS, text::CLASS.get(lang)),
-            Ctl::button(ids::OPEN_WITHDRAW, text::WITHDRAW.get(lang)),
+            Ctl::button(HcPress::OpenSend, text::SEND_CORE.get(lang)),
+            Ctl::button(HcPress::OpenClass, text::CLASS.get(lang)),
+            Ctl::button(HcPress::OpenWithdraw, text::WITHDRAW.get(lang)),
         ]));
         items.push(Item::Row(vec![
-            Ctl::button(ids::OPEN_TO_EVM, text::TO_EVM.get(lang)),
-            Ctl::button(ids::OPEN_FROM_EVM, text::FROM_EVM.get(lang)),
-            Ctl::button(ids::REFRESH, text::REFRESH.get(lang)),
+            Ctl::button(HcPress::OpenToEvm, text::TO_EVM.get(lang)),
+            Ctl::button(HcPress::OpenFromEvm, text::FROM_EVM.get(lang)),
+            Ctl::button(HcPress::Refresh, text::REFRESH.get(lang)),
         ]));
         // The selected account's rows only, like the balances above.
         let account = self.selected_account().map(|(account, ..)| account);
@@ -409,7 +412,7 @@ impl App {
             self.explorer_address_link(
                 yw_engine::explorer::ExplorerNet::HyperCore(network),
                 &account.to_checksum(),
-                crate::ui::screens_explorer::ids::CARD_HC,
+                ExplorerPress::CardHc,
             )
         });
         if let Some(link) = explorer {
@@ -476,7 +479,7 @@ impl App {
         }
         if self.hypercore.error.is_some() || self.hc_balances().is_none() {
             items.push(Item::Row(vec![Ctl::button(
-                ids::REFRESH,
+                HcPress::Refresh,
                 text::REFRESH.get(lang),
             )]));
         }
@@ -496,7 +499,7 @@ impl App {
         match form.kind {
             HcFormKind::Send => {
                 let mut rows = vec![Item::Row(vec![Ctl::radio(
-                    ids::ASSET_PERP,
+                    HcPress::AssetPerp,
                     &text::ASSET_PERP.fill(
                         lang,
                         [&self
@@ -507,15 +510,11 @@ impl App {
                     true,
                 )])];
                 for (row, (index, coin, total)) in self.hc_spot_rows().into_iter().enumerate() {
-                    let Some(id) = u16::try_from(row)
-                        .ok()
-                        .filter(|row| *row < ids::ASSET_SPAN)
-                        .map(|row| ids::ASSET_BASE.saturating_add(row))
-                    else {
+                    let Some(asset) = rows::row(row, rows::HC_ASSETS).map(HcPress::Asset) else {
                         break;
                     };
                     rows.push(Item::Row(vec![Ctl::radio(
-                        id,
+                        asset,
                         &text::ASSET_SPOT.fill(lang, [&escape_untrusted(&coin).text, &total]),
                         form.asset == HcAsset::Spot(index),
                         false,
@@ -527,13 +526,13 @@ impl App {
             HcFormKind::ClassTransfer => {
                 items.push(Item::Row(vec![
                     Ctl::radio(
-                        ids::DIR_TO_PERP,
+                        HcPress::DirToPerp,
                         text::SPOT_TO_PERP.get(lang),
                         form.to_perp,
                         true,
                     ),
                     Ctl::radio(
-                        ids::DIR_TO_SPOT,
+                        HcPress::DirToSpot,
                         text::PERP_TO_SPOT.get(lang),
                         !form.to_perp,
                         false,
@@ -554,15 +553,11 @@ impl App {
                     items.push(Item::Muted(text::NO_EVM_TOKENS.get(lang).to_owned()));
                 }
                 for (row, token) in tokens.iter().enumerate() {
-                    let Some(id) = u16::try_from(row)
-                        .ok()
-                        .filter(|row| *row < ids::ASSET_SPAN)
-                        .map(|row| ids::ASSET_BASE.saturating_add(row))
-                    else {
+                    let Some(asset) = rows::row(row, rows::HC_ASSETS).map(HcPress::Asset) else {
                         break;
                     };
                     items.push(Item::Row(vec![Ctl::radio(
-                        id,
+                        asset,
                         &text::EVM_TOKEN.fill(
                             lang,
                             [
@@ -581,8 +576,8 @@ impl App {
         items.push(Item::LabeledRow(
             text::AMOUNT.get(lang).to_owned(),
             vec![
-                Ctl::edit(ids::AMOUNT_EDIT, &form.amount_text, 240, false, 40),
-                Ctl::button(ids::MAX, text::MAX.get(lang))
+                Ctl::edit(EditField::HcAmount, &form.amount_text, 240, false, 40),
+                Ctl::button(HcPress::Max, text::MAX.get(lang))
                     .enabled(available.as_ref().is_some_and(|(amount, _)| amount != "0")),
             ],
         ));
@@ -616,9 +611,9 @@ impl App {
         }
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::REVIEW, text::REVIEW.get(lang))
+            Ctl::primary(HcPress::Review, text::REVIEW.get(lang))
                 .enabled(self.hc_can_review() && form.dirty_ms.is_none()),
-            Ctl::button(ids::CANCEL, text::CANCEL.get(lang)),
+            Ctl::button(HcPress::Cancel, text::CANCEL.get(lang)),
         ]));
     }
 
@@ -627,7 +622,7 @@ impl App {
         let form = &self.hypercore.form;
         items.push(Item::LabeledRow(
             label.to_owned(),
-            vec![Ctl::edit(ids::TO_EDIT, &form.to_text, 430, false, 64)],
+            vec![Ctl::edit(EditField::HcTo, &form.to_text, 430, false, 64)],
         ));
         for note in &form.notes {
             // Withdrawing to the signing account's own Arbitrum address is the default.
@@ -659,7 +654,7 @@ impl App {
             .any(yw_engine::flow::evm::form::AddressNote::needs_ack)
         {
             items.push(Item::Row(vec![Ctl::check(
-                ids::ACK,
+                HcPress::Ack,
                 text::ACK.get(lang),
                 form.ack,
             )]));
@@ -672,7 +667,7 @@ impl App {
         let hypercore = &self.settings.hypercore;
         items.push(Item::CardStart(Some("Hyperliquid HyperCore".to_owned())));
         items.push(Item::Row(vec![Ctl::check(
-            ids::ENABLED,
+            HcPress::Enabled,
             text::SETTINGS_SHOW.get(lang),
             hypercore.enabled,
         )]));
@@ -689,9 +684,9 @@ impl App {
         items.push(Item::LabeledRow(
             text::TESTNET_API.get(lang).to_owned(),
             vec![
-                Ctl::edit(ids::API_EDIT, &api, 360, false, 256),
-                Ctl::button(ids::API_SAVE, text::SAVE.get(lang)),
-                Ctl::button(ids::API_DEFAULT, text::OFFICIAL.get(lang)),
+                Ctl::edit(EditField::HcApi, &api, 360, false, 256),
+                Ctl::button(HcPress::ApiSave, text::SAVE.get(lang)),
+                Ctl::button(HcPress::ApiDefault, text::OFFICIAL.get(lang)),
             ],
         ));
         items.push(Item::Help(text::API_HELP.get(lang).to_owned()));

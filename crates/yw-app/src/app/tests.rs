@@ -3552,8 +3552,9 @@ fn ctl(items: &[Item], id: u16) -> Option<Ctl> {
 /// leaving the screen (S12's `주소 복사` has the account card's id).
 #[test]
 fn copy_is_answered_at_its_control_and_expires() {
-    use crate::ui::main_window::{Face, T_COPIED_ADDRESS};
+    use crate::ui::main_window::Face;
     use crate::ui::screens_evm::ids::COPY_ADDRESS;
+    use yw_engine::screen::model::T_COPIED_ADDRESS;
     use yw_engine::wallet::app_evm::Copied;
     let (mut app, dir) = unlocked_app("copied-mark", false);
     app.meta.as_mut().unwrap().prefs.tab = Tab::Evm;

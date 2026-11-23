@@ -12,14 +12,19 @@ use crate::app::App;
 use crate::ui::qr::RECEIVE_SHARED_ADDRESS_NOTE;
 use yw_engine::badge::Badge;
 use yw_engine::badge::custom_chain_badge;
+use yw_engine::cmd::{
+    ChainRowAction, CorePress, EvmActivityAction, EvmPress, ExplorerPress, LinksPress, Row,
+};
 use yw_engine::errors::ErrorCode;
 use yw_engine::flow::evm::MismatchKind;
+use yw_engine::form::{CredField, EditField};
 use yw_engine::logging::format_utc;
 use yw_engine::meta::BookChain;
 use yw_engine::network::NetworkId;
 use yw_engine::screen::Tone;
 use yw_engine::screen::facts::{PipeStatus, ScreenFacts};
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::screen::rows;
 use yw_engine::screen::{ActivityRowView, EvmQrKind};
 use yw_engine::token_view::RowPlace;
 use yw_engine::wallet::AppMode;
@@ -33,7 +38,7 @@ pub mod text;
 fn chain_add_row(lang: Lang, items: &mut Vec<Item>) {
     items.push(Item::Help(text::CHAIN_ADD_HELP.get(lang).to_owned()));
     items.push(Item::Row(vec![Ctl::button(
-        ids::CHAIN_ADD,
+        EvmPress::ChainAdd,
         text::CHAIN_ADD.get(lang),
     )]));
 }
@@ -546,7 +551,7 @@ impl App {
             items.push(Item::Banner(kind.code().text_in(lang), Tone::Blocked));
             if matches!(kind, MismatchKind::PinnedGenesis { .. }) {
                 items.push(Item::Row(vec![Ctl::primary(
-                    ids::REPIN_SETTINGS,
+                    EvmPress::RepinSettings,
                     text::REPIN_IN_SETTINGS.get(lang),
                 )]));
             }
@@ -584,20 +589,15 @@ impl App {
             crate::ui::screens::balance_failure_text(self.settings.language, code),
             Tone::Danger,
         ));
-        self.rpc_failure_buttons(
-            network,
-            crate::ui::screens::ids::EVM_RPC_TEST,
-            crate::ui::screens::ids::EVM_RPC_ROW,
-            items,
-        );
+        self.rpc_failure_buttons(network, CorePress::EvmRpcTest, CorePress::EvmRpcRow, items);
     }
 
     /// The two buttons under a network card's failure band, and the answer of its test.
     pub(crate) fn rpc_failure_buttons(
         &self,
         network: NetworkId,
-        test: u16,
-        open: u16,
+        test: CorePress,
+        open: CorePress,
         items: &mut Vec<Item>,
     ) {
         let testing =
@@ -705,24 +705,20 @@ impl App {
         // keep their row number.
         let foldable = rows
             .iter()
-            .skip(ids::ACTIVITY_FIRST)
+            .skip(rows::EVM_ACTIVITY_FIRST)
             .filter(|row| row.open.is_none())
             .count();
         let shown: Vec<(usize, ActivityRowView)> = rows
             .into_iter()
             .enumerate()
             .filter(|(index, row)| {
-                self.activity_all || *index < ids::ACTIVITY_FIRST || row.open.is_some()
+                self.activity_all || *index < rows::EVM_ACTIVITY_FIRST || row.open.is_some()
             })
             .collect();
         let count = shown.len();
         let mut prompt_drawn = false;
         for (position, (index, row)) in shown.into_iter().enumerate() {
-            let base = ids::ACTIVITY_BASE.saturating_add(
-                u16::try_from(index)
-                    .unwrap_or(0)
-                    .saturating_mul(ids::ACTIVITY_STRIDE),
-            );
+            let act = |action| EvmPress::Activity(Row(u16::try_from(index).unwrap_or(0)), action);
             // The status at the end of the first line (2026-11-12: a line of its own before).
             // 2026-11-22 (S4d E0c): the local time is formatted here, not in `activity_rows`.
             items.push(Item::Text(format!(
@@ -743,18 +739,14 @@ impl App {
                     .map(|_| {
                         crate::ui::screens_links::save_icon(
                             self.settings.language,
-                            base.saturating_add(6),
+                            act(EvmActivityAction::SaveAddress),
                         )
                     });
                 self.recipient_items(address, items);
                 crate::ui::screens_links::push_address_line(
                     items,
                     self.settings.language,
-                    crate::ui::screens_links::ids::row_id(
-                        crate::ui::screens_links::ids::EVM_TO_BASE,
-                        crate::ui::screens_links::ids::EVM_TO_SPAN,
-                        index,
-                    ),
+                    rows::row(index, rows::EVM_TO).map(|row| LinksPress::EvmTo(row).into()),
                     &address.to_checksum(),
                     yw_engine::screen::address::AddressKind::Evm,
                     save.into_iter().collect(),
@@ -765,29 +757,38 @@ impl App {
             crate::ui::screens_links::push_hash_line(
                 items,
                 self.settings.language,
-                Some(base),
+                Some(act(EvmActivityAction::CopyHash).into()),
                 &row.hash,
                 self.explorer_tx_icons(
                     NetworkId::Eip155(chain_id),
                     &row.hash,
-                    Some((base.saturating_add(7), base.saturating_add(5))),
+                    Some((
+                        act(EvmActivityAction::OpenExplorer).into(),
+                        act(EvmActivityAction::CopyExplorerLink).into(),
+                    )),
                 ),
             );
             let mut buttons = Vec::new();
             if row.open.is_some() {
                 // Replace-by-fee has one name on every chain (Bitcoin's `수수료 올리기`).
                 buttons.push(Ctl::button(
-                    base.saturating_add(1),
+                    act(EvmActivityAction::SpeedUp),
                     text::SPEED_UP.get(lang),
                 ));
                 buttons.push(Ctl::button(
-                    base.saturating_add(2),
+                    act(EvmActivityAction::Cancel),
                     text::CANCEL_TX.get(lang),
                 ));
                 if row.manual {
-                    buttons.push(Ctl::button(base.saturating_add(3), text::RESEND.get(lang)));
+                    buttons.push(Ctl::button(
+                        act(EvmActivityAction::Resend),
+                        text::RESEND.get(lang),
+                    ));
                 }
-                buttons.push(Ctl::danger(base.saturating_add(4), text::DISCARD.get(lang)));
+                buttons.push(Ctl::danger(
+                    act(EvmActivityAction::Discard),
+                    text::DISCARD.get(lang),
+                ));
             }
             if !buttons.is_empty() {
                 items.push(Item::Row(buttons));
@@ -804,7 +805,7 @@ impl App {
         }
         if foldable > 0 {
             items.push(Item::Row(vec![Ctl::link(
-                ids::ACTIVITY_MORE,
+                EvmPress::ActivityMore,
                 &if self.activity_all {
                     text::ACTIVITY_FOLD.get(lang).to_owned()
                 } else {
@@ -856,11 +857,12 @@ impl App {
         }
         // The footer in one row (2026-11-12; four stacked lines before): the action first,
         // the count of tucked-away zero rows in the check box's label, the hidden rows' link.
-        let mut footer = vec![Ctl::button(ids::TOKEN_OPEN, text::TOKEN_ADD.get(lang)).compact()];
+        let mut footer =
+            vec![Ctl::button(EvmPress::TokenOpen, text::TOKEN_ADD.get(lang)).compact()];
         if !rows.is_empty() {
             items.push(Item::Rule);
             footer.push(Ctl::check(
-                ids::TOKEN_HIDE_ZERO,
+                EvmPress::TokenHideZero(None),
                 &if zero > 0 {
                     text::HIDE_ZERO_COUNT.fill(lang, [&zero.to_string()])
                 } else {
@@ -873,7 +875,7 @@ impl App {
         if !hidden.is_empty() {
             let count = hidden.len();
             footer.push(Ctl::link(
-                ids::TOKEN_HIDDEN_TOGGLE,
+                EvmPress::TokenHiddenToggle,
                 &if open {
                     text::HIDDEN_FOLD_COUNT
                 } else {
@@ -909,7 +911,6 @@ impl App {
         hidden: bool,
         can_send: bool,
     ) {
-        use ids::{TokenAction, token_row_id};
         let balance = row.balance.map_or_else(
             || text::BALANCE_UNKNOWN.get(lang).to_owned(),
             |value| format_units(&value, row.decimals),
@@ -928,20 +929,18 @@ impl App {
         });
         let offset = u16::try_from(row.index).ok();
         let mut buttons = Vec::new();
-        if !hidden && let Some(offset) = offset.filter(|offset| *offset < ids::TOKEN_SEND_SPAN) {
+        if !hidden && let Some(offset) = offset.filter(|offset| *offset < rows::EVM_TOKEN_SENDS) {
             buttons.push(
-                Ctl::link(
-                    ids::TOKEN_SEND_BASE.saturating_add(offset),
-                    text::SEND.get(lang),
-                )
-                .compact()
-                .enabled(can_send && row.balance.is_some_and(|value| !value.is_zero())),
+                Ctl::link(EvmPress::TokenSend(Row(offset)), text::SEND.get(lang))
+                    .compact()
+                    .enabled(can_send && row.balance.is_some_and(|value| !value.is_zero())),
             );
         }
-        if let Some(id) = token_row_id(TokenAction::ToggleHidden(row.index)) {
+        let token_row = rows::row(row.index, rows::EVM_TOKEN_ROWS);
+        if let Some(token_row) = token_row {
             buttons.push(
                 Ctl::link(
-                    id,
+                    EvmPress::TokenToggleHidden(token_row),
                     if hidden {
                         text::UNHIDE.get(lang)
                     } else {
@@ -952,16 +951,18 @@ impl App {
             );
         }
         if !row.registered
-            && let Some(id) = token_row_id(TokenAction::Delete(row.index))
+            && let Some(token_row) = token_row
         {
-            buttons.push(Ctl::danger(id, text::DELETE.get(lang)).compact());
+            buttons.push(
+                Ctl::danger(EvmPress::TokenDelete(token_row), text::DELETE.get(lang)).compact(),
+            );
         }
         crate::ui::screens_links::push_address_line(
             items,
             lang,
             offset
-                .filter(|offset| *offset < ids::TOKEN_COPY_SPAN)
-                .map(|offset| ids::TOKEN_COPY_BASE.saturating_add(offset)),
+                .filter(|offset| *offset < rows::EVM_TOKEN_COPIES)
+                .map(|offset| EvmPress::TokenCopy(Row(offset)).into()),
             &row.address.to_checksum(),
             yw_engine::screen::address::AddressKind::Evm,
             buttons,
@@ -988,10 +989,8 @@ impl App {
         let mut visible = Vec::new();
         let mut hidden = Vec::new();
         for row in self.evm_token_rows(chain_id) {
-            let Some(id) = u16::try_from(row.index.saturating_add(1))
-                .ok()
-                .filter(|offset| *offset < ids::SEND_ASSET_SPAN)
-                .map(|offset| ids::SEND_ASSET_BASE.saturating_add(offset))
+            let Some(press) = rows::row(row.index.saturating_add(1), rows::EVM_SEND_ASSETS)
+                .map(EvmPress::SendAsset)
             else {
                 continue;
             };
@@ -1005,7 +1004,7 @@ impl App {
                 || text::NAME_BALANCE_UNKNOWN.fill(lang, [&name]),
                 |value| format!("{name} · {}", format_units(&value, row.decimals)),
             );
-            let radio = Ctl::radio(id, &text, asset == SendAsset::Token(row.address), false);
+            let radio = Ctl::radio(press, &text, asset == SendAsset::Token(row.address), false);
             if row.place == RowPlace::Hidden {
                 hidden.push(radio);
             } else {
@@ -1071,7 +1070,7 @@ impl App {
             self.mn_signing_banner(self.evm_backup_gate(source), items);
             self.card_pin_banner(self.evm_card_gate(source), items);
             items.push(Item::Row(vec![Ctl::link(
-                crate::ui::screens::ids::SWITCH_ACCOUNT,
+                CorePress::SwitchAccount,
                 text::SWITCH_ACCOUNT.get(lang),
             )]));
             items.push(Item::CardEnd);
@@ -1083,8 +1082,8 @@ impl App {
         items.push(Item::LabeledRow(
             text::RECIPIENT_FIELD.get(lang).to_owned(),
             vec![
-                Ctl::edit(ids::SEND_TO_EDIT, &form.to_text, 430, false, 64),
-                Ctl::button(ids::SEND_PICK, text::PICK_FROM_BOOK.get(lang)),
+                Ctl::edit(EditField::EvmSendTo, &form.to_text, 430, false, 64),
+                Ctl::button(EvmPress::SendPick, text::PICK_FROM_BOOK.get(lang)),
             ],
         ));
         // The format hint only until the address is valid (2026-11-12); the reminder to check
@@ -1127,7 +1126,7 @@ impl App {
                 .any(yw_engine::flow::evm::form::AddressNote::needs_ack)
             {
                 items.push(Item::Row(vec![Ctl::check(
-                    ids::SEND_ACK,
+                    EvmPress::SendAck(None),
                     text::ACK_WHOLE.get(lang),
                     form.ack,
                 )]));
@@ -1161,7 +1160,7 @@ impl App {
             .selected_account()
             .and_then(|(account, ..)| self.native_balance(chain_id, &account));
         assets.push(Ctl::radio(
-            ids::SEND_ASSET_BASE,
+            EvmPress::SendAsset(Row(0)),
             &native_held.map_or_else(
                 || text::NAME_BALANCE_UNKNOWN.fill(lang, [&native_symbol]),
                 |value| {
@@ -1183,7 +1182,7 @@ impl App {
             let open = self.evm.send_show_hidden || selected;
             items.push(Item::Row(vec![
                 Ctl::link(
-                    ids::SEND_HIDDEN_TOGGLE,
+                    EvmPress::SendHiddenToggle,
                     &if open {
                         text::HIDDEN_FOLD.get(lang).to_owned()
                     } else {
@@ -1231,8 +1230,8 @@ impl App {
         items.push(Item::LabeledRow(
             text::AMOUNT_FIELD.fill(lang, [&asset_symbol]),
             vec![
-                Ctl::edit(ids::SEND_AMOUNT_EDIT, &form.amount_text, 260, false, 128),
-                Ctl::button(ids::SEND_MAX, text::MAX.get(lang)),
+                Ctl::edit(EditField::EvmSendAmount, &form.amount_text, 260, false, 128),
+                Ctl::button(EvmPress::SendMax, text::MAX.get(lang)),
             ],
         ));
         // Only until the amount is valid (2026-11-12).
@@ -1283,7 +1282,7 @@ impl App {
                 items.push(Item::Help(text::FEE_DETAIL.fill(lang, [detail])));
             }
             items.push(Item::Row(vec![Ctl::link(
-                crate::ui::screens::ids::ADVANCED_TOGGLE,
+                CorePress::AdvancedToggle,
                 if self.show_advanced {
                     text::FEE_DETAIL_HIDE.get(lang)
                 } else {
@@ -1311,8 +1310,8 @@ impl App {
         self.journal_send_items(yw_engine::wallet::app_sidecar::SendChain::Evm, items);
         let blocker = self.review_blocker();
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SEND_REVIEW, text::REVIEW.get(lang)).enabled(blocker.is_none()),
-            Ctl::button(ids::SEND_CANCEL, text::CANCEL.get(lang)),
+            Ctl::primary(EvmPress::SendReview, text::REVIEW.get(lang)).enabled(blocker.is_none()),
+            Ctl::button(EvmPress::SendCancel, text::CANCEL.get(lang)),
         ]));
         // What `검토` waits for, or that it sends nothing yet (2026-11-12).
         items.push(Item::Help(
@@ -1338,7 +1337,7 @@ impl App {
                 text::PICK_BOOK
             };
             items.push(Item::Row(vec![Ctl::button(
-                ids::SEND_PICK_BASE.saturating_add(shown),
+                EvmPress::PickRecipient(Row(shown)),
                 &prefix.fill(lang, [&entry.name]),
             )]));
             items.push(Item::Mono(format_address(&entry.address)));
@@ -1395,8 +1394,8 @@ impl App {
                 NetworkId::Eip155(sent.chain_id),
                 &hash,
                 Some((
-                    crate::ui::screens_explorer::ids::RESULT_EVM_OPEN,
-                    crate::ui::screens_explorer::ids::RESULT_EVM_COPY,
+                    ExplorerPress::ResultEvmOpen.into(),
+                    ExplorerPress::ResultEvmCopy.into(),
                 )),
             );
             if !buttons.is_empty() {
@@ -1406,7 +1405,7 @@ impl App {
             self.result_save_items(BookTarget::Evm, items);
         }
         items.push(Item::Row(vec![Ctl::primary(
-            crate::ui::screens::ids::BACK_MAIN,
+            CorePress::BackMain,
             text::BACK_MAIN.get(lang),
         )]));
     }
@@ -1455,19 +1454,19 @@ impl App {
         items.push(crate::ui::screens::receive_address_row(
             self.settings.language,
             &format_address(&address),
-            ids::COPY_ADDRESS,
+            EvmPress::CopyAddress,
             Vec::new(),
         ));
         let kind = self.evm.receive_qr;
         items.push(Item::Row(vec![
             Ctl::radio(
-                ids::QR_EIP681,
+                EvmPress::QrEip681,
                 EvmQrKind::Eip681.label(self.settings.language),
                 kind == EvmQrKind::Eip681,
                 true,
             ),
             Ctl::radio(
-                ids::QR_PLAIN,
+                EvmPress::QrPlain,
                 EvmQrKind::PlainAddress.label(self.settings.language),
                 kind == EvmQrKind::PlainAddress,
                 false,
@@ -1506,8 +1505,8 @@ impl App {
         items.push(Item::LabeledRow(
             text::CONTRACT_ADDRESS.get(lang).to_owned(),
             vec![
-                Ctl::edit(ids::TOKEN_ADDR_EDIT, &form.address, 430, false, 64),
-                Ctl::button(ids::TOKEN_LOOKUP, text::LOOKUP.get(lang)),
+                Ctl::edit(EditField::EvmTokenAddress, &form.address, 430, false, 64),
+                Ctl::button(EvmPress::TokenLookup, text::LOOKUP.get(lang)),
             ],
         ));
         items.push(Item::Help(text::TOKEN_HELP.get(lang).to_owned()));
@@ -1527,7 +1526,7 @@ impl App {
             items.push(Item::LabeledRow(
                 text::LABEL.get(lang).to_owned(),
                 vec![Ctl::edit(
-                    ids::TOKEN_LABEL_EDIT,
+                    EditField::EvmTokenLabel,
                     &form.label,
                     260,
                     false,
@@ -1536,7 +1535,7 @@ impl App {
             ));
             items.push(Item::Help(text::LABEL_HELP.get(lang).to_owned()));
             items.push(Item::Row(vec![Ctl::primary(
-                ids::TOKEN_SAVE,
+                EvmPress::TokenSave,
                 text::SAVE.get(lang),
             )]));
         }
@@ -1555,7 +1554,7 @@ impl App {
         )));
         items.push(Item::Help(text::CHAINS_HELP.get(lang).to_owned()));
         let mut chains = self.settings.registered_evm();
-        chains.truncate(usize::from(ids::CHAIN_ROW_SPAN / 3));
+        chains.truncate(usize::from(rows::EVM_CHAIN_ROWS));
         let count = chains.len();
         for (index, chain_id) in chains.into_iter().enumerate() {
             let user = self
@@ -1624,14 +1623,19 @@ impl App {
                 );
                 items.push(Item::Mono(format!("genesis {genesis}")));
             }
-            let base = ids::CHAIN_ROW_BASE
-                .saturating_add(u16::try_from(index).unwrap_or(0).saturating_mul(3));
+            let chain_row = Row(u16::try_from(index).unwrap_or(0));
             let mut row = Vec::new();
             if user.is_some() {
-                row.push(Ctl::button(base, text::EDIT.get(lang)));
+                row.push(Ctl::button(
+                    EvmPress::ChainRow(chain_row, ChainRowAction::Edit),
+                    text::EDIT.get(lang),
+                ));
                 row.push(
-                    Ctl::danger(base.saturating_add(1), text::DELETE.get(lang))
-                        .enabled(matches!(self.mode, AppMode::Unlocked { .. })),
+                    Ctl::danger(
+                        EvmPress::ChainRow(chain_row, ChainRowAction::Delete),
+                        text::DELETE.get(lang),
+                    )
+                    .enabled(matches!(self.mode, AppMode::Unlocked { .. })),
                 );
             }
             if matches!(
@@ -1639,7 +1643,10 @@ impl App {
                 Some(MismatchKind::PinnedGenesis { .. })
             ) && (user.is_some() || chain_id == HYPEREVM_MAINNET)
             {
-                row.push(Ctl::primary(base.saturating_add(2), text::REPIN.get(lang)));
+                row.push(Ctl::primary(
+                    EvmPress::ChainRow(chain_row, ChainRowAction::Repin),
+                    text::REPIN.get(lang),
+                ));
             }
             if !row.is_empty() {
                 items.push(Item::Row(row));
@@ -1671,11 +1678,11 @@ impl App {
             .settings
             .registered_evm()
             .into_iter()
-            .take(usize::from(ids::CAPS_CHAIN_SPAN))
+            .take(usize::from(rows::EVM_CAPS_CHAINS))
             .enumerate()
             .map(|(index, chain_id)| {
                 Ctl::radio(
-                    ids::CAPS_CHAIN_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
+                    EvmPress::CapsChain(Row(u16::try_from(index).unwrap_or(0))),
                     &self.network_name(NetworkId::Eip155(chain_id)),
                     selected == Some(chain_id),
                     index == 0,
@@ -1695,19 +1702,25 @@ impl App {
             .map_or_else(String::new, |chain| chain.native_symbol);
         items.push(Item::LabeledRow(
             text::CAPS_FEE.get(lang).to_owned(),
-            vec![Ctl::edit(ids::CAPS_FEE_EDIT, &caps.fee, 160, false, 32)],
+            vec![Ctl::edit(EditField::EvmCapFee, &caps.fee, 160, false, 32)],
         ));
         items.push(Item::LabeledRow(
             text::CAPS_TIP.get(lang).to_owned(),
-            vec![Ctl::edit(ids::CAPS_TIP_EDIT, &caps.tip, 160, false, 32)],
+            vec![Ctl::edit(EditField::EvmCapTip, &caps.tip, 160, false, 32)],
         ));
         items.push(Item::LabeledRow(
             text::CAPS_TOTAL.fill(lang, [&symbol]),
-            vec![Ctl::edit(ids::CAPS_TOTAL_EDIT, &caps.total, 160, false, 40)],
+            vec![Ctl::edit(
+                EditField::EvmCapTotal,
+                &caps.total,
+                160,
+                false,
+                40,
+            )],
         ));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::CAPS_SAVE, text::SAVE.get(lang)),
-            Ctl::button(ids::CAPS_DEFAULT, text::DEFAULTS.get(lang)),
+            Ctl::primary(EvmPress::CapsSave, text::SAVE.get(lang)),
+            Ctl::button(EvmPress::CapsDefault, text::DEFAULTS.get(lang)),
         ]));
         items.push(Item::Help(text::CAPS_RANGE.get(lang).to_owned()));
         items.push(Item::CardEnd);
@@ -1733,7 +1746,7 @@ impl App {
             items.push(Item::Banner(message.clone(), Tone::Info));
         }
         items.push(Item::CardStart(None));
-        let mut chain_id = Ctl::edit(ids::CHAIN_ID_EDIT, &form.chain_id, 260, false, 20);
+        let mut chain_id = Ctl::edit(EditField::EvmChainId, &form.chain_id, 260, false, 20);
         if form.editing.is_some() {
             chain_id = chain_id.readonly();
         }
@@ -1741,14 +1754,20 @@ impl App {
         items.push(Item::Help(text::CHAIN_ID_HELP.get(lang).to_owned()));
         items.push(Item::LabeledRow(
             text::NAME.get(lang).to_owned(),
-            vec![Ctl::edit(ids::CHAIN_NAME_EDIT, &form.name, 260, false, 64)],
+            vec![Ctl::edit(
+                EditField::EvmChainName,
+                &form.name,
+                260,
+                false,
+                64,
+            )],
         ));
         items.push(Item::LabeledRow(
             yw_engine::flow::evm::user_chain::text::ITEM_SYMBOL
                 .get(lang)
                 .to_owned(),
             vec![Ctl::edit(
-                ids::CHAIN_SYMBOL_EDIT,
+                EditField::EvmChainSymbol,
                 &form.symbol,
                 160,
                 false,
@@ -1760,7 +1779,7 @@ impl App {
                 .get(lang)
                 .to_owned(),
             vec![Ctl::edit(
-                ids::CHAIN_DECIMALS_EDIT,
+                EditField::EvmChainDecimals,
                 &form.decimals,
                 80,
                 false,
@@ -1787,7 +1806,7 @@ impl App {
         };
         items.push(Item::LabeledRow(
             text::RPC_ADDRESS.get(lang).to_owned(),
-            vec![Ctl::edit(ids::CHAIN_RPC_EDIT, "", 430, true, 2_048)],
+            vec![Ctl::edit(CredField::ChainRpc, "", 430, true, 2_048)],
         ));
         items.push(Item::Help(if form.editing.is_some() {
             text::RPC_KEEP.fill(lang, [&hint])
@@ -1797,7 +1816,7 @@ impl App {
         items.push(Item::LabeledRow(
             text::EXPLORER_OPTIONAL.get(lang).to_owned(),
             vec![Ctl::edit(
-                ids::CHAIN_EXPLORER_EDIT,
+                EditField::EvmChainExplorer,
                 &form.explorer,
                 430,
                 false,
@@ -1808,13 +1827,13 @@ impl App {
             text::SIMULATION.get(lang).to_owned(),
             vec![
                 Ctl::radio(
-                    ids::CHAIN_SIM_AUTO,
+                    EvmPress::ChainSimAuto,
                     text::SIM_AUTO.get(lang),
                     !form.unsupported,
                     true,
                 ),
                 Ctl::radio(
-                    ids::CHAIN_SIM_UNSUPPORTED,
+                    EvmPress::ChainSimUnsupported,
                     text::SIM_UNSUPPORTED.get(lang),
                     form.unsupported,
                     false,
@@ -1824,8 +1843,8 @@ impl App {
         items.push(Item::Help(text::SIM_HELP.get(lang).to_owned()));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::CHAIN_SAVE, text::SAVE.get(lang)).enabled(form.pending.is_none()),
-            Ctl::button(ids::CHAIN_CANCEL, text::CANCEL.get(lang)),
+            Ctl::primary(EvmPress::ChainSave, text::SAVE.get(lang)).enabled(form.pending.is_none()),
+            Ctl::button(EvmPress::ChainCancel, text::CANCEL.get(lang)),
         ]));
     }
 

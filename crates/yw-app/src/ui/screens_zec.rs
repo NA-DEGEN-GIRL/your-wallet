@@ -11,9 +11,12 @@ use yw_core::zec::{ZecKeySource, ZecNetwork, format_zec, format_zec_and_zats};
 use crate::app::App;
 use crate::ui::screens_accounts::AccountItem;
 use yw_engine::badge::Badge;
+use yw_engine::cmd::{CorePress, ExplorerPress, LinksPress, MnPress, Press, Row, ZecPress};
+use yw_engine::form::EditField;
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::screen::rows;
 use yw_engine::settings::ZecIndexer;
 use yw_engine::wallet::AppMode;
 use yw_engine::zec::rpc::ZecRpcError;
@@ -244,7 +247,11 @@ pub mod ids {
     #[must_use]
     pub fn press_of(id: u16) -> Option<yw_engine::cmd::ZecPress> {
         use yw_engine::cmd::{Row, ZecPress};
-        let within = |base: u16, span: u16| super::offset(id, base, span).map(Row);
+        let within = |base: u16, span: u16| {
+            id.checked_sub(base)
+                .filter(|offset| *offset < span)
+                .map(Row)
+        };
         Some(match id {
             TAB_ZEC => ZecPress::TabZec,
             ENABLE_MAINNET => ZecPress::EnableMainnet,
@@ -307,10 +314,6 @@ pub mod ids {
             ZecPress::Hw(Row(row)) => HW_BASE.wrapping_add(row),
         }
     }
-}
-
-fn offset(id: u16, base: u16, span: u16) -> Option<u16> {
-    id.checked_sub(base).filter(|offset| *offset < span)
 }
 
 /// `YYYY-MM-DD HH:MM` in local time (UTC with a suffix if the conversion fails).
@@ -390,28 +393,27 @@ impl App {
     /// key (`Zcash 표준 경로 · YubiKey: {cards}`) and each imported key (its whole address
     /// `· 가져온 키`). The account's source is the selected item; when none of them is it (a
     /// non-standard path, a hidden EVM account, a card key no record holds …) it is one more
-    /// item ([`ids::SOURCE_CURRENT`]). A wallet without recovery words lists its cards' and
+    /// item (`ZecPress::SourceCurrent`). A wallet without recovery words lists its cards' and
     /// imported keys only.
     #[must_use]
     pub fn zec_source_items(&self) -> Vec<AccountItem> {
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
         let uses = |source, pubkey| self.zec_source_in_use(source, pubkey);
         let mut out = Vec::new();
-        let mut push = |id: u16, source: ZecKeySource, address: &str, selected: bool| {
+        let mut push = |press: Press, source: ZecKeySource, address: &str, selected: bool| {
             let (label, source) = self.zec_item_of(source, address);
             out.push(AccountItem {
-                id,
+                press,
                 label,
                 source,
                 selected,
                 enabled: unlocked,
             });
         };
-        let at =
-            |base: u16, position: usize| base.saturating_add(u16::try_from(position).unwrap_or(0));
+        let at = |position: usize| Row(u16::try_from(position).unwrap_or(0));
         if !self.key_only() {
             push(
-                ids::SOURCE_STANDARD,
+                ZecPress::SourceStandard.into(),
                 ZecKeySource::DEFAULT,
                 "",
                 uses(ZecKeySource::DEFAULT, None),
@@ -421,7 +423,7 @@ impl App {
                 .infos
                 .iter()
                 .enumerate()
-                .take(usize::from(crate::ui::screens_mnemonics::ids::ROW_SPAN))
+                .take(usize::from(rows::MNEMONICS))
                 .filter(|(_, info)| !info.primary)
             {
                 let source = ZecKeySource::Mnemonic {
@@ -430,7 +432,7 @@ impl App {
                     index: 0,
                 };
                 push(
-                    at(crate::ui::screens_mnemonics::ids::ZEC_PICK_BASE, row),
+                    MnPress::ZecPick(at(row)).into(),
                     source,
                     "",
                     uses(source, None),
@@ -439,7 +441,7 @@ impl App {
             for (position, evm_index) in self.zec_evm_indices().into_iter().enumerate() {
                 let source = ZecKeySource::EvmShared { evm_index };
                 push(
-                    at(ids::SOURCE_EVM_BASE, position),
+                    ZecPress::SourceEvm(at(position)).into(),
                     source,
                     "",
                     uses(source, None),
@@ -448,11 +450,16 @@ impl App {
         }
         for (position, index) in self.zec_hw_slots().into_iter().enumerate() {
             let source = ZecKeySource::Hardware { index };
-            push(at(ids::HW_BASE, position), source, "", uses(source, None));
+            push(
+                ZecPress::Hw(at(position)).into(),
+                source,
+                "",
+                uses(source, None),
+            );
         }
         for (position, (_, info)) in self.zec_imported_keys().iter().enumerate() {
             push(
-                at(ids::IMPORTED_BASE, position),
+                ZecPress::Imported(at(position)).into(),
                 ZecKeySource::Imported,
                 &info.address,
                 uses(ZecKeySource::Imported, Some(info.pubkey)),
@@ -463,7 +470,7 @@ impl App {
         {
             let (label, source) = self.zec_item_of(account.source, &account.address());
             out.push(AccountItem {
-                id: ids::SOURCE_CURRENT,
+                press: ZecPress::SourceCurrent.into(),
                 label,
                 source,
                 selected: true,
@@ -508,10 +515,10 @@ impl App {
         let imported = self.zec_selected_imported().is_some();
         let selected = imported.then(|| {
             SelectedLine::Buttons(vec![
-                Ctl::button(ids::REVEAL, text::REVEAL_KEY.get(lang))
+                Ctl::button(ZecPress::Reveal, text::REVEAL_KEY.get(lang))
                     .compact()
                     .enabled(unlocked),
-                Ctl::danger(ids::REMOVE, text::DELETE.get(lang))
+                Ctl::danger(ZecPress::Remove, text::DELETE.get(lang))
                     .compact()
                     .enabled(unlocked && self.can_remove_imported()),
             ])
@@ -541,13 +548,13 @@ impl App {
         }
         if self.zec.confirm_shared {
             details.push(Item::Row(vec![
-                Ctl::button(ids::SOURCE_APPLY, text::CONFIRM_EVM.get(lang))
+                Ctl::button(ZecPress::SourceApply, text::CONFIRM_EVM.get(lang))
                     .enabled(unlocked && free),
-                Ctl::link(ids::SOURCE_CANCEL, text::CANCEL.get(lang)),
+                Ctl::link(ZecPress::SourceCancel, text::CANCEL.get(lang)),
             ]));
         }
         let mut actions = vec![
-            Ctl::button(ids::IMPORT, text::IMPORT_KEY.get(lang))
+            Ctl::button(ZecPress::Import, text::IMPORT_KEY.get(lang))
                 .compact()
                 .enabled(self.can_import(yw_core::keyimport::ImportChain::Zec)),
         ];
@@ -558,7 +565,7 @@ impl App {
             items,
             AccountCard {
                 title: text::MY_ACCOUNTS.get(lang).to_owned(),
-                picker: crate::ui::screens_links::ids::PICKER_ZEC,
+                picker: LinksPress::PickerZec.into(),
                 accounts: self.zec_source_items(),
                 empty: Some(crate::ui::screens_keys::no_accounts_text(
                     lang,
@@ -587,18 +594,15 @@ impl App {
         items.push(Item::Help(text::DISABLED_HELP.get(lang).to_owned()));
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
         let mut row = vec![
-            Ctl::primary(ids::ENABLE_MAINNET, text::ENABLE_MAINNET.get(lang)).enabled(unlocked),
-            Ctl::button(ids::ENABLE_TESTNET, text::ENABLE_TESTNET.get(lang)).enabled(unlocked),
+            Ctl::primary(ZecPress::EnableMainnet, text::ENABLE_MAINNET.get(lang)).enabled(unlocked),
+            Ctl::button(ZecPress::EnableTestnet, text::ENABLE_TESTNET.get(lang)).enabled(unlocked),
         ];
         if ZecNetwork::ALL.into_iter().all(|network| {
             self.apikeys
                 .rpc_url(yw_engine::network::NetworkId::Zcash(network))
                 .is_none()
         }) {
-            row.push(Ctl::link(
-                crate::ui::screens::ids::ZEC_RPC_OPEN,
-                text::RPC_SETUP.get(lang),
-            ));
+            row.push(Ctl::link(CorePress::ZecRpcOpen, text::RPC_SETUP.get(lang)));
         }
         items.push(Item::Row(row));
         items.push(Item::CardEnd);
@@ -649,14 +653,14 @@ impl App {
             text::NETWORK.get(lang).to_owned(),
             vec![
                 Ctl::tab(
-                    ids::ENABLE_MAINNET,
+                    ZecPress::EnableMainnet,
                     "Zcash mainnet",
                     network == ZecNetwork::Mainnet,
                 )
                 .badge(Badge::zcash(ZecNetwork::Mainnet))
                 .enabled(!self.zec.busy),
                 Ctl::tab(
-                    ids::ENABLE_TESTNET,
+                    ZecPress::EnableTestnet,
                     text::TESTNET_CHIP.get(lang),
                     network == ZecNetwork::Testnet,
                 )
@@ -692,12 +696,12 @@ impl App {
             text::UTXO_SOURCE.get(lang).to_owned(),
             vec![
                 Ctl::tab(
-                    ids::INDEXER_NODE,
+                    ZecPress::IndexerNode,
                     text::INDEXER_NODE.get(lang),
                     indexer == ZecIndexer::Node,
                 ),
                 Ctl::tab(
-                    ids::INDEXER_BB,
+                    ZecPress::IndexerBb,
                     "Blockbook (/api/v2)",
                     indexer == ZecIndexer::BbRest,
                 ),
@@ -705,7 +709,7 @@ impl App {
         ));
         // `새로고침` (or `RPC 설정하기`) is the account card's, as on the other tabs (2026-11-11).
         items.push(Item::Row(vec![
-            Ctl::link(ids::DISABLE, text::DISABLE.get(lang)).enabled(!self.zec.busy),
+            Ctl::link(ZecPress::Disable, text::DISABLE.get(lang)).enabled(!self.zec.busy),
         ]));
         items.push(Item::CardEnd);
 
@@ -831,27 +835,24 @@ impl App {
                         self.settings.language,
                         &address,
                         yw_engine::screen::address::AddressKind::Zcash,
-                        ids::CARD_COPY,
+                        ZecPress::CardCopy,
                         !self.passphrase_unverified(),
                         self.explorer_address_icon(
                             yw_engine::network::NetworkId::Zcash(network),
                             &address,
-                            crate::ui::screens_explorer::ids::CARD_ZEC,
+                            ExplorerPress::CardZec,
                         ),
                     ));
                 }
             }
         }
         items.push(Item::Row(vec![if has_endpoint {
-            Ctl::link(ids::REFRESH, text::REFRESH.get(lang))
+            Ctl::link(ZecPress::Refresh, text::REFRESH.get(lang))
                 .tip(crate::ui::screens::T_REFRESH_TIP.get(lang))
                 .enabled(!self.zec.refreshing)
         } else {
             // Nothing to refresh without an address: this network's row (EVM·Solana alike).
-            Ctl::button(
-                crate::ui::screens::ids::ZEC_RPC_OPEN,
-                text::RPC_SETUP.get(lang),
-            )
+            Ctl::button(CorePress::ZecRpcOpen, text::RPC_SETUP.get(lang))
         }]));
         items.push(Item::CardEnd);
         // The account card `내 Zcash 계정` (2026-11-15: a card `키 출처` before).
@@ -887,9 +888,10 @@ impl App {
             );
             let receive_ok = !self.passphrase_unverified();
             items.push(Item::Row(vec![
-                Ctl::button(ids::COPY_ADDRESS, text::COPY_ADDRESS.get(lang)).enabled(receive_ok),
+                Ctl::button(ZecPress::CopyAddress, text::COPY_ADDRESS.get(lang))
+                    .enabled(receive_ok),
                 Ctl::button(
-                    ids::QR_TOGGLE,
+                    ZecPress::QrToggle,
                     if self.zec.show_qr {
                         text::QR_HIDE
                     } else {
@@ -916,7 +918,7 @@ impl App {
         items.push(Item::LabeledRow(
             text::RECIPIENT.get(lang).to_owned(),
             vec![Ctl::edit(
-                ids::SEND_TO_EDIT,
+                EditField::ZecSendTo,
                 &self.zec.to_text,
                 460,
                 false,
@@ -926,7 +928,7 @@ impl App {
         if let Some(note) = &self.zec.look_alike {
             items.push(Item::Banner(note.clone(), Tone::HighRisk));
             items.push(Item::Row(vec![Ctl::check(
-                ids::SEND_ADDR_ACK,
+                ZecPress::SendAddrAck,
                 text::ADDRESS_ACK.get(lang),
                 self.zec.ack,
             )]));
@@ -938,10 +940,16 @@ impl App {
         items.push(Item::LabeledRow(
             text::AMOUNT.get(lang).to_owned(),
             vec![
-                Ctl::edit(ids::SEND_AMOUNT_EDIT, &self.zec.amount_text, 200, false, 24)
-                    .enabled(!self.zec.send_max),
+                Ctl::edit(
+                    EditField::ZecSendAmount,
+                    &self.zec.amount_text,
+                    200,
+                    false,
+                    24,
+                )
+                .enabled(!self.zec.send_max),
                 // Like every chain's `최대` (2026-11-12): pressed while on.
-                Ctl::tab(ids::SEND_MAX, text::MAX.get(lang), self.zec.send_max),
+                Ctl::tab(ZecPress::SendMax, text::MAX.get(lang), self.zec.send_max),
             ],
         ));
         if self.zec.send_max {
@@ -978,16 +986,16 @@ impl App {
         }
         self.journal_send_items(yw_engine::wallet::app_sidecar::SendChain::Zec, items);
         let mut row =
-            vec![Ctl::primary(ids::SEND_REVIEW, text::REVIEW.get(lang)).enabled(can_send)];
+            vec![Ctl::primary(ZecPress::SendReview, text::REVIEW.get(lang)).enabled(can_send)];
         if let Some(txid) = &self.zec.sent {
-            row.push(Ctl::button(ids::RESULT_COPY, text::COPY_HASH.get(lang)));
+            row.push(Ctl::button(ZecPress::ResultCopy, text::COPY_HASH.get(lang)));
             // 2026-11-11: the accepted txid on the network's explorer.
             row.extend(self.explorer_tx_buttons(
                 yw_engine::network::NetworkId::Zcash(network),
                 &yw_core::zec::tx::txid_display(txid),
                 Some((
-                    crate::ui::screens_explorer::ids::RESULT_ZEC_OPEN,
-                    crate::ui::screens_explorer::ids::RESULT_ZEC_COPY,
+                    ExplorerPress::ResultZecOpen.into(),
+                    ExplorerPress::ResultZecCopy.into(),
                 )),
             ));
         }
@@ -1044,11 +1052,7 @@ impl App {
                     crate::ui::screens_links::push_address_line(
                         items,
                         self.settings.language,
-                        crate::ui::screens_links::ids::row_id(
-                            crate::ui::screens_links::ids::ZEC_TO_BASE,
-                            crate::ui::screens_links::ids::ZEC_TO_SPAN,
-                            row,
-                        ),
+                        rows::row(row, rows::ZEC_TO).map(|row| LinksPress::ZecTo(row).into()),
                         &to,
                         yw_engine::screen::address::AddressKind::Zcash,
                         Vec::new(),
@@ -1059,23 +1063,20 @@ impl App {
             items.push(Item::Help(text::FEE.fill(lang, [&format_zec(record.fee)])));
             let txid = record.txid_hex();
             // A click copies the txid; `탐색기에서 열기` ↗ · `탐색기 링크 복사` 🔗 at the right
-            // end (ids of `ui::screens_explorer`).
+            // end (`ExplorerPress::ZecActivity`).
             crate::ui::screens_links::push_hash_line(
                 items,
                 self.settings.language,
-                crate::ui::screens_links::ids::row_id(
-                    ids::ACTIVITY_COPY_BASE,
-                    ids::ACTIVITY_COPY_SPAN,
-                    row,
-                ),
+                rows::row(row, rows::ZEC_ACTIVITY_COPIES)
+                    .map(|row| ZecPress::ActivityCopy(row).into()),
                 &txid,
                 self.explorer_tx_icons(
                     yw_engine::network::NetworkId::Zcash(network),
                     &txid,
-                    crate::ui::screens_explorer::ids::activity_ids(
-                        crate::ui::screens_explorer::ids::ZEC_ACTIVITY_BASE,
-                        crate::ui::screens_explorer::ids::ZEC_ACTIVITY_SPAN,
+                    crate::ui::screens_explorer::activity_links(
+                        ExplorerPress::ZecActivity,
                         row,
+                        rows::ZEC_ACTIVITY_LINKS,
                     ),
                 ),
             );

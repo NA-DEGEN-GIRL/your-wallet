@@ -216,7 +216,7 @@ fn form_fields_and_buttons_reach_the_controller() {
 /// `fee_choice` is `#[doc(hidden)] pub` for it).
 #[test]
 fn fee_presses_match_the_drawn_radio_order() {
-    use crate::ui::screens_btc::{fee_choice_of, fee_ids, ids};
+    use crate::ui::screens_btc::ids::{self, fee_choice_of, fee_ids};
     use yw_engine::wallet::app_btc_commands::fee_choice;
     for bump in [false, true] {
         for id in fee_ids(bump) {

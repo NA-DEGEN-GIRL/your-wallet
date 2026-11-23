@@ -14,13 +14,16 @@ use yw_core::zec::ZecNetwork;
 
 use crate::app::App;
 use text as t;
+use yw_engine::cmd::{Row, YkConnectPress, YkManagePress, YkPress};
+use yw_engine::form::EditField;
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::screen::rows;
 use yw_engine::wallet::AppMode;
 use yw_engine::wallet::app_yubikey::text as yk;
 use yw_engine::wallet::app_yubikey::{
     CARD_SCRIPTS, MAX_ACCOUNT_INDEX, PGP_TOUCH, PIV_TOUCH, PgpKind, WizardOrigin, WizardStep,
-    YkWizard,
+    YkWizard, pgp_press,
 };
 
 mod connect;
@@ -1084,8 +1087,8 @@ impl App {
         items.push(Item::Banner(t::INTRO_WARN.get(lang).to_owned(), Tone::Warn));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::NEW_WALLET_START, t::BTN_START.get(lang)),
-            Ctl::button(ids::NEW_WALLET_CANCEL, t::BTN_CANCEL.get(lang)),
+            Ctl::primary(YkPress::NewWalletStart, t::BTN_START.get(lang)),
+            Ctl::button(YkPress::NewWalletCancel, t::BTN_CANCEL.get(lang)),
         ]));
     }
 
@@ -1110,9 +1113,9 @@ impl App {
             items.push(Item::Help(t::YK_MNEMONIC_WALLET.get(lang).to_owned()));
         }
         items.push(Item::Row(vec![
-            Ctl::primary(ids::ENROL_START, t::BTN_ENROL.get(lang))
+            Ctl::primary(YkPress::EnrolStart, t::BTN_ENROL.get(lang))
                 .enabled(unlocked && records.len() < MAX_CARDS),
-            Ctl::button(ids::CONNECT_START, t::BTN_CONNECT.get(lang))
+            Ctl::button(YkConnectPress::Start, t::BTN_CONNECT.get(lang))
                 .enabled(unlocked && records.len() < MAX_CARDS),
         ]));
         items.push(Item::Help(
@@ -1162,7 +1165,7 @@ impl App {
                     items,
                 );
             }
-            let row_id = u16::try_from(row).unwrap_or(u16::MAX);
+            let card_row = Row(u16::try_from(row).unwrap_or(u16::MAX));
             let open = self.card.pin_serial == Some(record.serial);
             let pins_label = match (open, factory) {
                 (true, _) => t::BTN_PINS_CLOSE,
@@ -1175,21 +1178,15 @@ impl App {
             // the card).
             items.push(Item::Row(vec![
                 if factory && !open {
-                    Ctl::primary(ids::PINS_BASE.saturating_add(row_id), pins_label)
+                    Ctl::primary(YkPress::Pins(card_row), pins_label)
                 } else {
-                    Ctl::button(ids::PINS_BASE.saturating_add(row_id), pins_label)
+                    Ctl::button(YkPress::Pins(card_row), pins_label)
                 }
                 .enabled(unlocked),
-                Ctl::button(
-                    ids::RESLOT_BASE.saturating_add(row_id),
-                    t::BTN_RESLOT.get(lang),
-                )
-                .enabled(unlocked),
-                Ctl::button(
-                    ids::RENAME_CARD_BASE.saturating_add(row_id),
-                    t::BTN_RENAME_CARD.get(lang),
-                )
-                .enabled(unlocked),
+                Ctl::button(YkManagePress::Reslot(card_row), t::BTN_RESLOT.get(lang))
+                    .enabled(unlocked),
+                Ctl::button(YkPress::RenameCard(card_row), t::BTN_RENAME_CARD.get(lang))
+                    .enabled(unlocked),
             ]));
             if unlocked && self.card.rename == Some(record.serial) {
                 self.yk_card_name_items(record.serial, items);
@@ -1197,16 +1194,10 @@ impl App {
             items.push(Item::Help(t::DANGER.get(lang).to_owned()));
             let removable = self.yk_can_remove();
             items.push(Item::Row(vec![
-                Ctl::danger(
-                    ids::REMOVE_BASE.saturating_add(row_id),
-                    t::BTN_REMOVE_RECORD.get(lang),
-                )
-                .enabled(unlocked && removable),
-                Ctl::danger(
-                    ids::CLEAR_BASE.saturating_add(row_id),
-                    t::BTN_ERASE_KEYS.get(lang),
-                )
-                .enabled(unlocked),
+                Ctl::danger(YkPress::Remove(card_row), t::BTN_REMOVE_RECORD.get(lang))
+                    .enabled(unlocked && removable),
+                Ctl::danger(YkManagePress::Clear(card_row), t::BTN_ERASE_KEYS.get(lang))
+                    .enabled(unlocked),
             ]));
             if unlocked && !removable {
                 items.push(Item::Help(t::LAST_KEY.get(lang).to_owned()));
@@ -1261,16 +1252,19 @@ impl App {
             .unwrap_or("");
         items.push(Item::Help(t::CARD_NAME_HELP.get(lang).to_owned()));
         let mut row = vec![
-            Ctl::edit(ids::CARD_NAME_EDIT, current, 260, false, 64),
-            Ctl::primary(ids::CARD_NAME_SAVE, t::BTN_SAVE.get(lang)),
+            Ctl::edit(EditField::YkCardName, current, 260, false, 64),
+            Ctl::primary(YkPress::CardNameSave, t::BTN_SAVE.get(lang)),
         ];
         if !current.is_empty() {
             row.push(Ctl::button(
-                ids::CARD_NAME_CLEAR,
+                YkPress::CardNameClear,
                 t::BTN_CLEAR_CARD_NAME.get(lang),
             ));
         }
-        row.push(Ctl::button(ids::CARD_NAME_CANCEL, t::BTN_CANCEL.get(lang)));
+        row.push(Ctl::button(
+            YkPress::CardNameCancel,
+            t::BTN_CANCEL.get(lang),
+        ));
         items.push(Item::Row(row));
     }
 
@@ -1341,7 +1335,7 @@ impl App {
             .enumerate()
             .map(|(position, kind)| {
                 Ctl::radio(
-                    ids::pgp_id(key, PgpAction::Kind(kind)),
+                    pgp_press(key, PgpAction::Kind(kind)),
                     kind_label(lang, kind),
                     form.kind == kind,
                     position == 0,
@@ -1354,8 +1348,8 @@ impl App {
             return;
         }
         let edit = match key {
-            PgpKey::Sig => ids::SIG_INDEX_EDIT,
-            PgpKey::Aut => ids::AUT_INDEX_EDIT,
+            PgpKey::Sig => EditField::YkSigIndex,
+            PgpKey::Aut => EditField::YkAutIndex,
         };
         let max = MAX_ACCOUNT_INDEX.to_string();
         items.push(Item::LabeledRow(
@@ -1374,7 +1368,7 @@ impl App {
                     .enumerate()
                     .map(|(position, script)| {
                         Ctl::radio(
-                            ids::pgp_id(key, PgpAction::Script(script)),
+                            pgp_press(key, PgpAction::Script(script)),
                             &script_label(lang, script),
                             form.script == script,
                             position == 0,
@@ -1391,7 +1385,7 @@ impl App {
                     .enumerate()
                     .map(|(position, network)| {
                         Ctl::radio(
-                            ids::pgp_id(key, PgpAction::Zec(network)),
+                            pgp_press(key, PgpAction::Zec(network)),
                             zec_network_label(lang, network),
                             form.zec == network,
                             position == 0,
@@ -1407,7 +1401,7 @@ impl App {
                 .enumerate()
                 .map(|(position, touch)| {
                     Ctl::radio(
-                        ids::pgp_id(key, PgpAction::Touch(touch)),
+                        pgp_press(key, PgpAction::Touch(touch)),
                         touch_label(lang, touch),
                         form.touch == touch,
                         position == 0,
@@ -1439,7 +1433,7 @@ impl App {
         if !records.is_empty() {
             items.push(Item::CardStart(Some(t::BACKUP_COPY.get(lang).to_owned())));
             items.push(Item::Row(vec![Ctl::check(
-                ids::BACKUP_TOGGLE,
+                YkPress::BackupToggle,
                 t::CHECK_BACKUP.get(lang),
                 wizard.backup_of.is_some(),
             )]));
@@ -1456,8 +1450,7 @@ impl App {
                         .enumerate()
                         .map(|(position, (row, record))| {
                             Ctl::radio(
-                                ids::BACKUP_BASE
-                                    .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                                YkPress::Backup(Row(u16::try_from(row).unwrap_or(u16::MAX))),
                                 &t::BACKUP_OPTION.fill(
                                     lang,
                                     [
@@ -1527,7 +1520,7 @@ impl App {
             self.yk_pgp_items(wizard, PgpKey::Aut, items);
             if wizard.uses_shared() {
                 items.push(Item::Row(vec![Ctl::check(
-                    ids::SHARED_ACK,
+                    YkPress::SharedAck,
                     t::SHARED_ACK.get(lang),
                     wizard.shared_ack,
                 )]));
@@ -1536,7 +1529,7 @@ impl App {
             items.push(Item::LabeledRow(
                 t::LABEL_SOL_COUNT.get(lang).to_owned(),
                 vec![Ctl::edit(
-                    ids::SOL_COUNT_EDIT,
+                    EditField::YkSolCount,
                     &wizard.sol_count_text,
                     80,
                     false,
@@ -1546,7 +1539,7 @@ impl App {
             items.push(Item::LabeledRow(
                 t::LABEL_FIRST_INDEX.get(lang).to_owned(),
                 vec![Ctl::edit(
-                    ids::SOL_START_EDIT,
+                    EditField::YkSolStart,
                     &wizard.sol_start_text,
                     80,
                     false,
@@ -1561,9 +1554,9 @@ impl App {
                     .map(|(position, touch)| {
                         Ctl::radio(
                             if position == 0 {
-                                ids::PIV_TOUCH_ALWAYS
+                                YkPress::PivTouchAlways
                             } else {
-                                ids::PIV_TOUCH_CACHED
+                                YkPress::PivTouchCached
                             },
                             touch_label(lang, touch),
                             wizard.piv_touch == touch,
@@ -1581,7 +1574,7 @@ impl App {
         }
         items.push(Item::Row(vec![
             Ctl::primary(
-                ids::PLAN_NEXT,
+                YkPress::PlanNext,
                 if wizard.seed_held {
                     t::BTN_NEXT_CONFIRM
                 } else {
@@ -1589,7 +1582,7 @@ impl App {
                 }
                 .get(lang),
             ),
-            Ctl::button(ids::WIZARD_CANCEL, t::BTN_CANCEL.get(lang)),
+            Ctl::button(YkPress::WizardCancel, t::BTN_CANCEL.get(lang)),
         ]));
     }
 
@@ -1601,8 +1594,8 @@ impl App {
             items.push(Item::Text(t::COMPUTING.get(lang).to_owned()));
             items.push(Item::CardEnd);
             items.push(Item::Row(vec![
-                Ctl::button(ids::CONFIRM_BACK, t::BTN_BACK_SLOTS.get(lang)),
-                Ctl::button(ids::WIZARD_CANCEL, t::BTN_CANCEL.get(lang)),
+                Ctl::button(YkPress::ConfirmBack, t::BTN_BACK_SLOTS.get(lang)),
+                Ctl::button(YkPress::WizardCancel, t::BTN_CANCEL.get(lang)),
             ]));
             return;
         };
@@ -1618,7 +1611,7 @@ impl App {
                 Tone::HighRisk,
             ));
             items.push(Item::Row(vec![Ctl::check(
-                ids::SAME_ACK,
+                YkPress::SameAck,
                 t::SAME_ACK.get(lang),
                 wizard.same_ack,
             )]));
@@ -1663,9 +1656,10 @@ impl App {
         }
         items.push(Item::Help(yk::YK_OVERWRITE.get(lang).to_owned()));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::CONFIRM_NEXT, t::BTN_NEXT.get(lang)).enabled(wizard.can_continue()),
-            Ctl::button(ids::CONFIRM_BACK, t::BTN_BACK_SLOTS.get(lang)),
-            Ctl::button(ids::WIZARD_CANCEL, t::BTN_CANCEL.get(lang)),
+            Ctl::primary(YkPress::ConfirmNext, t::BTN_NEXT.get(lang))
+                .enabled(wizard.can_continue()),
+            Ctl::button(YkPress::ConfirmBack, t::BTN_BACK_SLOTS.get(lang)),
+            Ctl::button(YkPress::WizardCancel, t::BTN_CANCEL.get(lang)),
         ]));
     }
 
@@ -1683,7 +1677,7 @@ impl App {
         items.push(Item::Field(t::CONNECTED_CARD.get(lang).to_owned(), line));
         if wizard.card.is_none() && wizard.card_error.is_some() {
             items.push(Item::Row(vec![Ctl::button(
-                ids::IDENTIFY_AGAIN,
+                YkPress::IdentifyAgain,
                 t::BTN_READ_AGAIN.get(lang),
             )]));
         }
@@ -1742,7 +1736,7 @@ impl App {
                     }
                 }
                 items.push(Item::Row(vec![Ctl::check(
-                    ids::OVERWRITE_ACK,
+                    YkPress::OverwriteAck,
                     yk::YK_OCCUPIED_ACK.get(lang),
                     wizard.overwrite_ack,
                 )]));
@@ -1752,7 +1746,7 @@ impl App {
                         [yw_engine::wallet::app_yubikey::manage::text::LOSS_WORD.get(lang)],
                     ),
                     vec![Ctl::edit(
-                        ids::OVERWRITE_EDIT,
+                        EditField::YkOverwrite,
                         &wizard.overwrite_typed,
                         120,
                         false,
@@ -1800,13 +1794,13 @@ impl App {
                 t::FIELD_PIV_MANAGEMENT.get(lang).to_owned(),
                 vec![
                     Ctl::radio(
-                        ids::MGMT_DEFAULT,
+                        YkPress::MgmtDefault,
                         t::MANAGEMENT_DEFAULT.get(lang),
                         wizard.default_management,
                         true,
                     ),
                     Ctl::radio(
-                        ids::MGMT_CUSTOM,
+                        YkPress::MgmtCustom,
                         t::MANAGEMENT_CUSTOM.get(lang),
                         !wizard.default_management,
                         false,
@@ -1825,12 +1819,12 @@ impl App {
             items.push(Item::Banner(error.clone(), Tone::Danger));
         }
         items.push(Item::Row(vec![
-            Ctl::primary(ids::IMPORT, t::BTN_IMPORT.get(lang))
+            Ctl::primary(YkPress::Import, t::BTN_IMPORT.get(lang))
                 .enabled(ready && wizard.can_import()),
         ]));
         items.push(Item::Help(t::YK_IMPORT.get(lang).to_owned()));
         items.push(Item::Row(vec![
-            Ctl::button(ids::ADOPT, t::BTN_ADOPT.get(lang)).enabled(ready),
+            Ctl::button(YkPress::Adopt, t::BTN_ADOPT.get(lang)).enabled(ready),
         ]));
         items.push(Item::Help(t::YK_ADOPT.get(lang).to_owned()));
         items.push(Item::Banner(
@@ -1839,8 +1833,8 @@ impl App {
         ));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::button(ids::CRED_BACK, t::BTN_BACK.get(lang)),
-            Ctl::button(ids::WIZARD_CANCEL, t::BTN_CANCEL.get(lang)),
+            Ctl::button(YkPress::CredBack, t::BTN_BACK.get(lang)),
+            Ctl::button(YkPress::WizardCancel, t::BTN_CANCEL.get(lang)),
         ]));
     }
 
@@ -1849,9 +1843,9 @@ impl App {
         if let Some(failure) = &wizard.failure {
             items.push(Item::Banner(failure.clone(), Tone::Danger));
             items.push(Item::Row(vec![
-                Ctl::primary(ids::RETRY, t::BTN_RETRY.get(lang)),
-                Ctl::button(ids::CONFIRM_BACK, t::BTN_BACK_SLOTS.get(lang)),
-                Ctl::button(ids::WIZARD_CANCEL, t::BTN_CANCEL.get(lang)),
+                Ctl::primary(YkPress::Retry, t::BTN_RETRY.get(lang)),
+                Ctl::button(YkPress::ConfirmBack, t::BTN_BACK_SLOTS.get(lang)),
+                Ctl::button(YkPress::WizardCancel, t::BTN_CANCEL.get(lang)),
             ]));
             return;
         }
@@ -1890,7 +1884,7 @@ impl App {
         }
         let open = self.card.result_details_open;
         items.push(Item::Row(vec![Ctl::link(
-            ids::RESULT_DETAILS,
+            YkPress::ResultDetails,
             if open {
                 t::DETAILS_OPEN
             } else {
@@ -1919,7 +1913,7 @@ impl App {
                 );
             }
             items.push(Item::Row(vec![Ctl::button(
-                ids::RECHECK,
+                YkPress::Recheck,
                 t::BTN_RECHECK.get(lang),
             )]));
             if let Some(lines) = &wizard.check {
@@ -1933,9 +1927,9 @@ impl App {
         // PIN card's first line says why `완료` is off).
         let pins_first = wizard.created && wizard.connect.is_none() && !wizard.pins_done();
         items.push(Item::Row(vec![
-            Ctl::primary(ids::FINISH, t::BTN_FINISH.get(lang)).enabled(!pins_first),
+            Ctl::primary(YkPress::Finish, t::BTN_FINISH.get(lang)).enabled(!pins_first),
             Ctl::button(
-                ids::ANOTHER,
+                YkPress::Another,
                 if wizard.connect.is_some() {
                     t::BTN_ANOTHER_CONNECT
                 } else {
@@ -1961,7 +1955,7 @@ impl App {
                 Tone::Warn,
             ));
             items.push(Item::Row(vec![Ctl::primary(
-                ids::PIN_NEEDED_OPEN,
+                YkPress::PinNeededOpen,
                 t::BTN_SET_PIN.get(lang),
             )]));
         }
@@ -2039,13 +2033,13 @@ impl App {
             t::LABEL_MODE.get(lang).to_owned(),
             vec![
                 Ctl::radio(
-                    ids::PINS_UNIFIED,
+                    YkPress::PinsUnified,
                     t::MODE_UNIFIED.get(lang),
                     !separate,
                     true,
                 ),
                 Ctl::radio(
-                    ids::PINS_SEPARATE,
+                    YkPress::PinsSeparate,
                     t::MODE_SEPARATE.get(lang),
                     separate,
                     false,
@@ -2064,17 +2058,20 @@ impl App {
             };
             items.push(Item::Row(vec![
                 Ctl::button(
-                    ids::CHANGE_PW1,
+                    YkPress::ChangePw1,
                     &label(PinTarget::OpenPgpUser, seen.openpgp_admin),
                 ),
                 Ctl::button(
-                    ids::CHANGE_PW3,
+                    YkPress::ChangePw3,
                     &label(PinTarget::OpenPgpAdmin, seen.openpgp_admin),
                 ),
             ]));
             items.push(Item::Row(vec![
-                Ctl::button(ids::CHANGE_PIV_PIN, &label(PinTarget::PivPin, seen.piv_pin)),
-                Ctl::button(ids::CHANGE_PUK, &label(PinTarget::PivPuk, seen.piv_pin)),
+                Ctl::button(
+                    YkPress::ChangePivPin,
+                    &label(PinTarget::PivPin, seen.piv_pin),
+                ),
+                Ctl::button(YkPress::ChangePuk, &label(PinTarget::PivPuk, seen.piv_pin)),
             ]));
             let protect = t::BTN_PROTECT_MANAGEMENT.get(lang);
             let protect = if seen.piv_management && !self.card.list_protected.contains(&serial) {
@@ -2082,18 +2079,18 @@ impl App {
             } else {
                 protect.to_owned()
             };
-            items.push(Item::Row(vec![Ctl::button(ids::CHANGE_MGMT, &protect)]));
+            items.push(Item::Row(vec![Ctl::button(YkPress::ChangeMgmt, &protect)]));
             items.push(Item::Help(t::YK_PROTECT_MGMT.get(lang).to_owned()));
         } else {
             items.push(Item::Row(vec![Ctl::primary(
-                ids::SET_PINS,
+                YkPress::SetPins,
                 t::BTN_SET_PINS.get(lang),
             )]));
         }
         // The guide and the order behind a link (2026-11-10).
         let open = self.card.pin_guide_open;
         items.push(Item::Row(vec![Ctl::link(
-            ids::PIN_GUIDE,
+            YkPress::PinGuide,
             if open {
                 t::PIN_GUIDE_OPEN
             } else {
@@ -2191,10 +2188,10 @@ impl App {
             .iter()
             .position(|record| record.serial == serial)
             .and_then(|row| u16::try_from(row).ok())
-            .filter(|row| *row < ids::PIN_GATE_SPAN)
+            .filter(|row| *row < rows::YK_PIN_GATES)
         {
             items.push(Item::Row(vec![Ctl::button(
-                ids::PIN_GATE_BASE + row,
+                YkPress::PinGate(Row(row)),
                 yw_engine::wallet::app_card::text::SET_PIN.get(lang),
             )]));
         }

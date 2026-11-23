@@ -5,8 +5,11 @@
 //! `연결 해제` and `모든 WalletConnect 세션 끊기`.
 
 use crate::app::App;
+use yw_engine::cmd::WcPress;
+use yw_engine::form::EditField;
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::screen::rows as screen_rows;
 use yw_engine::walletconnect::VerifyStatus;
 
 /// Control ids (16,000–16,099; the whole map is `ui::command_ids`).
@@ -171,18 +174,18 @@ impl App {
             items.push(Item::Text(step.get(lang).to_owned()));
         }
         items.push(Item::Row(vec![Ctl::primary(
-            ids::CLIPBOARD_CONNECT,
+            WcPress::ClipboardConnect,
             text::CLIPBOARD_CONNECT.get(lang),
         )]));
         items.push(Item::LabeledRow(
             text::URI_LABEL.get(lang).to_owned(),
             vec![
-                Ctl::edit(ids::URI_EDIT, &self.wc.uri_text, 420, false, 2_048),
-                Ctl::button(ids::PAIR, text::PAIR.get(lang)),
+                Ctl::edit(EditField::WcUri, &self.wc.uri_text, 420, false, 2_048),
+                Ctl::button(WcPress::Pair, text::PAIR.get(lang)),
             ],
         ));
         items.push(Item::Row(vec![Ctl::link(
-            ids::FILE_TOGGLE,
+            WcPress::FileToggle,
             if self.wc.file_open {
                 text::FILE_FOLD.get(lang)
             } else {
@@ -193,8 +196,8 @@ impl App {
             items.push(Item::LabeledRow(
                 text::FILE_LABEL.get(lang).to_owned(),
                 vec![
-                    Ctl::edit(ids::FILE_EDIT, &self.wc.file_text, 420, false, 1_024),
-                    Ctl::button(ids::FILE_QR, text::FILE_QR.get(lang)),
+                    Ctl::edit(EditField::WcFile, &self.wc.file_text, 420, false, 1_024),
+                    Ctl::button(WcPress::FileQr, text::FILE_QR.get(lang)),
                 ],
             ));
         }
@@ -211,7 +214,7 @@ impl App {
             self.settings.walletconnect_project.clone(),
         ));
         items.push(Item::Row(vec![Ctl::link(
-            ids::PROJECT_TOGGLE,
+            WcPress::ProjectToggle,
             if editing {
                 text::PROJECT_FOLD.get(lang)
             } else {
@@ -250,16 +253,16 @@ impl App {
             .clone()
             .unwrap_or_else(|| self.settings.walletconnect_project.clone());
         let mut row = vec![
-            Ctl::edit(ids::PROJECT_EDIT, &project, 300, false, 64),
+            Ctl::edit(EditField::WcProject, &project, 300, false, 64),
             if setup {
-                Ctl::primary(ids::PROJECT_SAVE, text::SAVE.get(lang))
+                Ctl::primary(WcPress::ProjectSave, text::SAVE.get(lang))
             } else {
-                Ctl::button(ids::PROJECT_SAVE, text::SAVE.get(lang))
+                Ctl::button(WcPress::ProjectSave, text::SAVE.get(lang))
             },
         ];
         if setup {
             // The address only goes to the clipboard: the app opens no web page (2026-11-10).
-            row.push(Ctl::link(ids::REOWN_COPY, text::REOWN_COPY.get(lang)));
+            row.push(Ctl::link(WcPress::ReownCopy, text::REOWN_COPY.get(lang)));
         }
         items.push(Item::LabeledRow("Reown Project ID".to_owned(), row));
         if !setup {
@@ -327,14 +330,12 @@ impl App {
                 local_time(&self.facts(), session.expiry),
             ));
             // Under the times, before the accounts — where the site cards have it (2026-11-12).
-            if let Some(id) = u16::try_from(rows.len())
-                .ok()
-                .filter(|offset| *offset < ids::ROW_SPAN)
-                .map(|offset| ids::ROW_BASE + offset)
+            if let Some(press) =
+                screen_rows::row(rows.len(), screen_rows::WC_SESSIONS).map(WcPress::Disconnect)
             {
                 rows.push(session.topic);
                 items.push(Item::Row(vec![
-                    Ctl::danger(id, text::DISCONNECT.get(lang)).compact(),
+                    Ctl::danger(press, text::DISCONNECT.get(lang)).compact(),
                 ]));
             }
             for account in &session.accounts {
@@ -348,7 +349,7 @@ impl App {
             items.push(Item::CardEnd);
         }
         items.push(Item::Row(vec![Ctl::danger(
-            ids::DISCONNECT_ALL,
+            WcPress::DisconnectAll,
             text::DISCONNECT_ALL.get(lang),
         )]));
     }

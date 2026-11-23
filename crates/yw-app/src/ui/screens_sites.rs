@@ -13,9 +13,11 @@ use yw_core::policy::{BrowserOrigin, Family};
 
 use crate::app::App;
 use crate::ui::screens_book::shown_address;
+use yw_engine::cmd::{Row, SitesPress};
 use yw_engine::meta::BookChain;
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::wallet::app_browser::SITES_PAGE_ROWS;
 
 /// Control ids (6,700–6,965; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -85,13 +87,13 @@ impl Page<'_> {
     /// the record is unavailable).
     fn button(&mut self, origin: &BrowserOrigin, family: Family) -> Option<Item> {
         let keys = self.keys.as_mut()?;
-        let id = u16::try_from(keys.len())
+        let press = u16::try_from(keys.len())
             .ok()
-            .filter(|offset| usize::from(*offset) < ids::SITES_PAGE_ROWS)
-            .map(|offset| ids::SITE_ROW_BASE + offset)?;
+            .filter(|offset| usize::from(*offset) < SITES_PAGE_ROWS)
+            .map(|offset| SitesPress::Disconnect(Row(offset)))?;
         keys.push((origin.clone(), family));
         Some(Item::Row(vec![
-            Ctl::danger(id, text::DISCONNECT.get(self.lang)).compact(),
+            Ctl::danger(press, text::DISCONNECT.get(self.lang)).compact(),
         ]))
     }
 }
@@ -107,15 +109,15 @@ fn page_nav(lang: Lang, items: &mut Vec<Item>, total: usize, pages: usize, shown
             &(shown + 1).to_string(),
             &pages.to_string(),
             &total.to_string(),
-            &ids::SITES_PAGE_ROWS.to_string(),
+            &SITES_PAGE_ROWS.to_string(),
         ],
     )));
     let mut nav = Vec::new();
     if shown > 0 {
-        nav.push(Ctl::button(ids::SITES_PREV, text::PREV_PAGE.get(lang)));
+        nav.push(Ctl::button(SitesPress::Prev, text::PREV_PAGE.get(lang)));
     }
     if shown + 1 < pages {
-        nav.push(Ctl::button(ids::SITES_NEXT, text::NEXT_PAGE.get(lang)));
+        nav.push(Ctl::button(SitesPress::Next, text::NEXT_PAGE.get(lang)));
     }
     items.push(Item::Row(nav));
 }
@@ -198,8 +200,8 @@ impl App {
             browser.map_or(0, |browser| browser.site_rows.page),
         );
         let page = Page {
-            start: shown * ids::SITES_PAGE_ROWS,
-            end: (shown + 1) * ids::SITES_PAGE_ROWS,
+            start: shown * SITES_PAGE_ROWS,
+            end: (shown + 1) * SITES_PAGE_ROWS,
             keys: browser.map(|browser| {
                 let mut keys = browser.site_rows.keys.borrow_mut();
                 keys.clear();
@@ -292,7 +294,7 @@ impl App {
         drop(page);
         page_nav(lang, items, total, pages, shown);
         items.push(Item::Row(vec![Ctl::danger(
-            ids::SITES_REVOKE_ALL,
+            SitesPress::RevokeAll,
             text::DISCONNECT_ALL.get(lang),
         )]));
     }

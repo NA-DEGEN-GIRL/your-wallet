@@ -202,6 +202,33 @@ pub const fn reslot_of(press: YkManagePress) -> Option<(PgpKey, ReslotAction)> {
     })
 }
 
+/// The re-slot radio press of `action` on slot `key` (the inverse of [`reslot_of`]; 2026-11-24,
+/// spec/15 §11.4 S5-4: the screens name it instead of the control id
+/// `ui::screens_yubikey::ids::reslot_id`).
+#[must_use]
+pub const fn reslot_press(key: PgpKey, action: ReslotAction) -> YkManagePress {
+    match action {
+        ReslotAction::Chain(Chain::Evm) => YkManagePress::ReslotEvm(key),
+        ReslotAction::Chain(Chain::Btc) => YkManagePress::ReslotBtc(key),
+        ReslotAction::Chain(Chain::Zec) => YkManagePress::ReslotZec(key),
+        ReslotAction::Chain(Chain::Shared) => YkManagePress::ReslotShared(key),
+        ReslotAction::Script(script) => YkManagePress::ReslotScript(key, script),
+    }
+}
+
+/// The preset radio press of `preset` (the inverse of [`preset_of`]; 2026-11-24, S5-4: the
+/// control id `ui::screens_yubikey::ids::preset_id` before).
+#[must_use]
+pub const fn preset_press(preset: Preset) -> YkManagePress {
+    match preset {
+        Preset::EvmBtc => YkManagePress::PresetEvmBtc,
+        Preset::EvmZec => YkManagePress::PresetEvmZec,
+        Preset::BtcZec => YkManagePress::PresetBtcZec,
+        Preset::EvmEvm => YkManagePress::PresetEvmEvm,
+        Preset::Custom => YkManagePress::PresetCustom,
+    }
+}
+
 /// The preset of a preset radio press; `None` for every other press.
 /// 2026-11-22 (S4d E0c): moved from `ui::screens_yubikey::ids` (wallet code maps the press).
 #[must_use]

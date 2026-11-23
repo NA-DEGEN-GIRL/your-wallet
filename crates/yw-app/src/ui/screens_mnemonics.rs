@@ -5,8 +5,11 @@
 use yw_core::lang::Text;
 
 use crate::app::App;
+use yw_engine::cmd::{MnPress, Row};
+use yw_engine::form::EditField;
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::screen::rows;
 use yw_engine::wallet::AppMode;
 use yw_engine::wallet::app_mnemonics::text as mn_text;
 
@@ -196,8 +199,10 @@ pub mod ids {
     }
 }
 
-fn row_id(base: u16, row: usize) -> u16 {
-    base.saturating_add(u16::try_from(row).unwrap_or(ids::ROW_SPAN))
+/// The `Row` of recovery phrase `row` (2026-11-24 S5-4: before, `row_id(base, row)`, its control
+/// id in the list starting at `base`).
+fn mn_row(row: usize) -> Row {
+    Row(u16::try_from(row).unwrap_or(rows::MNEMONICS))
 }
 
 impl App {
@@ -252,24 +257,24 @@ impl App {
             }
             if self.mn.rename == Some(info.id) {
                 items.push(Item::Row(vec![
-                    Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
-                    Ctl::primary(ids::RENAME_SAVE, text::SAVE.get(lang)),
-                    Ctl::button(ids::RENAME_CANCEL, text::CANCEL.get(lang)),
+                    Ctl::edit(EditField::MnRename, &label, 260, false, 64),
+                    Ctl::primary(MnPress::RenameSave, text::SAVE.get(lang)),
+                    Ctl::button(MnPress::RenameCancel, text::CANCEL.get(lang)),
                 ]));
             } else {
                 let mut actions = vec![
-                    Ctl::button(row_id(ids::RENAME_BASE, row), text::RENAME.get(lang)),
-                    Ctl::button(row_id(ids::REVEAL_BASE, row), text::SHOW_WORDS.get(lang)),
+                    Ctl::button(MnPress::Rename(mn_row(row)), text::RENAME.get(lang)),
+                    Ctl::button(MnPress::Reveal(mn_row(row)), text::SHOW_WORDS.get(lang)),
                 ];
                 if !info.backup_confirmed {
                     actions.push(
-                        Ctl::primary(row_id(ids::BACKUP_BASE, row), text::BACKUP_CHECK.get(lang))
+                        Ctl::primary(MnPress::Backup(mn_row(row)), text::BACKUP_CHECK.get(lang))
                             .enabled(unlocked),
                     );
                 }
                 if !info.primary {
                     actions.push(
-                        Ctl::danger(row_id(ids::REMOVE_BASE, row), text::DELETE.get(lang))
+                        Ctl::danger(MnPress::Remove(mn_row(row)), text::DELETE.get(lang))
                             .enabled(editable),
                     );
                 }
@@ -285,8 +290,8 @@ impl App {
         }
         let room = self.mn.infos.len() < yw_core::vault::MAX_MNEMONICS;
         items.push(Item::Row(vec![
-            Ctl::primary(ids::IMPORT, text::IMPORT_MORE.get(lang)).enabled(editable && room),
-            Ctl::button(ids::CREATE, text::CREATE_MORE.get(lang)).enabled(editable && room),
+            Ctl::primary(MnPress::Import, text::IMPORT_MORE.get(lang)).enabled(editable && room),
+            Ctl::button(MnPress::Create, text::CREATE_MORE.get(lang)).enabled(editable && room),
         ]));
         items.push(Item::Help(t(text::ADDED_HELP)));
     }
@@ -314,7 +319,7 @@ impl App {
         } else {
             items.push(Item::Banner(t(mn_text::REMOVE_UNCONFIRMED), Tone::HighRisk));
             items.push(Item::Row(vec![Ctl::button(
-                ids::REMOVE_REVEAL,
+                MnPress::RemoveReveal,
                 text::REVEAL_STEP.get(lang),
             )]));
             items.push(Item::Help(t(if self.mn.remove_revealed {
@@ -326,7 +331,7 @@ impl App {
                 text::TYPE_STEP.fill(lang, [mn_text::REMOVE_WORD.get(lang)]),
                 vec![
                     Ctl::edit(
-                        ids::REMOVE_TYPED_EDIT,
+                        EditField::MnRemoveTyped,
                         &self.mn.remove_typed,
                         160,
                         false,
@@ -340,9 +345,9 @@ impl App {
             items.push(Item::Banner(error.clone(), Tone::Danger));
         }
         items.push(Item::Row(vec![
-            Ctl::danger(ids::REMOVE_CONFIRM, text::DELETE_THIS.get(lang))
+            Ctl::danger(MnPress::RemoveConfirm, text::DELETE_THIS.get(lang))
                 .enabled(backup_confirmed || self.mn.remove_revealed),
-            Ctl::button(ids::REMOVE_CANCEL, text::CANCEL.get(lang)),
+            Ctl::button(MnPress::RemoveCancel, text::CANCEL.get(lang)),
         ]));
     }
 
@@ -428,15 +433,15 @@ impl App {
                 Tone::HighRisk,
             ));
             items.push(Item::Row(vec![Ctl::check(
-                ids::PREVIEW_SAME_ACK,
+                MnPress::PreviewSameAck,
                 text::YK_SAME_ACK.get(lang),
                 self.mn.same_ack,
             )]));
         }
         items.push(Item::Row(vec![
-            Ctl::primary(ids::PREVIEW_CONFIRM, text::IMPORT.get(lang))
+            Ctl::primary(MnPress::PreviewConfirm, text::IMPORT.get(lang))
                 .enabled(!same || self.mn.same_ack),
-            Ctl::button(ids::PREVIEW_CANCEL, text::CANCEL.get(lang)),
+            Ctl::button(MnPress::PreviewCancel, text::CANCEL.get(lang)),
         ]));
         items.push(Item::CardEnd);
     }
@@ -464,11 +469,10 @@ impl App {
                             .is_some_and(|entry| entry.next_index().is_some())
                     }
                 });
-                Ctl::button(row_id(ids::PICK_BASE, row), &self.mnemonic_label(info.id))
-                    .enabled(room)
+                Ctl::button(MnPress::Pick(mn_row(row)), &self.mnemonic_label(info.id)).enabled(room)
             })
             .collect();
-        buttons.push(Ctl::button(ids::PICK_CANCEL, text::CANCEL.get(lang)));
+        buttons.push(Ctl::button(MnPress::PickCancel, text::CANCEL.get(lang)));
         items.push(Item::Row(buttons));
     }
 
@@ -494,14 +498,11 @@ impl App {
                             .is_some()
                     }
                 });
-                Ctl::button(
-                    row_id(ids::SOL_PICK_BASE, row),
-                    &self.mnemonic_label(info.id),
-                )
-                .enabled(room && !self.sol.creating)
+                Ctl::button(MnPress::SolPick(mn_row(row)), &self.mnemonic_label(info.id))
+                    .enabled(room && !self.sol.creating)
             })
             .collect();
-        buttons.push(Ctl::button(ids::SOL_PICK_CANCEL, text::CANCEL.get(lang)));
+        buttons.push(Ctl::button(MnPress::SolPickCancel, text::CANCEL.get(lang)));
         items.push(Item::Row(buttons));
     }
 }
@@ -579,10 +580,10 @@ impl App {
             .iter()
             .position(|info| info.id == id)
             .and_then(|position| u16::try_from(position).ok())
-            .filter(|offset| *offset < ids::ROW_SPAN)
+            .filter(|offset| *offset < rows::MNEMONICS)
         {
             items.push(Item::Row(vec![Ctl::button(
-                ids::BACKUP_BASE.saturating_add(offset),
+                MnPress::Backup(Row(offset)),
                 mn_text::BACKUP_NOW.get(self.settings.language),
             )]));
         }

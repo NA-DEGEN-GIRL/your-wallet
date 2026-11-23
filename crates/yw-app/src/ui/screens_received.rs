@@ -18,9 +18,11 @@ use yw_core::lang::Lang;
 use yw_core::sol::SolAddress;
 
 use crate::app::App;
+use yw_engine::cmd::ReceivedPress;
 use yw_engine::received::{Incoming, RecvChain};
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::screen::rows;
 
 /// Command ids of the received history (17,800–18,399; spec/04 §2.6, `ui::command_ids`).
 pub mod ids {
@@ -385,18 +387,18 @@ impl App {
             return;
         }
         // The hash (public data) on its own line: a click copies it, `탐색기에서 열기` ↗
-        // (id + 1) at its right end when the list's network has a transaction page
-        // (2026-11-11). The sender above stays read-only.
-        let id = ids::row(chain, row);
-        let explorer = id
+        // at its right end when the list's network has a transaction page (2026-11-11). The
+        // sender above stays read-only.
+        let hash_row = rows::row(row, rows::RECEIVED_ROWS);
+        let explorer = hash_row
             .filter(|_| {
                 self.received_explorer_net(chain)
                     .and_then(|net| self.explorer_tx_url(net, &entry.hash))
                     .is_some()
             })
-            .map(|id| {
+            .map(|hash_row| {
                 Ctl::icon(
-                    id + 1,
+                    ReceivedPress::OpenExplorer(chain, hash_row),
                     yw_engine::screen::model::GLYPH_OPEN,
                     crate::ui::screens_links::T_EXPLORER_OPEN.get(self.settings.language),
                 )
@@ -404,7 +406,7 @@ impl App {
         crate::ui::screens_links::push_hash_line(
             items,
             self.settings.language,
-            id,
+            hash_row.map(|hash_row| ReceivedPress::CopyHash(chain, hash_row).into()),
             &entry.hash,
             explorer.into_iter().collect(),
         );
@@ -429,7 +431,10 @@ impl App {
                 && (!self.hc_foldable() || self.hypercore.unfolded);
             items.push(Item::Rule);
             items.push(Item::Row(vec![Ctl::check(
-                ids::toggle(chain),
+                ReceivedPress::Toggle {
+                    chain,
+                    checked: None,
+                },
                 if whole_hc {
                     text::RECEIVED_TOGGLE_HC.get(lang)
                 } else {
@@ -502,7 +507,7 @@ impl App {
         let folded = list.entries.len().saturating_sub(FIRST_ROWS);
         if folded > 0 {
             items.push(Item::Row(vec![Ctl::link(
-                ids::more(chain),
+                ReceivedPress::More(chain),
                 &if open {
                     text::FOLD.get(lang).to_owned()
                 } else {

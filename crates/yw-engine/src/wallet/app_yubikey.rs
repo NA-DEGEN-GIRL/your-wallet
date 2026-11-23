@@ -810,6 +810,22 @@ pub const fn pgp_of(press: YkPress) -> Option<(PgpKey, PgpAction)> {
     })
 }
 
+/// The wizard radio press of `action` on slot `key` (the inverse of [`pgp_of`]; 2026-11-24, spec/15
+/// §11.4 S5-4: the screens name it instead of the control id `ui::screens_yubikey::ids::pgp_id`).
+#[must_use]
+pub const fn pgp_press(key: PgpKey, action: PgpAction) -> YkPress {
+    match action {
+        PgpAction::Kind(PgpKind::None) => YkPress::PgpNone(key),
+        PgpAction::Kind(PgpKind::Evm) => YkPress::PgpEvm(key),
+        PgpAction::Kind(PgpKind::Btc) => YkPress::PgpBtc(key),
+        PgpAction::Kind(PgpKind::Shared) => YkPress::PgpShared(key),
+        PgpAction::Kind(PgpKind::Zec) => YkPress::PgpZec(key),
+        PgpAction::Script(script) => YkPress::PgpScript(key, script),
+        PgpAction::Touch(touch) => YkPress::PgpTouch(key, touch),
+        PgpAction::Zec(network) => YkPress::PgpZecNetwork(key, network),
+    }
+}
+
 /// Command ids of the wizard's touch radios: `(policy, id offset)`.
 pub const PGP_TOUCH: [TouchPolicy; 4] = [
     TouchPolicy::Always,
@@ -2652,5 +2668,63 @@ impl Wallet {
             _ => {}
         }
         wizard.error = None;
+    }
+}
+
+#[cfg(test)]
+mod press_tests {
+    use super::connect::{Choice, choice_of, choice_press};
+    use super::manage::{
+        Chain, Preset, ReslotAction, preset_of, preset_press, reslot_of, reslot_press,
+    };
+    use super::{CARD_SCRIPTS, PGP_TOUCH, PgpAction, PgpKind, pgp_of, pgp_press};
+    use yw_core::btc::ScriptType;
+    use yw_core::yubikey::plan::PgpKey;
+    use yw_core::zec::ZecNetwork;
+
+    /// 2026-11-24 (spec/15 §11.4 S5-4): the presses the screens draw map back to the action they
+    /// were built from, every value.
+    #[test]
+    fn forward_presses_invert_the_press_maps() {
+        for key in [PgpKey::Sig, PgpKey::Aut] {
+            let kinds = [
+                PgpKind::None,
+                PgpKind::Evm,
+                PgpKind::Btc,
+                PgpKind::Shared,
+                PgpKind::Zec,
+            ]
+            .map(PgpAction::Kind);
+            for action in kinds
+                .into_iter()
+                .chain(CARD_SCRIPTS.map(PgpAction::Script))
+                .chain(PGP_TOUCH.map(PgpAction::Touch))
+                .chain([ZecNetwork::Mainnet, ZecNetwork::Testnet].map(PgpAction::Zec))
+            {
+                assert_eq!(pgp_of(pgp_press(key, action)), Some((key, action)));
+            }
+            for action in Chain::ALL
+                .map(ReslotAction::Chain)
+                .into_iter()
+                .chain(CARD_SCRIPTS.map(ReslotAction::Script))
+            {
+                assert_eq!(reslot_of(reslot_press(key, action)), Some((key, action)));
+            }
+        }
+        for preset in Preset::ALL {
+            assert_eq!(preset_of(preset_press(preset)), Some(preset));
+        }
+        for row in [0, 1, 25] {
+            for choice in [
+                Choice::Skip,
+                Choice::Evm,
+                Choice::Btc(ScriptType::P2wpkh),
+                Choice::Btc(ScriptType::P2tr),
+                Choice::Zec,
+                Choice::Sol,
+            ] {
+                assert_eq!(choice_of(choice_press(row, choice)), Some((row, choice)));
+            }
+        }
     }
 }

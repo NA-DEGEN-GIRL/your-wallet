@@ -3,7 +3,9 @@
 //! button rows other screens add next to a hash or an address. The logic is `app_explorer`.
 
 use crate::app::App;
+use yw_engine::cmd::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction, Press, Row};
 use yw_engine::explorer::{ExplorerNet, LinkKind, TEMPLATE_MAX_BYTES};
+use yw_engine::form::EditField;
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, GLYPH_OPEN, Item};
 
@@ -223,6 +225,24 @@ pub mod text {
     }
 }
 
+/// The `탐색기에서 열기` and `탐색기 링크 복사` presses of activity row `row` (`link`: a chain's
+/// `ExplorerPress::*Activity`; `None` past `rows`, `yw_engine::screen::rows::*_ACTIVITY_LINKS`).
+/// 2026-11-24 (spec/15 §11.4 S5-4): before, the two control ids `ids::activity_ids(base, span,
+/// row)`.
+#[must_use]
+pub fn activity_links(
+    link: fn(Row, ExplorerLinkAction) -> ExplorerPress,
+    row: usize,
+    rows: u16,
+) -> Option<(Press, Press)> {
+    yw_engine::screen::rows::row(row, rows).map(|row| {
+        (
+            link(row, ExplorerLinkAction::Open).into(),
+            link(row, ExplorerLinkAction::Copy).into(),
+        )
+    })
+}
+
 impl App {
     /// `탐색기에서 열기` and `탐색기 링크 복사` for `hash` on `network` (empty when there is no
     /// URL: no template, or a hash outside the network's character set).
@@ -231,9 +251,9 @@ impl App {
         &self,
         network: impl Into<ExplorerNet>,
         hash: &str,
-        ids: Option<(u16, u16)>,
+        presses: Option<(Press, Press)>,
     ) -> Vec<Ctl> {
-        match ids {
+        match presses {
             Some((open, copy)) if self.explorer_tx_url(network, hash).is_some() => vec![
                 Ctl::button(open, text::OPEN.get(self.settings.language)),
                 Ctl::button(copy, text::COPY_LINK.get(self.settings.language)),
@@ -249,10 +269,11 @@ impl App {
         &self,
         network: impl Into<ExplorerNet>,
         address: &str,
-        id: u16,
+        press: impl Into<Press>,
     ) -> Option<Ctl> {
-        self.explorer_address_url(network, address)
-            .map(|_| Ctl::link(id, text::VIEW_ADDRESS.get(self.settings.language)).compact())
+        self.explorer_address_url(network, address).map(|_| {
+            Ctl::link(press.into(), text::VIEW_ADDRESS.get(self.settings.language)).compact()
+        })
     }
 
     /// The account card's ↗ icon `탐색기에서 주소 보기` on its address line (2026-11-11; `None`
@@ -262,11 +283,11 @@ impl App {
         &self,
         network: impl Into<ExplorerNet>,
         address: &str,
-        id: u16,
+        press: impl Into<Press>,
     ) -> Option<Ctl> {
         self.explorer_address_url(network, address).map(|_| {
             Ctl::icon(
-                id,
+                press.into(),
                 GLYPH_OPEN,
                 text::VIEW_ADDRESS.get(self.settings.language),
             )
@@ -281,9 +302,9 @@ impl App {
         network: impl Into<ExplorerNet>,
         address: &str,
         kind: yw_engine::screen::address::AddressKind,
-        copy: u16,
+        copy: impl Into<Press>,
         enabled: bool,
-        card: u16,
+        card: impl Into<Press>,
     ) -> Item {
         crate::ui::screens::own_address_row(
             self.settings.language,
@@ -328,19 +349,21 @@ impl App {
             )));
             items.push(Item::Help(self.explorer_line(net, LinkKind::Tx)));
             items.push(Item::Help(self.explorer_line(net, LinkKind::Address)));
-            let base = ids::ROW_BASE.saturating_add(
-                u16::try_from(row)
-                    .unwrap_or(0)
-                    .saturating_mul(ids::ROW_STRIDE),
-            );
+            let row_press = Row(u16::try_from(row).unwrap_or(0));
             let editing = self.explorer_ui.editing == Some(net);
             items.push(Item::Row(vec![
-                Ctl::button(base, text::CHANGE.get(lang))
-                    .compact()
-                    .enabled(!editing),
-                Ctl::button(base.saturating_add(1), text::RESET.get(lang))
-                    .compact()
-                    .enabled(self.explorer_override(net).is_some()),
+                Ctl::button(
+                    ExplorerPress::Row(row_press, ExplorerRowAction::Edit),
+                    text::CHANGE.get(lang),
+                )
+                .compact()
+                .enabled(!editing),
+                Ctl::button(
+                    ExplorerPress::Row(row_press, ExplorerRowAction::Reset),
+                    text::RESET.get(lang),
+                )
+                .compact()
+                .enabled(self.explorer_override(net).is_some()),
             ]));
             if editing {
                 self.explorer_form(items);
@@ -358,7 +381,7 @@ impl App {
         items.push(Item::LabeledRow(
             LinkKind::Tx.label_in(lang).to_owned(),
             vec![Ctl::edit(
-                ids::EDIT_TX,
+                EditField::ExplorerTx,
                 &self.explorer_ui.tx_text,
                 430,
                 false,
@@ -368,7 +391,7 @@ impl App {
         items.push(Item::LabeledRow(
             LinkKind::Address.label_in(lang).to_owned(),
             vec![Ctl::edit(
-                ids::EDIT_ADDRESS,
+                EditField::ExplorerAddress,
                 &self.explorer_ui.address_text,
                 430,
                 false,
@@ -380,8 +403,8 @@ impl App {
             items.push(Item::Banner(message.clone(), Tone::Danger));
         }
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SAVE, text::SAVE.get(lang)),
-            Ctl::button(ids::CANCEL, text::CANCEL.get(lang)),
+            Ctl::primary(ExplorerPress::Save, text::SAVE.get(lang)),
+            Ctl::button(ExplorerPress::Cancel, text::CANCEL.get(lang)),
         ]));
     }
 }

@@ -5,11 +5,13 @@
 
 use crate::app::App;
 use yw_engine::apikeys::KeyName;
+use yw_engine::cmd::LlmPress;
 use yw_engine::explain::config::DraftNotes;
 use yw_engine::explain::config::{
     effectively_enabled, host_phrase, parse_endpoint, privacy_notice,
 };
 use yw_engine::explain::{ReasoningEffort, ResponseFormatMode};
+use yw_engine::form::{CredField, EditField};
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
 
@@ -145,16 +147,17 @@ pub mod ids {
     }
 }
 
-/// The `빠른 입력` presets (spec/06 §2.1, 2026-11-11): command id and button label; the endpoint
+/// The `빠른 입력` presets (spec/06 §2.1, 2026-11-11): press and button label; the endpoint
 /// is the wallet's `app_llm::preset_url` of the button's press. A preset only fills the endpoint
 /// draft; `저장` (with its consent rule) applies it. 2026-11-22 (S4d E0c): the endpoints moved to
 /// `app_llm`, keyed by the press; before, a third column here, looked up by control id.
-pub const PRESETS: &[(u16, yw_core::lang::Text)] = &[
-    (ids::PRESET_OPENAI, text::PRESET_OPENAI),
-    (ids::PRESET_CLAUDE, text::PRESET_CLAUDE),
-    (ids::PRESET_OPENROUTER, text::PRESET_OPENROUTER),
-    (ids::PRESET_OLLAMA, text::PRESET_OLLAMA),
-    (ids::PRESET_LM_STUDIO, text::PRESET_LM_STUDIO),
+/// 2026-11-24 (S5-4): the first column is the press (the control id before).
+pub const PRESETS: &[(LlmPress, yw_core::lang::Text)] = &[
+    (LlmPress::PresetOpenAi, text::PRESET_OPENAI),
+    (LlmPress::PresetClaude, text::PRESET_CLAUDE),
+    (LlmPress::PresetOpenRouter, text::PRESET_OPENROUTER),
+    (LlmPress::PresetOllama, text::PRESET_OLLAMA),
+    (LlmPress::PresetLmStudio, text::PRESET_LM_STUDIO),
 ];
 
 /// The S15 `AI 설명` section texts (spec/04 §2.11, spec/06 §2; English spec/14).
@@ -246,7 +249,7 @@ impl App {
         };
         items.push(Item::Text(status));
         items.push(Item::Row(vec![Ctl::check(
-            ids::ENABLE,
+            LlmPress::Enable(None),
             text::ENABLE.get(lang),
             settings.enabled,
         )]));
@@ -265,7 +268,7 @@ impl App {
             t(text::QUICK_FILL),
             PRESETS
                 .iter()
-                .map(|(id, label)| Ctl::button(*id, label.get(lang)))
+                .map(|(press, label)| Ctl::button(*press, label.get(lang)))
                 .collect(),
         ));
         items.push(Item::Help(t(text::QUICK_HELP)));
@@ -273,7 +276,7 @@ impl App {
         items.push(Item::LabeledRow(
             t(text::ENDPOINT),
             vec![Ctl::edit(
-                ids::ENDPOINT_EDIT,
+                EditField::LlmEndpoint,
                 &form.endpoint_text,
                 460,
                 false,
@@ -289,7 +292,7 @@ impl App {
         items.push(Item::LabeledRow(
             t(text::MODEL),
             vec![Ctl::edit(
-                ids::MODEL_EDIT,
+                EditField::LlmModel,
                 &form.model_text,
                 260,
                 false,
@@ -300,13 +303,13 @@ impl App {
             t(text::FORMAT),
             vec![
                 Ctl::radio(
-                    ids::FORMAT_SCHEMA,
+                    LlmPress::FormatSchema,
                     text::FORMAT_SCHEMA.get(lang),
                     form.format == ResponseFormatMode::JsonSchema,
                     true,
                 ),
                 Ctl::radio(
-                    ids::FORMAT_OBJECT,
+                    LlmPress::FormatObject,
                     "json_object",
                     form.format == ResponseFormatMode::JsonObject,
                     false,
@@ -316,29 +319,39 @@ impl App {
         items.push(Item::LabeledRow(
             "max_tokens".to_owned(),
             vec![
-                Ctl::edit(ids::MAX_TOKENS_EDIT, &form.max_tokens_text, 100, false, 4)
-                    .enabled(!notes.openai),
+                Ctl::edit(
+                    EditField::LlmMaxTokens,
+                    &form.max_tokens_text,
+                    100,
+                    false,
+                    4,
+                )
+                .enabled(!notes.openai),
             ],
         ));
         if notes.openai {
             items.push(Item::Help(t(text::OPENAI_NOTE)));
         }
-        let effort = |id: u16, label: &str, value: Option<ReasoningEffort>| {
-            Ctl::radio(id, label, form.effort == value, value.is_none())
+        let effort = |press: LlmPress, label: &str, value: Option<ReasoningEffort>| {
+            Ctl::radio(press, label, form.effort == value, value.is_none())
         };
         items.push(Item::LabeledRow(
             t(text::EFFORT),
             vec![
-                effort(ids::EFFORT_NONE, text::EFFORT_NONE.get(lang), None),
-                effort(ids::EFFORT_LOW, "low", Some(ReasoningEffort::Low)),
-                effort(ids::EFFORT_MEDIUM, "medium", Some(ReasoningEffort::Medium)),
-                effort(ids::EFFORT_HIGH, "high", Some(ReasoningEffort::High)),
+                effort(LlmPress::EffortNone, text::EFFORT_NONE.get(lang), None),
+                effort(LlmPress::EffortLow, "low", Some(ReasoningEffort::Low)),
+                effort(
+                    LlmPress::EffortMedium,
+                    "medium",
+                    Some(ReasoningEffort::Medium),
+                ),
+                effort(LlmPress::EffortHigh, "high", Some(ReasoningEffort::High)),
             ],
         ));
         items.push(Item::Help(t(text::OPTIONS_HELP)));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SAVE, text::SAVE.get(lang)),
-            Ctl::button(ids::TEST, text::TEST.get(lang)).enabled(!form.test_running),
+            Ctl::primary(LlmPress::Save, text::SAVE.get(lang)),
+            Ctl::button(LlmPress::Test, text::TEST.get(lang)).enabled(!form.test_running),
         ]));
         items.push(Item::Help(t(text::TEST_HELP)));
         if form.test_running {
@@ -368,11 +381,11 @@ impl App {
         ));
         items.push(Item::LabeledRow(
             t(text::KEY),
-            vec![Ctl::edit(ids::KEY_EDIT, "", 320, true, 512)],
+            vec![Ctl::edit(CredField::LlmKey, "", 320, true, 512)],
         ));
         items.push(Item::Row(vec![
-            Ctl::button(ids::KEY_SAVE, text::KEY_SAVE.get(lang)),
-            Ctl::danger(ids::KEY_DELETE, text::KEY_DELETE.get(lang)).enabled(has_key),
+            Ctl::button(LlmPress::KeySave, text::KEY_SAVE.get(lang)),
+            Ctl::danger(LlmPress::KeyDelete, text::KEY_DELETE.get(lang)).enabled(has_key),
         ]));
         if form.key_deleted && !has_key {
             items.push(Item::Banner(t(text::KEY_DELETED), Tone::Success));

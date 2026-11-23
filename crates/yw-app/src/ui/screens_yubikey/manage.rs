@@ -7,10 +7,11 @@ use yw_core::yubikey::plan::{CardSlot, PgpKey, address_texts};
 use yw_core::yubikey::record::{HwKeyRecord, RecordedSlot};
 use yw_core::zec::ZecNetwork;
 
-use super::ids;
 use super::text as t;
 use super::{script_label, slot_items, steps_item, zec_network_label};
 use crate::app::App;
+use yw_engine::cmd::{Row, YkManagePress};
+use yw_engine::form::EditField;
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::wallet::app_yubikey::CARD_SCRIPTS;
@@ -18,7 +19,7 @@ use yw_engine::wallet::app_yubikey::manage::ReslotAction;
 use yw_engine::wallet::app_yubikey::manage::text as mt;
 use yw_engine::wallet::app_yubikey::manage::{
     Chain, ClearFlow, ClearStep, MAX_RESLOT_INDEX, Preset, ReslotFlow, ReslotStep, YkManage,
-    lost_slots,
+    lost_slots, preset_press, reslot_press,
 };
 use yw_engine::wallet::app_yubikey::text as yk;
 
@@ -36,7 +37,7 @@ pub const RESLOT_STEPS: [Text; 4] = [
 fn loss_items(
     lang: Lang,
     (lost, balances): (&[RecordedSlot], &[String]),
-    (ack_id, edit_id): (u16, u16),
+    (ack, edit): (YkManagePress, EditField),
     (acked, typed): (bool, &str),
     items: &mut Vec<Item>,
 ) {
@@ -59,13 +60,13 @@ fn loss_items(
         }
     }
     items.push(Item::Row(vec![Ctl::check(
-        ack_id,
+        ack,
         mt::YK_KEY_LOST_ACK.get(lang),
         acked,
     )]));
     items.push(Item::LabeledRow(
         t::TYPE_WORD.fill(lang, [mt::LOSS_WORD.get(lang)]),
-        vec![Ctl::edit(edit_id, typed, 120, false, 8)],
+        vec![Ctl::edit(edit, typed, 120, false, 8)],
     ));
 }
 
@@ -133,7 +134,7 @@ impl App {
                 .enumerate()
                 .map(|(position, chain)| {
                     Ctl::radio(
-                        ids::reslot_id(key, ReslotAction::Chain(chain)),
+                        reslot_press(key, ReslotAction::Chain(chain)),
                         chain.label(lang),
                         form.chain == chain,
                         position == 0,
@@ -150,8 +151,8 @@ impl App {
             },
             vec![Ctl::edit(
                 match key {
-                    PgpKey::Sig => ids::RESLOT_SIG_INDEX_EDIT,
-                    PgpKey::Aut => ids::RESLOT_AUT_INDEX_EDIT,
+                    PgpKey::Sig => EditField::YkReslotSigIndex,
+                    PgpKey::Aut => EditField::YkReslotAutIndex,
                 },
                 &form.index_text,
                 80,
@@ -167,7 +168,7 @@ impl App {
                     .enumerate()
                     .map(|(position, script)| {
                         Ctl::radio(
-                            ids::reslot_id(key, ReslotAction::Script(script)),
+                            reslot_press(key, ReslotAction::Script(script)),
                             &script_label(lang, script),
                             form.script == script,
                             position == 0,
@@ -210,7 +211,7 @@ impl App {
                 .enumerate()
                 .map(|(position, preset)| {
                     Ctl::radio(
-                        ids::preset_id(preset),
+                        preset_press(preset),
                         preset.label(lang),
                         flow.preset == preset,
                         position == 0,
@@ -229,9 +230,9 @@ impl App {
                     .map(|(position, network)| {
                         Ctl::radio(
                             if network == ZecNetwork::Mainnet {
-                                ids::RESLOT_ZEC_MAIN
+                                YkManagePress::ZecMain
                             } else {
-                                ids::RESLOT_ZEC_TEST
+                                YkManagePress::ZecTest
                             },
                             zec_network_label(lang, network),
                             flow.zec_network == network,
@@ -243,14 +244,14 @@ impl App {
         }
         items.push(Item::Help(t::STANDARD_PATHS.get(lang).to_owned()));
         items.push(Item::Row(vec![Ctl::check(
-            ids::RESLOT_ADVANCED,
+            YkManagePress::Advanced,
             t::ADVANCED.get(lang),
             flow.advanced,
         )]));
         if flow.uses_shared() {
             items.push(Item::Banner(yk::YK_SHARED.get(lang).to_owned(), Tone::Warn));
             items.push(Item::Row(vec![Ctl::check(
-                ids::RESLOT_SHARED_ACK,
+                YkManagePress::SharedAck,
                 t::SHARED_ACK.get(lang),
                 flow.shared_ack,
             )]));
@@ -262,7 +263,7 @@ impl App {
         }
         items.push(Item::Row(vec![
             Ctl::primary(
-                ids::RESLOT_NEXT,
+                YkManagePress::Next,
                 if flow.seed_held {
                     t::BTN_NEXT_CONFIRM
                 } else {
@@ -270,7 +271,7 @@ impl App {
                 }
                 .get(lang),
             ),
-            Ctl::button(ids::MANAGE_CANCEL, t::BTN_CANCEL.get(lang)),
+            Ctl::button(YkManagePress::Cancel, t::BTN_CANCEL.get(lang)),
         ]));
     }
 
@@ -283,8 +284,8 @@ impl App {
             items.push(Item::Text(t::COMPUTING_RESLOT.get(lang).to_owned()));
             items.push(Item::CardEnd);
             items.push(Item::Row(vec![
-                Ctl::button(ids::RESLOT_BACK, t::BTN_CHOOSE_AGAIN.get(lang)),
-                Ctl::button(ids::MANAGE_CANCEL, t::BTN_CANCEL.get(lang)),
+                Ctl::button(YkManagePress::Back, t::BTN_CHOOSE_AGAIN.get(lang)),
+                Ctl::button(YkManagePress::Cancel, t::BTN_CANCEL.get(lang)),
             ]));
             return;
         };
@@ -303,7 +304,7 @@ impl App {
                 Tone::HighRisk,
             ));
             items.push(Item::Row(vec![Ctl::check(
-                ids::RESLOT_SAME_ACK,
+                YkManagePress::SameAck,
                 t::SAME_ACK_RESLOT.get(lang),
                 flow.same_ack,
             )]));
@@ -373,14 +374,14 @@ impl App {
                 ));
             }
             items.push(Item::Row(vec![Ctl::check(
-                ids::RESLOT_REMOVED_ACK,
+                YkManagePress::RemovedAck,
                 t::REMOVED_ACK.get(lang),
                 flow.removed_ack,
             )]));
             loss_items(
                 lang,
                 (&lost_slots(&dropped), &balances),
-                (ids::RESLOT_LOSS_ACK, ids::RESLOT_LOSS_EDIT),
+                (YkManagePress::LossAck, EditField::YkReslotLoss),
                 (flow.loss_ack, &flow.loss_typed),
                 items,
             );
@@ -392,10 +393,10 @@ impl App {
         items.push(Item::Help(mt::YK_RESLOT_BACKUP.get(lang).to_owned()));
         items.push(Item::Help(t::ADMIN_NEXT.get(lang).to_owned()));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::RESLOT_IMPORT, yk::STEP_PUT_ON_CARD.get(lang))
+            Ctl::primary(YkManagePress::Import, yk::STEP_PUT_ON_CARD.get(lang))
                 .enabled(flow.can_import(&others)),
-            Ctl::button(ids::RESLOT_BACK, t::BTN_CHOOSE_AGAIN.get(lang)),
-            Ctl::button(ids::MANAGE_CANCEL, t::BTN_CANCEL.get(lang)),
+            Ctl::button(YkManagePress::Back, t::BTN_CHOOSE_AGAIN.get(lang)),
+            Ctl::button(YkManagePress::Cancel, t::BTN_CANCEL.get(lang)),
         ]));
     }
 
@@ -404,9 +405,9 @@ impl App {
         if let Some(failure) = &flow.failure {
             items.push(Item::Banner(failure.clone(), Tone::Danger));
             items.push(Item::Row(vec![
-                Ctl::primary(ids::RESLOT_RETRY, t::BTN_RETRY.get(lang)),
-                Ctl::button(ids::RESLOT_BACK, t::BTN_CHOOSE_AGAIN.get(lang)),
-                Ctl::button(ids::MANAGE_CANCEL, t::BTN_CANCEL.get(lang)),
+                Ctl::primary(YkManagePress::Retry, t::BTN_RETRY.get(lang)),
+                Ctl::button(YkManagePress::Back, t::BTN_CHOOSE_AGAIN.get(lang)),
+                Ctl::button(YkManagePress::Cancel, t::BTN_CANCEL.get(lang)),
             ]));
             return;
         }
@@ -425,7 +426,7 @@ impl App {
                 Tone::Warn,
             ));
             items.push(Item::Row(vec![Ctl::primary(
-                ids::RESLOT_PIN_NOW,
+                YkManagePress::PinNow,
                 t::BTN_SET_PIN_NOW.get(lang),
             )]));
         }
@@ -462,7 +463,7 @@ impl App {
                         .count()
                 });
                 items.push(Item::Row(vec![Ctl::button(
-                    ids::RESLOT_BACKUP_BASE.saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                    YkManagePress::ReslotBackup(Row(u16::try_from(row).unwrap_or(u16::MAX))),
                     &if shared > 0 {
                         t::APPLY_TO_SHARED
                             .fill(lang, [&self.card_name(other.serial), &shared.to_string()])
@@ -474,7 +475,7 @@ impl App {
             items.push(Item::CardEnd);
         }
         items.push(Item::Row(vec![Ctl::primary(
-            ids::MANAGE_DONE,
+            YkManagePress::Done,
             t::BTN_DONE_WIPE.get(lang),
         )]));
     }
@@ -486,7 +487,7 @@ impl App {
     /// done under '어떻게 지우나요 ▸'.
     fn yk_clear_method_items(
         lang: Lang,
-        (current, (ours, reset)): (Option<ClearMethod>, (u16, u16)),
+        (current, (ours, reset)): (Option<ClearMethod>, (YkManagePress, YkManagePress)),
         labels: (&str, &str),
         (ours_text, reset_text): (&str, &str),
         (how_ours, how_reset, how_open): (&str, &str, bool),
@@ -582,13 +583,16 @@ impl App {
         )));
         if has(true) > 0 {
             items.push(Item::Row(vec![Ctl::check(
-                ids::CLEAR_PGP_TOGGLE,
+                YkManagePress::ClearPgpToggle,
                 &t::PGP_KEYS.fill(lang, [&has(true).to_string()]),
                 flow.openpgp.is_some(),
             )]));
             Self::yk_clear_method_items(
                 lang,
-                (flow.openpgp, (ids::CLEAR_PGP_OURS, ids::CLEAR_PGP_RESET)),
+                (
+                    flow.openpgp,
+                    (YkManagePress::ClearPgpOurs, YkManagePress::ClearPgpReset),
+                ),
                 (t::PGP_OURS.get(lang), t::PGP_RESET.get(lang)),
                 (
                     mt::YK_CLEAR_PGP_OURS_RESULT.get(lang),
@@ -604,13 +608,16 @@ impl App {
         }
         if has(false) > 0 {
             items.push(Item::Row(vec![Ctl::check(
-                ids::CLEAR_PIV_TOGGLE,
+                YkManagePress::ClearPivToggle,
                 &t::PIV_SLOTS.fill(lang, [&has(false).to_string()]),
                 flow.piv.is_some(),
             )]));
             Self::yk_clear_method_items(
                 lang,
-                (flow.piv, (ids::CLEAR_PIV_OURS, ids::CLEAR_PIV_RESET)),
+                (
+                    flow.piv,
+                    (YkManagePress::ClearPivOurs, YkManagePress::ClearPivReset),
+                ),
                 (t::PIV_OURS.get(lang), t::PIV_RESET.get(lang)),
                 (
                     mt::YK_CLEAR_PIV_OURS_RESULT.get(lang),
@@ -636,7 +643,7 @@ impl App {
         items.push(Item::Help(mt::YK_CLEAR_SCOPE.get(lang).to_owned()));
         if flow.openpgp.is_some() || flow.piv.is_some() {
             items.push(Item::Row(vec![Ctl::link(
-                ids::CLEAR_HOW,
+                YkManagePress::ClearHow,
                 if flow.how_open {
                     t::HOW_OPEN
                 } else {
@@ -691,7 +698,7 @@ impl App {
             loss_items(
                 lang,
                 (&self.yk_clear_lost(flow), &balances),
-                (ids::CLEAR_LOSS_ACK, ids::CLEAR_LOSS_EDIT),
+                (YkManagePress::ClearLossAck, EditField::YkClearLoss),
                 (flow.loss_ack, &flow.loss_typed),
                 items,
             );
@@ -709,7 +716,7 @@ impl App {
         items.push(Item::LabeledRow(
             t::TYPE_WORD.fill(lang, [mt::CLEAR_WORD.get(lang)]),
             vec![Ctl::edit(
-                ids::CLEAR_CONFIRM_EDIT,
+                EditField::YkClearConfirm,
                 &flow.typed,
                 120,
                 false,
@@ -732,9 +739,9 @@ impl App {
             items.push(Item::Banner(error.clone(), Tone::Danger));
         }
         items.push(Item::Row(vec![
-            Ctl::danger(ids::CLEAR_RUN, t::BTN_ERASE_THIS.get(lang))
+            Ctl::danger(YkManagePress::ClearRun, t::BTN_ERASE_THIS.get(lang))
                 .enabled(self.yk_clear_ready(flow)),
-            Ctl::button(ids::MANAGE_CANCEL, t::BTN_CANCEL.get(lang)),
+            Ctl::button(YkManagePress::Cancel, t::BTN_CANCEL.get(lang)),
         ]));
     }
 
@@ -815,7 +822,7 @@ impl App {
             }
         }
         items.push(Item::Row(vec![Ctl::primary(
-            ids::MANAGE_DONE,
+            YkManagePress::Done,
             t::BTN_FINISH.get(lang),
         )]));
     }

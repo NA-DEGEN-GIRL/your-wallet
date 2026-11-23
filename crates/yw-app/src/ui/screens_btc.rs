@@ -15,10 +15,15 @@ use crate::app::App;
 use yw_engine::apikeys::KeyName;
 use yw_engine::badge::Badge;
 use yw_engine::btc::work::FeeQuote;
+use yw_engine::cmd::{
+    BookPress, BtcActivityAction, BtcPress, CorePress, ExplorerPress, LinksPress, MnPress, Row,
+};
 use yw_engine::errors::ErrorCode;
+use yw_engine::form::EditField;
 use yw_engine::meta::BookChain;
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::screen::rows;
 use yw_engine::settings::BtcIndexer;
 use yw_engine::text::grouped;
 use yw_engine::wallet::app_book::{BookTarget, PromptPlace};
@@ -331,7 +336,7 @@ pub mod ids {
         use yw_engine::cmd::{BtcActivityAction, BtcPress, Row};
         let within = |base: u16, span: u16| id.checked_sub(base).filter(|offset| *offset < span);
         for net in BtcNetwork::ALL {
-            let (_, save, default, test) = super::esplora_ids(net);
+            let (_, save, default, test) = esplora_ids(net);
             if id == save {
                 return Some(BtcPress::EsploraSave(net));
             }
@@ -486,9 +491,9 @@ pub mod ids {
             BtcPress::IdxEsplora => IDX_ESPLORA,
             BtcPress::IdxBbRpc => IDX_BB_RPC,
             BtcPress::IdxBbRest => IDX_BB_REST,
-            BtcPress::EsploraSave(net) => super::esplora_ids(net).1,
-            BtcPress::EsploraDefault(net) => super::esplora_ids(net).2,
-            BtcPress::EsploraTest(net) => super::esplora_ids(net).3,
+            BtcPress::EsploraSave(net) => esplora_ids(net).1,
+            BtcPress::EsploraDefault(net) => esplora_ids(net).2,
+            BtcPress::EsploraTest(net) => esplora_ids(net).3,
             BtcPress::EvmAccount(Row(row)) => EVM_ACCOUNT_BASE.wrapping_add(row),
             BtcPress::Account(Row(row)) => ACCOUNT_BASE.wrapping_add(row),
             BtcPress::Utxo(Row(row)) => UTXO_BASE.wrapping_add(row),
@@ -506,6 +511,55 @@ pub mod ids {
                 }),
         }
     }
+
+    /// The fee radio ids of the send form (2026-11-24 S5-4: moved into `ids` with the other id
+    /// tables; the screens draw [`super::fee_presses`]) (`bump = false`) or the fee-bump form, in
+    /// [`super::FEE_CHOICES`] order.
+    #[must_use]
+    pub const fn fee_ids(bump: bool) -> [u16; 4] {
+        if bump {
+            [
+                BUMP_FEE_FAST,
+                BUMP_FEE_NORMAL,
+                BUMP_FEE_SLOW,
+                BUMP_FEE_MANUAL,
+            ]
+        } else {
+            [FEE_FAST, FEE_NORMAL, FEE_SLOW, FEE_MANUAL]
+        }
+    }
+
+    /// The fee choice of a radio id, with whether it belongs to the fee-bump form.
+    #[must_use]
+    pub fn fee_choice_of(id: u16) -> Option<(yw_engine::wallet::app_btc::BtcFeeChoice, bool)> {
+        for bump in [false, true] {
+            if let Some(position) = fee_ids(bump).iter().position(|known| *known == id) {
+                return super::FEE_CHOICES
+                    .get(position)
+                    .map(|choice| (*choice, bump));
+            }
+        }
+        None
+    }
+
+    /// `(edit, 저장, 기본값으로, 테스트)` ids of a network's Esplora URL row.
+    #[must_use]
+    pub const fn esplora_ids(net: yw_core::btc::BtcNetwork) -> (u16, u16, u16, u16) {
+        match net {
+            yw_core::btc::BtcNetwork::Mainnet => (
+                ESPLORA_MAINNET_EDIT,
+                ESPLORA_MAINNET_SAVE,
+                ESPLORA_MAINNET_DEFAULT,
+                ESPLORA_MAINNET_TEST,
+            ),
+            yw_core::btc::BtcNetwork::Testnet4 => (
+                ESPLORA_TESTNET4_EDIT,
+                ESPLORA_TESTNET4_SAVE,
+                ESPLORA_TESTNET4_DEFAULT,
+                ESPLORA_TESTNET4_TEST,
+            ),
+        }
+    }
 }
 
 /// The fee choices in radio order.
@@ -515,57 +569,6 @@ const FEE_CHOICES: [BtcFeeChoice; 4] = [
     BtcFeeChoice::Slow,
     BtcFeeChoice::Manual,
 ];
-
-/// The fee radio ids of the send form (`bump = false`) or the fee-bump form, in
-/// [`FEE_CHOICES`] order.
-#[must_use]
-pub const fn fee_ids(bump: bool) -> [u16; 4] {
-    if bump {
-        [
-            ids::BUMP_FEE_FAST,
-            ids::BUMP_FEE_NORMAL,
-            ids::BUMP_FEE_SLOW,
-            ids::BUMP_FEE_MANUAL,
-        ]
-    } else {
-        [
-            ids::FEE_FAST,
-            ids::FEE_NORMAL,
-            ids::FEE_SLOW,
-            ids::FEE_MANUAL,
-        ]
-    }
-}
-
-/// The fee choice of a radio id, with whether it belongs to the fee-bump form.
-#[must_use]
-pub fn fee_choice_of(id: u16) -> Option<(BtcFeeChoice, bool)> {
-    for bump in [false, true] {
-        if let Some(position) = fee_ids(bump).iter().position(|known| *known == id) {
-            return FEE_CHOICES.get(position).map(|choice| (*choice, bump));
-        }
-    }
-    None
-}
-
-/// `(edit, 저장, 기본값으로, 테스트)` ids of a network's Esplora URL row.
-#[must_use]
-pub const fn esplora_ids(net: BtcNetwork) -> (u16, u16, u16, u16) {
-    match net {
-        BtcNetwork::Mainnet => (
-            ids::ESPLORA_MAINNET_EDIT,
-            ids::ESPLORA_MAINNET_SAVE,
-            ids::ESPLORA_MAINNET_DEFAULT,
-            ids::ESPLORA_MAINNET_TEST,
-        ),
-        BtcNetwork::Testnet4 => (
-            ids::ESPLORA_TESTNET4_EDIT,
-            ids::ESPLORA_TESTNET4_SAVE,
-            ids::ESPLORA_TESTNET4_DEFAULT,
-            ids::ESPLORA_TESTNET4_TEST,
-        ),
-    }
-}
 
 /// The settings name with its Korean particle (`mainnet으로`, `testnet4로`; English: the name).
 fn with_particle(lang: Lang, net: BtcNetwork) -> String {
@@ -617,6 +620,43 @@ fn local_time(facts: &dyn yw_engine::screen::facts::ScreenFacts, unix_ms: u64) -
 
 /// The rate a fee choice would use with `quote` (the floor when the estimate is below it, like
 /// `choose_fee_rate`); `None` for no estimate, no preview or `직접 입력`.
+/// The fee radios' presses of the send form (`bump = false`) or the fee-bump form, in
+/// [`FEE_CHOICES`] order (2026-11-24 S5-4: the screens drew the ids of `ids::fee_ids`).
+#[must_use]
+pub const fn fee_presses(bump: bool) -> [BtcPress; 4] {
+    if bump {
+        [
+            BtcPress::BumpFeeFast,
+            BtcPress::BumpFeeNormal,
+            BtcPress::BumpFeeSlow,
+            BtcPress::BumpFeeManual,
+        ]
+    } else {
+        [
+            BtcPress::FeeFast,
+            BtcPress::FeeNormal,
+            BtcPress::FeeSlow,
+            BtcPress::FeeManual,
+        ]
+    }
+}
+
+/// `(edit, 저장, 기본값으로, 테스트)` of a network's Esplora URL row (2026-11-24 S5-4: the
+/// screens drew the ids of `ids::esplora_ids`).
+#[must_use]
+pub const fn esplora_controls(net: BtcNetwork) -> (EditField, BtcPress, BtcPress, BtcPress) {
+    let edit = match net {
+        BtcNetwork::Mainnet => EditField::BtcEsploraMainnet,
+        BtcNetwork::Testnet4 => EditField::BtcEsploraTestnet4,
+    };
+    (
+        edit,
+        BtcPress::EsploraSave(net),
+        BtcPress::EsploraDefault(net),
+        BtcPress::EsploraTest(net),
+    )
+}
+
 fn quoted_rate(choice: BtcFeeChoice, quote: Option<&FeeQuote>) -> Option<FeeRate> {
     let quote = quote?;
     let slot = match choice {
@@ -734,7 +774,7 @@ impl App {
                 items.push(Item::Banner(gate.text(lang), Tone::Danger));
                 // That network's row with its field open (2026-11-10).
                 items.push(Item::Row(vec![Ctl::button(
-                    crate::ui::screens::ids::BTC_RPC_OPEN,
+                    CorePress::BtcRpcOpen,
                     text::RPC_SETUP.get(lang),
                 )]));
             }
@@ -744,8 +784,8 @@ impl App {
     fn btc_mismatch_row(lang: Lang, meta: BtcNetwork, settings: BtcNetwork, items: &mut Vec<Item>) {
         let (keep, change) = mismatch_labels(lang, meta, settings);
         items.push(Item::Row(vec![
-            Ctl::button(ids::MISMATCH_KEEP_META, &keep),
-            Ctl::button(ids::MISMATCH_USE_SETTINGS, &change),
+            Ctl::button(BtcPress::MismatchKeepMeta, &keep),
+            Ctl::button(BtcPress::MismatchUseSettings, &change),
         ]));
     }
 
@@ -793,7 +833,7 @@ impl App {
                     .fill(lang, [doing.get(lang), &discovery.checked.to_string()]),
             ));
             items.push(Item::Row(vec![Ctl::button(
-                ids::DISCOVER_CANCEL,
+                BtcPress::DiscoverCancel,
                 text::CANCEL.get(lang),
             )]));
             return;
@@ -806,7 +846,8 @@ impl App {
                 .unwrap_or_else(|| DISCOVERY_INCOMPLETE.get(lang).to_owned());
             items.push(Item::Banner(text, Tone::Warn));
             items.push(Item::Row(vec![
-                Ctl::button(ids::DISCOVER_RETRY, text::RETRY.get(lang)).enabled(ctx.gate().is_ok()),
+                Ctl::button(BtcPress::DiscoverRetry, text::RETRY.get(lang))
+                    .enabled(ctx.gate().is_ok()),
             ]));
         }
     }
@@ -819,7 +860,7 @@ impl App {
         let single = ctx.btc_meta().is_some_and(BtcMeta::is_single);
         if discovery_done && !single && !self.btc.discovery.running {
             items.push(Item::Row(vec![
-                Ctl::button(ids::DISCOVER_MORE, text::FIND_MORE.get(ctx.lang)).enabled(usable),
+                Ctl::button(BtcPress::DiscoverMore, text::FIND_MORE.get(ctx.lang)).enabled(usable),
             ]));
         }
     }
@@ -854,7 +895,11 @@ impl App {
         };
         let mut accounts = Vec::new();
         let mut chosen = None;
-        for (index, row) in rows.iter().take(usize::from(ids::ACCOUNT_SPAN)).enumerate() {
+        for (index, row) in rows
+            .iter()
+            .take(usize::from(rows::BTC_ACCOUNTS))
+            .enumerate()
+        {
             let account = ctx.accounts().into_iter().find(|meta| meta.id() == row.id);
             let source = account.map_or(yw_engine::screen::AccountSource::Card(None), |meta| {
                 Wallet::btc_source(meta.account(), net)
@@ -863,7 +908,7 @@ impl App {
                 chosen = Some((row.id, row.name.clone()));
             }
             accounts.push(AccountItem {
-                id: ids::ACCOUNT_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
+                press: BtcPress::Account(Row(u16::try_from(index).unwrap_or(0))).into(),
                 label: row.name.clone(),
                 source,
                 selected: row.selected,
@@ -873,17 +918,17 @@ impl App {
         let selected = chosen.map(|(id, label)| {
             if self.btc.rename == Some(id) {
                 return SelectedLine::Rename {
-                    edit: ids::RENAME_EDIT,
-                    save: ids::RENAME_SAVE,
-                    cancel: ids::RENAME_CANCEL,
+                    edit: EditField::BtcRename,
+                    save: BtcPress::RenameSave.into(),
+                    cancel: BtcPress::RenameCancel.into(),
                     label,
                 };
             }
-            let mut buttons = vec![Ctl::button(ids::RENAME, text::RENAME.get(lang)).compact()];
+            let mut buttons = vec![Ctl::button(BtcPress::Rename, text::RENAME.get(lang)).compact()];
             // Not the default account, not an imported key (it has `삭제`), not the last one
             // shown (2026-11-15, as EVM and Solana).
             if self.btc_can_hide(id) {
-                buttons.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
+                buttons.push(Ctl::button(BtcPress::Hide, text::HIDE.get(lang)).compact());
             }
             buttons.extend(self.btc_key_parts(ctx).0);
             SelectedLine::Buttons(buttons)
@@ -902,20 +947,22 @@ impl App {
             if self.btc.add_account_open {
                 footer.push(Item::Help(text::ADD_ACCOUNT_HELP.get(lang).to_owned()));
                 self.btc_add_source_items(ctx, usable, &mut footer);
-                for (offset, script_type) in yw_core::btc::ScriptType::CHOICES.iter().enumerate() {
-                    let id =
-                        ids::ACCOUNT_ADD_TYPE.saturating_add(u16::try_from(offset).unwrap_or(0));
+                for script_type in &yw_core::btc::ScriptType::CHOICES {
                     footer.push(Item::Row(vec![
-                        Ctl::button(id, &script_type.label_in(lang, net)).enabled(usable),
+                        Ctl::button(
+                            BtcPress::AccountAddType(*script_type),
+                            &script_type.label_in(lang, net),
+                        )
+                        .enabled(usable),
                     ]));
                 }
                 footer.push(Item::Row(vec![Ctl::button(
-                    ids::ACCOUNT_ADD_CANCEL,
+                    BtcPress::AccountAddCancel,
                     text::CANCEL.get(lang),
                 )]));
             } else {
                 actions.push(
-                    Ctl::button(ids::ACCOUNT_ADD, text::ADD_ACCOUNT.get(lang))
+                    Ctl::button(BtcPress::AccountAdd, text::ADD_ACCOUNT.get(lang))
                         .compact()
                         .enabled(usable),
                 );
@@ -934,7 +981,7 @@ impl App {
             items,
             AccountCard {
                 title: text::MY_ACCOUNTS.get(lang).to_owned(),
-                picker: crate::ui::screens_links::ids::PICKER_BTC,
+                picker: LinksPress::PickerBtc.into(),
                 accounts,
                 empty: Some(empty),
                 locked: None,
@@ -961,7 +1008,7 @@ impl App {
         ));
         items.push(Item::Row(vec![
             Ctl::radio(
-                ids::ADDRESS_MODE_SINGLE,
+                BtcPress::AddressModeSingle,
                 yw_engine::wallet::app_btc::T_BTC_MODE_SINGLE.get(lang),
                 fixed,
                 true,
@@ -970,7 +1017,7 @@ impl App {
         ]));
         items.push(Item::Row(vec![
             Ctl::radio(
-                ids::ADDRESS_MODE_HD,
+                BtcPress::AddressModeHd,
                 yw_engine::wallet::app_btc::T_BTC_MODE_HD.get(lang),
                 !fixed,
                 false,
@@ -998,10 +1045,10 @@ impl App {
                 } else {
                     self.btc.add_mnemonic == Some(info.id)
                 };
-                let id = crate::ui::screens_mnemonics::ids::BTC_PICK_BASE
-                    .saturating_add(u16::try_from(row).unwrap_or(0));
+                let press = MnPress::BtcPick(Row(u16::try_from(row).unwrap_or(0)));
                 items.push(Item::Row(vec![
-                    Ctl::radio(id, &self.mnemonic_label(info.id), chosen, row == 0).enabled(usable),
+                    Ctl::radio(press, &self.mnemonic_label(info.id), chosen, row == 0)
+                        .enabled(usable),
                 ]));
             }
             if self.btc.add_mnemonic.is_some() {
@@ -1012,7 +1059,7 @@ impl App {
         items.push(Item::Text(text::KEY_SOURCE.get(lang).to_owned()));
         items.push(Item::Row(vec![
             Ctl::radio(
-                ids::ACCOUNT_SOURCE_STANDARD,
+                BtcPress::AccountSourceStandard,
                 yw_engine::wallet::app_btc::T_BTC_SOURCE_STANDARD.get(lang),
                 !evm,
                 true,
@@ -1026,7 +1073,7 @@ impl App {
         ));
         items.push(Item::Row(vec![
             Ctl::radio(
-                ids::ACCOUNT_SOURCE_EVM,
+                BtcPress::AccountSourceEvm,
                 yw_engine::wallet::app_btc::T_BTC_SOURCE_EVM.get(lang),
                 evm,
                 false,
@@ -1048,16 +1095,17 @@ impl App {
         }
         for (row, (index, label, address)) in accounts
             .iter()
-            .take(usize::from(ids::EVM_ACCOUNT_SPAN))
+            .take(usize::from(rows::BTC_EVM_ACCOUNTS))
             .enumerate()
         {
-            let id = ids::EVM_ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0));
+            let press = BtcPress::EvmAccount(Row(u16::try_from(row).unwrap_or(0)));
             let text = format!(
                 "{label} · {} · m/44'/60'/0'/0/{index}",
                 yw_engine::wallet::app_btc::short_address(address)
             );
             items.push(Item::Row(vec![
-                Ctl::radio(id, &text, self.btc.add_evm_index == *index, row == 0).enabled(usable),
+                Ctl::radio(press, &text, self.btc.add_evm_index == *index, row == 0)
+                    .enabled(usable),
             ]));
         }
         items.push(Item::Help(text::EVM_PICK_HELP.get(lang).to_owned()));
@@ -1144,7 +1192,7 @@ impl App {
             items.push(Item::Help(text::NO_UTXOS.get(lang).to_owned()));
         }
         let can_freeze = self.btc_unlocked() && ctx.mismatch().is_none();
-        for (row, utxo) in utxos.iter().take(usize::from(ids::UTXO_SPAN)).enumerate() {
+        for (row, utxo) in utxos.iter().take(usize::from(rows::BTC_UTXOS)).enumerate() {
             let mut line = format!(
                 "{} · {}",
                 BtcUi::amount_text(utxo.value),
@@ -1173,7 +1221,7 @@ impl App {
             }
             items.push(Item::Text(line));
             items.push(Item::Mono(utxo.outpoint.to_string()));
-            let id = ids::UTXO_BASE.saturating_add(u16::try_from(row).unwrap_or(0));
+            let press = BtcPress::Utxo(Row(u16::try_from(row).unwrap_or(0)));
             let label = if utxo.frozen.is_some() {
                 text::UNFREEZE
             } else {
@@ -1181,13 +1229,13 @@ impl App {
             }
             .get(lang);
             items.push(Item::Row(vec![
-                Ctl::button(id, label).enabled(can_freeze && !utxo.in_flight),
+                Ctl::button(press, label).enabled(can_freeze && !utxo.in_flight),
             ]));
         }
-        let hidden = utxos.len().saturating_sub(usize::from(ids::UTXO_SPAN));
+        let hidden = utxos.len().saturating_sub(usize::from(rows::BTC_UTXOS));
         if hidden > 0 {
             items.push(Item::Muted(
-                text::UTXO_HIDDEN.fill(lang, [&hidden.to_string(), &ids::UTXO_SPAN.to_string()]),
+                text::UTXO_HIDDEN.fill(lang, [&hidden.to_string(), &rows::BTC_UTXOS.to_string()]),
             ));
         }
     }
@@ -1214,11 +1262,7 @@ impl App {
             Vec::new()
         };
         for (index, row) in rows.iter().enumerate() {
-            let base = ids::ACTIVITY_BASE.saturating_add(
-                u16::try_from(index)
-                    .unwrap_or(0)
-                    .saturating_mul(ids::ACTIVITY_STRIDE),
-            );
+            let act = |action| BtcPress::Activity(Row(u16::try_from(index).unwrap_or(0)), action);
             // The status at the end of the first line (2026-11-12: a line of its own before).
             items.push(Item::Text(format!(
                 "{} · {} · {} · {}",
@@ -1256,17 +1300,13 @@ impl App {
                 let save = self.offer_save(BookChain::Btc, &row.counterparty).then(|| {
                     crate::ui::screens_links::save_icon(
                         self.settings.language,
-                        base.saturating_add(ids::ACT_SAVE),
+                        act(BtcActivityAction::SaveAddress),
                     )
                 });
                 crate::ui::screens_links::push_address_line(
                     items,
                     self.settings.language,
-                    crate::ui::screens_links::ids::row_id(
-                        crate::ui::screens_links::ids::BTC_TO_BASE,
-                        crate::ui::screens_links::ids::BTC_TO_SPAN,
-                        index,
-                    ),
+                    rows::row(index, rows::BTC_TO).map(|row| LinksPress::BtcTo(row).into()),
                     &row.counterparty,
                     yw_engine::screen::address::AddressKind::Bitcoin,
                     save.into_iter().collect(),
@@ -1275,15 +1315,15 @@ impl App {
             crate::ui::screens_links::push_hash_line(
                 items,
                 self.settings.language,
-                Some(base.saturating_add(ids::ACT_COPY)),
+                Some(act(BtcActivityAction::CopyHash).into()),
                 &row.txid,
                 self.explorer_tx_icons(
                     yw_engine::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
                     &row.txid,
-                    crate::ui::screens_explorer::ids::activity_ids(
-                        crate::ui::screens_explorer::ids::BTC_ACTIVITY_BASE,
-                        crate::ui::screens_explorer::ids::BTC_ACTIVITY_SPAN,
+                    crate::ui::screens_explorer::activity_links(
+                        ExplorerPress::BtcActivity,
                         index,
+                        rows::BTC_ACTIVITY_LINKS,
                     ),
                 ),
             );
@@ -1303,14 +1343,14 @@ impl App {
             let mut buttons = Vec::new();
             if row.can_bump {
                 buttons.push(
-                    Ctl::button(base.saturating_add(ids::ACT_BUMP), text::BUMP_FEE.get(lang))
+                    Ctl::button(act(BtcActivityAction::Bump), text::BUMP_FEE.get(lang))
                         .enabled(usable),
                 );
             }
             if row.can_rebroadcast {
                 buttons.push(
                     Ctl::button(
-                        base.saturating_add(ids::ACT_REBROADCAST),
+                        act(BtcActivityAction::Rebroadcast),
                         text::REBROADCAST.get(lang),
                     )
                     .enabled(usable),
@@ -1318,17 +1358,14 @@ impl App {
             }
             if row.can_abandon {
                 buttons.push(
-                    Ctl::button(
-                        base.saturating_add(ids::ACT_ABANDON),
-                        text::ABANDON.get(lang),
-                    )
-                    .enabled(unlocked),
+                    Ctl::button(act(BtcActivityAction::Abandon), text::ABANDON.get(lang))
+                        .enabled(unlocked),
                 );
             }
             if row.can_esplora {
                 buttons.push(
                     Ctl::button(
-                        base.saturating_add(ids::ACT_ESPLORA),
+                        act(BtcActivityAction::Esplora),
                         text::ESPLORA_SEND.get(lang),
                     )
                     .enabled(usable),
@@ -1338,7 +1375,7 @@ impl App {
                 let retry = flow.is_some_and(|flow| flow.retry_precheck);
                 buttons.push(
                     Ctl::button(
-                        base.saturating_add(ids::ACT_CONTINUE),
+                        act(BtcActivityAction::Continue),
                         if retry {
                             text::RETRY
                         } else {
@@ -1349,7 +1386,7 @@ impl App {
                     .enabled(usable),
                 );
                 buttons.push(
-                    Ctl::button(base.saturating_add(ids::ACT_CANCEL), text::CANCEL.get(lang))
+                    Ctl::button(act(BtcActivityAction::Cancel), text::CANCEL.get(lang))
                         .enabled(unlocked),
                 );
             }
@@ -1384,7 +1421,7 @@ impl App {
             .to_owned(),
         ));
         items.push(Item::Row(vec![Ctl::primary(
-            ids::SECTION_BTC,
+            BtcPress::SectionBtc,
             text::BTC_SETTINGS.get(lang),
         )]));
         items.push(Item::CardEnd);
@@ -1435,7 +1472,7 @@ impl App {
             if self.btc.tip_regressed {
                 items.push(Item::Help(text::TIP_REGRESSED_HELP.get(lang).to_owned()));
                 items.push(Item::Row(vec![
-                    Ctl::button(ids::RESET_TIP, text::RESET_TIP.get(lang))
+                    Ctl::button(BtcPress::ResetTip, text::RESET_TIP.get(lang))
                         .enabled(self.btc_unlocked()),
                 ]));
             }
@@ -1503,12 +1540,12 @@ impl App {
                 self.settings.language,
                 &address,
                 yw_engine::screen::address::AddressKind::Bitcoin,
-                ids::CARD_COPY,
+                BtcPress::CardCopy,
                 true,
                 self.explorer_address_icon(
                     yw_engine::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
                     &address,
-                    crate::ui::screens_explorer::ids::CARD_BTC,
+                    ExplorerPress::CardBtc,
                 ),
             ));
         } else if usable && ctx.btc_meta().is_some() {
@@ -1517,17 +1554,18 @@ impl App {
         }
         let send_block = self.btc.send_block(ctx);
         let mut actions = vec![
-            Ctl::primary(ids::SEND_OPEN, text::SEND.get(lang)).enabled(send_block.is_none()),
-            Ctl::primary(ids::RECEIVE_OPEN, text::RECEIVE.get(lang)).enabled(self.btc_unlocked()),
+            Ctl::primary(BtcPress::SendOpen, text::SEND.get(lang)).enabled(send_block.is_none()),
+            Ctl::primary(BtcPress::ReceiveOpen, text::RECEIVE.get(lang))
+                .enabled(self.btc_unlocked()),
         ];
         if BtcUi::bump_target(ctx).is_some() {
             actions.push(
-                Ctl::button(ids::BUMP_OPEN, text::BUMP_FEE.get(lang))
+                Ctl::button(BtcPress::BumpOpen, text::BUMP_FEE.get(lang))
                     .enabled(usable && !self.btc.slot && !ctx.journal_damaged()),
             );
         }
         actions.push(
-            Ctl::link(ids::REFRESH, text::REFRESH.get(lang))
+            Ctl::link(BtcPress::Refresh, text::REFRESH.get(lang))
                 .tip(crate::ui::screens::T_REFRESH_TIP.get(self.settings.language))
                 .enabled(usable && !self.btc.refresh.busy && !self.btc.discovery.running),
         );
@@ -1608,7 +1646,7 @@ impl App {
     /// radios carry the node's preview (2026-11-10, `BtcUi::fee_quote`): "빠름 · 약 20분 · 12
     /// sat/vB" (the floor when the estimate is below it), "· 추정 없음", or a loading line.
     fn btc_fee_items(&self, fee: &BtcFeeForm, bump: bool, items: &mut Vec<Item>) {
-        let radio_ids = fee_ids(bump);
+        let radio_presses = fee_presses(bump);
         let lang = self.settings.language;
         let net = self.btc_ctx().net();
         let quote = if bump {
@@ -1619,15 +1657,15 @@ impl App {
         let loading = !bump && quote.is_none() && self.btc.fee_quote_job.is_some();
         let radios = FEE_CHOICES
             .iter()
-            .zip(radio_ids)
+            .zip(radio_presses)
             .enumerate()
-            .map(|(index, (choice, id))| {
+            .map(|(index, (choice, press))| {
                 let label = if bump {
                     choice.label(lang).to_owned()
                 } else {
                     fee_choice_label(lang, *choice, quote.as_ref())
                 };
-                Ctl::radio(id, &label, fee.choice == *choice, index == 0)
+                Ctl::radio(press, &label, fee.choice == *choice, index == 0)
             })
             .collect();
         items.push(Item::LabeledRow(text::FEE.get(lang).to_owned(), radios));
@@ -1644,9 +1682,9 @@ impl App {
         }
         if fee.choice == BtcFeeChoice::Manual {
             let id = if bump {
-                ids::BUMP_MANUAL_EDIT
+                EditField::BtcBumpManual
             } else {
-                ids::FEE_MANUAL_EDIT
+                EditField::BtcFeeManual
             };
             items.push(Item::LabeledRow(
                 text::FEE_RATE_LABEL.get(lang).to_owned(),
@@ -1680,9 +1718,9 @@ impl App {
                 Tone::Warn,
             ));
             let id = if bump {
-                ids::BUMP_TYPED_EDIT
+                EditField::BtcBumpTyped
             } else {
-                ids::TYPED_FEE_EDIT
+                EditField::BtcTypedFee
             };
             items.push(Item::LabeledRow(
                 text::TYPED_FEE_LABEL.get(lang).to_owned(),
@@ -1739,11 +1777,8 @@ impl App {
         items.push(Item::LabeledRow(
             text::RECIPIENT_ADDRESS.get(lang).to_owned(),
             vec![
-                Ctl::edit(ids::SEND_TO_EDIT, &form.to_text, 430, false, 128),
-                Ctl::button(
-                    crate::ui::screens_book::ids::BTC_PICK,
-                    text::PICK_FROM_BOOK.get(lang),
-                ),
+                Ctl::edit(EditField::BtcSendTo, &form.to_text, 430, false, 128),
+                Ctl::button(BookPress::BtcPick, text::PICK_FROM_BOOK.get(lang)),
             ],
         ));
         // The format hint only until the address is valid (2026-11-12); the reminder to check
@@ -1779,7 +1814,7 @@ impl App {
             if let Some(note) = &form.look_alike {
                 items.push(Item::Banner(note.clone(), Tone::HighRisk));
                 items.push(Item::Row(vec![Ctl::check(
-                    ids::SEND_ADDR_ACK,
+                    BtcPress::SendAddrAck,
                     text::ADDR_ACK.get(lang),
                     form.ack,
                 )]));
@@ -1805,18 +1840,18 @@ impl App {
         items.push(Item::LabeledRow(
             text::AMOUNT.get(lang).to_owned(),
             vec![
-                Ctl::edit(ids::SEND_AMOUNT_EDIT, &form.amount_text, 220, false, 32)
+                Ctl::edit(EditField::BtcSendAmount, &form.amount_text, 220, false, 32)
                     .enabled(!form.send_max),
                 // Right after the field like every chain's `최대` (2026-11-12), then the unit.
-                Ctl::tab(ids::SEND_MAX, text::MAX.get(lang), form.send_max),
+                Ctl::tab(BtcPress::SendMax, text::MAX.get(lang), form.send_max),
                 Ctl::radio(
-                    ids::UNIT_BTC,
+                    BtcPress::UnitBtc,
                     "BTC",
                     form.unit == yw_engine::wallet::app_btc::BtcAmountUnit::Btc,
                     true,
                 ),
                 Ctl::radio(
-                    ids::UNIT_SATS,
+                    BtcPress::UnitSats,
                     "sats",
                     form.unit == yw_engine::wallet::app_btc::BtcAmountUnit::Sats,
                     false,
@@ -1858,8 +1893,8 @@ impl App {
         self.journal_send_items(yw_engine::wallet::app_sidecar::SendChain::Btc, items);
         let blocker = self.btc_review_blocker();
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SEND_REVIEW, text::REVIEW.get(lang)).enabled(blocker.is_none()),
-            Ctl::button(ids::SEND_CANCEL, text::CANCEL.get(lang)),
+            Ctl::primary(BtcPress::SendReview, text::REVIEW.get(lang)).enabled(blocker.is_none()),
+            Ctl::button(BtcPress::SendCancel, text::CANCEL.get(lang)),
         ]));
         // What `검토` waits for, or that it sends nothing yet (2026-11-12).
         items.push(Item::Help(
@@ -1962,17 +1997,13 @@ impl App {
         items.push(Item::Muted(text::BUMP_HELP.get(lang).to_owned()));
         self.btc_fee_items(&form.fee, true, items);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::BUMP_REVIEW, text::REVIEW.get(lang))
+            Ctl::primary(BtcPress::BumpReview, text::REVIEW.get(lang))
                 .enabled(self.btc_can_review_bump()),
-            Ctl::button(ids::BUMP_CANCEL, text::CANCEL.get(lang)),
+            Ctl::button(BtcPress::BumpCancel, text::CANCEL.get(lang)),
         ]));
     }
 
     /// The S11 result for Bitcoin: the local txid, status and the post-sign flow.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the result rows and buttons in order"
-    )]
     pub fn btc_send_result_screen(&self, items: &mut Vec<Item>) {
         let ctx = self.btc_ctx();
         let net = ctx.net();
@@ -1994,7 +2025,7 @@ impl App {
         let Some(txid) = self.btc.result else {
             items.push(Item::Muted(text::NO_RESULT.get(lang).to_owned()));
             items.push(Item::Row(vec![Ctl::button(
-                crate::ui::screens::ids::BACK_MAIN,
+                CorePress::BackMain,
                 text::BACK_MAIN.get(lang),
             )]));
             return;
@@ -2025,15 +2056,15 @@ impl App {
                 if waiting { Tone::Warn } else { Tone::Info },
             ));
         }
-        let mut row = vec![Ctl::button(ids::RESULT_COPY, text::COPY_HASH.get(lang))];
+        let mut row = vec![Ctl::button(BtcPress::ResultCopy, text::COPY_HASH.get(lang))];
         // 2026-11-11: the txid on the network's explorer (also before the broadcast is known:
         // the page then says it does not know the transaction yet).
         row.extend(self.explorer_tx_buttons(
             yw_engine::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
             &txid.to_display_hex(),
             Some((
-                crate::ui::screens_explorer::ids::RESULT_BTC_OPEN,
-                crate::ui::screens_explorer::ids::RESULT_BTC_COPY,
+                ExplorerPress::ResultBtcOpen.into(),
+                ExplorerPress::ResultBtcCopy.into(),
             )),
         ));
         let signed = record
@@ -2043,7 +2074,8 @@ impl App {
             && flow.is_some_and(|flow| flow.retry_precheck && flow.stage == BtcFlowStage::Waiting)
         {
             row.push(
-                Ctl::button(ids::RESULT_RETRY, text::RETRY.get(lang)).enabled(ctx.gate().is_ok()),
+                Ctl::button(BtcPress::ResultRetry, text::RETRY.get(lang))
+                    .enabled(ctx.gate().is_ok()),
             );
         }
         let rejected = record
@@ -2062,16 +2094,13 @@ impl App {
                 .to_owned(),
             ));
             row.push(Ctl::button(
-                ids::RESULT_TO_SEND,
+                BtcPress::ResultToSend,
                 text::TO_SEND_SCREEN.get(lang),
             ));
         }
         row.insert(
             0,
-            Ctl::primary(
-                crate::ui::screens::ids::BACK_MAIN,
-                text::BACK_MAIN.get(lang),
-            ),
+            Ctl::primary(CorePress::BackMain, text::BACK_MAIN.get(lang)),
         );
         items.push(Item::Row(row));
         if !bump {
@@ -2129,7 +2158,7 @@ impl App {
         let mut actions = Vec::new();
         if !view.fixed {
             actions.push(
-                Ctl::button(ids::NEW_ADDRESS, text::NEW_ADDRESS.get(lang))
+                Ctl::button(BtcPress::NewAddress, text::NEW_ADDRESS.get(lang))
                     .compact()
                     .enabled(ctx.gate().is_ok()),
             );
@@ -2137,7 +2166,7 @@ impl App {
         items.push(crate::ui::screens::receive_address_row(
             self.settings.language,
             &grouped(&view.address),
-            ids::COPY_ADDRESS,
+            BtcPress::CopyAddress,
             actions,
         ));
         items.push(Item::Qr(view.qr.clone()));
@@ -2160,7 +2189,7 @@ impl App {
             text::SETTINGS_CARD.get(lang).to_owned(),
         )));
         items.push(Item::Row(vec![Ctl::check(
-            ids::ENABLE,
+            BtcPress::Enable,
             text::ENABLE.get(lang),
             settings.enabled,
         )]));
@@ -2168,13 +2197,13 @@ impl App {
             text::NETWORK.get(lang).to_owned(),
             vec![
                 Ctl::radio(
-                    ids::SET_MAINNET,
+                    BtcPress::SetMainnet,
                     "mainnet",
                     net == BtcNetwork::Mainnet,
                     true,
                 ),
                 Ctl::radio(
-                    ids::SET_TESTNET4,
+                    BtcPress::SetTestnet4,
                     text::TESTNET4_RADIO.get(lang),
                     net == BtcNetwork::Testnet4,
                     false,
@@ -2207,7 +2236,7 @@ impl App {
             ));
         }
         items.push(Item::Row(vec![Ctl::button(
-            crate::ui::screens::ids::GO_NETWORK,
+            CorePress::GoNetwork,
             text::GO_NETWORK.get(lang),
         )]));
         items.push(Item::CardEnd);
@@ -2219,19 +2248,19 @@ impl App {
             text::INDEXER.get(lang).to_owned(),
             vec![
                 Ctl::radio(
-                    ids::IDX_ESPLORA,
+                    BtcPress::IdxEsplora,
                     "Esplora",
                     indexer == BtcIndexer::Esplora,
                     true,
                 ),
                 Ctl::radio(
-                    ids::IDX_BB_RPC,
+                    BtcPress::IdxBbRpc,
                     "Blockbook JSON-RPC (bb-rpc)",
                     indexer == BtcIndexer::BbRpc,
                     false,
                 ),
                 Ctl::radio(
-                    ids::IDX_BB_REST,
+                    BtcPress::IdxBbRest,
                     "Blockbook REST (bb-rest)",
                     indexer == BtcIndexer::BbRest,
                     false,
@@ -2243,7 +2272,7 @@ impl App {
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("Esplora URL".to_owned())));
         for known in BtcNetwork::ALL {
-            let (edit, save, default, test) = esplora_ids(known);
+            let (edit, save, default, test) = esplora_controls(known);
             let value = ctx.esplora_text(known);
             items.push(Item::Subtitle(format!(
                 "Esplora URL — {}",
@@ -2277,9 +2306,7 @@ mod tests {
     use yw_core::btc::{BtcMeta, BtcNetwork, Sats};
     use yw_platform::http::HttpsUrl;
 
-    use super::{
-        T_BTC_ESPLORA_NOTE, fee_choice_of, fee_ids, grouped, ids, mismatch_labels, network_tone,
-    };
+    use super::{T_BTC_ESPLORA_NOTE, grouped, ids, mismatch_labels, network_tone};
     use crate::app::{App, Paths};
     use crate::ui::main_window::{Ctl, Item};
     use yw_core::lang::Lang;
@@ -2392,9 +2419,9 @@ mod tests {
         // The other modules are checked against these ranges in `ui::command_ids`.
         // Fee radios map back to their form.
         for bump in [false, true] {
-            let choices: Vec<_> = fee_ids(bump)
+            let choices: Vec<_> = ids::fee_ids(bump)
                 .into_iter()
-                .map(|id| fee_choice_of(id).unwrap())
+                .map(|id| ids::fee_choice_of(id).unwrap())
                 .collect();
             assert_eq!(
                 choices,
@@ -2406,7 +2433,7 @@ mod tests {
                 ]
             );
         }
-        assert_eq!(fee_choice_of(ids::SEND_REVIEW), None);
+        assert_eq!(ids::fee_choice_of(ids::SEND_REVIEW), None);
     }
 
     #[test]

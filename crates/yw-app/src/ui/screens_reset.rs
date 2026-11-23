@@ -4,6 +4,8 @@
 use crate::app::App;
 use crate::app_extension::{CHROME_EXTENSIONS_URL, ExtensionStatus};
 use yw_core::lang::Lang;
+use yw_engine::cmd::{CorePress, ExtPress, ResetPress};
+use yw_engine::form::EditField;
 use yw_engine::screen::Tone;
 use yw_engine::screen::facts::ScreenFacts;
 use yw_engine::screen::model::{Ctl, Item};
@@ -298,16 +300,13 @@ impl App {
             format!("{band} ({})", code.code()),
             Tone::Danger,
         ));
-        let mut row = vec![Ctl::primary(ids::WAIT_RETRY, text::RELOAD.get(lang))];
+        let mut row = vec![Ctl::primary(ResetPress::WaitRetry, text::RELOAD.get(lang))];
         // S10's toolbar has `잠금` already.
         if self.screen != yw_engine::wallet::Screen::Main {
-            row.push(Ctl::button(
-                crate::ui::screens::ids::LOCK,
-                text::LOCK.get(lang),
-            ));
+            row.push(Ctl::button(CorePress::Lock, text::LOCK.get(lang)));
         }
         row.push(Ctl::button(
-            crate::ui::screens::ids::OPEN_LOG_FOLDER,
+            CorePress::OpenLogFolder,
             text::OPEN_LOG_FOLDER.get(lang),
         ));
         items.push(Item::Row(row));
@@ -322,17 +321,14 @@ impl App {
         ));
         let mut row = Vec::new();
         if matches!(self.mode, AppMode::BackupPending | AppMode::Unlocked { .. }) {
-            row.push(Ctl::primary(ids::WAIT_RETRY, text::RELOAD.get(lang)));
+            row.push(Ctl::primary(ResetPress::WaitRetry, text::RELOAD.get(lang)));
         }
+        row.push(Ctl::button(CorePress::Lock, text::LOCK.get(lang)));
         row.push(Ctl::button(
-            crate::ui::screens::ids::LOCK,
-            text::LOCK.get(lang),
-        ));
-        row.push(Ctl::button(
-            crate::ui::screens::ids::OPEN_LOG_FOLDER,
+            CorePress::OpenLogFolder,
             text::OPEN_LOG_FOLDER.get(lang),
         ));
-        row.push(Ctl::link(ids::RESET_OPEN, text::RESET_LINK.get(lang)));
+        row.push(Ctl::link(ResetPress::Open, text::RESET_LINK.get(lang)));
         items.push(Item::Row(row));
     }
 
@@ -341,7 +337,7 @@ impl App {
         items.push(Item::Gap(8));
         items.push(Item::Help(help.to_owned()));
         items.push(Item::Row(vec![Ctl::link(
-            ids::RESET_OPEN,
+            ResetPress::Open,
             text::RESET_LINK.get(lang),
         )]));
     }
@@ -403,7 +399,7 @@ impl App {
         }
         items.push(Item::Help(T_RESET_SETTINGS.get(lang).to_owned()));
         items.push(Item::Row(vec![Ctl::check(
-            ids::RESET_SETTINGS_CHECK,
+            ResetPress::SettingsCheck(None),
             text::MOVE_SETTINGS.get(lang),
             self.reset.include_settings,
         )]));
@@ -413,7 +409,7 @@ impl App {
         items.push(Item::Text(text::TYPE_PHRASE.fill(lang, [phrase])));
         items.push(Item::LabeledRow(
             text::PHRASE_LABEL.get(lang).to_owned(),
-            vec![Ctl::edit(ids::RESET_PHRASE, "", 160, false, 16)],
+            vec![Ctl::edit(EditField::ResetPhrase, "", 160, false, 16)],
         ));
         let label = if !self.reset.phrase_ok {
             text::HOLD_NEEDS_PHRASE.fill(lang, [phrase])
@@ -428,7 +424,7 @@ impl App {
             enabled: self.reset.phrase_ok,
         });
         items.push(Item::Row(vec![Ctl::button(
-            ids::RESET_CANCEL,
+            ResetPress::Cancel,
             text::CANCEL.get(lang),
         )]));
         items.push(Item::CardEnd);
@@ -460,7 +456,7 @@ impl App {
     pub(crate) fn extension_screen(&self, items: &mut Vec<Item>) {
         let lang = self.settings.language;
         items.push(Item::Row(vec![Ctl::link(
-            ids::EXT_BACK,
+            ExtPress::Back,
             text::BACK.get(lang),
         )]));
         items.push(Item::Title(text::EXT_TITLE.get(lang).to_owned()));
@@ -500,16 +496,16 @@ impl App {
         }
         // The folder picker takes the copied path (2026-11-10): copying is the main step.
         let mut row = vec![
-            Ctl::primary(ids::EXT_COPY_PATH, text::EXT_COPY_PATH.get(lang))
+            Ctl::primary(ExtPress::CopyPath, text::EXT_COPY_PATH.get(lang))
                 .enabled(found.is_some()),
             Ctl::button(
-                ids::EXT_COPY_URL,
+                ExtPress::CopyUrl,
                 &text::EXT_COPY_URL.fill(lang, [CHROME_EXTENSIONS_URL]),
             ),
         ];
         if self.facts().flags().open_folders {
             row.push(
-                Ctl::link(ids::EXT_OPEN_FOLDER, text::EXT_OPEN_FOLDER.get(lang))
+                Ctl::link(ExtPress::OpenFolder, text::EXT_OPEN_FOLDER.get(lang))
                     .enabled(found.is_some()),
             );
         }
@@ -527,7 +523,7 @@ impl App {
             )
         {
             items.push(Item::Row(vec![Ctl::link(
-                ids::EXT_OPEN,
+                ExtPress::Open,
                 text::EXT_LINK.get(self.settings.language),
             )]));
         }

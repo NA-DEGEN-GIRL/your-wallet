@@ -20,6 +20,8 @@
 
 use crate::app::App;
 use crate::ui::screens_links::PickerEntry;
+use yw_engine::cmd::{MnPress, Press};
+use yw_engine::form::EditField;
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::screen::text::{SOURCE_EVM_KEY, SOURCE_IMPORTED, SOURCE_WORDS};
@@ -28,8 +30,8 @@ use yw_engine::wallet::app_hidden::Family;
 /// One account of the card's drop-down.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountItem {
-    /// The entry's command id (the radio id of before).
-    pub id: u16,
+    /// The entry's press (the radio's of before; 2026-11-24 S5-4: its control id before).
+    pub press: Press,
     /// The account's label.
     pub label: String,
     /// Where its key comes from.
@@ -46,12 +48,12 @@ pub struct AccountItem {
 pub enum SelectedLine {
     /// Its inline rename: the field (`edit`, holding `label`), `저장` (`save`), `취소` (`cancel`).
     Rename {
-        /// The field's id.
-        edit: u16,
+        /// The field (2026-11-24 S5-4: the three were control ids before).
+        edit: EditField,
         /// `저장`.
-        save: u16,
+        save: Press,
         /// `취소`.
-        cancel: u16,
+        cancel: Press,
         /// The current label.
         label: String,
     },
@@ -64,8 +66,9 @@ pub enum SelectedLine {
 pub struct AccountCard {
     /// The card title (`내 EVM 계정`, `내 Solana 계정`).
     pub title: String,
-    /// The drop-down button's id (`screens_links::ids::PICKER_*`).
-    pub picker: u16,
+    /// The drop-down button's press (`LinksPress::Picker*`; 2026-11-24 S5-4: its control id
+    /// `screens_links::ids::PICKER_*` before).
+    pub picker: Press,
     /// The visible accounts in display order.
     pub accounts: Vec<AccountItem>,
     /// A muted line instead of the drop-down while there is no account.
@@ -115,7 +118,7 @@ impl App {
             .iter()
             .zip(self.account_item_labels(&card.accounts))
             .map(|(account, label)| PickerEntry {
-                id: account.id,
+                press: account.press,
                 label,
                 selected: account.selected,
                 enabled: (account.enabled && card.locked.is_none()) || account.selected,
@@ -191,7 +194,7 @@ impl App {
     #[must_use]
     pub fn mnemonics_link(&self) -> Ctl {
         Ctl::link(
-            crate::ui::screens_mnemonics::ids::MAIN_LINK,
+            MnPress::MainLink,
             crate::ui::screens::text::ADD_MANAGE_MNEMONICS.get(self.settings.language),
         )
         .compact()

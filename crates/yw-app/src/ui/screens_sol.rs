@@ -18,10 +18,16 @@ use yw_core::sol::{SolAddress, SolAsset, SolCluster, SplAllowEntry};
 use crate::app::App;
 use crate::ui::screens_accounts::{AccountCard, AccountItem, SelectedLine};
 use yw_engine::badge::Badge;
+use yw_engine::cmd::{
+    BookPress, BtcPress, CorePress, ExplorerPress, KeysPress, LinksPress, Press, Row, SolPress,
+    SolScanAction, ZecPress,
+};
+use yw_engine::form::EditField;
 use yw_engine::meta::{BookChain, Tab};
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::screen::rows;
 use yw_engine::wallet::app_book::{BookTarget, PromptPlace};
 use yw_engine::wallet::app_sol::SolAccountId;
 use yw_engine::wallet::{AppMode, Wallet};
@@ -573,21 +579,13 @@ impl App {
         let tab = self.meta.as_ref().map_or(Tab::Evm, |meta| meta.prefs.tab);
         let evm = format!("  {}  ", text::TAB_EVM.get(self.settings.language));
         items.push(Item::Row(vec![
-            Ctl::tab(ids::TAB_EVM, &evm, tab == Tab::Evm).badge(Badge::family(BookChain::Evm)),
-            Ctl::tab(ids::TAB_SOL, "  Solana  ", tab == Tab::Sol)
+            Ctl::tab(SolPress::TabEvm, &evm, tab == Tab::Evm).badge(Badge::family(BookChain::Evm)),
+            Ctl::tab(SolPress::TabSol, "  Solana  ", tab == Tab::Sol)
                 .badge(Badge::family(BookChain::Sol)),
-            Ctl::tab(
-                crate::ui::screens_btc::ids::TAB_BTC,
-                "  Bitcoin  ",
-                tab == Tab::Btc,
-            )
-            .badge(Badge::family(BookChain::Btc)),
-            Ctl::tab(
-                crate::ui::screens_zec::ids::TAB_ZEC,
-                "  Zcash  ",
-                tab == Tab::Zec,
-            )
-            .badge(Badge::zcash(self.settings.zcash.network)),
+            Ctl::tab(BtcPress::TabBtc, "  Bitcoin  ", tab == Tab::Btc)
+                .badge(Badge::family(BookChain::Btc)),
+            Ctl::tab(ZecPress::TabZec, "  Zcash  ", tab == Tab::Zec)
+                .badge(Badge::zcash(self.settings.zcash.network)),
         ]));
     }
 
@@ -631,13 +629,13 @@ impl App {
             text::NETWORK.get(lang).to_owned(),
             vec![
                 Ctl::tab(
-                    ids::CLUSTER_MAINNET,
+                    SolPress::ClusterMainnet,
                     "Solana mainnet",
                     cluster == SolCluster::Mainnet,
                 )
                 .badge(Badge::solana(SolCluster::Mainnet)),
                 Ctl::tab(
-                    ids::CLUSTER_DEVNET,
+                    SolPress::ClusterDevnet,
                     SolCluster::Devnet.display_name_in(lang),
                     cluster == SolCluster::Devnet,
                 )
@@ -662,12 +660,7 @@ impl App {
                 crate::ui::screens::balance_failure_text(self.settings.language, code),
                 Tone::Danger,
             ));
-            self.rpc_failure_buttons(
-                network,
-                crate::ui::screens::ids::SOL_RPC_TEST,
-                crate::ui::screens::ids::SOL_RPC_ROW,
-                items,
-            );
+            self.rpc_failure_buttons(network, CorePress::SolRpcTest, CorePress::SolRpcRow, items);
         }
         // The status line, unless the band above has just said the failure (2026-11-12).
         if failure.is_none() {
@@ -773,28 +766,28 @@ impl App {
                 self.settings.language,
                 &text,
                 yw_engine::screen::address::AddressKind::Solana,
-                ids::COPY_ADDRESS,
+                SolPress::CopyAddress,
                 true,
                 self.explorer_address_icon(
                     yw_engine::network::NetworkId::Solana(self.settings.solana.cluster),
                     &text,
-                    crate::ui::screens_explorer::ids::CARD_SOL,
+                    ExplorerPress::CardSol,
                 ),
             ));
             let mut row = vec![
-                Ctl::primary(ids::SEND_OPEN, text::SEND.get(lang)).enabled(unlocked),
-                Ctl::primary(ids::RECEIVE_OPEN, text::RECEIVE.get(lang)),
+                Ctl::primary(SolPress::SendOpen, text::SEND.get(lang)).enabled(unlocked),
+                Ctl::primary(SolPress::ReceiveOpen, text::RECEIVE.get(lang)),
             ];
             if no_endpoint {
                 // The same next step as every tab (2026-11-08): no refresh without an address;
                 // it opens this cluster's row with its field (2026-11-10).
                 row.push(Ctl::button(
-                    crate::ui::screens::ids::SOL_RPC_OPEN,
+                    CorePress::SolRpcOpen,
                     text::RPC_SETUP.get(lang),
                 ));
             } else {
                 row.push(
-                    Ctl::link(ids::REFRESH, text::REFRESH.get(lang))
+                    Ctl::link(SolPress::Refresh, text::REFRESH.get(lang))
                         .tip(crate::ui::screens::T_REFRESH_TIP.get(lang)),
                 );
             }
@@ -811,7 +804,7 @@ impl App {
         for (row, (id, label, _)) in self
             .sol_account_rows()
             .into_iter()
-            .take(usize::from(ids::ACCOUNT_SPAN))
+            .take(usize::from(rows::SOL_ACCOUNTS))
             .enumerate()
         {
             let is_selected = selected == Some(id);
@@ -828,7 +821,7 @@ impl App {
                 chosen = Some((id, label.clone()));
             }
             accounts.push(AccountItem {
-                id: ids::ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0)),
+                press: SolPress::Account(Row(u16::try_from(row).unwrap_or(0))).into(),
                 label,
                 source,
                 selected: is_selected,
@@ -838,40 +831,34 @@ impl App {
         let selected = chosen.map(|(id, label)| {
             if self.sol.rename == Some(id) {
                 return SelectedLine::Rename {
-                    edit: ids::RENAME_EDIT,
-                    save: ids::RENAME_SAVE,
-                    cancel: ids::RENAME_CANCEL,
+                    edit: EditField::SolRename,
+                    save: SolPress::RenameSave.into(),
+                    cancel: SolPress::RenameCancel.into(),
                     label,
                 };
             }
-            let mut buttons = vec![Ctl::button(ids::RENAME, text::RENAME.get(lang)).compact()];
+            let mut buttons = vec![Ctl::button(SolPress::Rename, text::RENAME.get(lang)).compact()];
             match id {
                 // No `숨기기` for a recovery phrase's first account (2026-11-12, as EVM).
                 SolAccountId::Derived(index) | SolAccountId::Mnemonic(_, index) => {
                     if index != 0 {
-                        buttons.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
+                        buttons.push(Ctl::button(SolPress::Hide, text::HIDE.get(lang)).compact());
                     }
                 }
                 // A YubiKey account: no "개인키 보기" (the key is on the card only).
                 SolAccountId::Hardware(_) => {
-                    buttons.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
+                    buttons.push(Ctl::button(SolPress::Hide, text::HIDE.get(lang)).compact());
                 }
                 SolAccountId::Imported(_) => {
                     buttons.push(
-                        Ctl::button(
-                            crate::ui::screens_keys::ids::SOL_REVEAL,
-                            text::REVEAL_KEY.get(lang),
-                        )
-                        .compact()
-                        .enabled(unlocked),
+                        Ctl::button(KeysPress::SolReveal, text::REVEAL_KEY.get(lang))
+                            .compact()
+                            .enabled(unlocked),
                     );
                     buttons.push(
-                        Ctl::danger(
-                            crate::ui::screens_keys::ids::SOL_REMOVE,
-                            text::DELETE.get(lang),
-                        )
-                        .compact()
-                        .enabled(unlocked && removable),
+                        Ctl::danger(KeysPress::SolRemove, text::DELETE.get(lang))
+                            .compact()
+                            .enabled(unlocked && removable),
                     );
                 }
             }
@@ -881,7 +868,7 @@ impl App {
         let mut footer = Vec::new();
         if !self.key_only() {
             actions.push(
-                Ctl::button(ids::ADD_ACCOUNT, text::ADD_ACCOUNT.get(lang))
+                Ctl::button(SolPress::AddAccount, text::ADD_ACCOUNT.get(lang))
                     .compact()
                     .enabled(
                         !self.sol.creating
@@ -893,17 +880,14 @@ impl App {
                                     .is_some()),
                     ),
             );
-            actions.push(Ctl::button(ids::SCAN_OPEN, text::SCAN.get(lang)).compact());
+            actions.push(Ctl::button(SolPress::ScanOpen, text::SCAN.get(lang)).compact());
             self.sol_pick_row(&mut footer);
             footer.push(Item::Help(text::SCAN_HINT.get(lang).to_owned()));
         }
         actions.push(
-            Ctl::button(
-                crate::ui::screens_keys::ids::SOL_IMPORT,
-                text::IMPORT_KEY.get(lang),
-            )
-            .compact()
-            .enabled(self.can_import(yw_core::keyimport::ImportChain::Sol)),
+            Ctl::button(KeysPress::SolImport, text::IMPORT_KEY.get(lang))
+                .compact()
+                .enabled(self.can_import(yw_core::keyimport::ImportChain::Sol)),
         );
         // The recovery-words link as on the EVM card (2026-11-15; the Solana card had none).
         actions.push(self.mnemonics_link());
@@ -911,7 +895,7 @@ impl App {
             items,
             AccountCard {
                 title: text::MY_ACCOUNTS.get(lang).to_owned(),
-                picker: crate::ui::screens_links::ids::PICKER_SOL,
+                picker: LinksPress::PickerSol.into(),
                 accounts,
                 empty: Some(
                     if self.sol.creating {
@@ -1044,20 +1028,17 @@ impl App {
         let save = counterparties
             .get(row)
             .filter(|known| **known == shown && self.offer_save(BookChain::Sol, known))
-            .and(crate::ui::screens_links::ids::row_id(
-                crate::ui::screens_book::ids::SOL_ACTIVITY_BASE,
-                crate::ui::screens_book::ids::SOL_ACTIVITY_SPAN,
-                row,
-            ))
-            .map(|id| crate::ui::screens_links::save_icon(self.settings.language, id));
+            .and(rows::row(row, rows::SOL_ACTIVITY_SAVES))
+            .map(|save_row| {
+                crate::ui::screens_links::save_icon(
+                    self.settings.language,
+                    BookPress::SolActivitySave(save_row),
+                )
+            });
         crate::ui::screens_links::push_address_line(
             items,
             self.settings.language,
-            crate::ui::screens_links::ids::row_id(
-                crate::ui::screens_links::ids::SOL_TO_BASE,
-                crate::ui::screens_links::ids::SOL_TO_SPAN,
-                row,
-            ),
+            rows::row(row, rows::SOL_TO).map(|row| LinksPress::SolTo(row).into()),
             &shown,
             yw_engine::screen::address::AddressKind::Solana,
             save.into_iter().collect(),
@@ -1104,9 +1085,9 @@ impl App {
             if !matches!(holding, Some(TokenHolding::Active(_))) {
                 items.push(Item::Help(note));
             }
-            let id = ids::TOKEN_SEND_BASE.saturating_add(u16::try_from(index).unwrap_or(0));
+            let send = SolPress::TokenSend(Row(u16::try_from(index).unwrap_or(0)));
             let mut row = vec![
-                Ctl::link(id, text::SEND.get(lang)).compact().enabled(
+                Ctl::link(send, text::SEND.get(lang)).compact().enabled(
                     can_send
                         && holding
                             .and_then(TokenHolding::balance)
@@ -1117,7 +1098,7 @@ impl App {
             crate::ui::screens_links::push_address_line(
                 items,
                 self.settings.language,
-                Self::sol_token_copy_id(index),
+                Self::sol_token_copy(index),
                 &entry.mint.to_base58(),
                 yw_engine::screen::address::AddressKind::Solana,
                 row,
@@ -1127,7 +1108,7 @@ impl App {
             let open = self.sol.show_hidden_tokens;
             let count = hidden.len();
             items.push(Item::Row(vec![Ctl::link(
-                ids::TOKEN_HIDDEN_TOGGLE,
+                SolPress::TokenHiddenToggle,
                 &if open {
                     text::HIDDEN_COLLAPSE
                 } else {
@@ -1152,7 +1133,7 @@ impl App {
                     crate::ui::screens_links::push_address_line(
                         items,
                         self.settings.language,
-                        Self::sol_token_copy_id(index),
+                        Self::sol_token_copy(index),
                         &entry.mint.to_base58(),
                         yw_engine::screen::address::AddressKind::Solana,
                         Self::sol_token_hide_button(lang, index, true),
@@ -1163,22 +1144,18 @@ impl App {
         items.push(Item::CardEnd);
     }
 
-    /// The copy id of allowlist row `index`'s mint (none beyond the id span).
-    fn sol_token_copy_id(index: usize) -> Option<u16> {
-        u16::try_from(index)
-            .ok()
-            .filter(|offset| *offset < ids::TOKEN_COPY_SPAN)
-            .map(|offset| ids::TOKEN_COPY_BASE.saturating_add(offset))
+    /// The copy press of allowlist row `index`'s mint (none beyond the row bound; 2026-11-24
+    /// S5-4: its control id before).
+    fn sol_token_copy(index: usize) -> Option<Press> {
+        rows::row(index, rows::SOL_TOKEN_COPIES).map(|row| SolPress::TokenCopy(row).into())
     }
 
     /// `숨기기` / `다시 보이기` of allowlist row `index` (none beyond the id span).
     fn sol_token_hide_button(lang: Lang, index: usize, hidden: bool) -> Vec<Ctl> {
-        u16::try_from(index)
-            .ok()
-            .filter(|offset| *offset < ids::TOKEN_HIDE_SPAN)
-            .map(|offset| {
+        rows::row(index, rows::SOL_TOKEN_HIDES)
+            .map(|row| {
                 Ctl::link(
-                    ids::TOKEN_HIDE_BASE.saturating_add(offset),
+                    SolPress::TokenHide(row),
                     if hidden { text::UNHIDE } else { text::HIDE }.get(lang),
                 )
                 .compact()
@@ -1247,14 +1224,14 @@ impl App {
         if form.moving.is_none() {
             self.favorite_chip_items(BookTarget::Sol, items);
         }
-        let mut to_edit = Ctl::edit(ids::SEND_TO_EDIT, &form.to_text, 430, false, 64);
+        let mut to_edit = Ctl::edit(EditField::SolSendTo, &form.to_text, 430, false, 64);
         let mut to_row = Vec::new();
         if form.moving.is_some() {
             to_edit = to_edit.readonly();
             to_row.push(to_edit);
         } else {
             to_row.push(to_edit);
-            to_row.push(Ctl::button(ids::SEND_PICK, text::PICK_BOOK.get(lang)));
+            to_row.push(Ctl::button(SolPress::SendPick, text::PICK_BOOK.get(lang)));
         }
         items.push(Item::LabeledRow(text::TO_LINE.get(lang).to_owned(), to_row));
         // The format hint only until the address is valid (2026-11-12); the reminder to check
@@ -1345,8 +1322,8 @@ impl App {
         self.journal_send_items(yw_engine::wallet::app_sidecar::SendChain::Sol, items);
         let blocker = self.sol_review_blocker();
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SEND_REVIEW, text::REVIEW.get(lang)).enabled(blocker.is_none()),
-            Ctl::button(ids::SEND_CANCEL, text::CANCEL.get(lang)),
+            Ctl::primary(SolPress::SendReview, text::REVIEW.get(lang)).enabled(blocker.is_none()),
+            Ctl::button(SolPress::SendCancel, text::CANCEL.get(lang)),
         ]));
         // What `검토` waits for, or that it sends nothing yet (2026-11-12).
         items.push(Item::Help(
@@ -1364,11 +1341,11 @@ impl App {
         let radios: Vec<Ctl> = self
             .sol_assets()
             .into_iter()
-            .take(usize::from(ids::SEND_ASSET_SPAN))
+            .take(usize::from(rows::SOL_SEND_ASSETS))
             .enumerate()
             .map(|(index, choice)| {
                 Ctl::radio(
-                    ids::SEND_ASSET_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
+                    SolPress::SendAsset(Row(u16::try_from(index).unwrap_or(0))),
                     choice.symbol(),
                     choice == asset,
                     index == 0,
@@ -1395,13 +1372,17 @@ impl App {
             items.push(Item::Mono(grouped(&entry.mint)));
         }
         let mut amount_row = vec![
-            Ctl::edit(ids::SEND_AMOUNT_EDIT, &form.amount_text, 260, false, 32)
+            Ctl::edit(EditField::SolSendAmount, &form.amount_text, 260, false, 32)
                 .enabled(!form.send_max),
         ];
         if form.moving.is_none() {
             // `최대` right after the field on every chain (2026-11-12: a check box here, a
             // button on EVM); pressed while on.
-            amount_row.push(Ctl::tab(ids::SEND_MAX, text::MAX.get(lang), form.send_max));
+            amount_row.push(Ctl::tab(
+                SolPress::SendMax,
+                text::MAX.get(lang),
+                form.send_max,
+            ));
         }
         items.push(Item::LabeledRow(
             text::AMOUNT.fill(lang, [asset.symbol()]),
@@ -1435,7 +1416,7 @@ impl App {
             )));
         }
         items.push(Item::Row(vec![Ctl::link(
-            crate::ui::screens::ids::ADVANCED_TOGGLE,
+            CorePress::AdvancedToggle,
             if self.show_advanced {
                 text::FEE_HIDE
             } else {
@@ -1458,7 +1439,7 @@ impl App {
         }
         for (index, (label, address)) in entries.into_iter().enumerate() {
             items.push(Item::Row(vec![Ctl::button(
-                ids::SEND_PICK_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
+                SolPress::SendPickRow(Row(u16::try_from(index).unwrap_or(0))),
                 &label,
             )]));
             items.push(Item::Mono(grouped(&address)));
@@ -1500,15 +1481,15 @@ impl App {
                 &signature,
             )));
             // For checking on an explorer: 88 characters are not retyped by hand.
-            let mut buttons = vec![Ctl::button(ids::RESULT_COPY, text::COPY_HASH.get(lang))];
+            let mut buttons = vec![Ctl::button(SolPress::ResultCopy, text::COPY_HASH.get(lang))];
             buttons.extend(self.explorer_tx_buttons(
                 yw_engine::network::NetworkId::Solana(
                     yw_engine::wallet::app_explorer::app_cluster(cluster),
                 ),
                 &yw_core::codec::base58::base58_encode(&signature),
                 Some((
-                    crate::ui::screens_explorer::ids::RESULT_SOL_OPEN,
-                    crate::ui::screens_explorer::ids::RESULT_SOL_COPY,
+                    ExplorerPress::ResultSolOpen.into(),
+                    ExplorerPress::ResultSolCopy.into(),
                 )),
             ));
             items.push(Item::Row(buttons));
@@ -1516,10 +1497,7 @@ impl App {
             self.sol_send_now_row(items);
             self.result_save_items(BookTarget::Sol, items);
         }
-        let mut row = vec![Ctl::primary(
-            crate::ui::screens::ids::BACK_MAIN,
-            text::BACK_MAIN.get(lang),
-        )];
+        let mut row = vec![Ctl::primary(CorePress::BackMain, text::BACK_MAIN.get(lang))];
         // A scan move: the kept results, for the account's other assets (spec/07 §3.3).
         let moved = self
             .sol
@@ -1527,10 +1505,10 @@ impl App {
             .as_ref()
             .is_some_and(|(form, _)| form.moving.is_some());
         if moved && self.sol.scan.stage == yw_engine::wallet::app_sol::ScanStage::Done {
-            row.push(Ctl::button(ids::SCAN_BACK, text::SCAN_BACK.get(lang)));
+            row.push(Ctl::button(SolPress::ScanBack, text::SCAN_BACK.get(lang)));
         }
         if self.sol_can_resend() {
-            row.push(Ctl::button(ids::SEND_AGAIN, text::SEND_AGAIN.get(lang)));
+            row.push(Ctl::button(SolPress::SendAgain, text::SEND_AGAIN.get(lang)));
             items.push(Item::Help(text::SEND_AGAIN_NOTE.get(lang).to_owned()));
         }
         items.push(Item::Row(row));
@@ -1545,7 +1523,7 @@ impl App {
         }
         let lang = self.settings.language;
         items.push(Item::Row(vec![Ctl::button(
-            ids::SEND_NOW,
+            SolPress::SendNow,
             text::SEND_NOW.get(lang),
         )]));
         items.push(Item::Help(text::SEND_NOW_NOTE.get(lang).to_owned()));
@@ -1603,7 +1581,7 @@ impl App {
         items.push(crate::ui::screens::receive_address_row(
             self.settings.language,
             &grouped(&address),
-            ids::COPY_ADDRESS,
+            SolPress::CopyAddress,
             Vec::new(),
         ));
         items.push(Item::Qr(address.to_base58()));
@@ -1624,13 +1602,13 @@ impl App {
             text::CLUSTER.get(lang).to_owned(),
             vec![
                 Ctl::radio(
-                    ids::SET_MAINNET,
+                    SolPress::SetMainnet,
                     "mainnet",
                     solana.cluster == yw_engine::network::SolCluster::Mainnet,
                     true,
                 ),
                 Ctl::radio(
-                    ids::SET_DEVNET,
+                    SolPress::SetDevnet,
                     text::DEVNET_RADIO.get(lang),
                     solana.cluster == yw_engine::network::SolCluster::Devnet,
                     false,
@@ -1640,7 +1618,7 @@ impl App {
         items.push(Item::Help(text::RPC_ROWS.get(lang).to_owned()));
         items.push(Item::Rule);
         items.push(Item::Row(vec![Ctl::button(
-            ids::SCAN_OPEN,
+            SolPress::ScanOpen,
             text::SCAN.get(lang),
         )]));
         items.push(Item::Help(text::SCAN_SETTINGS_HELP.get(lang).to_owned()));
@@ -1653,7 +1631,7 @@ impl App {
             items.push(Item::LabeledRow(
                 text::FEE_CAP_LABEL.get(lang).to_owned(),
                 vec![Ctl::edit(
-                    ids::FEE_CAP_EDIT,
+                    EditField::SolFeeCap,
                     &solana.max_fee_lamports.to_string(),
                     200,
                     false,
@@ -1663,7 +1641,7 @@ impl App {
             items.push(Item::LabeledRow(
                 text::CU_CAP_LABEL.get(lang).to_owned(),
                 vec![Ctl::edit(
-                    ids::CU_PRICE_EDIT,
+                    EditField::SolCuPrice,
                     &solana.max_cu_price_micro.to_string(),
                     200,
                     false,
@@ -1671,8 +1649,8 @@ impl App {
                 )],
             ));
             items.push(Item::Row(vec![
-                Ctl::primary(ids::FEE_SAVE, text::SAVE.get(lang)),
-                Ctl::button(ids::FEE_DEFAULT, text::DEFAULTS.get(lang)),
+                Ctl::primary(SolPress::FeeSave, text::SAVE.get(lang)),
+                Ctl::button(SolPress::FeeDefault, text::DEFAULTS.get(lang)),
             ]));
             items.push(Item::Help(text::FEE_RANGE_HELP.get(lang).to_owned()));
             items.push(Item::CardEnd);
@@ -1700,7 +1678,7 @@ impl App {
                     Tone::Warn,
                 ));
                 items.push(Item::Row(vec![
-                    Ctl::button(ids::SCAN_START, text::SCAN_START.get(lang))
+                    Ctl::button(SolPress::ScanStart, text::SCAN_START.get(lang))
                         .enabled(matches!(self.mode, AppMode::Unlocked { .. })),
                 ]));
             }
@@ -1730,7 +1708,7 @@ impl App {
                     }
                 }
                 let movable = target.is_some() && matches!(self.mode, AppMode::Unlocked { .. });
-                let shown = usize::from(ids::SCAN_ROW_SPAN / ids::SCAN_ROW_STRIDE);
+                let shown = usize::from(rows::SOL_SCAN_ROWS);
                 for (index, row) in rows.iter().take(shown).enumerate() {
                     let (balance, tokens) = self.sol_scan_balances(row);
                     let mut line = format!(
@@ -1751,22 +1729,27 @@ impl App {
                     let _ = write!(line, " {}", text::RPC_REFERENCE.get(lang));
                     items.push(Item::Text(line));
                     items.push(Item::Mono(grouped(&row.address)));
+                    let scan_row = rows::row(index, rows::SOL_SCAN_ROWS);
                     if row.source.is_standard() {
-                        if let Some(id) = ids::scan_row_id(ids::ScanAction::Add(index)) {
+                        if let Some(scan_row) = scan_row {
                             items.push(Item::Row(vec![Ctl::button(
-                                id,
+                                SolPress::ScanRow(scan_row, SolScanAction::Add),
                                 text::ADD_ACCOUNT.get(lang),
                             )]));
                         }
-                    } else if let Some(id) = ids::scan_row_id(ids::ScanAction::Move(index)) {
+                    } else if let Some(scan_row) = scan_row {
                         items.push(Item::Row(vec![
-                            Ctl::button(id, text::MOVE_TO_STANDARD.get(lang)).enabled(movable),
+                            Ctl::button(
+                                SolPress::ScanRow(scan_row, SolScanAction::Move),
+                                text::MOVE_TO_STANDARD.get(lang),
+                            )
+                            .enabled(movable),
                         ]));
                     }
                 }
                 items.push(Item::Muted(text::SCAN_MOVE_NOTE.get(lang).to_owned()));
                 items.push(Item::Row(vec![Ctl::button(
-                    ids::SCAN_AGAIN,
+                    SolPress::ScanAgain,
                     text::SCAN_AGAIN.get(lang),
                 )]));
             }
@@ -1787,22 +1770,19 @@ impl App {
         prompt_drawn: &mut bool,
         items: &mut Vec<Item>,
     ) {
-        use crate::ui::screens_explorer::ids::{
-            SOL_ACTIVITY_BASE, SOL_ACTIVITY_SPAN, activity_ids,
-        };
         crate::ui::screens_links::push_hash_line(
             items,
             self.settings.language,
-            crate::ui::screens_links::ids::row_id(
-                ids::ACTIVITY_COPY_BASE,
-                ids::ACTIVITY_COPY_SPAN,
-                row,
-            ),
+            rows::row(row, rows::SOL_ACTIVITY_COPIES).map(|row| SolPress::ActivityCopy(row).into()),
             tx_id,
             self.explorer_tx_icons(
                 yw_engine::network::NetworkId::Solana(self.settings.solana.cluster),
                 tx_id,
-                activity_ids(SOL_ACTIVITY_BASE, SOL_ACTIVITY_SPAN, row),
+                crate::ui::screens_explorer::activity_links(
+                    ExplorerPress::SolActivity,
+                    row,
+                    rows::SOL_ACTIVITY_LINKS,
+                ),
             ),
         );
         if let Some(address) = counterparties

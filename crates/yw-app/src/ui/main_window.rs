@@ -99,23 +99,17 @@ pub const GLYPH_UP: &str = yw_engine::screen::model::GLYPH_UP;
 /// The selected entry of a drop-down, and a copy just made (U+2713 CHECK MARK).
 pub const GLYPH_CHECK: &str = yw_engine::screen::model::GLYPH_CHECK;
 
-/// The fixed texts of the main-window renderer (spec/14).
+/// The fixed texts of the main-window renderer (spec/14). 2026-11-24 (spec/15 §11.4 S5-4): the
+/// copy mark's three texts moved with the mark to `yw_engine::screen::model::text`; the layout
+/// reads them there.
 pub mod text {
     yw_core::texts! {
-        /// What a control says for about 1.5 s after its copy (2026-11-12,
-        /// [`super::mark_copied`]).
-        T_COPIED = "복사됨" / "Copied";
-        /// The same after an address copy: with the paste check, in short (address poisoning).
-        T_COPIED_ADDRESS = "복사됨 · 붙여넣은 뒤 전체 확인" / "Copied · check it whole after pasting";
-        /// The paste check alone: after the row of a text button that says `복사됨` for an
-        /// address.
-        T_PASTE_CHECK = "붙여넣은 뒤 전체 확인" / "Check it whole after pasting";
         /// A QR code that does not fit the window.
         QR_TOO_NARROW = "창을 넓히면 QR이 표시됩니다" / "Widen the window to show the QR code";
     }
 }
 
-pub use text::{T_COPIED, T_COPIED_ADDRESS, T_PASTE_CHECK};
+use yw_engine::screen::model::T_COPIED;
 
 /// What a button draws instead of its label ([`Ctl::face`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,7 +124,7 @@ pub enum Face {
     /// the badge, and the symbol ([`GLYPH_DOWN`], [`GLYPH_UP`], [`GLYPH_CHECK`]) at the right
     /// end.
     Entry(Option<&'static str>),
-    /// A [`Face::Value`] right after its copy (2026-11-12, [`mark_copied`]): the same lines with
+    /// A [`Face::Value`] right after its copy (2026-11-12, `yw_engine::screen::model::mark_copied`): the same lines with
     /// [`GLYPH_CHECK`] in the success color where the copy symbol is; [`layout`] writes the
     /// caption (`복사됨`) after the line's actions.
     Copied(Vec<Vec<(String, bool)>>, &'static str),
@@ -1061,7 +1055,7 @@ impl Layouter<'_> {
     /// actions right after it (2026-11-12: an icon belongs next to the value it acts on, not at
     /// the far edge of the card); or, when the value does not fit beside them, the value over
     /// the whole width (in lines of whole characters) and the actions under its left edge.
-    /// Right after a copy ([`mark_copied`]) its caption follows the last control of the line.
+    /// Right after a copy (`yw_engine::screen::model::mark_copied`) its caption follows the last control of the line.
     fn copy_line(&mut self, value: &Ctl, actions: &[Ctl]) {
         let pad = self.px(VALUE_PAD_DIP);
         let chrome = self.px(VALUE_CHROME_DIP);
@@ -1575,52 +1569,6 @@ impl Layouter<'_> {
     }
 }
 
-/// Marks the control `id` of `items` as just copied (2026-11-12, `Wallet::copy_text`): the answer
-/// is at the control that was pressed and nothing else changes. A copy line's value draws
-/// [`GLYPH_CHECK`] for its copy symbol and gets a caption after its icons (`address`: with the
-/// paste check); an icon becomes the check mark with the same caption; a text button says
-/// `복사됨` at the width of its label, and after an address its row ends with the paste check
-/// as a tag ([`Item::Pill`]: on the row's own line whenever it fits there). No control is
-/// added, removed or moved, so [`ControlSet::sync`] creates none again and the focus stays.
-pub fn mark_copied(lang: Lang, items: &mut Vec<Item>, id: u16, address: bool) {
-    let mut tag_after = None;
-    for (index, item) in items.iter_mut().enumerate() {
-        let (ctls, row) = match item {
-            Item::CopyLine { value, actions } => {
-                if value.id == id {
-                    if let Some(Face::Value(lines)) = &mut value.face {
-                        let note = if address { T_COPIED_ADDRESS } else { T_COPIED }.get(lang);
-                        value.face = Some(Face::Copied(core::mem::take(lines), note));
-                    }
-                    return;
-                }
-                (actions, false)
-            }
-            Item::Row(ctls) | Item::LabeledRow(_, ctls) => (ctls, true),
-            _ => continue,
-        };
-        let Some(ctl) = ctls.iter_mut().find(|ctl| ctl.id == id && ctl.is_button()) else {
-            continue;
-        };
-        match ctl.face {
-            Some(Face::Glyph(_)) => ctl.face = Some(Face::Glyph(GLYPH_CHECK)),
-            None => {
-                let label = core::mem::replace(&mut ctl.text, T_COPIED.get(lang).to_owned());
-                ctl.fit.push(label);
-                if address && row {
-                    tag_after = Some(index);
-                }
-            }
-            Some(_) => {}
-        }
-        break;
-    }
-    if let Some(index) = tag_after {
-        let tag = Item::Pill(T_PASTE_CHECK.get(lang).to_owned(), Tone::Success);
-        items.insert(index.saturating_add(1), tag);
-    }
-}
-
 /// Places `items` in a client area `client_w` pixels wide at `dpi`, scrolled by `scroll` px.
 #[must_use]
 pub fn layout(
@@ -1911,7 +1859,7 @@ fn kind_class(kind: ControlKind) -> ControlKind {
 /// value's lines (emphasized spans in bold mono and `theme::FOCUS`, the rest in mono and
 /// `theme::TEXT`) with the copy symbol in the link color at the right end, or a drop-down
 /// entry's label from the left with its symbol at the right end. Right after a copy
-/// ([`mark_copied`]) the value's symbol, or the icon, is the check mark in the success color.
+/// (`yw_engine::screen::model::mark_copied`) the value's symbol, or the icon, is the check mark in the success color.
 fn button_face(ctl: &Ctl, face: &Face, fonts: &Fonts, style: ButtonStyle, dpi: u32) -> ButtonFace {
     match face {
         Face::Entry(mark) => ButtonFace {
@@ -2744,24 +2692,36 @@ mod tests {
     /// mark, a text button says `복사됨` at its own width (an address: the paste check as a
     /// tag at the end of its row). The same controls at the same places, no new line.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one layout check per kind of copied control, in order"
+    )]
     fn copied_mark_is_at_the_control_and_moves_nothing() {
+        // 2026-11-24 (S5-4): the screens build the model and mark the copy by its press; the
+        // lowered list is laid out (before, the Windows list was built and marked by id).
+        use yw_engine::cmd::{CorePress, EvmPress, Press};
+        use yw_engine::screen::model::{self as m, T_COPIED_ADDRESS, T_PASTE_CHECK};
         let measure = |_: &str, _: FontRole, _: i32| 20;
         let width = |text: &str| i32::try_from(text.len()).unwrap_or(0).saturating_mul(7);
         let address = "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646";
         let spans = own_address_spans(address, AddressKind::Evm, false);
-        let items = vec![
-            Item::CopyLine {
-                value: Ctl::value(7, "주소 복사", spans.clone()),
+        let value_copy = Press::Evm(EvmPress::CopyAddress);
+        let link_copy = Press::Core(CorePress::Exit);
+        let text_copy = Press::Core(CorePress::Lock);
+        let model = vec![
+            m::Item::CopyLine {
+                value: m::Ctl::value(value_copy, "주소 복사", spans.clone()),
                 actions: vec![
-                    Ctl::icon(8, GLYPH_OPEN, "탐색기에서 열기"),
-                    Ctl::icon(9, GLYPH_LINK, "탐색기 링크 복사"),
+                    m::Ctl::icon(CorePress::Recover, GLYPH_OPEN, "탐색기에서 열기"),
+                    m::Ctl::icon(link_copy, GLYPH_LINK, "탐색기 링크 복사"),
                 ],
             },
-            Item::Row(vec![
-                Ctl::primary(10, "주소 복사"),
-                Ctl::button(11, "QR 보기"),
+            m::Item::Row(vec![
+                m::Ctl::primary(text_copy, "주소 복사"),
+                m::Ctl::button(CorePress::Unlock, "QR 보기"),
             ]),
         ];
+        let items = crate::ui::lower::lowered(model.clone());
         let rects = |placed: &Placed| -> Vec<(u16, Rect)> {
             placed
                 .controls
@@ -2777,16 +2737,24 @@ mod tests {
                 .cloned()
                 .collect()
         };
-        let marked = |id: u16, address: bool| {
-            let mut items = items.clone();
-            mark_copied(Lang::Ko, &mut items, id, address);
-            items
+        let marked = |press: Press, address: bool| {
+            let mut items = model.clone();
+            m::mark_copied(Lang::Ko, &mut items, press, address);
+            crate::ui::lower::lowered(items)
         };
         let plain = layout(&items, Lang::Ko, 900, 96, 0, &measure, &width);
         assert!(captions(&plain).is_empty());
 
         // The address: the check mark's face, the caption with the paste check after the icons.
-        let placed = layout(&marked(7, true), Lang::Ko, 900, 96, 0, &measure, &width);
+        let placed = layout(
+            &marked(value_copy, true),
+            Lang::Ko,
+            900,
+            96,
+            0,
+            &measure,
+            &width,
+        );
         assert_eq!(rects(&placed), rects(&plain));
         assert_eq!(placed.content_height, plain.content_height);
         let (value, _) = &placed.controls[0];
@@ -2811,7 +2779,15 @@ mod tests {
         for (room, caption) in [(100, Some(T_COPIED.ko)), (20, None)] {
             let client = end + room + margin;
             let unmarked = layout(&items, Lang::Ko, client, 96, 0, &measure, &width);
-            let placed = layout(&marked(7, true), Lang::Ko, client, 96, 0, &measure, &width);
+            let placed = layout(
+                &marked(value_copy, true),
+                Lang::Ko,
+                client,
+                96,
+                0,
+                &measure,
+                &width,
+            );
             assert_eq!(rects(&placed), rects(&unmarked), "{room}");
             let notes = captions(&placed);
             assert_eq!(notes.first().map(|note| note.text.as_str()), caption);
@@ -2819,7 +2795,15 @@ mod tests {
 
         // The value on its own lines (300 px): the caption after the icons under it.
         let unmarked = layout(&items, Lang::Ko, 300, 96, 0, &measure, &width);
-        let narrow = layout(&marked(7, false), Lang::Ko, 300, 96, 0, &measure, &width);
+        let narrow = layout(
+            &marked(value_copy, false),
+            Lang::Ko,
+            300,
+            96,
+            0,
+            &measure,
+            &width,
+        );
         assert_eq!(rects(&narrow), rects(&unmarked));
         assert_eq!(narrow.content_height, unmarked.content_height);
         let last = narrow.controls[2].1;
@@ -2829,7 +2813,15 @@ mod tests {
         assert!(notes[0].rect.y >= narrow.controls[0].1.bottom());
 
         // An icon (`탐색기 링크 복사`): the check mark in its place, the value as it was.
-        let placed = layout(&marked(9, false), Lang::Ko, 900, 96, 0, &measure, &width);
+        let placed = layout(
+            &marked(link_copy, false),
+            Lang::Ko,
+            900,
+            96,
+            0,
+            &measure,
+            &width,
+        );
         assert_eq!(rects(&placed), rects(&plain));
         assert_eq!(placed.controls[0].0.face, plain.controls[0].0.face);
         assert_eq!(placed.controls[2].0.face, Some(Face::Glyph(GLYPH_CHECK)));
@@ -2841,11 +2833,27 @@ mod tests {
 
         // A text button: `복사됨` at its width; after an address the paste check is a tag at
         // the end of its row.
-        let placed = layout(&marked(10, false), Lang::Ko, 900, 96, 0, &measure, &width);
+        let placed = layout(
+            &marked(text_copy, false),
+            Lang::Ko,
+            900,
+            96,
+            0,
+            &measure,
+            &width,
+        );
         assert_eq!(rects(&placed), rects(&plain));
         assert_eq!(placed.controls[3].0.text, T_COPIED.ko);
         assert_eq!(placed.texts, plain.texts);
-        let placed = layout(&marked(10, true), Lang::Ko, 900, 96, 0, &measure, &width);
+        let placed = layout(
+            &marked(text_copy, true),
+            Lang::Ko,
+            900,
+            96,
+            0,
+            &measure,
+            &width,
+        );
         assert_eq!(rects(&placed), rects(&plain));
         assert_eq!(placed.content_height, plain.content_height);
         let other = placed.controls[4].1;

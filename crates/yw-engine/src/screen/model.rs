@@ -15,10 +15,34 @@
 //! the layout), the QR pixel layout, the control ids. The screens start building this model in
 //! S5-4; until then only the lowering and its tests use it.
 
+use yw_core::lang::Lang;
+
 use crate::badge::Badge;
-use crate::cmd::Press;
+use crate::cmd::{
+    BookPress, BtcPress, CorePress, EvmPress, ExplorerPress, ExtPress, HcPress, HiddenPress,
+    KeysPress, LinksPress, LlmPress, MnPress, Press, ReceivedPress, ResetPress, RpcImportPress,
+    SidecarPress, SitesPress, SolPress, WcPress, YkConnectPress, YkManagePress, YkPress, ZecPress,
+};
 use crate::form::{CredField, EditField};
 use crate::screen::Tone;
+
+/// The fixed texts of the copy mark ([`mark_copied`], spec/14). 2026-11-24 (spec/15 §11.4 S5-4):
+/// moved from yw-app `ui::main_window::text` with the mark (wording unchanged; the fourth entry,
+/// `QR_TOO_NARROW`, stays with the Windows layout).
+pub mod text {
+    yw_core::texts! {
+        /// What a control says for about 1.5 s after its copy (2026-11-12,
+        /// [`super::mark_copied`]).
+        T_COPIED = "복사됨" / "Copied";
+        /// The same after an address copy: with the paste check, in short (address poisoning).
+        T_COPIED_ADDRESS = "복사됨 · 붙여넣은 뒤 전체 확인" / "Copied · check it whole after pasting";
+        /// The paste check alone: after the row of a text button that says `복사됨` for an
+        /// address.
+        T_PASTE_CHECK = "붙여넣은 뒤 전체 확인" / "Check it whole after pasting";
+    }
+}
+
+pub use text::{T_COPIED, T_COPIED_ADDRESS, T_PASTE_CHECK};
 
 /// What a control does: the press it sends, or the field it edits (spec/15 §11.3: 버튼은 `Cmd`,
 /// 입력 칸은 필드 id).
@@ -38,13 +62,6 @@ pub enum Act {
     Legacy(u16),
 }
 
-/// Transitional (2026-11-24, S5-4 only; see [`Act::Legacy`]).
-impl From<u16> for Act {
-    fn from(id: u16) -> Self {
-        Self::Legacy(id)
-    }
-}
-
 impl From<Press> for Act {
     fn from(press: Press) -> Self {
         Self::Press(press)
@@ -61,6 +78,34 @@ impl From<CredField> for Act {
     fn from(field: CredField) -> Self {
         Self::Cred(field)
     }
+}
+
+/// Transitional (2026-11-24, S5-4 only; see [`Act::Legacy`]).
+impl From<u16> for Act {
+    fn from(id: u16) -> Self {
+        Self::Legacy(id)
+    }
+}
+
+/// A family's press is an [`Act::Press`] (2026-11-24, S5-4): the screens write
+/// `Ctl::button(CorePress::Lock, …)`.
+macro_rules! family_acts {
+    ($($family:ident),* $(,)?) => {
+        $(
+            impl From<$family> for Act {
+                fn from(press: $family) -> Self {
+                    Self::Press(press.into())
+                }
+            }
+        )*
+    };
+}
+
+family_acts! {
+    CorePress, ReceivedPress, SitesPress, LlmPress, WcPress, HiddenPress, SidecarPress,
+    ExplorerPress, LinksPress, BookPress, ResetPress, ExtPress, KeysPress, RpcImportPress,
+    MnPress, HcPress, ZecPress, SolPress, BtcPress, EvmPress, YkPress, YkManagePress,
+    YkConnectPress,
 }
 
 /// A button's look (Windows: `ui::theme::BUTTON_*`).
@@ -391,6 +436,86 @@ impl Ctl {
     pub const fn is_button(&self) -> bool {
         matches!(self.kind, CtlKind::Button(_))
     }
+
+    /// Whether this control sends `press` (a check box's state ignored,
+    /// [`Press::same_control`]).
+    #[must_use]
+    pub fn sends(&self, press: Press) -> bool {
+        matches!(self.act, Act::Press(own) if own.same_control(press))
+    }
+}
+
+/// The copy just made says so at its own control (2026-11-12): a copyable value's copy symbol
+/// becomes ✓ and its line says `복사됨` (with the paste check for an address); an icon button's
+/// symbol becomes ✓; a text button says `복사됨` (sized for its label too) and, for an address in
+/// a row, a paste-check tag follows the row. The first control that sends `anchor` is marked.
+///
+/// 2026-11-24 (spec/15 §11.4 S5-4): moved from yw-app `ui::main_window`, where it found the
+/// control by its id (`cmd_table::id_of(anchor)`); here by its press ([`Ctl::sends`]: the same
+/// control exactly when the ids are equal, yw-app table test
+/// `same_control_is_same_id_on_every_press`).
+pub fn mark_copied(lang: Lang, items: &mut Vec<Item>, anchor: Press, address: bool) {
+    let mut tag_after = None;
+    for (index, item) in items.iter_mut().enumerate() {
+        let (ctls, row) = match item {
+            Item::CopyLine { value, actions } => {
+                if value.sends(anchor) {
+                    if let Some(Face::Value(lines)) = &mut value.face {
+                        let note = if address { T_COPIED_ADDRESS } else { T_COPIED }.get(lang);
+                        value.face = Some(Face::Copied(core::mem::take(lines), note));
+                    }
+                    return;
+                }
+                (actions, false)
+            }
+            Item::Row(ctls) | Item::LabeledRow(_, ctls) => (ctls, true),
+            _ => continue,
+        };
+        let Some(ctl) = ctls
+            .iter_mut()
+            .find(|ctl| ctl.sends(anchor) && ctl.is_button())
+        else {
+            continue;
+        };
+        match ctl.face {
+            Some(Face::Glyph(_)) => ctl.face = Some(Face::Glyph(GLYPH_CHECK)),
+            None => {
+                let label = core::mem::replace(&mut ctl.text, T_COPIED.get(lang).to_owned());
+                ctl.fit.push(label);
+                if address && row {
+                    tag_after = Some(index);
+                }
+            }
+            Some(_) => {}
+        }
+        break;
+    }
+    if let Some(index) = tag_after {
+        let tag = Item::Pill(T_PASTE_CHECK.get(lang).to_owned(), Tone::Success);
+        items.insert(index.saturating_add(1), tag);
+    }
+}
+
+/// Turns off every `받기` and `주소 복사` control in `items` (unverified-passphrase sessions,
+/// spec/02 §7.5): the presses [`Press::is_receive_gated`] names, which the wallet also refuses.
+/// 2026-11-24 (spec/15 §11.4 S5-4): moved from yw-app, where it matched the eight control ids of
+/// `ui::screens::RECEIVE_IDS` (the same controls, yw-app table test
+/// `family_presses_keep_the_gate_and_the_observer`).
+pub fn disable_receive(items: &mut [Item]) {
+    let gated = |ctl: &Ctl| matches!(ctl.act, Act::Press(press) if press.is_receive_gated());
+    for item in items {
+        match item {
+            Item::Row(ctls) | Item::LabeledRow(_, ctls) | Item::Toolbar(_, ctls) => {
+                for ctl in ctls.iter_mut().filter(|ctl| gated(ctl)) {
+                    ctl.enabled = false;
+                }
+            }
+            Item::CopyLine { value, .. } if gated(value) => {
+                value.enabled = false;
+            }
+            _ => {}
+        }
+    }
 }
 
 /// One element of a screen.
@@ -562,6 +687,81 @@ mod tests {
         assert_eq!(
             Ctl::edit(EditField::CoreRename, given, 200, false, 32).text,
             given
+        );
+    }
+
+    /// 2026-11-24 (S5-4): the copy mark finds its control by press, a check box's state set
+    /// aside; the receive gate turns off exactly the presses `Press::is_receive_gated` names.
+    #[test]
+    fn the_copy_mark_and_the_receive_gate_go_by_press() {
+        use super::{
+            Item, T_COPIED, T_COPIED_ADDRESS, T_PASTE_CHECK, disable_receive, mark_copied,
+        };
+        use crate::cmd::{BookPress, EvmPress, SolPress};
+        use crate::screen::Tone;
+        use yw_core::lang::Lang;
+        let spans = vec![("0x".to_owned(), false)];
+        let items = vec![
+            Item::CopyLine {
+                value: Ctl::value(EvmPress::CopyAddress, "주소 복사", spans.clone()),
+                actions: vec![Ctl::icon(EvmPress::BookOpen, GLYPH_COPY, "복사")],
+            },
+            Item::Row(vec![
+                Ctl::check(BookPress::Verified(None), "확인", false),
+                Ctl::button(SolPress::CopyAddress, "주소 복사"),
+                Ctl::button(SolPress::ReceiveOpen, "받기"),
+            ]),
+        ];
+        let mut marked = items.clone();
+        mark_copied(
+            Lang::Ko,
+            &mut marked,
+            Press::Evm(EvmPress::CopyAddress),
+            true,
+        );
+        let line = |item: &Item| match item {
+            Item::CopyLine { value, actions } => Some((value.clone(), actions.clone())),
+            _ => None,
+        };
+        let row_of = |item: &Item| match item {
+            Item::Row(row) => Some(row.clone()),
+            _ => None,
+        };
+        let (value, _) = line(&marked[0]).unwrap();
+        assert_eq!(
+            value.face,
+            Some(Face::Copied(vec![spans], T_COPIED_ADDRESS.ko))
+        );
+        let mut marked = items.clone();
+        mark_copied(
+            Lang::Ko,
+            &mut marked,
+            Press::Sol(SolPress::CopyAddress),
+            true,
+        );
+        let row = row_of(&marked[1]).unwrap();
+        assert_eq!(row[1].text, T_COPIED.ko);
+        assert_eq!(
+            marked[2],
+            Item::Pill(T_PASTE_CHECK.ko.to_owned(), Tone::Success)
+        );
+        // A check box's press with its state still finds the box (not a button: unmarked).
+        let mut marked = items.clone();
+        mark_copied(
+            Lang::Ko,
+            &mut marked,
+            Press::Book(BookPress::Verified(Some(true))),
+            false,
+        );
+        assert_eq!(marked, items);
+        let mut gated = items.clone();
+        disable_receive(&mut gated);
+        let (value, actions) = line(&gated[0]).unwrap();
+        assert!(!value.enabled && actions[0].enabled);
+        let row = row_of(&gated[1]).unwrap();
+        assert_eq!(
+            row.iter().map(|ctl| ctl.enabled).collect::<Vec<_>>(),
+            [true, false, false]
         );
     }
 }

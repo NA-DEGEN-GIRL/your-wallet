@@ -2423,7 +2423,7 @@ impl App {
     fn on_command(&mut self, id: u16) {
         self.note_input();
         let closed = !matches!(id, IDOK | IDCANCEL)
-            && !Self::is_picker_button(id)
+            && !crate::ui::cmd_table::is_picker_button(id)
             && self.wallet.close_pickers();
         self.dispatch(Cmd::Form(self.controls.form_snapshot()));
         let input = cmd_table::capture(id, &self.controls, self.main.as_ref(), &self.wc.file_text);

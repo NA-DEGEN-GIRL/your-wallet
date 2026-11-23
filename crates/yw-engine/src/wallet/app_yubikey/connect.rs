@@ -174,6 +174,23 @@ pub fn choice_of(press: YkConnectPress) -> Option<(usize, Choice)> {
     Some((usize::from(row), choice))
 }
 
+/// The choice radio press of `choice` on found-key row `row` (the inverse of [`choice_of`];
+/// 2026-11-24, spec/15 §11.4 S5-4: the screens name it instead of the control id
+/// `ui::screens_yubikey::ids::connect_choice_id`). A row past `u16` is `u16::MAX`, as the id
+/// was.
+#[must_use]
+pub fn choice_press(row: usize, choice: Choice) -> YkConnectPress {
+    use crate::cmd::Row;
+    let row = Row(u16::try_from(row).unwrap_or(u16::MAX));
+    match choice {
+        Choice::Evm => YkConnectPress::ChoiceEvm(row),
+        Choice::Btc(script) => YkConnectPress::ChoiceBtc(row, script),
+        Choice::Zec => YkConnectPress::ChoiceZec(row),
+        Choice::Sol => YkConnectPress::ChoiceSol(row),
+        Choice::Skip => YkConnectPress::ChoiceSkip(row),
+    }
+}
+
 impl Wallet {
     /// The networks a connected Bitcoin / Zcash key is used on: the settings' Bitcoin network,
     /// and the Zcash network of the settings when Zcash is on (else the one matching Bitcoin).

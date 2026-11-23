@@ -14,7 +14,13 @@ use crate::app::App;
 use crate::ui::screens_accounts::{AccountCard, AccountItem, SelectedLine};
 use yw_core::lang::{Lang, Text};
 use yw_engine::apikeys::{KeyName, mask_url, template_entry};
+use yw_engine::cmd::{
+    BtcPress, CorePress, EvmPress, ExplorerPress, ExtPress, KeysPress, LinksPress, LlmPress,
+    MnPress, Press, ResetPress, Row, RpcImportPress, RpcRowAction, SitesPress, SolPress,
+    YkConnectPress, YkPress,
+};
 use yw_engine::errors::ErrorCode;
+use yw_engine::form::{CredField, EditField};
 use yw_engine::meta::EvmAccountPref;
 use yw_engine::network::NetworkId;
 use yw_engine::screen::AccountSource;
@@ -23,6 +29,7 @@ use yw_engine::screen::Tone;
 use yw_engine::screen::address::AddressKind;
 use yw_engine::screen::facts::ScreenFacts;
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::screen::rows;
 use yw_engine::settings::{LogLevel, RpcTemplate};
 use yw_engine::wallet::{AppMode, CREATE_STEPS, Confirm, IMPORT_STEPS, Screen, TestState};
 
@@ -570,7 +577,8 @@ pub fn steps<const N: usize>(labels: [&str; N], current: usize) -> Item {
 #[must_use]
 pub fn back_main(lang: Lang) -> Item {
     Item::Row(vec![
-        Ctl::link(ids::BACK_MAIN, text::BACK_MAIN.get(lang)).tip(text::BACK_MAIN_TIP.get(lang)),
+        Ctl::link(CorePress::BackMain, text::BACK_MAIN.get(lang))
+            .tip(text::BACK_MAIN_TIP.get(lang)),
     ])
 }
 
@@ -657,7 +665,12 @@ pub fn balance_failure_text(lang: Lang, code: ErrorCode) -> String {
 
 /// Every chain's `받기` (S12) command, and every `주소 복사` on S10 (2026-11-11: the account
 /// cards' address line and the Zcash 받기 card) — an unverified passphrase's addresses belong
-/// to another wallet, so they are not handed out from the main screen either.
+/// to another wallet, so they are not handed out from the main screen either. 2026-11-24 (spec/15
+/// §11.4 S5-4): test-only — the screens turn these controls off by press
+/// (`yw_engine::screen::model::disable_receive`: `Press::is_receive_gated`, which names the same
+/// eight, table test `family_presses_keep_the_gate_and_the_observer`); the census and the tests
+/// still send these ids.
+#[cfg(test)]
 pub const RECEIVE_IDS: [u16; 8] = [
     crate::ui::screens_evm::ids::RECEIVE_OPEN,
     crate::ui::screens_sol::ids::RECEIVE_OPEN,
@@ -680,13 +693,13 @@ pub fn own_address_row(
     lang: Lang,
     address: &str,
     kind: AddressKind,
-    copy: u16,
+    copy: impl Into<Press>,
     enabled: bool,
     explorer: Option<Ctl>,
 ) -> Item {
     Item::CopyLine {
         value: Ctl::value(
-            copy,
+            copy.into(),
             crate::ui::screens_links::T_ADDRESS_COPY.get(lang),
             yw_engine::screen::address::own_address_spans(address, kind, false),
         )
@@ -701,12 +714,17 @@ pub fn own_address_row(
 /// the address of before; the command still copies the address itself — and `actions`
 /// (Bitcoin's `새 주소`) at the right end.
 #[must_use]
-pub fn receive_address_row(lang: Lang, shown: &str, copy: u16, actions: Vec<Ctl>) -> Item {
+pub fn receive_address_row(
+    lang: Lang,
+    shown: &str,
+    copy: impl Into<Press>,
+    actions: Vec<Ctl>,
+) -> Item {
     let spans = yw_engine::screen::address::address_spans(shown)
         .unwrap_or_else(|| vec![(shown.to_owned(), false)]);
     Item::CopyLine {
         value: Ctl::value(
-            copy,
+            copy.into(),
             crate::ui::screens_links::T_ADDRESS_COPY.get(lang),
             spans,
         ),
@@ -758,9 +776,9 @@ fn header(app: &App, items: &mut Vec<Item>) {
             items.push(Item::Help(line));
         }
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SETTINGS_RESTORE, text::SETTINGS_RESTORE.get(lang)),
+            Ctl::primary(CorePress::SettingsRestore, text::SETTINGS_RESTORE.get(lang)),
             Ctl::button(
-                ids::SETTINGS_ACCEPT_FILE,
+                CorePress::SettingsAcceptFile,
                 text::SETTINGS_ACCEPT_FILE.get(lang),
             ),
         ]));
@@ -774,7 +792,7 @@ fn header(app: &App, items: &mut Vec<Item>) {
     }
     if !app.banners.is_empty() || app.info.is_some() {
         items.push(Item::Row(vec![Ctl::link(
-            ids::DISMISS_BANNERS,
+            CorePress::DismissBanners,
             text::DISMISS_BANNERS.get(lang),
         )]));
     }
@@ -915,7 +933,7 @@ impl App {
         let several = self.several_mnemonics();
         let mut row = vec![
             Ctl::button(
-                ids::REVEAL_MNEMONIC,
+                CorePress::RevealMnemonic,
                 if several {
                     text::REVEAL_FIRST_MNEMONIC.get(lang)
                 } else {
@@ -923,12 +941,12 @@ impl App {
                 },
             )
             .enabled(public),
-            Ctl::button(ids::REVEAL_KEY, text::REVEAL_KEY.get(lang))
+            Ctl::button(CorePress::RevealKey, text::REVEAL_KEY.get(lang))
                 .enabled(unlocked && !self.hardware_selected()),
         ];
         if several {
             row.push(Ctl::link(
-                crate::ui::screens_mnemonics::ids::MAIN_LINK,
+                MnPress::MainLink,
                 text::MANAGE_MNEMONICS.get(lang),
             ));
         }
@@ -1092,18 +1110,13 @@ impl App {
             items.push(Item::Toolbar(
                 "Your Wallet".to_owned(),
                 vec![
-                    Ctl::button(
-                        crate::ui::screens_evm::ids::BOOK_OPEN,
-                        text::ADDRESS_BOOK.get(lang),
-                    ),
-                    Ctl::button(
-                        crate::ui::screens_sites::ids::SITES_OPEN,
-                        text::SITES_WC.get(lang),
-                    ),
+                    Ctl::button(EvmPress::BookOpen, text::ADDRESS_BOOK.get(lang)),
+                    Ctl::button(SitesPress::Open, text::SITES_WC.get(lang)),
                     // Shortcuts in the tooltips (2026-11-12; "잠금 (Ctrl+L)" in the label before).
-                    Ctl::button(ids::OPEN_SETTINGS, text::SETTINGS.get(lang))
+                    Ctl::button(CorePress::OpenSettings, text::SETTINGS.get(lang))
                         .tip(text::SETTINGS_TIP.get(lang)),
-                    Ctl::button(ids::LOCK, text::LOCK.get(lang)).tip(text::LOCK_TIP.get(lang)),
+                    Ctl::button(CorePress::Lock, text::LOCK.get(lang))
+                        .tip(text::LOCK_TIP.get(lang)),
                 ],
             ));
         }
@@ -1155,6 +1168,15 @@ impl App {
             Screen::YubiKey => self.yk_wizard_screen(&mut items),
             Screen::YubiKeyWalletIntro => self.yk_wallet_intro(&mut items),
         }
+        if self.passphrase_unverified() {
+            yw_engine::screen::model::disable_receive(&mut items);
+        }
+        // The copy just made says so at its own control (2026-11-12, `Wallet::copy_text`).
+        // 2026-11-20 (S4 P6): the mark holds the press. 2026-11-24 (S5-4): the control is found
+        // by that press in the model (before, by `cmd_table::id_of(press)` in the Windows list).
+        if let Some(copied) = self.copied {
+            yw_engine::screen::model::mark_copied(lang, &mut items, copied.anchor, copied.address);
+        }
         items
     }
 
@@ -1178,14 +1200,11 @@ impl App {
             let mut row = Vec::new();
             if self.facts().flags().open_folders {
                 row.push(Ctl::button(
-                    ids::OPEN_DATA_FOLDER,
+                    CorePress::OpenDataFolder,
                     text::OPEN_FOLDER.get(lang),
                 ));
             }
-            row.push(Ctl::link(
-                crate::ui::screens_reset::ids::RESET_OPEN,
-                text::LEFTOVER_MOVE.get(lang),
-            ));
+            row.push(Ctl::link(ResetPress::Open, text::LEFTOVER_MOVE.get(lang)));
             items.push(Item::Row(row));
         }
         // Two groups (2026-11-08): start something new, or bring back a wallet already used;
@@ -1197,12 +1216,8 @@ impl App {
         items.push(Item::Text(text::FIRST_NEW_TEXT.get(lang).to_owned()));
         items.push(Item::Help(T_FIRST[2].get(lang).to_owned()));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::FIRST_CREATE, text::CREATE_WALLET.get(lang)).enabled(enabled),
-            Ctl::button(
-                crate::ui::screens_yubikey::ids::NEW_WALLET,
-                text::FIRST_YK_WALLET.get(lang),
-            )
-            .enabled(enabled),
+            Ctl::primary(CorePress::FirstCreate, text::CREATE_WALLET.get(lang)).enabled(enabled),
+            Ctl::button(YkPress::NewWallet, text::FIRST_YK_WALLET.get(lang)).enabled(enabled),
         ]));
         items.push(Item::Help(text::FIRST_YK_WALLET_HELP.fill(
             lang,
@@ -1213,17 +1228,10 @@ impl App {
             text::FIRST_EXISTING_TITLE.get(lang).to_owned(),
         )));
         items.push(Item::Row(vec![
-            Ctl::button(ids::FIRST_IMPORT, text::FIRST_IMPORT.get(lang)).enabled(enabled),
-            Ctl::button(
-                crate::ui::screens_keys::ids::FIRST_KEY,
-                text::FIRST_KEY.get(lang),
-            )
-            .enabled(enabled),
-            Ctl::button(
-                crate::ui::screens_yubikey::ids::CONNECT_NEW_WALLET,
-                text::FIRST_YK_CONNECT.get(lang),
-            )
-            .enabled(enabled),
+            Ctl::button(CorePress::FirstImport, text::FIRST_IMPORT.get(lang)).enabled(enabled),
+            Ctl::button(KeysPress::FirstKey, text::FIRST_KEY.get(lang)).enabled(enabled),
+            Ctl::button(YkConnectPress::NewWallet, text::FIRST_YK_CONNECT.get(lang))
+                .enabled(enabled),
         ]));
         for line in [
             text::FIRST_IMPORT_HELP.get(lang).to_owned(),
@@ -1254,8 +1262,8 @@ impl App {
         items.push(Item::Help(text::CREATE_INTRO_HELP.get(lang).to_owned()));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::CREATE_NEXT, text::START.get(lang)),
-            Ctl::button(ids::INTRO_CANCEL, text::CANCEL.get(lang)),
+            Ctl::primary(CorePress::CreateNext, text::START.get(lang)),
+            Ctl::button(CorePress::IntroCancel, text::CANCEL.get(lang)),
         ]));
     }
 
@@ -1268,12 +1276,9 @@ impl App {
         items.push(Item::CardStart(None));
         items.push(Item::Text(text::BACKUP_PENDING_TEXT.get(lang).to_owned()));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::BACKUP_CHECK, text::BACKUP_CHECK.get(lang)),
-            Ctl::button(
-                crate::ui::screens_evm::ids::RECEIVE_OPEN,
-                text::RECEIVE.get(lang),
-            ),
-            Ctl::button(ids::LOCK, text::LOCK.get(lang)),
+            Ctl::primary(CorePress::BackupCheck, text::BACKUP_CHECK.get(lang)),
+            Ctl::button(EvmPress::ReceiveOpen, text::RECEIVE.get(lang)),
+            Ctl::button(CorePress::Lock, text::LOCK.get(lang)),
         ]));
         items.push(Item::CardEnd);
         Self::reset_link(lang, items, text::BACKUP_PENDING_RESET.get(lang));
@@ -1297,8 +1302,8 @@ impl App {
         ));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::IMPORT_NEXT, text::START.get(lang)),
-            Ctl::button(ids::INTRO_CANCEL, text::CANCEL.get(lang)),
+            Ctl::primary(CorePress::ImportNext, text::START.get(lang)),
+            Ctl::button(CorePress::IntroCancel, text::CANCEL.get(lang)),
         ]));
     }
 
@@ -1316,8 +1321,8 @@ impl App {
         items.push(Item::Mono(shown));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::IMPORT_CORRECT, text::IMPORT_CORRECT.get(lang)),
-            Ctl::button(ids::IMPORT_WRONG, text::IMPORT_WRONG.get(lang)),
+            Ctl::primary(CorePress::ImportCorrect, text::IMPORT_CORRECT.get(lang)),
+            Ctl::button(CorePress::ImportWrong, text::IMPORT_WRONG.get(lang)),
         ]));
         items.push(Item::Help(text::IMPORT_ADDRESS_HELP.get(lang).to_owned()));
     }
@@ -1334,7 +1339,7 @@ impl App {
         // is a single row at the bottom (2026-11-12).
         items.push(Item::Gap(4));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::UNLOCK, text::UNLOCK.get(lang)).width(160),
+            Ctl::primary(CorePress::Unlock, text::UNLOCK.get(lang)).width(160),
         ]));
         items.push(Item::Help(
             text::LOCKED_AUTO_LOCK.fill(lang, [&self.settings.auto_lock_minutes.to_string()]),
@@ -1352,7 +1357,7 @@ impl App {
             items.push(Item::Gap(8));
             items.push(Item::Help(text::LOCKED_DAMAGED.get(lang).to_owned()));
             items.push(Item::Row(vec![Ctl::link(
-                ids::RECOVER,
+                CorePress::Recover,
                 text::RECOVER_PREV.get(lang),
             )]));
         }
@@ -1360,10 +1365,7 @@ impl App {
         items.push(Item::Gap(16));
         items.push(Item::LabeledRow(
             text::FORGOT_PASSWORD.get(lang).to_owned(),
-            vec![Ctl::link(
-                crate::ui::screens_reset::ids::RESET_OPEN,
-                text::RESET_WALLET.get(lang),
-            )],
+            vec![Ctl::link(ResetPress::Open, text::RESET_WALLET.get(lang))],
         ));
     }
 
@@ -1376,14 +1378,17 @@ impl App {
         ));
         items.push(Item::CardStart(None));
         items.push(Item::Row(vec![Ctl::check(
-            ids::MISMATCH_CHECK,
+            CorePress::MismatchCheck(None),
             text::MISMATCH_CHECK.get(lang),
             self.mismatch_checked,
         )]));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::MISMATCH_RETRY, text::MISMATCH_RETRY.get(lang)),
-            Ctl::button(ids::MISMATCH_CONTINUE, text::MISMATCH_CONTINUE.get(lang))
-                .enabled(self.mismatch_checked),
+            Ctl::primary(CorePress::MismatchRetry, text::MISMATCH_RETRY.get(lang)),
+            Ctl::button(
+                CorePress::MismatchContinue,
+                text::MISMATCH_CONTINUE.get(lang),
+            )
+            .enabled(self.mismatch_checked),
         ]));
         items.push(Item::CardEnd);
     }
@@ -1443,7 +1448,7 @@ impl App {
             self.done_balance_card(items);
         }
         items.push(Item::Row(vec![Ctl::primary(
-            ids::DONE_CONTINUE,
+            CorePress::DoneContinue,
             text::DONE_OPEN_WALLET.get(lang),
         )]));
     }
@@ -1468,7 +1473,7 @@ impl App {
                 ],
             )));
             items.push(Item::Row(vec![Ctl::button(
-                ids::DONE_RPC,
+                CorePress::DoneRpc,
                 text::OPEN_RPC_SETTINGS.get(lang),
             )]));
             return;
@@ -1477,26 +1482,26 @@ impl App {
         if self.settings.rpc_template == RpcTemplate::QuickNode {
             items.push(Item::LabeledRow(
                 text::QUICKNODE_ADDRESS.get(lang).to_owned(),
-                vec![Ctl::edit(ids::DONE_QN_EDIT, "", 520, true, 256)],
+                vec![Ctl::edit(CredField::DoneQn, "", 520, true, 256)],
             ));
             items.push(Item::Help(text::T_DONE_QUICKNODE.get(lang).to_owned()));
             if let Some(error) = &self.done_error {
                 items.push(Item::Banner(error.clone(), Tone::Danger));
             }
             items.push(Item::Row(vec![
-                Ctl::primary(ids::DONE_CONNECT, text::DONE_CONNECT.get(lang)),
-                Ctl::link(ids::DONE_RPC, text::DONE_OTHER_PROVIDERS.get(lang)),
+                Ctl::primary(CorePress::DoneConnect, text::DONE_CONNECT.get(lang)),
+                Ctl::link(CorePress::DoneRpc, text::DONE_OTHER_PROVIDERS.get(lang)),
             ]));
         } else {
             items.push(Item::Help(text::DONE_PROVIDER_HELP.get(lang).to_owned()));
             items.push(Item::Row(vec![Ctl::button(
-                ids::DONE_RPC,
+                CorePress::DoneRpc,
                 text::DONE_SET_RPC.get(lang),
             )]));
         }
         if self.facts().flags().rpc_json_import && self.facts().rpc_json_present() {
             items.push(Item::Row(vec![Ctl::link(
-                ids::DONE_RPC_JSON,
+                CorePress::DoneRpcJson,
                 text::DONE_RPC_JSON.get(lang),
             )]));
         }
@@ -1530,10 +1535,10 @@ impl App {
                         .iter()
                         .position(|known| known == network)
                         .and_then(|row| u16::try_from(row).ok())
-                        .filter(|row| *row < ids::RPC_ROW_OPEN_SPAN)
+                        .filter(|row| *row < rows::RPC_ROW_OPENS)
                     {
                         items.push(Item::Row(vec![Ctl::link(
-                            ids::RPC_ROW_OPEN_BASE.saturating_add(row),
+                            CorePress::RpcRowOpen(Row(row)),
                             &text::OPEN_ROW.fill(lang, [&name]),
                         )]));
                     }
@@ -1555,7 +1560,7 @@ impl App {
             items.push(Item::Help(text::DONE_FAILED_HELP.get(lang).to_owned()));
         }
         items.push(Item::Row(vec![Ctl::button(
-            ids::DONE_RPC,
+            CorePress::DoneRpc,
             text::OPEN_RPC_SETTINGS.get(lang),
         )]));
     }
@@ -1569,7 +1574,7 @@ impl App {
                 text::CHROME_EXTENSION_STATUS.fill(lang, [self.extension_status().text_in(lang)]),
             ));
             items.push(Item::Row(vec![Ctl::button(
-                crate::ui::screens_reset::ids::EXT_OPEN,
+                ExtPress::Open,
                 text::HOW_TO_INSTALL.get(lang),
             )]));
         }
@@ -1582,7 +1587,7 @@ impl App {
             }
         )));
         items.push(Item::Row(vec![Ctl::button(
-            ids::DONE_WC,
+            CorePress::DoneWc,
             text::SETTINGS.get(lang),
         )]));
     }
@@ -1607,16 +1612,16 @@ impl App {
         }
         items.push(Item::Text(line));
         let receive = if evm {
-            Some(crate::ui::screens_evm::ids::RECEIVE_OPEN)
+            Some(Press::Evm(EvmPress::ReceiveOpen))
         } else if self.sol_selected().is_some() {
-            Some(crate::ui::screens_sol::ids::RECEIVE_OPEN)
+            Some(Press::Sol(SolPress::ReceiveOpen))
         } else if self.settings.bitcoin.enabled {
-            Some(crate::ui::screens_btc::ids::RECEIVE_OPEN)
+            Some(Press::Btc(BtcPress::ReceiveOpen))
         } else {
             None
         };
-        if let Some(id) = receive {
-            items.push(Item::Row(vec![Ctl::button(id, text::RECEIVE.get(lang))]));
+        if let Some(press) = receive {
+            items.push(Item::Row(vec![Ctl::button(press, text::RECEIVE.get(lang))]));
         }
     }
 
@@ -1629,7 +1634,7 @@ impl App {
             if self.settings.evm_chain_id == SEPOLIA {
                 lines.push(Item::Text(text::DONE_BALANCE_SEPOLIA.get(lang).to_owned()));
                 lines.push(Item::Row(vec![Ctl::button(
-                    ids::DONE_MAINNET,
+                    CorePress::DoneMainnet,
                     text::DONE_SHOW_MAINNET.get(lang),
                 )]));
             } else {
@@ -1692,15 +1697,18 @@ impl App {
         ));
         let mut row = Vec::new();
         if prev {
-            row.push(Ctl::primary(ids::RECOVER, text::RECOVERY_RESTORE.get(lang)));
+            row.push(Ctl::primary(
+                CorePress::Recover,
+                text::RECOVERY_RESTORE.get(lang),
+            ));
         }
         if self.facts().flags().open_folders {
             row.push(Ctl::button(
-                ids::OPEN_DATA_FOLDER,
+                CorePress::OpenDataFolder,
                 text::OPEN_FOLDER.get(lang),
             ));
         }
-        row.push(Ctl::button(ids::EXIT, text::EXIT.get(lang)));
+        row.push(Ctl::button(CorePress::Exit, text::EXIT.get(lang)));
         items.push(Item::Row(row));
         items.push(Item::CardEnd);
         items.push(Item::Help(
@@ -1810,31 +1818,26 @@ impl App {
             NetworkId::Eip155(chain_id),
             &address.to_checksum(),
             AddressKind::Evm,
-            crate::ui::screens_evm::ids::COPY_ADDRESS,
+            EvmPress::CopyAddress,
             true,
-            crate::ui::screens_explorer::ids::CARD_EVM,
+            ExplorerPress::CardEvm,
         ));
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
         let mut row = vec![
-            Ctl::primary(crate::ui::screens_evm::ids::SEND_OPEN, text::SEND.get(lang))
-                .enabled(unlocked),
-            Ctl::primary(
-                crate::ui::screens_evm::ids::RECEIVE_OPEN,
-                text::RECEIVE.get(lang),
-            ),
+            Ctl::primary(EvmPress::SendOpen, text::SEND.get(lang)).enabled(unlocked),
+            Ctl::primary(EvmPress::ReceiveOpen, text::RECEIVE.get(lang)),
         ];
         if endpoint {
             row.push(
-                Ctl::link(
-                    crate::ui::screens_evm::ids::REFRESH,
-                    text::REFRESH.get(lang),
-                )
-                .tip(T_REFRESH_TIP.get(lang)),
+                Ctl::link(EvmPress::Refresh, text::REFRESH.get(lang)).tip(T_REFRESH_TIP.get(lang)),
             );
         } else {
             // Nothing to refresh without an address: that network's row with its field open
             // (spec/04 §2.6, 2026-11-10).
-            row.push(Ctl::button(ids::EVM_RPC_OPEN, text::DONE_SET_RPC.get(lang)));
+            row.push(Ctl::button(
+                CorePress::EvmRpcOpen,
+                text::DONE_SET_RPC.get(lang),
+            ));
         }
         items.push(Item::Row(row));
         items.push(Item::CardEnd);
@@ -1870,14 +1873,14 @@ impl App {
         let chains = self.settings.registered_evm();
         let labels: Vec<String> = chains
             .iter()
-            .take(usize::from(ids::NETWORK_SPAN))
+            .take(usize::from(rows::NETWORKS))
             .map(|chain_id| self.network_choice_label(*chain_id))
             .collect();
         items.push(Item::LabeledRow(
             text::NETWORK.get(lang).to_owned(),
             vec![
                 Ctl::picker(
-                    crate::ui::screens_evm::ids::NETWORK_PICKER,
+                    EvmPress::NetworkPicker,
                     &self.network_choice_label(selected),
                     open,
                 )
@@ -1898,11 +1901,11 @@ impl App {
             items.push(Item::Menu(
                 chains
                     .iter()
-                    .take(usize::from(ids::NETWORK_SPAN))
+                    .take(usize::from(rows::NETWORKS))
                     .enumerate()
                     .map(|(index, chain_id)| {
                         Ctl::entry(
-                            ids::NETWORK_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
+                            CorePress::Network(Row(u16::try_from(index).unwrap_or(0))),
                             &self.network_choice_label(*chain_id),
                             *chain_id == selected,
                         )
@@ -1929,7 +1932,7 @@ impl App {
         for (row, (pref, label, ..)) in self
             .account_rows()
             .into_iter()
-            .take(usize::from(ids::ACCOUNT_SPAN))
+            .take(usize::from(rows::EVM_ACCOUNTS))
             .enumerate()
         {
             let is_selected = selected == Some(pref);
@@ -1945,7 +1948,7 @@ impl App {
                 chosen = Some((pref, label.clone()));
             }
             accounts.push(AccountItem {
-                id: ids::ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0)),
+                press: CorePress::Account(Row(u16::try_from(row).unwrap_or(0))).into(),
                 label,
                 source,
                 selected: is_selected,
@@ -1955,24 +1958,25 @@ impl App {
         let selected = chosen.map(|(pref, label)| {
             if self.rename == Some(pref) {
                 return SelectedLine::Rename {
-                    edit: ids::RENAME_EDIT,
-                    save: ids::RENAME_SAVE,
-                    cancel: ids::RENAME_CANCEL,
+                    edit: EditField::CoreRename,
+                    save: CorePress::RenameSave.into(),
+                    cancel: CorePress::RenameCancel.into(),
                     label,
                 };
             }
-            let mut buttons = vec![Ctl::button(ids::RENAME, text::RENAME.get(lang)).compact()];
+            let mut buttons =
+                vec![Ctl::button(CorePress::Rename, text::RENAME.get(lang)).compact()];
             match pref {
                 // A recovery phrase's first account (…/0) cannot be hidden: no button
                 // (2026-11-12; an off button and a line saying why before).
                 EvmAccountPref::Index(index) | EvmAccountPref::Mnemonic(_, index) => {
                     if index != 0 {
-                        buttons.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
+                        buttons.push(Ctl::button(CorePress::Hide, text::HIDE.get(lang)).compact());
                     }
                 }
                 EvmAccountPref::Record(_) => {
                     buttons.push(
-                        Ctl::danger(ids::REMOVE_KEY, text::DELETE.get(lang))
+                        Ctl::danger(CorePress::RemoveKey, text::DELETE.get(lang))
                             .compact()
                             .enabled(self.can_remove_imported()),
                     );
@@ -1980,7 +1984,7 @@ impl App {
                 // A YubiKey account (spec/10 §13): no "개인키 보기" (the key is on the card
                 // only); hidden until a card with its key is enrolled again.
                 EvmAccountPref::Hardware(_) => {
-                    buttons.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
+                    buttons.push(Ctl::button(CorePress::Hide, text::HIDE.get(lang)).compact());
                 }
             }
             SelectedLine::Buttons(buttons)
@@ -1988,13 +1992,13 @@ impl App {
         let mut actions = Vec::new();
         if !self.key_only() {
             actions.push(
-                Ctl::button(ids::ADD_ACCOUNT, text::ADD_ACCOUNT.get(lang))
+                Ctl::button(CorePress::AddAccount, text::ADD_ACCOUNT.get(lang))
                     .compact()
                     .enabled(self.can_add_account()),
             );
         }
         actions.push(
-            Ctl::button(ids::IMPORT_KEY, text::IMPORT_KEY.get(lang))
+            Ctl::button(CorePress::ImportKey, text::IMPORT_KEY.get(lang))
                 .compact()
                 .enabled(self.can_import(yw_core::keyimport::ImportChain::Evm)),
         );
@@ -2005,7 +2009,7 @@ impl App {
             items,
             AccountCard {
                 title: text::MY_ACCOUNTS.get(lang).to_owned(),
-                picker: crate::ui::screens_links::ids::PICKER_EVM,
+                picker: LinksPress::PickerEvm.into(),
                 accounts,
                 empty: None,
                 locked: None,
@@ -2025,7 +2029,10 @@ impl App {
     pub fn back_row(&self) -> Item {
         let lang = self.settings.language;
         if self.done_return {
-            Item::Row(vec![Ctl::link(ids::BACK_DONE, text::BACK_DONE.get(lang))])
+            Item::Row(vec![Ctl::link(
+                CorePress::BackDone,
+                text::BACK_DONE.get(lang),
+            )])
         } else {
             back_main(lang)
         }
@@ -2037,7 +2044,7 @@ impl App {
         items.push(Item::Title(text::SETTINGS.get(lang).to_owned()));
         items.push(Item::Row(vec![
             Ctl::tab(
-                ids::SECTION_SECURITY,
+                CorePress::SectionSecurity,
                 text::TAB_SECURITY.get(lang),
                 section == SettingsSection::Security,
             )
@@ -2045,49 +2052,49 @@ impl App {
             // Keys and backups first and fixed widths (2026-11-08): the nine tabs keep one row
             // at the default 960 DIP window.
             Ctl::tab(
-                crate::ui::screens_mnemonics::ids::SECTION_MNEMONICS,
+                MnPress::SectionMnemonics,
                 text::TAB_MNEMONICS.get(lang),
                 section == SettingsSection::Mnemonics,
             )
             .width(88),
             Ctl::tab(
-                crate::ui::screens_yubikey::ids::SECTION_YUBIKEY,
+                YkPress::SectionYubikey,
                 "YubiKey",
                 section == SettingsSection::YubiKey,
             )
             .width(84),
             Ctl::tab(
-                ids::SECTION_NETWORK,
+                CorePress::SectionNetwork,
                 text::TAB_NETWORK.get(lang),
                 section == SettingsSection::Network,
             )
             .width(120),
             Ctl::tab(
-                crate::ui::screens_evm::ids::SECTION_CHAINS,
+                EvmPress::SectionChains,
                 text::TAB_CHAINS.get(lang),
                 section == SettingsSection::Chains,
             )
             .width(92),
             Ctl::tab(
-                crate::ui::screens_sol::ids::SECTION_SOL,
+                SolPress::SectionSol,
                 "Solana",
                 section == SettingsSection::Solana,
             )
             .width(76),
             Ctl::tab(
-                crate::ui::screens_btc::ids::SECTION_BTC,
+                BtcPress::SectionBtc,
                 "Bitcoin",
                 section == SettingsSection::Bitcoin,
             )
             .width(76),
             Ctl::tab(
-                crate::ui::screens_llm::ids::SECTION_AI,
+                LlmPress::SectionAi,
                 text::TAB_AI.get(lang),
                 section == SettingsSection::Ai,
             )
             .width(80),
             Ctl::tab(
-                ids::SECTION_OTHER,
+                CorePress::SectionOther,
                 text::TAB_OTHER.get(lang),
                 section == SettingsSection::Other,
             )
@@ -2113,7 +2120,7 @@ impl App {
     pub(crate) fn advanced_toggle(&self, items: &mut Vec<Item>) {
         let lang = self.settings.language;
         items.push(Item::Row(vec![Ctl::link(
-            ids::ADVANCED_TOGGLE,
+            CorePress::AdvancedToggle,
             if self.show_advanced {
                 text::ADVANCED_HIDE.get(lang)
             } else {
@@ -2133,13 +2140,13 @@ impl App {
             text::AUTO_LOCK_LABEL.get(lang).to_owned(),
             vec![
                 Ctl::edit(
-                    ids::AUTOLOCK_EDIT,
+                    EditField::CoreAutoLock,
                     &self.settings.auto_lock_minutes.to_string(),
                     80,
                     false,
                     2,
                 ),
-                Ctl::button(ids::AUTOLOCK_SAVE, text::SAVE.get(lang)),
+                Ctl::button(CorePress::AutolockSave, text::SAVE.get(lang)),
             ],
         ));
         items.push(Item::CardEnd);
@@ -2161,7 +2168,7 @@ impl App {
             }
             items.push(Item::Help(text::SECRETS_KEY_ONLY.get(lang).to_owned()));
             items.push(Item::Row(vec![
-                Ctl::button(ids::REVEAL_KEY, text::REVEAL_KEY.get(lang)).enabled(
+                Ctl::button(CorePress::RevealKey, text::REVEAL_KEY.get(lang)).enabled(
                     unlocked && self.selected_account().is_some() && !self.hardware_selected(),
                 ),
             ]));
@@ -2171,7 +2178,7 @@ impl App {
         items.push(Item::Help(text::SECRETS_KEY_NOTE.get(lang).to_owned()));
         if self.facts().flags().secret_copy {
             items.push(Item::Row(vec![Ctl::check(
-                ids::COPY_TOGGLE,
+                CorePress::CopyToggle(None),
                 text::ALLOW_COPY.get(lang),
                 self.settings.allow_secret_copy,
             )]));
@@ -2186,7 +2193,7 @@ impl App {
             crate::app::T_PASSWORD_OLD_COPIES.get(lang).to_owned(),
         ));
         items.push(Item::Row(vec![
-            Ctl::button(ids::CHANGE_PASSWORD, text::CHANGE_PASSWORD.get(lang)).enabled(public),
+            Ctl::button(CorePress::ChangePassword, text::CHANGE_PASSWORD.get(lang)).enabled(public),
         ]));
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some(
@@ -2213,7 +2220,7 @@ impl App {
         )));
         items.push(Item::Help(text::RESET_CARD_HELP.get(lang).to_owned()));
         items.push(Item::Row(vec![Ctl::danger(
-            crate::ui::screens_reset::ids::RESET_OPEN,
+            ResetPress::Open,
             text::RESET_WALLET.get(lang),
         )]));
         items.push(Item::CardEnd);
@@ -2227,8 +2234,18 @@ impl App {
         items.push(Item::CardStart(Some(LANGUAGE_TITLE.to_owned())));
         items.push(Item::Help(text::LANGUAGE_HELP.get(lang).to_owned()));
         items.push(Item::Row(vec![
-            Ctl::radio(ids::LANG_KO, LANGUAGE_KOREAN, lang == Lang::Ko, true),
-            Ctl::radio(ids::LANG_EN, "English", lang == Lang::En, false),
+            Ctl::radio(
+                CorePress::Lang(Lang::Ko),
+                LANGUAGE_KOREAN,
+                lang == Lang::Ko,
+                true,
+            ),
+            Ctl::radio(
+                CorePress::Lang(Lang::En),
+                "English",
+                lang == Lang::En,
+                false,
+            ),
         ]));
         items.push(Item::CardEnd);
     }
@@ -2255,19 +2272,19 @@ impl App {
         let template = self.settings.rpc_template;
         items.push(Item::Row(vec![
             Ctl::radio(
-                ids::TPL_QUICKNODE,
+                CorePress::Template(RpcTemplate::QuickNode),
                 text::TPL_QUICKNODE.get(lang),
                 template == RpcTemplate::QuickNode,
                 true,
             ),
             Ctl::radio(
-                ids::TPL_ALCHEMY,
+                CorePress::Template(RpcTemplate::Alchemy),
                 text::ALCHEMY.get(lang),
                 template == RpcTemplate::Alchemy,
                 false,
             ),
             Ctl::radio(
-                ids::TPL_MANUAL,
+                CorePress::Template(RpcTemplate::Manual),
                 text::TPL_MANUAL.get(lang),
                 template == RpcTemplate::Manual,
                 false,
@@ -2284,12 +2301,12 @@ impl App {
                 items.push(Item::Help(text::QN_STORED.fill(lang, [status])));
                 items.push(Item::LabeledRow(
                     text::QN_NAME.get(lang).to_owned(),
-                    vec![Ctl::edit(ids::QN_NAME_EDIT, "", 320, true, 256)],
+                    vec![Ctl::edit(CredField::QnName, "", 320, true, 256)],
                 ));
                 items.push(Item::Help(text::QN_NAME_HELP.get(lang).to_owned()));
                 items.push(Item::LabeledRow(
                     text::QN_TOKEN.get(lang).to_owned(),
-                    vec![Ctl::edit(ids::QN_TOKEN_EDIT, "", 320, true, 256)],
+                    vec![Ctl::edit(CredField::QnToken, "", 320, true, 256)],
                 ));
                 items.push(Item::Help(text::QN_TOKEN_HELP.get(lang).to_owned()));
                 items.push(Item::Help(text::T_QUICKNODE_CHAINS.get(lang).to_owned()));
@@ -2298,7 +2315,7 @@ impl App {
                 items.push(Item::Help(text::ALCHEMY_STORED.fill(lang, [status])));
                 items.push(Item::LabeledRow(
                     text::API_KEY.get(lang).to_owned(),
-                    vec![Ctl::edit(ids::ALCHEMY_KEY_EDIT, "", 320, true, 256)],
+                    vec![Ctl::edit(CredField::AlchemyKey, "", 320, true, 256)],
                 ));
                 items.push(Item::Help(text::ALCHEMY_KEY_HELP.get(lang).to_owned()));
             }
@@ -2308,9 +2325,10 @@ impl App {
         }
         let manual = template == RpcTemplate::Manual;
         items.push(Item::Row(vec![
-            Ctl::primary(ids::GENERATE, text::GENERATE.get(lang)).enabled(!manual),
-            Ctl::button(ids::TPL_SAVE, text::TPL_SAVE.get(lang)).enabled(!manual),
-            Ctl::danger(ids::TPL_DELETE, text::TPL_DELETE.get(lang)).enabled(!manual && stored),
+            Ctl::primary(CorePress::Generate, text::GENERATE.get(lang)).enabled(!manual),
+            Ctl::button(CorePress::TemplateSave, text::TPL_SAVE.get(lang)).enabled(!manual),
+            Ctl::danger(CorePress::TemplateDelete, text::TPL_DELETE.get(lang))
+                .enabled(!manual && stored),
         ]));
         if self.rpc_removed == Some(yw_engine::wallet::RpcRemoved::Template) {
             items.push(Item::Banner(
@@ -2326,7 +2344,7 @@ impl App {
         self.rpc_summary_items(items);
         items.push(Item::Help(text::RPC_LIST_HELP.get(lang).to_owned()));
         let mut networks = self.url_networks();
-        networks.truncate(usize::from(ids::ROW_SPAN / 3));
+        networks.truncate(usize::from(rows::RPC_ROWS));
         // The note above an open field: the stored credentials can make the empty addresses.
         let template_name = match template {
             RpcTemplate::QuickNode => Some("QuickNode"),
@@ -2338,13 +2356,12 @@ impl App {
         // `삭제`. 13 networks fit on one screen instead of three.
         for (row, network) in networks.into_iter().enumerate() {
             let url = self.apikeys.rpc_url(network);
-            let base =
-                ids::ROW_BASE.saturating_add(u16::try_from(row).unwrap_or(0).saturating_mul(3));
+            let row = Row(u16::try_from(row).unwrap_or(0));
             items.push(Item::LabeledRow(
                 self.network_name(network),
                 vec![
                     Ctl::button(
-                        base,
+                        CorePress::RpcRow(row, RpcRowAction::Replace),
                         if url.is_some() {
                             text::REPLACE.get(lang)
                         } else {
@@ -2352,12 +2369,18 @@ impl App {
                         },
                     )
                     .compact(),
-                    Ctl::button(base.saturating_add(1), text::TEST.get(lang))
-                        .compact()
-                        .enabled(url.is_some()),
-                    Ctl::danger(base.saturating_add(2), text::DELETE.get(lang))
-                        .compact()
-                        .enabled(url.is_some()),
+                    Ctl::button(
+                        CorePress::RpcRow(row, RpcRowAction::Test),
+                        text::TEST.get(lang),
+                    )
+                    .compact()
+                    .enabled(url.is_some()),
+                    Ctl::danger(
+                        CorePress::RpcRow(row, RpcRowAction::Delete),
+                        text::DELETE.get(lang),
+                    )
+                    .compact()
+                    .enabled(url.is_some()),
                 ],
             ));
             let message = self.rpc_messages.iter().find(|(id, _, _)| *id == network);
@@ -2382,9 +2405,9 @@ impl App {
                     items.push(Item::Help(text::ROW_TEMPLATE_STORED.fill(lang, [name])));
                 }
                 items.push(Item::Row(vec![
-                    Ctl::edit(ids::REPLACE_EDIT, "", 420, true, 2_048),
-                    Ctl::primary(ids::REPLACE_SAVE, text::SAVE.get(lang)),
-                    Ctl::button(ids::REPLACE_CANCEL, text::CANCEL.get(lang)),
+                    Ctl::edit(CredField::RpcReplace, "", 420, true, 2_048),
+                    Ctl::primary(CorePress::ReplaceSave, text::SAVE.get(lang)),
+                    Ctl::button(CorePress::ReplaceCancel, text::CANCEL.get(lang)),
                 ]));
                 items.push(Item::Help(text::ROW_PASTE_HELP.get(lang).to_owned()));
             }
@@ -2410,7 +2433,7 @@ impl App {
                 text::DORMANT_HELP.fill(lang, [&dormant.len().to_string()]),
             ));
             items.push(Item::Row(vec![Ctl::danger(
-                ids::PRUNE_DORMANT,
+                CorePress::PruneDormant,
                 text::DORMANT_DELETE.get(lang),
             )]));
             items.push(Item::CardEnd);
@@ -2442,16 +2465,16 @@ impl App {
                 if self.rpc_import.confirm_delete {
                     items.push(Item::Banner(t(text::JSON_DELETE_CONFIRM), Tone::Warn));
                     items.push(Item::Row(vec![
-                        Ctl::danger(ids::RPC_JSON_DELETE_CONFIRM, text::DELETE.get(lang)),
-                        Ctl::button(ids::RPC_JSON_DELETE_CANCEL, text::CANCEL.get(lang)),
+                        Ctl::danger(RpcImportPress::DeleteConfirm, text::DELETE.get(lang)),
+                        Ctl::button(RpcImportPress::DeleteCancel, text::CANCEL.get(lang)),
                     ]));
                 } else {
                     if self.rpc_import.imported {
                         items.push(Item::Banner(t(text::JSON_LEFT), Tone::Warn));
                     }
                     items.push(Item::Row(vec![
-                        Ctl::button(ids::RPC_IMPORT, text::IMPORT_BUTTON.get(lang)),
-                        Ctl::button(ids::RPC_JSON_DELETE, text::DELETE_FILE.get(lang)),
+                        Ctl::button(RpcImportPress::Import, text::IMPORT_BUTTON.get(lang)),
+                        Ctl::button(RpcImportPress::Delete, text::DELETE_FILE.get(lang)),
                     ]));
                 }
                 items.push(Item::CardEnd);
@@ -2491,14 +2514,14 @@ impl App {
                 Tone::Warn,
             ));
             items.push(Item::Row(vec![
-                Ctl::button(ids::RPC_IMPORT_OVERWRITE, text::OVERWRITE.get(lang)),
-                Ctl::button(ids::RPC_IMPORT_FILL, text::FILL_EMPTY.get(lang)),
-                Ctl::button(ids::RPC_IMPORT_CANCEL, text::CANCEL.get(lang)),
+                Ctl::button(RpcImportPress::Overwrite, text::OVERWRITE.get(lang)),
+                Ctl::button(RpcImportPress::Fill, text::FILL_EMPTY.get(lang)),
+                Ctl::button(RpcImportPress::Cancel, text::CANCEL.get(lang)),
             ]));
         } else {
             items.push(Item::Row(vec![
-                Ctl::button(ids::RPC_IMPORT_OVERWRITE, text::IMPORT.get(lang)),
-                Ctl::button(ids::RPC_IMPORT_CANCEL, text::CANCEL.get(lang)),
+                Ctl::button(RpcImportPress::Overwrite, text::IMPORT.get(lang)),
+                Ctl::button(RpcImportPress::Cancel, text::CANCEL.get(lang)),
             ]));
         }
         items.push(Item::Help(t(text::SAVE_NOTE)));
@@ -2560,9 +2583,9 @@ impl App {
             .filter_map(|(row, network)| {
                 let row = u16::try_from(row)
                     .ok()
-                    .filter(|row| *row < ids::RPC_ROW_OPEN_SPAN)?;
+                    .filter(|row| *row < rows::RPC_ROW_OPENS)?;
                 Some(Ctl::link(
-                    ids::RPC_ROW_OPEN_BASE.saturating_add(row),
+                    CorePress::RpcRowOpen(Row(row)),
                     &self.network_name(network),
                 ))
             })
@@ -2590,10 +2613,14 @@ impl App {
             text::TEST_ALL.get(lang).to_owned()
         };
         items.push(Item::Row(vec![
-            Ctl::button(ids::TEST_ALL, &label).enabled(configured > 0 && !tests.busy()),
+            Ctl::button(CorePress::TestAll, &label).enabled(configured > 0 && !tests.busy()),
         ]));
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the cards of the Other settings section in order (2026-11-24 S5-4: longer by its press names)"
+    )]
     fn other_section(&self, items: &mut Vec<Item>) {
         let lang = self.settings.language;
         let flags = self.facts().flags();
@@ -2608,7 +2635,7 @@ impl App {
                     .to_owned(),
             ));
             items.push(Item::Row(vec![Ctl::button(
-                crate::ui::screens_reset::ids::EXT_OPEN,
+                ExtPress::Open,
                 text::EXTENSION_OPEN.get(lang),
             )]));
             items.push(Item::CardEnd);
@@ -2624,7 +2651,7 @@ impl App {
             },
         ));
         items.push(Item::Row(vec![Ctl::button(
-            crate::ui::screens_sites::ids::SITES_OPEN,
+            SitesPress::Open,
             text::WC_OPEN_SITES.get(lang),
         )]));
         items.push(Item::CardEnd);
@@ -2634,13 +2661,13 @@ impl App {
             )));
             items.push(Item::Help(text::BROWSER_LINK_HELP.get(lang).to_owned()));
             items.push(Item::Row(vec![Ctl::check(
-                ids::AUTOLAUNCH_TOGGLE,
+                CorePress::AutolaunchToggle(None),
                 text::AUTOLAUNCH.get(lang),
                 self.settings.browser_auto_launch,
             )]));
             items.push(Item::Help(text::AUTOLAUNCH_HELP.get(lang).to_owned()));
             items.push(Item::Row(vec![Ctl::check(
-                ids::LOCALHOST_TOGGLE,
+                CorePress::LocalhostToggle(None),
                 text::LOCALHOST.get(lang),
                 self.settings.allow_localhost_dapps,
             )]));
@@ -2653,7 +2680,7 @@ impl App {
         items.push(Item::Help(text::DIAGNOSTICS_HELP.get(lang).to_owned()));
         if flags.open_folders {
             items.push(Item::Row(vec![Ctl::button(
-                ids::OPEN_LOG_FOLDER,
+                CorePress::OpenLogFolder,
                 text::OPEN_LOG_FOLDER.get(lang),
             )]));
         }
@@ -2662,10 +2689,30 @@ impl App {
             items.push(Item::LabeledRow(
                 text::LOG_LEVEL.get(lang).to_owned(),
                 vec![
-                    Ctl::radio(ids::LOG_ERROR, "error", level == LogLevel::Error, true),
-                    Ctl::radio(ids::LOG_WARN, "warn", level == LogLevel::Warn, false),
-                    Ctl::radio(ids::LOG_INFO, "info", level == LogLevel::Info, false),
-                    Ctl::radio(ids::LOG_DEBUG, "debug", level == LogLevel::Debug, false),
+                    Ctl::radio(
+                        CorePress::LogLevel(LogLevel::Error),
+                        "error",
+                        level == LogLevel::Error,
+                        true,
+                    ),
+                    Ctl::radio(
+                        CorePress::LogLevel(LogLevel::Warn),
+                        "warn",
+                        level == LogLevel::Warn,
+                        false,
+                    ),
+                    Ctl::radio(
+                        CorePress::LogLevel(LogLevel::Info),
+                        "info",
+                        level == LogLevel::Info,
+                        false,
+                    ),
+                    Ctl::radio(
+                        CorePress::LogLevel(LogLevel::Debug),
+                        "debug",
+                        level == LogLevel::Debug,
+                        false,
+                    ),
                 ],
             ));
             items.push(Item::Help(text::LOG_LEVEL_HELP.get(lang).to_owned()));
@@ -2687,7 +2734,7 @@ impl App {
         ));
         if flags.open_folders {
             items.push(Item::Row(vec![Ctl::button(
-                ids::OPEN_DATA_FOLDER,
+                CorePress::OpenDataFolder,
                 text::OPEN_FOLDER.get(lang),
             )]));
         }
@@ -2920,29 +2967,29 @@ impl App {
         }
         if kind == Confirm::Generate {
             items.push(Item::Row(vec![Ctl::check(
-                ids::OVERWRITE_CHECK,
+                CorePress::OverwriteCheck(None),
                 text::C_OVERWRITE.get(lang),
                 self.overwrite_checked,
             )]));
         }
         if matches!(kind, Confirm::ChainRepin | Confirm::LlmOn) {
-            let (check_id, check_text, checked) = if kind == Confirm::LlmOn {
+            let (check, check_text, checked) = if kind == Confirm::LlmOn {
                 (
-                    crate::ui::screens_llm::ids::NOTICE_CHECK,
+                    Press::Llm(LlmPress::NoticeCheck(None)),
                     text::C_UNDERSTOOD.get(lang),
                     self.llm_ui.notice_checked,
                 )
             } else {
                 (
-                    crate::ui::screens_evm::ids::REPIN_CHECK,
+                    Press::Evm(EvmPress::RepinCheck(None)),
                     text::C_REPIN_CHECK.get(lang),
                     self.evm.repin.as_ref().is_some_and(|repin| repin.checked),
                 )
             };
-            items.push(Item::Row(vec![Ctl::check(check_id, check_text, checked)]));
+            items.push(Item::Row(vec![Ctl::check(check, check_text, checked)]));
             items.push(Item::Row(vec![
-                Ctl::primary(ids::CONFIRM_YES, yes).enabled(checked),
-                Ctl::button(ids::CONFIRM_NO, text::CANCEL.get(lang)),
+                Ctl::primary(CorePress::ConfirmYes, yes).enabled(checked),
+                Ctl::button(CorePress::ConfirmNo, text::CANCEL.get(lang)),
             ]));
             items.push(Item::CardEnd);
             return;
@@ -2950,8 +2997,8 @@ impl App {
         if kind == Confirm::YkAbandon {
             // Going on is the main choice; giving up discards the words (spec/10 §7.1-1).
             items.push(Item::Row(vec![
-                Ctl::primary(ids::CONFIRM_NO, text::C_KEEP_CREATING.get(lang)),
-                Ctl::danger(ids::CONFIRM_YES, yes),
+                Ctl::primary(CorePress::ConfirmNo, text::C_KEEP_CREATING.get(lang)),
+                Ctl::danger(CorePress::ConfirmYes, yes),
             ]));
             items.push(Item::CardEnd);
             return;
@@ -2959,8 +3006,8 @@ impl App {
         if kind == Confirm::YkPinLater {
             // Setting the PIN now is the main choice (back to the result and its PIN card).
             items.push(Item::Row(vec![
-                Ctl::primary(ids::CONFIRM_NO, text::C_PIN_NOW.get(lang)),
-                Ctl::button(ids::CONFIRM_YES, yes),
+                Ctl::primary(CorePress::ConfirmNo, text::C_PIN_NOW.get(lang)),
+                Ctl::button(CorePress::ConfirmYes, yes),
             ]));
             items.push(Item::CardEnd);
             return;
@@ -2971,11 +3018,11 @@ impl App {
         };
         items.push(Item::Row(vec![
             if destructive {
-                Ctl::danger(ids::CONFIRM_YES, yes)
+                Ctl::danger(CorePress::ConfirmYes, yes)
             } else {
-                Ctl::primary(ids::CONFIRM_YES, yes)
+                Ctl::primary(CorePress::ConfirmYes, yes)
             },
-            Ctl::button(ids::CONFIRM_NO, no),
+            Ctl::button(CorePress::ConfirmNo, no),
         ]));
         items.push(Item::CardEnd);
     }

@@ -8,9 +8,12 @@ use yw_core::evm::display::format_address;
 
 use crate::app::App;
 use yw_engine::badge::Badge;
+use yw_engine::cmd::{BookPress, BookRowAction, Row};
+use yw_engine::form::EditField;
 use yw_engine::meta::{BookChain, Contact};
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
+use yw_engine::screen::rows;
 use yw_engine::text::grouped;
 use yw_engine::wallet::app_book::{BookTarget, PromptPlace, short_address};
 
@@ -321,7 +324,7 @@ impl App {
             self.book_form_card(items);
         } else {
             items.push(Item::Row(vec![Ctl::primary(
-                ids::ADD_OPEN,
+                BookPress::AddOpen,
                 text::ADD_OPEN.get(lang),
             )]));
         }
@@ -345,7 +348,7 @@ impl App {
             }
             let count = entries.len();
             for (position, entry) in entries.into_iter().enumerate() {
-                let base = ids::ROW_BASE.saturating_add(index.saturating_mul(ids::ROW_STRIDE));
+                let row = Row(index);
                 let position_in_book = index;
                 index = index.saturating_add(1);
                 let favorite = meta.is_some_and(|meta| meta.is_favorite(chain, &entry.address));
@@ -370,7 +373,7 @@ impl App {
                 // and the actions are icons right after it, not a row of buttons under it.
                 let actions = vec![
                     Ctl::icon(
-                        base,
+                        BookPress::Row(row, BookRowAction::Favorite),
                         if favorite { "★" } else { "☆" },
                         if favorite {
                             text::UNFAVORITE.get(lang)
@@ -378,15 +381,23 @@ impl App {
                             text::FAVORITE.get(lang)
                         },
                     ),
-                    Ctl::icon(base.saturating_add(1), "✎", text::EDIT.get(lang)),
-                    Ctl::icon(base.saturating_add(2), "✕", text::DELETE_ICON.get(lang)),
+                    Ctl::icon(
+                        BookPress::Row(row, BookRowAction::Edit),
+                        "✎",
+                        text::EDIT.get(lang),
+                    ),
+                    Ctl::icon(
+                        BookPress::Row(row, BookRowAction::Delete),
+                        "✕",
+                        text::DELETE_ICON.get(lang),
+                    ),
                 ];
                 let shown = shown_address(chain, &entry.address);
-                if position_in_book < ids::COPY_SPAN {
+                if position_in_book < rows::BOOK_COPIES {
                     items.push(crate::ui::screens::receive_address_row(
                         lang,
                         &shown,
-                        ids::COPY_BASE.saturating_add(position_in_book),
+                        BookPress::Copy(Row(position_in_book)),
                         actions,
                     ));
                 } else {
@@ -419,9 +430,9 @@ impl App {
                 .iter()
                 .map(|chain| {
                     let id = match chain {
-                        BookChain::Evm => ids::CHAIN_EVM,
-                        BookChain::Sol => ids::CHAIN_SOL,
-                        BookChain::Btc => ids::CHAIN_BTC,
+                        BookChain::Evm => BookPress::ChainEvm,
+                        BookChain::Sol => BookPress::ChainSol,
+                        BookChain::Btc => BookPress::ChainBtc,
                     };
                     Ctl::tab(id, family_name(*chain), *chain == form.chain)
                         .badge(Badge::family(*chain))
@@ -439,7 +450,7 @@ impl App {
                 .to_owned(),
             ));
         }
-        let mut address = Ctl::edit(ids::ADDR_EDIT, &form.address, 430, false, 128);
+        let mut address = Ctl::edit(EditField::BookAddress, &form.address, 430, false, 128);
         if editing {
             address = address.readonly();
         }
@@ -449,35 +460,35 @@ impl App {
         ));
         items.push(Item::LabeledRow(
             text::NAME.get(lang).to_owned(),
-            vec![Ctl::edit(ids::LABEL_EDIT, &form.label, 260, false, 64)],
+            vec![Ctl::edit(EditField::BookLabel, &form.label, 260, false, 64)],
         ));
         items.push(Item::Row(vec![Ctl::check(
-            ids::VERIFIED,
+            BookPress::Verified(None),
             text::VERIFIED_CHECK.get(lang),
             form.verified,
         )]));
         items.push(Item::Row(vec![Ctl::check(
-            ids::FAVORITE,
+            BookPress::Favorite(None),
             text::FAVORITE_CHECK.get(lang),
             form.favorite,
         )]));
         if let Some(note) = &form.look_alike {
             items.push(Item::Banner(note.clone(), Tone::HighRisk));
             items.push(Item::Row(vec![Ctl::check(
-                ids::FORM_ACK,
+                BookPress::FormAck(None),
                 text::ACK.get(lang),
                 form.ack,
             )]));
         }
         let mut row = vec![
             Ctl::primary(
-                ids::SAVE,
+                BookPress::Save,
                 if editing { text::SAVE } else { text::ADD }.get(lang),
             )
             .enabled(form.look_alike.is_none() || form.ack),
         ];
         if editing || form.open {
-            row.push(Ctl::button(ids::CANCEL, text::CANCEL.get(lang)));
+            row.push(Ctl::button(BookPress::Cancel, text::CANCEL.get(lang)));
         }
         items.push(Item::Row(row));
         items.push(Item::CardEnd);
@@ -494,7 +505,7 @@ impl App {
             .enumerate()
             .map(|(index, entry)| {
                 Ctl::button(
-                    ids::FAV_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
+                    BookPress::Chip(Row(u16::try_from(index).unwrap_or(0))),
                     &chip_text(entry, true),
                 )
             })
@@ -542,7 +553,7 @@ impl App {
         }
         if self.offer_save(chain, &address) {
             items.push(Item::Row(vec![Ctl::link(
-                ids::SEND_SAVE,
+                BookPress::SendSave,
                 text::SAVE_THIS.get(self.settings.language),
             )]));
         }
@@ -572,7 +583,7 @@ impl App {
             ));
             items.push(Item::Help(text::SAVE_HELP.get(lang).to_owned()));
             items.push(Item::Row(vec![Ctl::button(
-                ids::RESULT_SAVE,
+                BookPress::ResultSave,
                 text::SAVE_TO_BOOK.get(lang),
             )]));
             items.push(Item::CardEnd);
@@ -615,7 +626,7 @@ impl App {
         if let Some(note) = &prompt.look_alike {
             items.push(Item::Banner(note.clone(), Tone::HighRisk));
             items.push(Item::Row(vec![Ctl::check(
-                ids::PROMPT_ACK,
+                BookPress::PromptAck(None),
                 text::ACK.get(lang),
                 prompt.ack,
             )]));
@@ -626,10 +637,10 @@ impl App {
         items.push(Item::LabeledRow(
             text::NAME.get(lang).to_owned(),
             vec![
-                Ctl::edit(ids::PROMPT_LABEL_EDIT, &prompt.label, 220, false, 64),
-                Ctl::button(ids::PROMPT_SAVE, text::SAVE.get(lang))
+                Ctl::edit(EditField::BookPromptLabel, &prompt.label, 220, false, 64),
+                Ctl::button(BookPress::PromptSave, text::SAVE.get(lang))
                     .enabled(prompt.look_alike.is_none() || prompt.ack),
-                Ctl::link(ids::PROMPT_CANCEL, text::CANCEL.get(lang)),
+                Ctl::link(BookPress::PromptCancel, text::CANCEL.get(lang)),
             ],
         ));
         if card {
@@ -652,7 +663,7 @@ impl App {
         for (index, entry) in entries.iter().enumerate() {
             let favorite = meta.is_some_and(|meta| meta.is_favorite(entry.chain, &entry.address));
             items.push(Item::Row(vec![Ctl::button(
-                ids::BTC_PICK_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
+                BookPress::BtcPickRow(Row(u16::try_from(index).unwrap_or(0))),
                 &text::PICK.fill(lang, [if favorite { "★ " } else { "" }, &entry.label]),
             )]));
             items.push(Item::Mono(grouped(&entry.address)));

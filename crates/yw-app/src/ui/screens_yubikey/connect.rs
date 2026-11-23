@@ -7,12 +7,13 @@ use yw_core::yubikey::connect::KeyUse;
 use yw_core::yubikey::plan::{CardSlot, address_texts};
 
 use super::text as t;
-use super::{grouped_address, ids, slot_items, steps_item};
+use super::{grouped_address, slot_items, steps_item};
 use crate::app::App;
+use yw_engine::cmd::{YkConnectPress, YkPress};
 use yw_engine::screen::Tone;
 use yw_engine::screen::model::{Ctl, Item};
 use yw_engine::wallet::app_yubikey::connect::text as ct;
-use yw_engine::wallet::app_yubikey::connect::{Choice, ConnectForm};
+use yw_engine::wallet::app_yubikey::connect::{Choice, ConnectForm, choice_press};
 use yw_engine::wallet::app_yubikey::{WizardOrigin, WizardStep, YkWizard};
 
 /// The connect flow's step labels.
@@ -87,8 +88,9 @@ impl App {
             }
             items.push(Item::CardEnd);
             items.push(Item::Row(vec![
-                Ctl::primary(ids::CONNECT_RESCAN, t::BTN_READ_AGAIN.get(lang)).enabled(!form.busy),
-                Ctl::button(ids::WIZARD_CANCEL, t::BTN_CANCEL.get(lang)),
+                Ctl::primary(YkConnectPress::Rescan, t::BTN_READ_AGAIN.get(lang))
+                    .enabled(!form.busy),
+                Ctl::button(YkPress::WizardCancel, t::BTN_CANCEL.get(lang)),
             ]));
             return;
         };
@@ -144,7 +146,7 @@ impl App {
                     .enumerate()
                     .map(|(position, choice)| {
                         Ctl::radio(
-                            ids::connect_choice_id(row, *choice),
+                            choice_press(row, *choice),
                             &choice.label(lang),
                             chosen == choice,
                             position == 0,
@@ -184,10 +186,10 @@ impl App {
             items.push(Item::Banner(error.clone(), Tone::Danger));
         }
         items.push(Item::Row(vec![
-            Ctl::primary(ids::CONNECT_NEXT, t::BTN_NEXT.get(lang))
+            Ctl::primary(YkConnectPress::Next, t::BTN_NEXT.get(lang))
                 .enabled(!form.busy && !scan.keys.is_empty() && form.error.is_none()),
-            Ctl::button(ids::CONNECT_RESCAN, t::BTN_READ_AGAIN.get(lang)).enabled(!form.busy),
-            Ctl::button(ids::WIZARD_CANCEL, t::BTN_CANCEL.get(lang)),
+            Ctl::button(YkConnectPress::Rescan, t::BTN_READ_AGAIN.get(lang)).enabled(!form.busy),
+            Ctl::button(YkPress::WizardCancel, t::BTN_CANCEL.get(lang)),
         ]));
     }
 
@@ -235,7 +237,7 @@ impl App {
             ));
         }
         items.push(Item::Row(vec![
-            Ctl::button(ids::CONNECT_PIN, t::PIN_OWNERSHIP.get(lang)).enabled(!form.busy),
+            Ctl::button(YkConnectPress::Pin, t::PIN_OWNERSHIP.get(lang)).enabled(!form.busy),
         ]));
         items.push(Item::CardEnd);
         if form.scan.as_ref().is_some_and(|scan| scan.defaults.piv_pin) {
@@ -246,9 +248,9 @@ impl App {
         }
         items.push(Item::Help(t::SIGN_HELP.get(lang).to_owned()));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::CONNECT_SAVE, t::BTN_SAVE.get(lang)).enabled(!form.busy),
-            Ctl::button(ids::CONNECT_BACK, t::BTN_CHOOSE_AGAIN.get(lang)),
-            Ctl::button(ids::WIZARD_CANCEL, t::BTN_CANCEL.get(lang)),
+            Ctl::primary(YkConnectPress::Save, t::BTN_SAVE.get(lang)).enabled(!form.busy),
+            Ctl::button(YkConnectPress::Back, t::BTN_CHOOSE_AGAIN.get(lang)),
+            Ctl::button(YkPress::WizardCancel, t::BTN_CANCEL.get(lang)),
         ]));
     }
 }

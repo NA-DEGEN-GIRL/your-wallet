@@ -9,7 +9,8 @@
 //! banner tags, receive QR choices and source words the wallet code shares with the shell, before
 //! in `yw_app::ui::{main_window, qr, screens_accounts}::text`. 2026-11-23, S4d E1: the wallet's
 //! catalogues `wallet::…::text`, before `yw_app::app_*::text` and the wallet's half of
-//! `yw_app::app::text`.)
+//! `yw_app::app::text`. 2026-11-24, S5-4: `screen::model::text`, the copy mark's texts, before in
+//! `yw_app::ui::main_window::text`.)
 
 use yw_core::lang::Entry;
 
@@ -58,6 +59,10 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
         crate::received::zec::text::ALL,
     ),
     ("yw_engine::rpc::text", crate::rpc::text::ALL),
+    (
+        "yw_engine::screen::model::text",
+        crate::screen::model::text::ALL,
+    ),
     ("yw_engine::screen::text", crate::screen::text::ALL),
     ("yw_engine::secret::text", crate::secret::text::ALL),
     ("yw_engine::settings::text", crate::settings::text::ALL),

@@ -1163,7 +1163,8 @@ const KINDS: [Kind; 4] = [
             "finish_rpc_import",
             "generate",
             "generate_and_report",
-            "items",
+            // 2026-11-24 (S5-4): the screen marks the copy in `screen_model` (was `items`,
+            // which now only lowers the model, `ui::lower`).
             "layout_and_paint",
             // 2026-11-22 (S4c W15): `on_command`'s `self.copied = None` is the wallet's
             // `forget_copy_mark` (below), and `tick`'s `copied_tick` call `timer_part`'s.
@@ -1189,6 +1190,7 @@ const KINDS: [Kind; 4] = [
             "save_rename",
             "save_settings",
             "save_template_credentials",
+            "screen_model",
             "set_info",
             "sol_save_fees",
             "start_repin",
@@ -8154,7 +8156,10 @@ const RENDER_SHELL_PATHS: [&str; 4] = [
 /// The `crate::ui` modules other than the render files that render code names (2026-11-24, S5-3
 /// review): before, any `crate::ui::` path passed, a Windows-side module of `ui` too. Each is
 /// still named, so the list stays exact; a new one is reviewed here.
-const RENDER_UI_MODULES: [&str; 3] = ["cmd_table", "main_window", "qr"];
+///
+/// 2026-11-24 (S5-4): `cmd_table` left the list — the screens name presses and fields, and the
+/// copy mark and the open drop-down compare presses (`id_of` before).
+const RENDER_UI_MODULES: [&str; 2] = ["main_window", "qr"];
 
 /// The `impl App` fns defined outside the render files that render code calls (2026-11-24, S5-3
 /// review): only the facts. Before, a render builder's `self.<shell fn>(` was not seen, so a

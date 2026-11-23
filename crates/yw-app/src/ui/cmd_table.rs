@@ -124,6 +124,15 @@ pub const fn id_of(press: Press) -> u16 {
     }
 }
 
+/// Whether `id` is the selector of a drop-down (an account one or S10's network one): the shell's
+/// Enter and Esc resolution asks it (`App::on_command`). 2026-11-24 (spec/15 §11.4 S5-4): moved
+/// here from `ui::screens_links` (`App::is_picker_button`), unchanged, when the screens stopped
+/// naming control ids.
+#[must_use]
+pub fn is_picker_button(id: u16) -> bool {
+    screens_links::ids::FIXED.contains(&id) || id == screens_evm::ids::NETWORK_PICKER
+}
+
 /// The 58 plain edits and their control ids (S3 B5).
 const FIELDS: [(EditField, u16); 58] = {
     use crate::ui::{
@@ -498,7 +507,7 @@ mod tests {
             LinksPress::PickerZec,
         ]) {
             assert_eq!(press_of(id, &controls), Some(Press::Links(picker)), "{id}");
-            assert!(crate::app::App::is_picker_button(id), "{id}");
+            assert!(is_picker_button(id), "{id}");
         }
     }
 
@@ -1033,7 +1042,7 @@ mod tests {
             );
         }
         for net in BtcNetwork::ALL {
-            let (_, save, default, test) = screens_btc::esplora_ids(net);
+            let (_, save, default, test) = screens_btc::ids::esplora_ids(net);
             assert_eq!(
                 press_of(save, &controls).unwrap(),
                 Press::Btc(BtcPress::EsploraSave(net))
@@ -1967,5 +1976,336 @@ mod tests {
         }
         assert!(!format!("{snapshot:?}").contains("secret"));
         assert!(ControlSet::default().form_snapshot().0.is_empty());
+    }
+
+    /// Table test (2026-11-24, spec/15 §11.4 S5-4): two presses are the same control
+    /// (`Press::same_control`: equal once a check box's state is set aside) exactly when they
+    /// have the same control id — over every press the window can send, each check box in its
+    /// three states. The screen model finds a control by press (the copy mark, the open
+    /// drop-down, the receive gate), where the Windows list found it by id.
+    #[test]
+    fn same_control_is_same_id_on_every_press() {
+        let mut presses = Vec::new();
+        for id in every_id() {
+            for state in [None, Some(true), Some(false)] {
+                let controls = ControlSet::default();
+                if let Some(checked) = state {
+                    controls.type_check(id, checked);
+                }
+                if let Some(press) = press_of(id, &controls) {
+                    presses.push(press);
+                }
+            }
+        }
+        assert!(presses.len() > 3_000, "{}", presses.len());
+        // One representative press (state set aside) per id, and the same one for every press
+        // of that id: `same_control` implies the same id and the same id implies `same_control`.
+        let mut by_id: std::collections::BTreeMap<u16, Press> = std::collections::BTreeMap::new();
+        for press in &presses {
+            let drawn = press.without_check();
+            assert_eq!(id_of(drawn), id_of(*press), "{press:?}");
+            let known = *by_id.entry(id_of(*press)).or_insert(drawn);
+            assert!(known.same_control(*press), "{press:?} and {known:?}");
+        }
+        let drawn: Vec<(u16, Press)> = by_id.into_iter().collect();
+        for (index, (id, press)) in drawn.iter().enumerate() {
+            for (other_id, other) in drawn.iter().skip(index + 1) {
+                assert!(
+                    !press.same_control(*other),
+                    "{id} {press:?} and {other_id} {other:?}"
+                );
+            }
+        }
+    }
+
+    /// Table test (2026-11-24, S5-4): every row bound of `yw_engine::screen::rows` is the row
+    /// count of its press's control-id range here (the span, divided by the stride of a strided
+    /// range), so the screens bound their rows where they did when they named ids; the EVM
+    /// activity fold is the constant it was.
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "one table of every row bound")]
+    fn screen_rows_are_the_id_ranges() {
+        use crate::ui::{screens as core, screens_received as received};
+        use yw_engine::screen::rows;
+        let ranges: [(u16, u16, &str); 37] = [
+            (rows::NETWORKS, core::ids::NETWORK_SPAN, "networks"),
+            (rows::EVM_ACCOUNTS, core::ids::ACCOUNT_SPAN, "evm accounts"),
+            (rows::RPC_ROWS, core::ids::ROW_SPAN / 3, "rpc rows"),
+            (
+                rows::RPC_ROW_OPENS,
+                core::ids::RPC_ROW_OPEN_SPAN,
+                "rpc row opens",
+            ),
+            (
+                rows::BOOK_COPIES,
+                screens_book::ids::COPY_SPAN,
+                "book copies",
+            ),
+            (
+                rows::SOL_ACTIVITY_SAVES,
+                screens_book::ids::SOL_ACTIVITY_SPAN,
+                "sol activity saves",
+            ),
+            (
+                rows::BTC_ACCOUNTS,
+                screens_btc::ids::ACCOUNT_SPAN,
+                "btc accounts",
+            ),
+            (
+                rows::BTC_EVM_ACCOUNTS,
+                screens_btc::ids::EVM_ACCOUNT_SPAN,
+                "btc evm accounts",
+            ),
+            (rows::BTC_UTXOS, screens_btc::ids::UTXO_SPAN, "btc utxos"),
+            (
+                rows::EVM_TOKEN_SENDS,
+                screens_evm::ids::TOKEN_SEND_SPAN,
+                "evm token sends",
+            ),
+            (
+                rows::EVM_TOKEN_ROWS,
+                screens_evm::ids::TOKEN_ROW_SPAN / screens_evm::ids::TOKEN_ROW_STRIDE,
+                "evm token rows",
+            ),
+            (
+                rows::EVM_TOKEN_COPIES,
+                screens_evm::ids::TOKEN_COPY_SPAN,
+                "evm token copies",
+            ),
+            (
+                rows::EVM_SEND_ASSETS,
+                screens_evm::ids::SEND_ASSET_SPAN,
+                "evm send assets",
+            ),
+            (
+                rows::EVM_CHAIN_ROWS,
+                screens_evm::ids::CHAIN_ROW_SPAN / 3,
+                "evm chain rows",
+            ),
+            (
+                rows::EVM_CAPS_CHAINS,
+                screens_evm::ids::CAPS_CHAIN_SPAN,
+                "evm caps chains",
+            ),
+            (
+                rows::HIDDEN_ROWS,
+                screens_hidden::ids::ROW_SPAN,
+                "hidden rows",
+            ),
+            (
+                rows::HIDDEN_BTC_ROWS,
+                screens_hidden::ids::BTC_ROW_SPAN,
+                "hidden btc rows",
+            ),
+            (
+                rows::HC_ASSETS,
+                screens_hypercore::ids::ASSET_SPAN,
+                "hc assets",
+            ),
+            (
+                rows::MNEMONICS,
+                screens_mnemonics::ids::ROW_SPAN,
+                "mnemonics",
+            ),
+            (
+                rows::RECEIVED_ROWS,
+                received::ids::CHAIN_SPAN / received::ids::ROW_STRIDE,
+                "received rows",
+            ),
+            (
+                rows::SOL_ACCOUNTS,
+                screens_sol::ids::ACCOUNT_SPAN,
+                "sol accounts",
+            ),
+            (
+                rows::SOL_ACTIVITY_COPIES,
+                screens_sol::ids::ACTIVITY_COPY_SPAN,
+                "sol activity copies",
+            ),
+            (
+                rows::SOL_SEND_ASSETS,
+                screens_sol::ids::SEND_ASSET_SPAN,
+                "sol send assets",
+            ),
+            (
+                rows::SOL_TOKEN_COPIES,
+                screens_sol::ids::TOKEN_COPY_SPAN,
+                "sol token copies",
+            ),
+            (
+                rows::SOL_TOKEN_HIDES,
+                screens_sol::ids::TOKEN_HIDE_SPAN,
+                "sol token hides",
+            ),
+            (
+                rows::SOL_SCAN_ROWS,
+                screens_sol::ids::SCAN_ROW_SPAN / screens_sol::ids::SCAN_ROW_STRIDE,
+                "sol scan rows",
+            ),
+            (
+                rows::WC_SESSIONS,
+                screens_walletconnect::ids::ROW_SPAN,
+                "wc sessions",
+            ),
+            (
+                rows::YK_PIN_GATES,
+                screens_yubikey::ids::PIN_GATE_SPAN,
+                "yk pin gates",
+            ),
+            (rows::EVM_TO, screens_links::ids::EVM_TO_SPAN, "evm to"),
+            (rows::SOL_TO, screens_links::ids::SOL_TO_SPAN, "sol to"),
+            (rows::BTC_TO, screens_links::ids::BTC_TO_SPAN, "btc to"),
+            (rows::ZEC_TO, screens_links::ids::ZEC_TO_SPAN, "zec to"),
+            (
+                rows::SOL_ACTIVITY_LINKS,
+                screens_explorer::ids::SOL_ACTIVITY_SPAN / screens_explorer::ids::ACTIVITY_STRIDE,
+                "sol activity links",
+            ),
+            (
+                rows::BTC_ACTIVITY_LINKS,
+                screens_explorer::ids::BTC_ACTIVITY_SPAN / screens_explorer::ids::ACTIVITY_STRIDE,
+                "btc activity links",
+            ),
+            (
+                rows::ZEC_ACTIVITY_LINKS,
+                screens_explorer::ids::ZEC_ACTIVITY_SPAN / screens_explorer::ids::ACTIVITY_STRIDE,
+                "zec activity links",
+            ),
+            (
+                rows::ZEC_ACTIVITY_COPIES,
+                screens_zec::ids::ACTIVITY_COPY_SPAN,
+                "zec activity copies",
+            ),
+            (
+                u16::try_from(rows::EVM_ACTIVITY_FIRST).unwrap(),
+                u16::try_from(screens_evm::ids::ACTIVITY_FIRST).unwrap(),
+                "evm activity first",
+            ),
+        ];
+        for (rows, ids, what) in ranges {
+            assert_eq!(rows, ids, "{what}");
+        }
+        // The explorer's activity pairs: a row inside its bound has both ids inside the range,
+        // the first row past it has none (as `ids::activity_ids` drew).
+        for (base, span, bound) in [
+            (
+                screens_explorer::ids::SOL_ACTIVITY_BASE,
+                screens_explorer::ids::SOL_ACTIVITY_SPAN,
+                rows::SOL_ACTIVITY_LINKS,
+            ),
+            (
+                screens_explorer::ids::BTC_ACTIVITY_BASE,
+                screens_explorer::ids::BTC_ACTIVITY_SPAN,
+                rows::BTC_ACTIVITY_LINKS,
+            ),
+            (
+                screens_explorer::ids::ZEC_ACTIVITY_BASE,
+                screens_explorer::ids::ZEC_ACTIVITY_SPAN,
+                rows::ZEC_ACTIVITY_LINKS,
+            ),
+        ] {
+            let last = usize::from(bound) - 1;
+            assert!(screens_explorer::ids::activity_ids(base, span, last).is_some());
+            assert!(screens_explorer::ids::activity_ids(base, span, last + 1).is_none());
+        }
+    }
+
+    /// Table test (2026-11-24, S5-4): the presses the screens draw where they drew a computed id
+    /// are the controls of those ids — the `YubiKey` wizard's slot radios
+    /// (`pgp_press` ↔ `ids::pgp_id`), the re-slot radios (`reslot_press` ↔ `ids::reslot_id`),
+    /// the presets (`preset_press` ↔ `ids::preset_id`), the connect choices (`choice_press` ↔
+    /// `ids::connect_choice_id`, every row), the Bitcoin fee radios (`fee_presses` ↔
+    /// `ids::fee_ids`) and Esplora rows (`esplora_controls` ↔ `ids::esplora_ids`), every value a
+    /// screen draws.
+    #[test]
+    fn computed_presses_are_the_ids_they_replaced() {
+        use screens_yubikey::ids as yk;
+        use yw_core::btc::{BtcNetwork, ScriptType};
+        use yw_core::yubikey::plan::{PgpKey, TouchPolicy};
+        use yw_core::zec::ZecNetwork;
+        use yw_engine::wallet::app_yubikey::connect::{Choice, choice_press};
+        use yw_engine::wallet::app_yubikey::manage::{
+            Chain, Preset, ReslotAction, preset_press, reslot_press,
+        };
+        use yw_engine::wallet::app_yubikey::{CARD_SCRIPTS, PGP_TOUCH, PgpAction, PgpKind};
+        let id = |press: Press| id_of(press);
+        for key in [PgpKey::Sig, PgpKey::Aut] {
+            let kinds = [
+                PgpKind::None,
+                PgpKind::Evm,
+                PgpKind::Btc,
+                PgpKind::Shared,
+                PgpKind::Zec,
+            ]
+            .map(PgpAction::Kind);
+            let scripts = CARD_SCRIPTS.map(PgpAction::Script);
+            let touches = PGP_TOUCH.map(PgpAction::Touch);
+            let networks = [ZecNetwork::Mainnet, ZecNetwork::Testnet].map(PgpAction::Zec);
+            for action in kinds
+                .into_iter()
+                .chain(scripts)
+                .chain(touches)
+                .chain(networks)
+            {
+                let press = yw_engine::wallet::app_yubikey::pgp_press(key, action);
+                assert_eq!(
+                    id(press.into()),
+                    yk::pgp_id(key, action),
+                    "{key:?} {action:?}"
+                );
+            }
+            assert!(!PGP_TOUCH.contains(&TouchPolicy::Never));
+            for action in Chain::ALL
+                .map(ReslotAction::Chain)
+                .into_iter()
+                .chain(CARD_SCRIPTS.map(ReslotAction::Script))
+            {
+                let press = reslot_press(key, action);
+                assert_eq!(
+                    id(press.into()),
+                    yk::reslot_id(key, action),
+                    "{key:?} {action:?}"
+                );
+            }
+        }
+        for preset in Preset::ALL {
+            assert_eq!(
+                id(preset_press(preset).into()),
+                yk::preset_id(preset),
+                "{preset:?}"
+            );
+        }
+        for row in 0..usize::from(yk::CONNECT_CHOICE_ROWS) {
+            for choice in yk::CONNECT_CHOICES
+                .into_iter()
+                .chain([Choice::Btc(ScriptType::P2tr)])
+            {
+                assert_eq!(
+                    id(choice_press(row, choice).into()),
+                    yk::connect_choice_id(row, choice),
+                    "{row} {choice:?}"
+                );
+            }
+        }
+        for bump in [false, true] {
+            let ids = screens_btc::ids::fee_ids(bump);
+            for (press, id_of_radio) in screens_btc::fee_presses(bump).into_iter().zip(ids) {
+                assert_eq!(id(press.into()), id_of_radio, "{bump} {press:?}");
+            }
+        }
+        for net in BtcNetwork::ALL {
+            let (edit, save, default, test) = screens_btc::esplora_controls(net);
+            let ids = screens_btc::ids::esplora_ids(net);
+            assert_eq!(
+                (
+                    edit_id_of(edit),
+                    id(save.into()),
+                    id(default.into()),
+                    id(test.into())
+                ),
+                ids,
+                "{net:?}"
+            );
+        }
     }
 }
