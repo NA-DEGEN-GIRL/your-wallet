@@ -14,6 +14,11 @@
 //! What stays Windows-only: the layout metrics, the colors and fonts, the button backdrop (set by
 //! the layout), the QR pixel layout, the control ids. The screens start building this model in
 //! S5-4; until then only the lowering and its tests use it.
+//!
+//! 2026-11-24 (spec/15 §11.4 S5-4): the screens build it, naming each control's press or field
+//! (a family press is an [`Act`] through `From`); [`mark_copied`] and [`disable_receive`] find
+//! their controls by press; the row bound of each list is `screen::rows`. No control id is named
+//! here or in the screens (yw-app source check `the_screen_model_names_no_control_id`).
 
 use yw_core::lang::Lang;
 
@@ -55,11 +60,10 @@ pub enum Act {
     Field(EditField),
     /// A masked credential edit (its text is never in the model).
     Cred(CredField),
-    /// Transitional (2026-11-24, spec/15 §11.4 S5-4 only): a Windows control id, which the
-    /// Windows lowering draws as that id. The screens flipped to this model with their ids as
-    /// they were, and name a press or a field family by family; the last S5-4 commit removes
-    /// this variant and [`From<u16>`] (as S3 D3 removed `Press::Legacy`).
-    Legacy(u16),
+    // 2026-11-24 (spec/15 §11.4 S5-4): between the flip commit and the last S5-4 commit a
+    // fourth, transitional act held a Windows control id (drawn as that id, `From<u16>`), while
+    // the screens moved from ids to presses; it is gone (as S3 D3 removed `Press::Legacy`), and
+    // yw-app source check `the_screen_model_names_no_control_id` keeps it out.
 }
 
 impl From<Press> for Act {
@@ -77,13 +81,6 @@ impl From<EditField> for Act {
 impl From<CredField> for Act {
     fn from(field: CredField) -> Self {
         Self::Cred(field)
-    }
-}
-
-/// Transitional (2026-11-24, S5-4 only; see [`Act::Legacy`]).
-impl From<u16> for Act {
-    fn from(id: u16) -> Self {
-        Self::Legacy(id)
     }
 }
 

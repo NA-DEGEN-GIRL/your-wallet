@@ -18,9 +18,10 @@
 //! 2026-11-24 (spec/15 §11.4 S5-4): the screens build the model (`App::screen_model`) and
 //! [`App::items`] lowers it here — the Windows list the census hashes, `layout`, `paint` and
 //! `ControlSet::sync` consume, value for value the list the screens built before. The screens
-//! name their controls by id at first (the transitional `Act::Legacy`, drawn as that id) and by
-//! press or field family by family after. Both counts go to `App::press_mismatch` (debug builds),
-//! which the census asserts 0 at every observation.
+//! name their controls by press or field; only this lowering gives them a control id (the first
+//! S5-4 commit drew the ids the screens still named through a transitional act, gone since the
+//! last; source check `the_screen_model_names_no_control_id`). Both counts go to
+//! `App::press_mismatch` (debug builds), which the census asserts 0 at every observation.
 
 use yw_engine::screen::model::{self, Act, CtlKind, Style};
 use yw_win::ui::controls::{ButtonStyle, ControlKind};
@@ -125,8 +126,6 @@ impl Lowering {
             }
             Act::Field(field) => cmd_table::edit_id_of(field),
             Act::Cred(field) => cmd_table::cred_id_of(field),
-            // Transitional (S5-4 only): the id the screen named, drawn as it was.
-            Act::Legacy(id) => id,
         }
     }
 

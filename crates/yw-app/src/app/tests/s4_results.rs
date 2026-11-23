@@ -8409,6 +8409,165 @@ fn render_asks_the_shell_only_through_facts() {
     assert!(asks >= 20, "the facts are asked ({asks})");
 }
 
+/// What screen code that names a control id looks like (2026-11-24, spec/15 §11.4 S5-4): an
+/// `ids::` path (any module's control ids), the transitional `Legacy` act, an id taken as a
+/// `u16` (`id: u16`, `From<u16>`), or a `u16` constant named like an id or an id range
+/// (`…_ID`, `…_BASE`, `…_SPAN`, `…_STRIDE`). Row bounds (`screen::rows`) are plain counts, not
+/// ids.
+fn control_id_reach(code: &str) -> Vec<String> {
+    let bytes = code.as_bytes();
+    let mut found = Vec::new();
+    for (at, _) in code.match_indices("ids") {
+        if (at == 0 || !is_ident(bytes[at - 1]))
+            && bytes.get(at + 3).is_none_or(|&b| !is_ident(b))
+            && code[at + 3..].trim_start().starts_with("::")
+        {
+            found.push("path ids::".to_owned());
+        }
+    }
+    if has_word(code, "Legacy") {
+        found.push("word Legacy".to_owned());
+    }
+    let typed_u16 = |rest: &str| {
+        rest.trim_start()
+            .strip_prefix(':')
+            .is_some_and(|rest| starts_with_word(rest.trim_start(), "u16"))
+    };
+    if code.match_indices("id").any(|(at, _)| {
+        (at == 0 || !is_ident(bytes[at - 1]))
+            && bytes.get(at + 2).is_none_or(|&b| !is_ident(b))
+            && typed_u16(&code[at + 2..])
+    }) {
+        found.push("an id as u16".to_owned());
+    }
+    let flat: String = code.split_whitespace().collect();
+    if flat.contains("From<u16>forAct") {
+        found.push("From<u16> for Act".to_owned());
+    }
+    for (at, _) in code.match_indices("const") {
+        if (at > 0 && is_ident(bytes[at - 1])) || bytes.get(at + 5).is_some_and(|&b| is_ident(b)) {
+            continue;
+        }
+        let rest = code[at + 5..].trim_start();
+        let name: String = rest
+            .chars()
+            .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+            .collect();
+        if typed_u16(&rest[name.len()..])
+            && ["_ID", "_BASE", "_SPAN", "_STRIDE"]
+                .iter()
+                .any(|end| name.ends_with(end))
+        {
+            found.push(format!("const {name}"));
+        }
+    }
+    found
+}
+
+/// `code` without its `pub mod ids { … }` block (the Windows control-id table each render file
+/// keeps until its builders leave yw-app, S5-5).
+fn without_ids_module(src: &Src) -> String {
+    let mut code = src.code.clone().into_bytes();
+    for (at, _) in src.code.match_indices("pub mod ids") {
+        let Some(open) = src.code[at..].find('{').map(|offset| at + offset) else {
+            continue;
+        };
+        if let Some(block) = src.blocks.iter().find(|block| block.open == open) {
+            for byte in code.iter_mut().take(block.close + 1).skip(at) {
+                if *byte != b'\n' {
+                    *byte = b' ';
+                }
+            }
+        }
+    }
+    String::from_utf8(code).unwrap()
+}
+
+/// S5-4 (2026-11-24, spec/15 §11.3, §11.4 S5; S5 plan critic C8): the screen model and the code
+/// that builds it name no control id. In yw-engine's `screen/` and in yw-app's render files
+/// (`ui/screens*.rs`, `ui/removed.rs`, production code without their `ids` modules) there is no
+/// `ids::` path, no `Legacy` act, no id taken as a `u16` (`id: u16`, `From<u16> for Act`) and no
+/// `u16` id constant: a control names its press or field (`yw_engine::screen::model::Act`), and
+/// only the Windows lowering gives it an id (`ui::lower`, `cmd_table::id_of`). Before, the
+/// screens built the Windows list with control ids (until the first S5-4 commit) and then named
+/// them through the transitional `Act::Legacy(u16)` (until this commit). The scanner is tried on
+/// made-up code in [`control_id_reach_on_made_up_code`].
+#[test]
+fn the_screen_model_names_no_control_id() {
+    let files = production_code();
+    let screen: Vec<&Src> = files
+        .iter()
+        .filter(|src| src.file.starts_with("yw-engine/src/screen/"))
+        .collect();
+    let render: Vec<&Src> = files
+        .iter()
+        .filter(|src| is_render_file(&src.file))
+        .collect();
+    assert!(
+        screen.len() >= 5 && screen.iter().any(|src| src.file.ends_with("/model.rs")),
+        "the screen model moved: review this check"
+    );
+    assert_eq!(
+        render.len(),
+        27,
+        "the render files moved: review this check"
+    );
+    let mut findings = Vec::new();
+    let mut presses = 0_usize;
+    for src in &screen {
+        for finding in control_id_reach(&src.code) {
+            findings.push(format!("{}: {finding}", src.file));
+        }
+    }
+    for src in &render {
+        let code = without_ids_module(src);
+        for finding in control_id_reach(&code) {
+            findings.push(format!("{}: {finding}", src.file));
+        }
+        presses += code.matches("Press::").count();
+    }
+    assert!(
+        findings.is_empty(),
+        "screen code names a control id: {findings:#?}"
+    );
+    assert!(presses > 500, "the screens name presses ({presses})");
+}
+
+/// [`control_id_reach`] on made-up code (2026-11-24, S5-4).
+#[test]
+fn control_id_reach_on_made_up_code() {
+    let code = code_only(concat!(
+        "fn a() { let _ = Ctl::button(ids::LOCK, \"x\"); let _ = crate::ui::screens_evm::ids :: A; }\n",
+        "fn b(id: u16) -> Act { Act::Legacy(id) }\n",
+        "impl From < u16 > for Act { fn from(id: u16) -> Self { todo() } }\n",
+        "pub const ROW_BASE: u16 = 1; const LOCK_ID : u16 = 2; const X_SPAN: u16 = 3;\n",
+        "// ids::LOCK and Legacy in a comment\n",
+    ));
+    assert_eq!(
+        control_id_reach(&code),
+        [
+            "path ids::",
+            "path ids::",
+            "word Legacy",
+            "an id as u16",
+            "From<u16> for Act",
+            "const ROW_BASE",
+            "const LOCK_ID",
+            "const X_SPAN",
+        ]
+    );
+    let clean = code_only(concat!(
+        "fn c(row: usize) -> Option<Row> { rows::row(row, rows::NETWORKS) }\n",
+        "pub const NETWORKS: u16 = 40; const fn d() {} fn e(ids_text: Vec<u16>, valid: u16) {}\n",
+        "fn f() { let _ = Ctl::button(CorePress::Lock, \"ids::LOCK\"); }\n",
+    ));
+    assert!(
+        control_id_reach(&clean).is_empty(),
+        "{:?}",
+        control_id_reach(&clean)
+    );
+}
+
 /// [`render_shell_reach`] on made-up code (2026-11-24, S5-3): it finds each way out and passes
 /// the facts and `crate::ui` paths.
 #[test]
