@@ -124,8 +124,9 @@ pub fn yubikey_wallet(
 // 2026-11-23 (S4d E1 review): what keeps them out of production is a source check, not the
 // compiler. This module is always compiled and `pub` (`#[doc(hidden)]` only), so any crate that
 // imports a trait can call its methods; production code never names `testkit` (source check
-// `testkit_is_named_only_by_tests`, which reads yw-app and yw-engine; S7 at S4d E4 adds the
-// consent names). The review also found that E1 had added two accessors beyond the preflight's
+// `testkit_is_named_only_by_tests`, which reads yw-app and yw-engine; 2026-11-23, S4d E4: and S7
+// `approval_capability_is_engine_only`, which also keeps the consent names, `Approved`,
+// `ApprovalStore` and `consume` out of yw-app's code). The review also found that E1 had added two accessors beyond the preflight's
 // recommendations that handed out the store itself (`&mut ApprovalStore`, from which `consume`
 // makes an `Approved`) and the secret session slot (`&mut Option<SecretSession>`); they are
 // replaced by [`StoreProbe`], which returns outcomes only, and by four setup steps that only put

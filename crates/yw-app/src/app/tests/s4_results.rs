@@ -5070,6 +5070,637 @@ fn the_only_consume_is_wallet_code() {
     }
 }
 
+// ---- S7: the approval capability is engine-only (2026-11-23, S4d E4) ------------------------
+
+/// The enums whose variant `Approved` [`capability_names`] lets through after `<enum>::`: an
+/// approval queue's outcome and an approval window's status, not the consent token
+/// `yw_core::approval::Approved`. Each is checked to be a yw-engine enum with that variant.
+const APPROVED_VARIANT_OWNERS: [&str; 2] = ["QueueOutcome", "InteractionStatus"];
+
+/// The wallet's consent steps that take no `Approved` themselves (critique A-15): the one
+/// `consume` (`consume_and_sign`), the card step's PIN answers, which sign with or drop the
+/// approval it holds (`card_submit`, `card_cancel`), and the signing waiter that a consumed
+/// approval answers through (`push_sign_waiter`). With the `impl Wallet` fns that take an
+/// `Approved` ([`wallet_fn_heads`]) they are crate-private in yw-engine and unnamed in yw-app's
+/// code.
+const CONSENT_STEPS: [&str; 4] = [
+    "consume_and_sign",
+    "card_submit",
+    "card_cancel",
+    "push_sign_waiter",
+];
+
+/// The `impl Wallet` fns that take an `Approved` which the S4d preflight (row E4) and critique
+/// A-15 name: the scan must find each among them (A-20).
+const NAMED_APPROVAL_TAKERS: [&str; 7] = [
+    "card_begin",
+    "dispatch_evm_sign",
+    "sol_consumed",
+    "sol_dapp_consumed",
+    "btc_consumed",
+    "hc_consumed",
+    "zec_consumed",
+];
+
+/// yw-engine's always-compiled test entries (`testkit`) and the traits and probe through which
+/// yw-app's tests reach the consent steps (spec/15 §18 28). `testkit_is_named_only_by_tests`
+/// (`card_pcsc.rs`) keeps the module out of yw-app's and yw-engine's code; here the names too.
+const TEST_ENTRIES: [&str; 5] = [
+    "testkit",
+    "WalletTestExt",
+    "FlowTestExt",
+    "SessionTestExt",
+    "StoreProbe",
+];
+
+/// The fields of yw-engine's wallet that hold an `Approved` or the `ApprovalStore` (type,
+/// field): the scan must find each (A-20), and none is `pub`.
+const APPROVAL_HOLDERS: [(&str, &str); 4] = [
+    ("CardStep", "approved"),
+    ("EvmUi", "store"),
+    ("PendingDappSign", "approved"),
+    ("PendingSign", "approved"),
+];
+
+/// The `pub` fns of yw-engine's wallet that take or return an `Approved` by value (file, fn,
+/// reason). Every other fn there that does is `pub(crate)` or private.
+const PUB_APPROVAL_FNS: [(&str, &str, &str); 1] = [(
+    "yw-engine/src/wallet/app_btc.rs",
+    "consumed",
+    "the Bitcoin controller `BtcUi`'s signing step (spec/08 §11.1): `Wallet::btc_consumed` calls \
+     it, and the pinned helper `impl Harness` of the frozen `tests/btc_app_flow.rs` drives the \
+     controller with its own store; yw-app's code cannot hold an `Approved` to give it and names \
+     no `consumed`",
+)];
+
+/// The identifier tokens of `code` (not starting with a digit) with their offsets.
+fn ident_tokens(code: &str) -> Vec<(usize, &str)> {
+    let bytes = code.as_bytes();
+    let mut tokens = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        if is_ident(bytes[at]) {
+            let start = at;
+            while at < bytes.len() && is_ident(bytes[at]) {
+                at += 1;
+            }
+            if !bytes[start].is_ascii_digit() {
+                tokens.push((start, &code[start..at]));
+            }
+        } else {
+            at += 1;
+        }
+    }
+    tokens
+}
+
+/// Whether the `Approved` at `at` is the variant of one of [`APPROVED_VARIANT_OWNERS`]
+/// (`QueueOutcome::Approved`), not the consent token.
+fn is_approved_variant(code: &str, at: usize) -> bool {
+    code[..at]
+        .trim_end()
+        .strip_suffix("::")
+        .is_some_and(|before| {
+            let before = before.trim_end();
+            APPROVED_VARIANT_OWNERS
+                .iter()
+                .any(|owner| ends_with_word(before, owner))
+        })
+}
+
+/// Whether the path after an `approval` that ends at `after` is its `store` module:
+/// `approval::store`, or a `{ … }` group after `approval::` that names `store`.
+fn names_the_store_module(code: &str, after: usize) -> bool {
+    let Some(rest) = code[after..].trim_start().strip_prefix("::") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if rest.starts_with('{') {
+        let open = code.len() - rest.len();
+        return has_word(&code[open..=close_of(code.as_bytes(), open)], "store");
+    }
+    starts_with_word(rest, "store")
+}
+
+/// The names in `code` (comments and strings blanked) that would give it the approval
+/// capability, with their offsets: the type `Approved` (not a variant,
+/// [`is_approved_variant`]), `ApprovalStore`, `consume`, a path to `approval::store`, a
+/// `consumed`/`*_consumed` fn, the consent steps `steps`, the `KeyJob`/`KeyOutcome` variants
+/// that carry an `Approved` (`carriers`) and the [`TEST_ENTRIES`].
+fn capability_names(
+    code: &str,
+    steps: &BTreeSet<String>,
+    carriers: &BTreeSet<String>,
+) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    for (at, token) in ident_tokens(code) {
+        let hit = match token {
+            "Approved" => !is_approved_variant(code, at),
+            "ApprovalStore" | "consume" => true,
+            "approval" => names_the_store_module(code, at + token.len()),
+            _ => {
+                token == "consumed"
+                    || token.ends_with("_consumed")
+                    || steps.contains(token)
+                    || carriers.contains(token)
+                    || TEST_ENTRIES.contains(&token)
+            }
+        };
+        if hit {
+            let name = if token == "approval" {
+                "approval::store"
+            } else {
+                token
+            };
+            found.push((at, name.to_owned()));
+        }
+    }
+    found
+}
+
+/// The 1-based line of offset `at` in `code` ([`code_only`] keeps every newline).
+fn line_at(code: &str, at: usize) -> usize {
+    code[..at].matches('\n').count() + 1
+}
+
+/// The chunks of the `{ … }` or `( … )` body that opens at `open`, split at its own commas.
+fn body_items(code: &str, open: usize) -> Vec<&str> {
+    let bytes = code.as_bytes();
+    let mut items = Vec::new();
+    let mut depth = 0_i32;
+    let mut start = open + 1;
+    for (at, &byte) in bytes.iter().enumerate().skip(open) {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    items.push(&code[start..at]);
+                    break;
+                }
+            }
+            b',' if depth == 1 => {
+                items.push(&code[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    items
+        .into_iter()
+        .map(without_attributes)
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+/// `item` trimmed, without its leading `#[…]` attributes.
+fn without_attributes(item: &str) -> &str {
+    let mut rest = item.trim();
+    while rest.starts_with("#[") {
+        let end = paren_like_end(rest.as_bytes());
+        rest = rest[end..].trim_start();
+    }
+    rest
+}
+
+/// The offset after the `]` that closes the `[` of a leading `#[`.
+fn paren_like_end(bytes: &[u8]) -> usize {
+    let mut depth = 0_usize;
+    for (at, &byte) in bytes.iter().enumerate() {
+        match byte {
+            b'[' => depth += 1,
+            b']' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return at + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    bytes.len()
+}
+
+/// The leading identifier of `text`.
+fn leading_ident(text: &str) -> String {
+    text.chars()
+        .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+        .collect()
+}
+
+/// Whether `item` names the type `Approved` (not a variant, [`is_approved_variant`]) or
+/// `ApprovalStore`.
+fn names_an_approval(item: &str) -> bool {
+    ident_tokens(item).into_iter().any(|(at, token)| {
+        (token == "Approved" && !is_approved_variant(item, at)) || token == "ApprovalStore"
+    })
+}
+
+/// The variants of the enums of `src` that carry an `Approved` (`SignEvm`, `CardUnused`, …).
+fn approval_carriers(src: &Src) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    for block in &src.blocks {
+        let block_head = normalized(head(&src.code, block.open));
+        if !block_head.split_whitespace().any(|word| word == "enum") {
+            continue;
+        }
+        for variant in body_items(&src.code, block.open) {
+            if names_an_approval(variant) {
+                found.insert(leading_ident(variant));
+            }
+        }
+    }
+    found
+}
+
+/// Whether the fn signature `sig` takes or returns an `Approved` by value (`Approved`,
+/// `Box<Approved>`, `Option<Box<Approved>>`, …), not only a reference to one.
+fn takes_approval_by_value(sig: &str) -> bool {
+    sig.match_indices("Approved").any(|(at, word)| {
+        let bytes = sig.as_bytes();
+        if (at > 0 && is_ident(bytes[at - 1]))
+            || bytes.get(at + word.len()).is_some_and(|&b| is_ident(b))
+        {
+            return false;
+        }
+        let mut before: String = sig[..at].split_whitespace().collect();
+        // The path to the type (`yw_core::approval::`) and a lifetime are not the borrow.
+        while let Some(stripped) = before.strip_suffix("::") {
+            let keep = stripped.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
+            before = keep.to_owned();
+        }
+        let before = before.trim_end_matches("mut");
+        let before =
+            before.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '\'');
+        !before.ends_with('&')
+    })
+}
+
+/// One fn of yw-engine's wallet: its file, name, signature (from `fn`), whether it is `pub` and
+/// whether it is an `impl Wallet` fn.
+struct WalletFnHead {
+    file: String,
+    name: String,
+    sig: String,
+    public: bool,
+    of_wallet: bool,
+}
+
+/// Every fn of yw-engine's wallet (`yw-engine/src/wallet/`, production code) with its head.
+fn wallet_fn_heads(files: &[Src]) -> Vec<WalletFnHead> {
+    let mut found = Vec::new();
+    for src in files
+        .iter()
+        .filter(|src| src.file.starts_with("yw-engine/src/wallet/"))
+    {
+        let impls: Vec<(usize, usize)> = src
+            .blocks
+            .iter()
+            .filter(|block| {
+                without_attributes(&normalized(head(&src.code, block.open))) == "impl Wallet"
+            })
+            .map(|block| (block.open, block.close))
+            .collect();
+        for block in &src.blocks {
+            let block_head = head(&src.code, block.open);
+            let Some((at, _)) = block_head
+                .match_indices("fn ")
+                .find(|&(at, _)| at == 0 || !is_ident(block_head.as_bytes()[at - 1]))
+            else {
+                continue;
+            };
+            let sig = &block_head[at..];
+            found.push(WalletFnHead {
+                file: src.file.clone(),
+                name: leading_ident(sig["fn ".len()..].trim_start()),
+                sig: normalized(sig),
+                public: block_head[..at]
+                    .split_whitespace()
+                    .any(|word| word == "pub"),
+                of_wallet: impls
+                    .iter()
+                    .any(|&(open, close)| open < block.open && block.close < close),
+            });
+        }
+    }
+    found
+}
+
+/// The fields of yw-engine's wallet types that hold an `Approved` or an `ApprovalStore`: (type,
+/// field, whether the field is `pub`), for brace structs and tuple structs, and for enums
+/// (a variant is `pub` with a `pub enum`).
+fn approval_holders(files: &[Src]) -> Vec<(String, String, bool)> {
+    let mut found = Vec::new();
+    for src in files
+        .iter()
+        .filter(|src| src.file.starts_with("yw-engine/src/wallet/"))
+    {
+        let code = &src.code;
+        for keyword in ["struct ", "enum "] {
+            for (at, _) in code.match_indices(keyword) {
+                if at > 0 && is_ident(code.as_bytes()[at - 1]) {
+                    continue;
+                }
+                let name = leading_ident(code[at + keyword.len()..].trim_start());
+                let Some(open) = code[at..].find(['{', '(', ';']).map(|n| at + n) else {
+                    continue;
+                };
+                if code.as_bytes()[open] == b';' {
+                    continue;
+                }
+                let line_start = code[..at].rfind(['\n', ';', '}', '{']).map_or(0, |n| n + 1);
+                let enum_public = code[line_start..at]
+                    .split_whitespace()
+                    .any(|word| word == "pub");
+                for item in body_items(code, open) {
+                    if names_an_approval(item) {
+                        let public = if keyword == "enum " {
+                            enum_public
+                        } else {
+                            item.strip_prefix("pub")
+                                .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+                        };
+                        let field = leading_ident(
+                            item.strip_prefix("pub(crate)")
+                                .or_else(|| item.strip_prefix("pub(super)"))
+                                .or_else(|| item.strip_prefix("pub"))
+                                .unwrap_or(item)
+                                .trim_start(),
+                        );
+                        found.push((name.clone(), field, public));
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// S7 `approval_capability_is_engine_only` (2026-11-23, spec/15 §11.4 S4d E4; plan §4.4 S7,
+/// D-22, critique A-15 and A-20; S4d preflight row E4; [03] §11.5, AGENTS.md §6 "Single use"):
+/// since E1 the approval flow, the store and every consent step are yw-engine's, and yw-app's
+/// code (its `src` without test files and `#[cfg(test)]` items, [`production_code`]) holds no
+/// way to the approval capability. It names no:
+///
+/// - type `Approved` (`QueueOutcome::Approved` and `InteractionStatus::Approved` are variants),
+///   `ApprovalStore`, `consume` (in any call form) or path to `yw_core::approval::store`;
+/// - consent step: an `impl Wallet` fn that takes an `Approved` (found in the engine, so a new
+///   one is covered), [`CONSENT_STEPS`], or any `consumed`/`*_consumed` fn;
+/// - `KeyJob`/`KeyOutcome` variant that carries an `Approved` (`SignEvm`, `CardUnused`, …,
+///   found in `events.rs`), so the shell cannot take one out of a worker's event or send one;
+/// - yw-engine test entry ([`TEST_ENTRIES`]).
+///
+/// In yw-engine's wallet every fn that takes or returns an `Approved` by value, the consent
+/// steps among them, is `pub(crate)` or private (but [`PUB_APPROVAL_FNS`]), and every field that
+/// holds an `Approved` or the `ApprovalStore` is not `pub` ([`APPROVAL_HOLDERS`]). The wallet
+/// holds exactly the one `consume` of [`the_only_consume_is_wallet_code`]. The check finds what
+/// it looks for (over 50 yw-app files, the named takers, holders and carriers, the variant
+/// owners, A-20) and its readers fail on made-up code
+/// (`approval_capability_names_on_made_up_code`,
+/// `approval_takers_holders_and_carriers_on_made_up_code`).
+#[test]
+fn approval_capability_is_engine_only() {
+    let files = production_code();
+    let heads = wallet_fn_heads(&files);
+    let takers: BTreeSet<String> = heads
+        .iter()
+        .filter(|head| head.of_wallet && takes_approval_by_value(&head.sig))
+        .map(|head| head.name.clone())
+        .collect();
+    for name in NAMED_APPROVAL_TAKERS {
+        assert!(takers.contains(name), "{name} takes an Approved");
+    }
+    let mut steps = takers.clone();
+    for name in CONSENT_STEPS {
+        assert_eq!(
+            heads
+                .iter()
+                .filter(|head| head.of_wallet && head.name == name)
+                .count(),
+            1,
+            "one impl Wallet fn {name}"
+        );
+        steps.insert(name.to_owned());
+    }
+    assert_engine_side(&files, &heads, &steps);
+    let carriers = approval_carriers(src_of(&files, "yw-engine/src/events.rs"));
+    assert!(
+        carriers.contains("SignEvm") && carriers.contains("CardUnused") && carriers.len() >= 13,
+        "the variants that carry an Approved: {carriers:?}"
+    );
+    let app: Vec<&Src> = files
+        .iter()
+        .filter(|src| src.file.starts_with("yw-app/"))
+        .collect();
+    assert!(app.len() > 50, "{} yw-app files scanned", app.len());
+    let mut found = Vec::new();
+    for src in app {
+        for (at, name) in capability_names(&src.code, &steps, &carriers) {
+            found.push(format!("{}:{} {name}", src.file, line_at(&src.code, at)));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "yw-app code names the approval capability:\n{}",
+        found.join("\n")
+    );
+}
+
+/// The engine half of [`approval_capability_is_engine_only`]: the consent steps `steps` and
+/// every wallet fn that takes or returns an `Approved` by value are not `pub` (but
+/// [`PUB_APPROVAL_FNS`]); the holders are found and not `pub`; the variant owners have the
+/// variant; the wallet holds one `consume`, in `consume_and_sign`.
+fn assert_engine_side(files: &[Src], heads: &[WalletFnHead], steps: &BTreeSet<String>) {
+    assert!(heads.len() > 900, "{} wallet fns", heads.len());
+    let mut public = Vec::new();
+    for head in heads {
+        let consent = head.of_wallet && steps.contains(&head.name);
+        if head.public && (consent || takes_approval_by_value(&head.sig)) {
+            public.push((head.file.as_str(), head.name.as_str()));
+        }
+    }
+    let allowed: Vec<(&str, &str)> = PUB_APPROVAL_FNS
+        .iter()
+        .map(|&(file, name, _)| (file, name))
+        .collect();
+    assert_eq!(public, allowed, "pub wallet fns that take an Approved");
+    let holders = approval_holders(files);
+    for (ty, field) in APPROVAL_HOLDERS {
+        assert!(
+            holders.iter().any(|(t, f, _)| t == ty && f == field),
+            "{ty}.{field} holds an Approved or the store: {holders:?}"
+        );
+    }
+    let open: Vec<_> = holders.iter().filter(|(_, _, public)| *public).collect();
+    assert!(open.is_empty(), "pub approval holders: {open:?}");
+    for owner in APPROVED_VARIANT_OWNERS {
+        let found = files
+            .iter()
+            .filter(|src| src.file.starts_with("yw-engine/"))
+            .flat_map(|src| enum_variants(src, owner))
+            .any(|variant| variant == "Approved");
+        assert!(
+            found,
+            "{owner} is a yw-engine enum with the variant Approved"
+        );
+    }
+    let mut consumes = Vec::new();
+    for src in files
+        .iter()
+        .filter(|src| src.file.starts_with("yw-engine/src/wallet/"))
+    {
+        for (at, token) in ident_tokens(&src.code) {
+            if token == "consume" {
+                let func = fn_at(&src.code, &src.blocks, at).unwrap_or_default();
+                consumes.push(format!("{}:{func}", src.file));
+            }
+        }
+    }
+    assert_eq!(
+        consumes,
+        ["yw-engine/src/wallet/app_approval.rs:consume_and_sign"],
+        "the wallet's one consume"
+    );
+}
+
+/// The variants of `enum <name>` in `src`.
+fn enum_variants(src: &Src, name: &str) -> Vec<String> {
+    let mut variants = Vec::new();
+    for block in &src.blocks {
+        let block_head = normalized(head(&src.code, block.open));
+        let words: Vec<&str> = block_head.split_whitespace().collect();
+        if words.windows(2).any(|pair| pair == ["enum", name]) {
+            variants.extend(
+                body_items(&src.code, block.open)
+                    .into_iter()
+                    .map(leading_ident),
+            );
+        }
+    }
+    variants
+}
+
+#[test]
+fn approval_capability_names_on_made_up_code() {
+    let steps: BTreeSet<String> = ["card_begin", "dispatch_evm_sign", "push_sign_waiter"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let carriers: BTreeSet<String> = ["SignEvm", "CardUnused"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    for (code, name) in [
+        ("fn f(a: yw_core::approval::Approved) {}", "Approved"),
+        ("let held: Option<Box<Approved>> = None;", "Approved"),
+        ("use yw_core::approval::{ApprovalId, Approved};", "Approved"),
+        ("use yw_core::approval::Approved as Token;", "Approved"),
+        ("let x = some::alias::Approved;", "Approved"),
+        ("let mut store = ApprovalStore::new();", "ApprovalStore"),
+        ("let a = store.consume(id, digest, now);", "consume"),
+        ("let a = <_>::consume(&mut s, id, d, n);", "consume"),
+        ("ids.map(Store::consume)", "consume"),
+        ("use yw_core::approval::store;", "approval::store"),
+        (
+            "use yw_core::approval::{ApprovalId, store::X};",
+            "approval::store",
+        ),
+        ("self.wallet.card_begin(a, kind, None);", "card_begin"),
+        (
+            "Wallet::dispatch_evm_sign(w, t, a, i, f)",
+            "dispatch_evm_sign",
+        ),
+        ("self.wallet.btc.consumed(ctx, a, &item);", "consumed"),
+        ("self.wallet.sol_consumed(a, c, 0);", "sol_consumed"),
+        (
+            "let t = w.push_sign_waiter(SignWaiter::App);",
+            "push_sign_waiter",
+        ),
+        ("KeyJob::SignEvm { approved, .. } => {}", "SignEvm"),
+        (
+            "if let KeyOutcome::CardUnused(a, _) = outcome {}",
+            "CardUnused",
+        ),
+        ("use yw_engine::testkit::WalletTestExt;", "testkit"),
+        ("let p: StoreProbe<'_> = w.evm_store_mut();", "StoreProbe"),
+    ] {
+        let found = capability_names(&code_only(code), &steps, &carriers);
+        assert!(
+            found.iter().any(|(_, found)| found == name),
+            "{code}: {found:?}"
+        );
+    }
+    for code in [
+        "QueueOutcome::Approved => {}",
+        "yw_engine::approval::QueueOutcome::Approved",
+        "InteractionStatus :: Approved",
+        "let consumed_at_ms = 0; let consumer = 1; let consumes = 2;",
+        "struct ApprovedX; struct UnApproved; let approval_store = 0;",
+        "use yw_engine::approval::{QueueOutcome, QueueSource};",
+        "let s = \"Approved consume card_begin testkit\"; // ApprovalStore",
+        "self.wallet.card_begins(); self.wallet.on_cmd(cmd);",
+    ] {
+        let found = capability_names(&code_only(code), &steps, &carriers);
+        assert!(found.is_empty(), "{code}: {found:?}");
+    }
+}
+
+#[test]
+fn approval_takers_holders_and_carriers_on_made_up_code() {
+    for sig in [
+        "fn f(&mut self, approved: Approved)",
+        "fn f(a: yw_core::approval::Approved, b: u8)",
+        "fn f(a: Box<Approved>)",
+        "fn f() -> Result<(), Box<Approved>>",
+        "fn f(a: &u8) -> Option<yw_core::approval::Approved>",
+    ] {
+        assert!(takes_approval_by_value(sig), "{sig}");
+    }
+    for sig in [
+        "fn f(a: &Approved)",
+        "fn f(a: &yw_core::approval::Approved) -> u8",
+        "fn f<'a>(a: &'a Approved)",
+        "fn f(a: &mut Approved)",
+        "fn f(o: QueueOutcome, a: ApprovedX)",
+    ] {
+        assert!(!takes_approval_by_value(sig), "{sig}");
+    }
+    let src = Src::new(
+        "yw-engine/src/wallet/made_up.rs".to_owned(),
+        code_only(
+            "pub struct A { pub approved: Box<Approved>, id: u64 }
+pub struct B(pub(crate) ApprovalStore);
+enum C { Held(Approved), Empty }
+pub enum D { Sign { approved: Box<Approved> } }
+struct E;
+pub struct F { pub(crate) store: ApprovalStore, pub shown: u64 }",
+        ),
+    );
+    assert_eq!(
+        approval_holders(std::slice::from_ref(&src)),
+        [
+            ("A".to_owned(), "approved".to_owned(), true),
+            ("B".to_owned(), "ApprovalStore".to_owned(), false),
+            ("F".to_owned(), "store".to_owned(), false),
+            ("C".to_owned(), "Held".to_owned(), false),
+            ("D".to_owned(), "Sign".to_owned(), true),
+        ]
+    );
+    let events = Src::new(
+        "yw-engine/src/events.rs".to_owned(),
+        code_only(
+            "pub enum KeyJob { Lock, SignEvm { ticket: u64, approved: Box<Approved> }, \
+             #[doc(hidden)] Gone(Box<Approved>, u8), Load { a: Result<(), u8> } }",
+        ),
+    );
+    assert_eq!(
+        approval_carriers(&events),
+        ["Gone".to_owned(), "SignEvm".to_owned()]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+    );
+}
+
 /// The secret form's actions split at `on_secret_action` (2026-11-22, S4c W12, preflight critic
 /// C12; plan §3.6, §7.3): the shell's `apply_form_action` keeps only the window's own arms
 /// (repaint, paste, copy) and hands each of the five wallet actions to the wallet's half
