@@ -24,12 +24,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use yw_app::rpc::{RpcClient, RpcFailure, classify};
-use yw_app::sol::flow::{
-    DappPreviewJob, PreviewJob, PreviewOutcome, SolEndpoint, balances, dapp_preview, pre_sign,
-    pre_sign_dapp, preview,
-};
-use yw_app::sol::rpc as sol;
 use yw_app::system_clock::SystemClock;
 use yw_core::bip32::path::AccountIndex;
 use yw_core::codec::base58::base58_encode;
@@ -47,6 +41,12 @@ use yw_core::sol::recipient::{check_recipient, check_recipient_for};
 use yw_core::sol::template::SPL_ALLOWLIST;
 use yw_core::sol::token::{TokenHolding, check_mint, parse_token_account};
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore, SplAllowEntry};
+use yw_engine::rpc::{RpcClient, RpcFailure, classify};
+use yw_engine::sol::flow::{
+    DappPreviewJob, PreviewJob, PreviewOutcome, SolEndpoint, balances, dapp_preview, pre_sign,
+    pre_sign_dapp, preview,
+};
+use yw_engine::sol::rpc as sol;
 use yw_json::{Limits as JsonLimits, Number, Object, Value};
 use yw_platform::http::{HttpError, HttpsUrl};
 use yw_win::http::Client;
@@ -534,7 +534,7 @@ fn probe_spl(
 #[expect(clippy::too_many_lines, reason = "one probe sequence per cluster")]
 fn probe_cluster(report: &mut Report, cluster: SolCluster, url: &HttpsUrl) -> TestResult {
     let net = cluster.network_id();
-    let transport = Client::new(yw_app::rpc::RPC_TIMEOUTS).map_err(|_| "WinHTTP")?;
+    let transport = Client::new(yw_engine::rpc::RPC_TIMEOUTS).map_err(|_| "WinHTTP")?;
     let client = RpcClient::new(&transport);
     // getGenesisHash (spec/07 §15.1).
     match sol::genesis_hash(&client, url) {

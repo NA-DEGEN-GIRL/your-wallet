@@ -6,17 +6,17 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use yw_app::events::KeyOutcome;
-use yw_app::meta;
 use yw_app::store::{FileStorage, LockedSlotBox};
-use yw_app::workers::journal::JournalState;
-use yw_app::workers::journal::btc::{BtcKeyError, BtcMetaOp};
-use yw_app::workers::key::sidecar_readable;
 use yw_core::btc::{BtcAccounts, BtcNetwork, ScriptType};
 use yw_core::error::{StorageError, VaultError};
 use yw_core::keyimport::{ImportChain, ImportKey, ImportSpec};
 use yw_core::password::VaultPassword;
 use yw_core::vault::{FileKind, PasswordChange, Vault, VaultStorage};
+use yw_engine::events::KeyOutcome;
+use yw_engine::meta;
+use yw_engine::workers::journal::JournalState;
+use yw_engine::workers::journal::btc::{BtcKeyError, BtcMetaOp};
+use yw_engine::workers::key::sidecar_readable;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 

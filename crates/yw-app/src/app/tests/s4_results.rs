@@ -6110,3 +6110,252 @@ fn the_probe_is_installed_only_by_tests() {
         "the seam module is cfg(test)"
     );
 }
+
+/// The facade entries kept for the bodies of the tests frozen at F-A (2026-11-23, S4d E3b,
+/// preflight §2 E3b, critic C16): `yw-app/src/lib.rs` re-exports these yw-engine modules ...
+const KEPT_LIB_FACADE: [&str; 9] = [
+    "btc", "errors", "events", "flow", "meta", "network", "sol", "workers", "yubikey",
+];
+/// ... and `yw-app/src/ui/mod.rs` these.
+const KEPT_UI_FACADE: [&str; 2] = ["approval", "approval_view"];
+
+/// The identifier that starts at `at` in `code` (empty when none does).
+fn ident_at(code: &str, at: usize) -> &str {
+    let end = code[at..]
+        .bytes()
+        .position(|byte| !is_ident(byte))
+        .map_or(code.len(), |n| at + n);
+    &code[at..end]
+}
+
+/// The kept facade entry a path names whose first segment starts at `at` of `code`, if any.
+fn kept_entry_at(code: &str, at: usize) -> Option<String> {
+    let first = ident_at(code, at);
+    if KEPT_LIB_FACADE.contains(&first) {
+        return Some(first.to_owned());
+    }
+    let after = at + first.len();
+    if first == "ui" && code[after..].starts_with("::") {
+        let second = ident_at(code, after + 2);
+        if KEPT_UI_FACADE.contains(&second) {
+            return Some(format!("ui::{second}"));
+        }
+    }
+    None
+}
+
+/// The offsets of every use of a kept facade entry in `code`, with the entry: a path that starts
+/// at one of `roots` (`crate::` and, for the binary `main.rs`, `yw_app::` in yw-app `src`;
+/// `yw_app::` in `tests/`) or at `super::` (relative paths; no yw-app module has a child of one
+/// of these names), whole or inside a `{ … }` group.
+fn facade_uses(code: &str, roots: &[&str]) -> Vec<(usize, String)> {
+    let bytes = code.as_bytes();
+    let mut found = Vec::new();
+    for &start in roots.iter().chain(&["super::"]) {
+        for (at, _) in code.match_indices(start) {
+            if (at > 0 && is_ident(bytes[at - 1])) || code[..at].ends_with("::") {
+                continue;
+            }
+            let mut rest = at + start.len();
+            while code[rest..].starts_with("super::") {
+                rest += "super::".len();
+            }
+            if !code[rest..].starts_with('{') {
+                found.extend(kept_entry_at(code, rest).map(|entry| (at, entry)));
+                continue;
+            }
+            let close = close_of(bytes, rest);
+            let mut depth = 0_usize;
+            let mut entry = rest + 1;
+            for (n, &byte) in bytes.iter().enumerate().take(close + 1).skip(rest + 1) {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' if depth > 0 => depth -= 1,
+                    b',' | b'}' => {
+                        let text = &code[entry..n];
+                        let lead = entry + (text.len() - text.trim_start().len());
+                        found.extend(kept_entry_at(code, lead).map(|name| (at, name)));
+                        entry = n + 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The names of the fns whose bodies hold offset `at` of `code`.
+fn fns_around(code: &str, at: usize) -> Vec<&str> {
+    let bytes = code.as_bytes();
+    let mut names = Vec::new();
+    for (start, _) in code.match_indices("fn ") {
+        if start > at || (start > 0 && is_ident(bytes[start - 1])) {
+            continue;
+        }
+        let rest = &code[start + 3..];
+        let name_at = start + 3 + (rest.len() - rest.trim_start().len());
+        let name = ident_at(code, name_at);
+        let open = code[name_at..].find(['{', ';']).map(|n| name_at + n);
+        if let Some(open) = open.filter(|&open| bytes[open] == b'{' && open < at)
+            && at <= close_of(bytes, open)
+            && !name.is_empty()
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// The names the `use yw_engine::…;` statements at depth 0 of `code` bind.
+fn engine_reexports(code: &str) -> BTreeSet<String> {
+    let blocks = blocks_of(code.as_bytes());
+    let mut names = BTreeSet::new();
+    for (at, _) in code.match_indices("use yw_engine::") {
+        if blocks
+            .iter()
+            .any(|block| block.open < at && at < block.close)
+        {
+            continue;
+        }
+        let end = code[at..].find(';').map_or(code.len(), |n| at + n);
+        let path = &code[at + "use yw_engine::".len()..end];
+        let entries: Vec<&str> = match path.find('{') {
+            Some(open) => path[open + 1..path.rfind('}').unwrap_or(path.len())]
+                .split(',')
+                .collect(),
+            None => vec![path],
+        };
+        for entry in entries.iter().map(|entry| entry.trim()) {
+            if entry.is_empty() {
+                continue;
+            }
+            let bound = match entry.rsplit_once(" as ") {
+                Some((_, alias)) => alias,
+                None => entry.rsplit("::").next().unwrap_or(entry),
+            };
+            names.insert(bound.trim().to_owned());
+        }
+    }
+    names
+}
+
+/// Source check `the_kept_facade_is_named_only_by_frozen_tests` (2026-11-23, S4d E3b, preflight
+/// §2 E3b "optional source check", critic C16): the S2 facade is gone but for the entries that
+/// the bodies of the tests frozen at F-A name (`s4_flow/frozen-tests.txt`, never changed), and no
+/// other code names them. Every `crate::`/`yw_app::`/`super::` path in yw-app `src` and every
+/// `yw_app::`/`super::` path in yw-app `tests/` that starts with a kept entry lies in the body of
+/// a frozen test, and every kept entry has such a user (an unused one goes). `lib.rs` and
+/// `ui/mod.rs` re-export exactly the kept entries from yw-engine, and `browser/mod.rs` nothing.
+/// Finds what it checks (A-20).
+#[test]
+fn the_kept_facade_is_named_only_by_frozen_tests() {
+    let frozen: BTreeSet<&str> = include_str!("s4_flow/frozen-tests.txt")
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let file = parts.next()?;
+            parts.next().filter(|_| file.starts_with("yw-app/"))
+        })
+        .collect();
+    assert!(frozen.len() > 50, "frozen yw-app tests: {}", frozen.len());
+    let app = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut scanned = 0_usize;
+    let mut used: BTreeMap<String, usize> = BTreeMap::new();
+    let mut stray = Vec::new();
+    let src: &[&str] = &["crate::", "yw_app::"];
+    for (dir, roots) in [("src", src), ("tests", &["yw_app::"])] {
+        let mut stack = vec![app.join(dir)];
+        while let Some(path) = stack.pop() {
+            if path.is_dir() {
+                stack.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(app)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel == "src/lib.rs" || rel == "src/ui/mod.rs" {
+                continue;
+            }
+            scanned += 1;
+            let code = code_only(&std::fs::read_to_string(&path).unwrap());
+            for (at, entry) in facade_uses(&code, roots) {
+                if fns_around(&code, at)
+                    .iter()
+                    .any(|name| frozen.contains(name))
+                {
+                    *used.entry(entry).or_default() += 1;
+                } else {
+                    let line = code[..at].matches('\n').count() + 1;
+                    stray.push(format!("{rel}:{line} {entry}"));
+                }
+            }
+        }
+    }
+    assert!(scanned > 100, "scanned {scanned} files");
+    assert!(
+        stray.is_empty(),
+        "facade paths outside frozen test bodies: {stray:#?}"
+    );
+    let kept: BTreeSet<String> = KEPT_LIB_FACADE
+        .iter()
+        .map(|&name| name.to_owned())
+        .chain(KEPT_UI_FACADE.iter().map(|name| format!("ui::{name}")))
+        .collect();
+    assert_eq!(
+        used.keys().cloned().collect::<BTreeSet<_>>(),
+        kept,
+        "every kept entry has a frozen user: {used:?}"
+    );
+    let read = |rel: &str| code_only(&std::fs::read_to_string(app.join(rel)).unwrap());
+    let names = |list: &[&str]| list.iter().map(|&name| name.to_owned()).collect();
+    let lib: BTreeSet<String> = names(&KEPT_LIB_FACADE);
+    assert_eq!(
+        engine_reexports(&read("src/lib.rs")),
+        lib,
+        "lib.rs re-exports"
+    );
+    let ui: BTreeSet<String> = names(&KEPT_UI_FACADE);
+    assert_eq!(
+        engine_reexports(&read("src/ui/mod.rs")),
+        ui,
+        "ui/mod.rs re-exports"
+    );
+    assert!(
+        !read("src/browser/mod.rs").contains("use "),
+        "browser/mod.rs re-exports nothing"
+    );
+}
+
+/// The facade check's readers on made-up code (they can fail).
+#[test]
+fn facade_uses_on_made_up_code() {
+    let code = "use crate::{errors::ErrorCode, ui::approval::QueueSource, store};\n\
+                fn frozen() { let x = crate::network::NetworkId::Solana; }\n\
+                fn other() { super::super::events::KeyJob::Lock; crate::ui::qr::x(); }\n\
+                mod m { pub(crate) use yw_engine::sol; }\n\
+                use yw_engine::{btc, errors as e};\n\
+                use yw_engine::approval::view as approval_view;\n";
+    let uses = facade_uses(code, &["crate::"]);
+    let entries: Vec<&str> = uses.iter().map(|(_, entry)| entry.as_str()).collect();
+    assert_eq!(entries, ["errors", "ui::approval", "network", "events"]);
+    assert!(fns_around(code, uses[0].0).is_empty());
+    assert_eq!(fns_around(code, uses[2].0), ["frozen"]);
+    assert_eq!(fns_around(code, uses[3].0), ["other"]);
+    assert_eq!(
+        engine_reexports(code),
+        BTreeSet::from(["approval_view", "btc", "e"].map(str::to_owned)),
+        "depth 0 only, aliases bound"
+    );
+    let tests = "fn t() { yw_app::ui::approval_view::x(); yw_app::ui::approval_input::y(); }";
+    let found: Vec<String> = facade_uses(tests, &["yw_app::"])
+        .into_iter()
+        .map(|u| u.1)
+        .collect();
+    assert_eq!(found, ["ui::approval_view"]);
+}

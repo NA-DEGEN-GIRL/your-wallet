@@ -20,22 +20,6 @@ use btc_support::{
     ACCOUNT_CHAIN_CODE, ACCOUNT_PUBKEY, CORE_URL, Call, ESPLORA_BASE, FakeBtc, ManualClock, Reply,
     TIP, TestResult, Verb, account, address_json, healthy, params, path_address, xpub,
 };
-use yw_app::apikeys::ApiKeys;
-use yw_app::btc::Trigger;
-use yw_app::btc::chain::ChainInput;
-use yw_app::btc::flow::RefreshJob;
-use yw_app::btc::work::{BtcRpcEvent, BtcRpcJob, BtcTarget};
-use yw_app::events::{
-    EventQueue, ImportedAccount, JournalView, KeyJob, KeyOutcome, RpcEvent, UiEvent,
-};
-use yw_app::flow::evm::{Clock, Limits};
-use yw_app::meta::Meta;
-use yw_app::network::{BtcNet, NetworkId};
-use yw_app::settings::{BitcoinSettings, BtcIndexer};
-use yw_app::ui::approval_view::Block;
-use yw_app::workers::journal::btc::BtcMetaOp;
-use yw_app::workers::key::KeyWorker;
-use yw_app::workers::rpc::{RpcJob, RpcWorker};
 use yw_core::approval::{ApprovalId, ApprovalStore};
 use yw_core::bip32::path::BtcChain;
 use yw_core::btc::address::script_pubkey;
@@ -50,9 +34,25 @@ use yw_core::btc::{
 use yw_core::journal::btc::BtcTxState;
 use yw_core::keyimport::{ImportPreview, ImportSpec};
 use yw_core::secret::Zeroizing;
+use yw_engine::apikeys::ApiKeys;
+use yw_engine::approval::view::Block;
+use yw_engine::btc::Trigger;
+use yw_engine::btc::chain::ChainInput;
+use yw_engine::btc::flow::RefreshJob;
+use yw_engine::btc::work::{BtcRpcEvent, BtcRpcJob, BtcTarget};
+use yw_engine::events::{
+    EventQueue, ImportedAccount, JournalView, KeyJob, KeyOutcome, RpcEvent, UiEvent,
+};
+use yw_engine::flow::evm::{Clock, Limits};
+use yw_engine::meta::Meta;
+use yw_engine::network::{BtcNet, NetworkId};
+use yw_engine::settings::{BitcoinSettings, BtcIndexer};
 use yw_engine::wallet::app_btc::{
     BtcAction, BtcAmountUnit, BtcApprovalItem, BtcCtx, BtcFeeChoice, BtcGate, BtcScreen, BtcUi,
 };
+use yw_engine::workers::journal::btc::BtcMetaOp;
+use yw_engine::workers::key::KeyWorker;
+use yw_engine::workers::rpc::{RpcJob, RpcWorker};
 use yw_platform::http::HttpsUrl;
 
 const ABANDON: &str =
@@ -477,7 +477,7 @@ impl Harness {
         let shared = Arc::clone(&world);
         let fake = FakeBtc::new(&clock, move |call| answer(&shared, call));
         let rpc = RpcWorker::new(
-            Some(Arc::clone(&fake) as Arc<dyn yw_app::rpc::Transport>),
+            Some(Arc::clone(&fake) as Arc<dyn yw_engine::rpc::Transport>),
             Box::new(ClockRef(Arc::clone(&clock))),
             Limits::PRODUCTION,
         );
@@ -494,7 +494,7 @@ impl Harness {
             key: KeyWorker::new(
                 &dir,
                 yw_app::store::WinKeyPlatform::deps_with_cards(Box::new(
-                    yw_app::yubikey::NoReaders,
+                    yw_engine::yubikey::NoReaders,
                 )),
             ),
             dir,
@@ -542,7 +542,7 @@ impl Harness {
             return Err("key start not committed".into());
         }
         self.settings.enabled = true;
-        self.settings.network = yw_app::btc::app_network(network);
+        self.settings.network = yw_engine::btc::app_network(network);
         self.unlocked = true;
         self.key_job(KeyJob::LoadMeta);
         self.key_job(KeyJob::LoadJournal);
@@ -715,12 +715,12 @@ impl Harness {
     fn approve(&mut self) -> TestResult {
         let item = self.queued.remove(0);
         let draft = BtcUi::draft(yw_core::lang::Lang::Ko, &item, ApprovalId::random()?)
-            .map_err(yw_app::errors::ErrorCode::code)?;
+            .map_err(yw_engine::errors::ErrorCode::code)?;
         let mut store = ApprovalStore::new();
         let now = self.clock.now_ms();
         let request = store.issue(draft, now, self.clock.now_unix_ms())?;
         assert!(
-            yw_app::ui::approval::validate_for_display(&request.display).is_ok(),
+            yw_engine::approval::validate_for_display(&request.display).is_ok(),
             "every BTC field has a label"
         );
         let approved = store.consume(request.id, request.digest, now.saturating_add(1))?;

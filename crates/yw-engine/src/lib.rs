@@ -2,7 +2,8 @@
 //! spec/15 §3.1). It depends on yw-core, yw-json and yw-platform only, never on yw-win or an OS
 //! crate, and has no `unsafe`; its `clippy.toml` bans file, socket, process, wall-clock and
 //! environment access (threads and `Instant` are allowed, spec/01 §5.1). The Windows app (yw-app)
-//! re-exports the moved modules under their old paths until S4 (2026-11-18: was S3–S4).
+//! re-exported the moved modules under their old paths (2026-11-18: until S3–S4); since S4d E3b
+//! (2026-11-23) it names them here, and keeps only the entries that tests frozen through S4 name.
 //!
 //! [`errors`] holds the user-visible error codes, [`text`] the shared text rules, [`network`] the
 //! `NetworkId`, [`logging`] the log facade (the platform installs a `LogSink`), [`yubikey`] the

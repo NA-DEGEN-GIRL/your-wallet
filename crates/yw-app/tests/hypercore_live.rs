@@ -112,7 +112,7 @@ fn post(client: &Client, path: &str, body: &[u8]) -> Result<Value, Box<dyn std::
 #[ignore = "live network: Hyperliquid testnet API (spec/11 §9.3)"]
 #[expect(clippy::too_many_lines, reason = "one live scenario")]
 fn testnet_info_shapes_and_signer_recovery() -> TestResult {
-    let client = Client::new(yw_app::rpc::RPC_TIMEOUTS)?;
+    let client = Client::new(yw_engine::rpc::RPC_TIMEOUTS)?;
 
     // A throwaway key from the OS CSPRNG, only in memory.
     let mut secret = [0_u8; 32];

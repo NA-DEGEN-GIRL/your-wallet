@@ -1,17 +1,19 @@
 //! UI modules (spec/04 §1.8): the main window layout and screens, secret windows W01–W10, the
-//! secret input buffers, the approval interaction/queue rules and the A01 content model, the
-//! receive QR, text layout and theme. The A01 window itself is `crate::app_approval`.
+//! approval window's input map, the receive QR and the theme. The A01 window itself is
+//! `crate::app_approval`; the approval interaction/queue rules, the A01 content model, the text
+//! layout and the secret input buffers are yw-engine's (below).
 //!
 //! (2026-11-17, spec/15 §11.4 S2: the approval queue and interaction rules, the approval texts,
 //! the text layout and the secret input buffers moved to yw-engine, and in E2 the chain badge;
-//! they are re-exported here under their old names until S4 (2026-11-18: was S3–S4).)
+//! they were re-exported here under their old names (`approval`, `interaction`, `text_layout`,
+//! `approval_text`, `secure_field`, `badge`, `approval_view`). 2026-11-23 (S4d E3a/E3b, preflight
+//! §2 E3b and critic C16; spec/15 §11.4 S4): yw-app names them as `yw_engine::…`; only
+//! `approval` and `approval_view` stay, because the bodies of tests frozen at F-A name them
+//! (`app/tests/chain_sites.rs`, `tests/btc_app_flow.rs`); they go when the S4 freeze ends.)
 
+#[doc(hidden)]
 pub use yw_engine::approval;
-pub use yw_engine::approval::{interaction, layout as text_layout, text as approval_text};
-pub use yw_engine::secure_field;
-// 2026-11-17 (S2 E2): the chain badge followed with `meta`.
-pub use yw_engine::badge;
-// 2026-11-17 (S2 E3): the A01 content model followed (engine `approval::view`).
+#[doc(hidden)]
 pub use yw_engine::approval::view as approval_view;
 
 pub mod approval_input;

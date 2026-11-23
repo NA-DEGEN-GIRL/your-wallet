@@ -5,7 +5,7 @@
 //! `stray_press` moved to `ui::approval_input`; this file stays with the Windows shell.
 
 use yw_app::ui::approval_input::stray_press;
-use yw_app::ui::interaction::InteractionEvent;
+use yw_engine::approval::interaction::InteractionEvent;
 use yw_win::ui::Msg;
 
 #[test]

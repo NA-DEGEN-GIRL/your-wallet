@@ -7,14 +7,7 @@
 
 use std::path::PathBuf;
 
-use yw_app::events::KeyOutcome;
-use yw_app::meta;
 use yw_app::store::{FileStorage, LockedSlotBox};
-use yw_app::workers::journal::JournalState;
-use yw_app::workers::journal::btc::{
-    BtcJournalDone, BtcJournalOp, BtcKeyError, BtcMetaDone, BtcMetaOp, BtcRefreshUpdate,
-    BtcSignFailure,
-};
 use yw_core::approval::{ApprovalId, ApprovalStore, Approved};
 use yw_core::bip32::path::BtcChain;
 use yw_core::btc::fee::{FeeChoice, FeeRate, FeeSource};
@@ -28,6 +21,13 @@ use yw_core::journal::btc::{BtcTxState, TrackObservation, TransitionError};
 use yw_core::journal::{Entry, EntryKind, JournalPlain};
 use yw_core::password::VaultPassword;
 use yw_core::vault::{FileKind, Vault};
+use yw_engine::events::KeyOutcome;
+use yw_engine::meta;
+use yw_engine::workers::journal::JournalState;
+use yw_engine::workers::journal::btc::{
+    BtcJournalDone, BtcJournalOp, BtcKeyError, BtcMetaDone, BtcMetaOp, BtcRefreshUpdate,
+    BtcSignFailure,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 

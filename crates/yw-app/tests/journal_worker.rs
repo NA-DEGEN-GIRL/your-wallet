@@ -12,12 +12,7 @@ use std::path::PathBuf;
 
 use common::evm::{S2_UNIX_MS, TestResult, USER, address, fake, job, ready, send_intent, world};
 use common::{Answer, FakeClock};
-use yw_app::events::{EvmSigned, KeyOutcome, SignFailure, SignInfo, SignTicket};
-use yw_app::flow::evm::ChainCache;
-use yw_app::flow::evm::prepare::prepare;
-use yw_app::meta;
 use yw_app::store::{FileStorage, LockedSlotBox};
-use yw_app::workers::journal::JournalState;
 use yw_core::approval::ApprovalStore;
 use yw_core::codec::keccak256;
 use yw_core::evm::chain::{SEPOLIA_GENESIS, sepolia};
@@ -25,6 +20,11 @@ use yw_core::evm::sign::SignError;
 use yw_core::journal::evm::{Role, Transition, TxState};
 use yw_core::password::VaultPassword;
 use yw_core::vault::{FileKind, Vault};
+use yw_engine::events::{EvmSigned, KeyOutcome, SignFailure, SignInfo, SignTicket};
+use yw_engine::flow::evm::ChainCache;
+use yw_engine::flow::evm::prepare::prepare;
+use yw_engine::meta;
+use yw_engine::workers::journal::JournalState;
 
 const ABANDON: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -271,7 +271,7 @@ fn post_sign_verification_failure_stores_nothing() -> TestResult {
 /// ticket (the UI matches waiters by ticket, never by queue order).
 #[test]
 fn lock_cancelled_signing_jobs_report_their_tickets() -> TestResult {
-    use yw_app::events::{
+    use yw_engine::events::{
         KeyJob, KeyQueue, KeyResult, LockSignal, MessageSignFailure, MessageSigned,
     };
     let rpc = fake(world(11_155_111, SEPOLIA_GENESIS, Vec::new()));
@@ -321,10 +321,10 @@ fn lock_cancelled_signing_jobs_report_their_tickets() -> TestResult {
     queue.push(2, KeyJob::Shutdown);
     let dir = temp_dir("lock-tickets")?;
     let results: std::sync::Mutex<Vec<KeyResult>> = std::sync::Mutex::new(Vec::new());
-    yw_app::workers::key::run(
-        yw_app::workers::key::KeyWorker::new(
+    yw_engine::workers::key::run(
+        yw_engine::workers::key::KeyWorker::new(
             &dir,
-            yw_app::store::WinKeyPlatform::deps_with_cards(Box::new(yw_app::yubikey::NoReaders)),
+            yw_app::store::WinKeyPlatform::deps_with_cards(Box::new(yw_engine::yubikey::NoReaders)),
         ),
         &queue,
         &|result| {

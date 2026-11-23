@@ -12,16 +12,16 @@ use btc_support::{
     CORE_URL, Call, Reply, Rig, TESTNET4_GENESIS, TestResult, Verb, account, chain_input, healthy,
     params, xpub,
 };
-use yw_app::btc::{BtcClient, ChainSession, Trigger};
-use yw_app::received::btc::{
-    BTC_PENDING_CHECK_MAX, BtcReceivedWork, ESPLORA_MEMPOOL_PAGE, T_BB_NO_TXS, T_BB_NO_TXS_ONCE,
-    fetch,
-};
-use yw_app::received::{Cursor, Fetched, Incoming, PENDING_MISS_MAX};
-use yw_app::settings::BtcIndexer;
 use yw_core::bip32::path::BtcChain;
 use yw_core::btc::BtcNetwork;
 use yw_core::btc::address::{BtcAddress, p2wpkh_program};
+use yw_engine::btc::{BtcClient, ChainSession, Trigger};
+use yw_engine::received::btc::{
+    BTC_PENDING_CHECK_MAX, BtcReceivedWork, ESPLORA_MEMPOOL_PAGE, T_BB_NO_TXS, T_BB_NO_TXS_ONCE,
+    fetch,
+};
+use yw_engine::received::{Cursor, Fetched, Incoming, PENDING_MISS_MAX};
+use yw_engine::settings::BtcIndexer;
 use yw_engine::wallet::app_received::RecvList;
 
 /// A made-up sender (not a valid address of anyone).
@@ -365,7 +365,7 @@ fn blockbook_vanished_pending_rows() -> TestResult {
     };
     let mut list = RecvList::default();
     list.apply(Fetched {
-        found: yw_app::received::Found {
+        found: yw_engine::received::Found {
             entries: vec![pending_row(&gone, &[0])],
             dust: Vec::new(),
         },

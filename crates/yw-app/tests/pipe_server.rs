@@ -18,8 +18,8 @@ use std::time::Duration;
 use common::FakeClock;
 use common::browser::{GOLDEN_ID, NOW_UNIX, RequestSpec, Sink, json, request_frame, wallet};
 use yw_app::browser::server::start;
-use yw_app::browser::{BrowserCore, DappSink, VaultView};
-use yw_app::settings::Settings;
+use yw_engine::browser::{BrowserCore, DappSink, VaultView};
+use yw_engine::settings::Settings;
 use yw_json::frame::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 use yw_json::{Limits, Number, Value};
 use yw_win::pipe::{ConnectError, PipeReader, Server, ServerError, connect_client, user_only_sddl};
@@ -73,7 +73,7 @@ fn core() -> Arc<BrowserCore> {
     let core = BrowserCore::new(
         GOLDEN_ID,
         Arc::new(Sink::default()) as Arc<dyn DappSink>,
-        Arc::new(FakeClock::at(NOW_UNIX)) as Arc<dyn yw_app::flow::evm::Clock>,
+        Arc::new(FakeClock::at(NOW_UNIX)) as Arc<dyn yw_engine::flow::evm::Clock>,
     );
     core.set_wallet(wallet(VaultView::Locked, &Settings::default()));
     core

@@ -3,19 +3,21 @@
 //! Win32 shell (`app`, `ui::main_window`, `ui::secret`) runs in the binary.
 #![forbid(unsafe_code)]
 
-// 2026-11-17 (spec/15 §11.4 S2, spec/01 §2.3b): these modules moved to yw-engine; the re-exports
-// keep their `crate::…` paths until S4 rewrites the callers (transitional facade;
-// 2026-11-18: was S3–S4).
-pub use yw_engine::{errors, logging, network, text, wallet_files, yubikey};
-// 2026-11-17 (S2 E2): settings, wallet metadata, explain and the RPC pipelines followed.
-pub use yw_engine::{
-    apikeys, btc, explain, explorer, flow, hypercore, meta, received, rpc, settings, sol,
-    token_view, zec,
-};
-// 2026-11-17 (S2 E3): the dApp dispatcher, the `WalletConnect` worker, the events and the
-// workers followed. `browser` is a local facade module that re-exports the engine part and keeps
-// the Windows pipe server; before E3, `walletconnect` was one too (it kept the relay worker).
-pub use yw_engine::{events, walletconnect, workers};
+// 2026-11-17 (spec/15 §11.4 S2, spec/01 §2.3b): these modules moved to yw-engine, and the
+// re-exports kept their `crate::…` paths (transitional facade: `errors, logging, network, text,
+// wallet_files, yubikey`; in S2 E2 `apikeys, btc, explain, explorer, flow, hypercore, meta,
+// received, rpc, settings, sol, token_view, zec`; in S2 E3 `events, walletconnect, workers`).
+// 2026-11-23 (S4d E3a/E3b, preflight §2 E3b and critic C16; spec/15 §11.4 S4): yw-app `src` and
+// `tests/` name `yw_engine::…` directly and the facade is gone, but for the entries that the
+// bodies of the tests frozen at F-A name (`app/tests/s4_flow/frozen-tests.txt`, never changed):
+// the A-4 tests of `app/tests/chain_sites.rs` (`crate::{errors, events, flow, network, sol,
+// workers, yubikey}`) and `tests/btc_app_flow.rs` (`yw_app::{btc, errors, events, meta,
+// workers}`). They go in the first commit after the S4 freeze ends; no other code names them
+// (source check `the_kept_facade_is_named_only_by_frozen_tests`).
+#[doc(hidden)]
+pub use yw_engine::{btc, errors, events, meta, workers};
+#[cfg(test)]
+pub(crate) use yw_engine::{flow, network, sol, yubikey};
 
 // 2026-11-23 (spec/15 §11.4 S4d E1, preflight O-1 and critic C2; 주인 상시 결정(2026-11-21):
 // 권고안, spec/15 §18 28): the wallet modules moved to `yw_engine::wallet`. The tests frozen at

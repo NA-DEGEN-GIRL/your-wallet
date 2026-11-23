@@ -1,8 +1,10 @@
 //! The A01 content model (spec/04 §3.2–§3.3): which fields go to the fixed header, the fixed
 //! simulation band, and the scrolling summary / asset-change / warnings + acknowledgement /
 //! critical-field areas and the folded 자세히 (non-critical fields and raw data). Pure, so AP-4/AP-6 are tested without windows; `ui::approval_window` paints it.
-//! (2026-11-17, spec/15 §11.4 S2 E3: moved from yw-app `ui::approval_view`, which re-exports it
-//! under that name until S3–S4.)
+//! (2026-11-17, spec/15 §11.4 S2 E3: moved from yw-app `ui::approval_view`, which re-exported it
+//! under that name (2026-11-18: until S3–S4). 2026-11-23 (S4d E3b): yw-app names it
+//! `yw_engine::approval::view`; the re-export stays only for the bodies of tests frozen through
+//! S4.)
 
 use core::fmt::Write as _;
 

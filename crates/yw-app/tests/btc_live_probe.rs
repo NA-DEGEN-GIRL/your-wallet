@@ -24,19 +24,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use yw_app::btc::chain::{ChainInput, check_full};
-use yw_app::btc::flow::{DiscoveryJob, TrackJob, discover, observe_tx, prev_transaction};
-use yw_app::btc::indexer::{BtcIndexerReq, BtcIndexerResp, fetch};
-use yw_app::btc::rpc::{
-    MempoolEntry, estimate_smart_fee, get_mempool_entry, get_mempool_info, test_mempool_accept,
-};
-use yw_app::btc::{
-    BtcClient, BtcEndpoint, BtcEnv, BtcError, ChainSession, LogSink, Pace, Trigger, network_id,
-};
-use yw_app::flow::evm::Clock;
-use yw_app::logging::Field;
-use yw_app::rpc::{RPC_TIMEOUTS, RpcFailure, classify};
-use yw_app::settings::{BtcIndexer, LogLevel};
 use yw_app::system_clock::SystemClock;
 use yw_core::bip32::AccountXpub;
 use yw_core::btc::address::BtcAddress;
@@ -44,6 +31,19 @@ use yw_core::btc::prevtx::verify_prev_output;
 use yw_core::btc::script::p2wpkh_script_pubkey;
 use yw_core::btc::tx::{Transaction, TxIn, TxOut, serialize, sha256d};
 use yw_core::btc::{BTC_CONF_TARGETS, BtcNetwork, OutPoint, Sats, Txid};
+use yw_engine::btc::chain::{ChainInput, check_full};
+use yw_engine::btc::flow::{DiscoveryJob, TrackJob, discover, observe_tx, prev_transaction};
+use yw_engine::btc::indexer::{BtcIndexerReq, BtcIndexerResp, fetch};
+use yw_engine::btc::rpc::{
+    MempoolEntry, estimate_smart_fee, get_mempool_entry, get_mempool_info, test_mempool_accept,
+};
+use yw_engine::btc::{
+    BtcClient, BtcEndpoint, BtcEnv, BtcError, ChainSession, LogSink, Pace, Trigger, network_id,
+};
+use yw_engine::flow::evm::Clock;
+use yw_engine::logging::Field;
+use yw_engine::rpc::{RPC_TIMEOUTS, RpcFailure, classify};
+use yw_engine::settings::{BtcIndexer, LogLevel};
 use yw_json::Limits as JsonLimits;
 use yw_platform::http::HttpsUrl;
 use yw_win::http::Client;
@@ -129,7 +129,9 @@ impl LogSink for QuietLog {
 
 fn rpc_kv(failure: RpcFailure) -> String {
     let detail = match failure {
-        RpcFailure::Http(error) => format!("transport={}", yw_app::btc::client::http_word(error)),
+        RpcFailure::Http(error) => {
+            format!("transport={}", yw_engine::btc::client::http_word(error))
+        }
         RpcFailure::Status(status) => format!("http={status}"),
         RpcFailure::Rpc(code) => format!("code={code}"),
         RpcFailure::Malformed => "malformed".to_owned(),
@@ -186,7 +188,7 @@ fn esplora_base(net: BtcNetwork) -> Result<HttpsUrl, &'static str> {
     };
     let text = match std::env::var(name) {
         Ok(value) => {
-            yw_app::settings::validate_esplora_url(&value).ok_or("esplora override rejected")?
+            yw_engine::settings::validate_esplora_url(&value).ok_or("esplora override rejected")?
         }
         Err(_) => net.esplora_default().to_owned(),
     };

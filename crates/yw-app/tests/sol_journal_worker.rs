@@ -12,11 +12,8 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use yw_app::events::{KeyOutcome, SignTicket, SolDappSigned, SolDappSignedSummary, SolSignFailure};
-use yw_app::meta;
 use yw_app::store::{FileStorage, LockedSlotBox};
 use yw_app::system_clock::SystemClock;
-use yw_app::workers::journal::{JournalState, SolDappSignJob, SolSignTimes};
 use yw_core::approval::{ApprovalId, ApprovalStore, Approved};
 use yw_core::bip32::path::AccountIndex;
 use yw_core::error::StorageError;
@@ -42,6 +39,11 @@ use yw_core::sol::{
     SolAddress, SolAsset, SolCluster, SolSignError, SolTransferCore, sign_transfer,
 };
 use yw_core::vault::{FileKind, Vault, VaultStorage};
+use yw_engine::events::{
+    KeyOutcome, SignTicket, SolDappSigned, SolDappSignedSummary, SolSignFailure,
+};
+use yw_engine::meta;
+use yw_engine::workers::journal::{JournalState, SolDappSignJob, SolSignTimes};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 

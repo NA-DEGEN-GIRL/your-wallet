@@ -13,14 +13,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use common::{Answer, FakeRpc, url};
-use yw_app::events::{ImportedAccount, KeyJob, KeyOutcome, RevealWhat};
-use yw_app::sol::flow::{PreviewJob, PreviewOutcome, SolEndpoint, preview};
 use yw_app::store::{FileStorage, LockedSlotBox, WinKeyPlatform};
 use yw_app::system_clock::SystemClock;
-use yw_app::workers::journal::btc::BtcMetaDone;
-use yw_app::workers::journal::{JournalState, SolSignTimes};
-use yw_app::workers::key::KeyWorker;
-use yw_app::yubikey::NoReaders;
 use yw_core::approval::ApprovalStore;
 use yw_core::bip32::path::BtcChain;
 use yw_core::btc::{BtcAccountId, BtcNetwork, ScriptType};
@@ -36,6 +30,12 @@ use yw_core::sol::message::parse_transaction;
 use yw_core::sol::recipient::check_recipient;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster};
 use yw_core::vault::{Vault, VaultStatus};
+use yw_engine::events::{ImportedAccount, KeyJob, KeyOutcome, RevealWhat};
+use yw_engine::sol::flow::{PreviewJob, PreviewOutcome, SolEndpoint, preview};
+use yw_engine::workers::journal::btc::BtcMetaDone;
+use yw_engine::workers::journal::{JournalState, SolSignTimes};
+use yw_engine::workers::key::KeyWorker;
+use yw_engine::yubikey::NoReaders;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 

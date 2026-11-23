@@ -9,9 +9,9 @@
 
 use core::fmt::Write as _;
 
-use yw_app::errors::ErrorCode;
 use yw_core::approval::{MAX_DISPLAY_VALUE_BYTES, is_valid_display_text};
 use yw_core::lang::{Entry, Lang, has_hangul, placeholders};
+use yw_engine::errors::ErrorCode;
 
 const SPEC: &str = include_str!("../../../spec/14-language.md");
 const SPEC04: &str = include_str!("../../../spec/04-app-ui.md");
@@ -332,7 +332,7 @@ fn every_field_key_has_a_label_in_both_languages() {
     for key in 0..=u16::MAX {
         let key = yw_core::approval::FieldKey(key);
         if key.flags().is_some() {
-            let text = yw_app::ui::approval::field_label_text(key);
+            let text = yw_engine::approval::field_label_text(key);
             assert!(
                 text.is_some_and(|text| !text.en.is_empty() && !has_hangul(text.en)),
                 "{key:?}"

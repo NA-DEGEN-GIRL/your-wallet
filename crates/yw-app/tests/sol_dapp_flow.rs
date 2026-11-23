@@ -20,13 +20,6 @@ mod common;
 use std::path::PathBuf;
 
 use common::{Answer, FakeClock, FakeRpc, url};
-use yw_app::browser::params::{Validated, validate};
-use yw_app::events::{
-    ChainMessageSigned, ChainSignature, KeyJob, KeyOutcome, SignTicket, SolDappSigned,
-    SolKeysPurpose,
-};
-use yw_app::sol::flow::{DappPreviewJob, SolEndpoint, dapp_preview};
-use yw_app::workers::key::KeyWorker;
 use yw_core::approval::{ApprovalId, ApprovalStore, RiskLevel};
 use yw_core::bip32::path::AccountIndex;
 use yw_core::policy::{BrowserOrigin, Method};
@@ -34,7 +27,14 @@ use yw_core::secret::Zeroizing;
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::dapp::{SolTxMode, SolTxRequest, build_sol_tx_request};
 use yw_core::sol::{SolAddress, SolCluster};
+use yw_engine::browser::params::{Validated, validate};
+use yw_engine::events::{
+    ChainMessageSigned, ChainSignature, KeyJob, KeyOutcome, SignTicket, SolDappSigned,
+    SolKeysPurpose,
+};
+use yw_engine::sol::flow::{DappPreviewJob, SolEndpoint, dapp_preview};
 use yw_engine::wallet::app_chain_sites::{ChainAnswer, chain_answer_value};
+use yw_engine::workers::key::KeyWorker;
 use yw_json::{Limits, Value};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -65,7 +65,7 @@ fn temp_dir(tag: &str) -> TestResult<PathBuf> {
 fn worker(dir: &std::path::Path) -> TestResult<(KeyWorker, [u8; 32], [u8; 32])> {
     let mut worker = KeyWorker::new(
         dir,
-        yw_app::store::WinKeyPlatform::deps_with_cards(Box::new(yw_app::yubikey::NoReaders)),
+        yw_app::store::WinKeyPlatform::deps_with_cards(Box::new(yw_engine::yubikey::NoReaders)),
     );
     let _ = worker.handle(KeyJob::Load);
     let preview = worker.handle(KeyJob::PreviewImport {
@@ -474,9 +474,9 @@ fn program_failed() -> Answer {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one send from params to answer")]
 fn send_is_checked_journaled_and_answered_after_the_first_round() -> TestResult {
-    use yw_app::sol::flow::{PreSignError, TrackJob, pre_sign_dapp, track_round};
-    use yw_app::sol::rpc::SendConfig;
     use yw_core::sol::broadcast::{LoopState, PendingTx};
+    use yw_engine::sol::flow::{PreSignError, TrackJob, pre_sign_dapp, track_round};
+    use yw_engine::sol::rpc::SendConfig;
     use yw_engine::wallet::app_sol_dapp::{sol_round_failed, sol_send_answer};
 
     let dir = temp_dir("send")?;

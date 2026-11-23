@@ -20,30 +20,30 @@ mod llm {
         NEW, S2_UNIX_MS, USER, address, fake, fixture, job, ready, send_intent, user_chain, world,
     };
     use super::common::{Answer, FakeClock};
-    use yw_app::apikeys::ApiKeys;
     use yw_app::app::{App, Paths};
-    use yw_app::events::EventQueue;
-    use yw_app::explain::config::{ApiKey, ModelName, parse_endpoint};
-    use yw_app::explain::input::RequestKind;
-    use yw_app::explain::panel::AiPanel;
-    use yw_app::explain::request::{HttpResponse, LlmTransport, TransportError};
-    use yw_app::explain::{
-        AiPanelState, ExplainError, ExplainInput, ExplainService, ExplainSim, ExplainSource,
-        HiddenReason, LlmConfig, LlmDone, LlmJob, MAX_RESPONSE_BODY, MismatchReason,
-        REQUEST_DEADLINE_MS, ResponseFormatMode, build_input, explain_once,
-    };
     use yw_app::explain_transport::{WinHttpTransport, factory};
-    use yw_app::flow::evm::ChainCache;
-    use yw_app::flow::evm::prepare::{Prepared, prepare};
-    use yw_app::settings::{LlmSettings, Settings};
-    use yw_app::ui::interaction::{
-        ApprovalGate, ApprovalSession, InteractionEvent, PrepareState, ReadyContent, ack_needed,
-        can_approve, sim_state,
-    };
     use yw_core::approval::{ApprovalStore, ChainFacts};
     use yw_core::evm::amount::U256;
     use yw_core::evm::chain::{SEPOLIA_GENESIS, SimulationSupport, sepolia};
     use yw_core::lang::Lang;
+    use yw_engine::apikeys::ApiKeys;
+    use yw_engine::approval::interaction::{
+        ApprovalGate, ApprovalSession, InteractionEvent, PrepareState, ReadyContent, ack_needed,
+        can_approve, sim_state,
+    };
+    use yw_engine::events::EventQueue;
+    use yw_engine::explain::config::{ApiKey, ModelName, parse_endpoint};
+    use yw_engine::explain::input::RequestKind;
+    use yw_engine::explain::panel::AiPanel;
+    use yw_engine::explain::request::{HttpResponse, LlmTransport, TransportError};
+    use yw_engine::explain::{
+        AiPanelState, ExplainError, ExplainInput, ExplainService, ExplainSim, ExplainSource,
+        HiddenReason, LlmConfig, LlmDone, LlmJob, MAX_RESPONSE_BODY, MismatchReason,
+        REQUEST_DEADLINE_MS, ResponseFormatMode, build_input, explain_once,
+    };
+    use yw_engine::flow::evm::ChainCache;
+    use yw_engine::flow::evm::prepare::{Prepared, prepare};
+    use yw_engine::settings::{LlmSettings, Settings};
     use yw_engine::wallet::app_llm::transaction_input;
     use yw_json::{Limits, Number, Object, Value};
 
@@ -513,7 +513,7 @@ mod llm {
         let _ = requesting.set_input(0, input.clone(), false);
         panels.push(requesting);
         for result in [
-            Ok(yw_app::explain::Explanation {
+            Ok(yw_engine::explain::Explanation {
                 summary: "설명".to_owned(),
                 actions: Vec::new(),
                 unknowns: Vec::new(),
@@ -566,7 +566,10 @@ mod llm {
 
     // ----- E3, E4, E5, E9, E11 over WinHTTP ------------------------------------------------
 
-    fn run(mock: &Mock, key: Option<&str>) -> Result<yw_app::explain::Explanation, ExplainError> {
+    fn run(
+        mock: &Mock,
+        key: Option<&str>,
+    ) -> Result<yw_engine::explain::Explanation, ExplainError> {
         let cfg = config(mock, key);
         let transport = WinHttpTransport::new(cfg.endpoint()).unwrap();
         explain_once(&transport, &cfg, &native_input()).0

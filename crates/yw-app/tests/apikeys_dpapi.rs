@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 
 use yw_app::app::{Paths, load_apikeys};
 use yw_app::app_store::{APIKEYS_ENTROPY, WinAppStore};
-use yw_app::settings::Settings;
 use yw_core::vault::FileKind;
 use yw_engine::app_store::{AppStore, SealedRead, load_sealed_keys};
+use yw_engine::settings::Settings;
 
 /// The DPAPI optional entropy every `apikeys.dpapi` was sealed with (spec/04 §6.3: ASCII
 /// `your-wallet/v3/apikeys`, 22 bytes). Written out here, never taken from the app.
@@ -131,7 +131,7 @@ fn the_windows_app_store_keeps_the_file_and_seal() {
     assert!(!unreadable);
     assert_eq!(
         keys.encode().as_slice(),
-        yw_app::apikeys::ApiKeys::default().encode().as_slice()
+        yw_engine::apikeys::ApiKeys::default().encode().as_slice()
     );
 
     let entries = vec![("tpl:alchemy".to_owned(), KEY.to_owned())];
