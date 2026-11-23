@@ -34,6 +34,14 @@
 //! before W3, `take_cred` compared the units with the edit itself). The test fails unless
 //! `form_mismatch` and the credential misses stay 0; it prints the fields it saw shown and typed.
 //!
+//! 2026-11-24 (spec/15 §11.3, §11.4 S5-6): the form state is the engine's — no read-back from the
+//! edits feeds it any more (`Cmd::Form` at a press and after a render, `Cmd::FieldShown` after a
+//! field write are gone); the engine works out what the edits show from `EN_CHANGE`, its own field
+//! writes and the models it drew (`form::FormSync`, the Windows keep rule of `ControlSet::sync`).
+//! So the comparisons above are what check that rule against the real window (an edit created
+//! again by a render, the focused edit kept across one, a programmatic write). It also sums and
+//! prints the lowering's `press_mismatch` (S5 plan C18) and fails unless it is 0.
+//!
 //! The main-window mirror (2026-11-21, S4 W3 review, critique B-10): on one more app, the
 //! wallet's `main_hidden()` and a due balance tick with the real main window shown, minimized,
 //! shown, hidden and shown again (`main_hidden_follows_the_window`).
@@ -78,6 +86,10 @@ struct Tally {
     /// Sum over all apps of `form_mismatch` and the credential misses.
     form_mismatch: u32,
     cred_misses: u32,
+    /// Sum over all apps of `press_mismatch` (2026-11-24, spec/15 §11.4 S5-6, S5 plan C18: the
+    /// screen model's lowering drew a press at a control id that maps back to another press, or a
+    /// credential edit with text; the census asserts it 0 since S5-4, this test since S5-6).
+    press_mismatch: u32,
     /// Steps skipped because their edit or button was not shown.
     skipped: usize,
     /// Enter steps run through the shell (`IDOK`), and the edits where Enter pressed a control
@@ -165,6 +177,9 @@ fn close(app: Rc<RefCell<App>>, rx: Receiver<RpcJob>, census: &Census, tally: &m
             .form_mismatch
             .saturating_add(state.form_mismatch.get());
         tally.cred_misses = tally.cred_misses.saturating_add(state.cred_misses());
+        tally.press_mismatch = tally
+            .press_mismatch
+            .saturating_add(state.press_mismatch.get());
     }
     drop(app);
     drop(rx);
@@ -587,6 +602,7 @@ fn form_state_equals_the_window() {
         tally.cred_misses,
         tally.differences.len()
     );
+    println!("tour_forms: press_mismatch = {}", tally.press_mismatch);
     println!(
         "tour_forms: Enter through IDOK: {} steps, {} edits where it pressed a control",
         tally.enters,
@@ -613,4 +629,5 @@ fn form_state_equals_the_window() {
         );
     }
     assert_eq!((tally.form_mismatch, tally.cred_misses), (0, 0));
+    assert_eq!(tally.press_mismatch, 0);
 }

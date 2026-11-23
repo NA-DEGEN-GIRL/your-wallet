@@ -96,8 +96,16 @@
 //! `App::dispatch` hand a `Cmd` to `Wallet::on_cmd` on the wallet (`self.wallet.on_cmd`; before,
 //! `App::on_cmd`), and every other wallet fn the shell calls is listed with its reason in the
 //! source check `the_shell_writes_wallet_state_only_through_entries`.
+//!
+//! 2026-11-24 (spec/15 §11.3, §11.4 S5-6): the form state's read-backs are gone. `Render` is
+//! answered with `Cmd::Rendered { focus }` when it laid the screen out (the plain edit that had
+//! the keyboard focus before the layout; no answer without a window, as before), and the engine
+//! works out what the edits show from the model it built; `SetField`/`ClearField` write the edit
+//! and are not answered (the engine resolved the write when the drain took it,
+//! `Wallet::next_effect`). Before, `Render` answered `Cmd::Form` (every plain edit read back)
+//! and the field writes `Cmd::FieldShown` (the written edit read back). The shell's debug shadow
+//! read `App::check_form_in_step` still compares the form state with the edits after every drain.
 
-use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Cmd;
 use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 use yw_engine::secret::SecretEffect;
@@ -353,16 +361,20 @@ impl App {
             Effect::Render => {
                 #[cfg(test)]
                 self.controls.record("refresh".to_owned());
-                self.render_main();
+                // 2026-11-24 (spec/15 §11.4 S5-6): the plain edit with the keyboard focus before
+                // the layout, which keeps what was typed into it where the layout keeps it
+                // (`ControlSet::sync`); the engine applies the same rule to the model it built.
+                let focus = self.controls.focused_id().and_then(cmd_table::field_of);
                 // S3 B5 (Windows-transitional): the layout may have created edits again (from
                 // their model text) or kept the one being typed in, so the form state is read
                 // back from the window. Headless (no window) nothing was laid out.
                 // 2026-11-21 (S4 W2, plan §3.4, D-4): answered as `Cmd::Form`, which the drain
                 // hands to the logic at once (it replaces the form state, nothing else); before,
                 // this arm replaced the form state itself, at the same point.
-                self.main
-                    .is_some()
-                    .then(|| Cmd::Form(self.controls.form_snapshot()))
+                // 2026-11-24 (S5-6): answered as `Cmd::Rendered { focus }` when the screen was
+                // laid out (no window, or no fonts: nothing drawn, no answer); the read-back
+                // `Cmd::Form` is gone.
+                self.render_main().then_some(Cmd::Rendered { focus })
             }
             Effect::StartTimer { timer, ms } => {
                 #[cfg(test)]
@@ -412,12 +424,11 @@ impl App {
                 // 2026-11-21 (S4 W2, D-4): the read-back is answered as `Cmd::FieldShown`, which
                 // the drain hands to the logic at once (it sets that one field of the form state,
                 // nothing else); before, this arm set it itself, at the same point.
-                let id = edit_id_of(field);
-                self.controls.set_text(id, &text);
-                Some(Cmd::FieldShown {
-                    field,
-                    text: self.controls.text(id, field.cap()).map(Zeroizing::new),
-                })
+                // 2026-11-24 (S5-6): no read-back and no answer: the engine resolved the write
+                // when the drain took it (the written text where the edit is drawn, else what
+                // the field showed), which the debug shadow read checks after the drain.
+                self.controls.set_text(edit_id_of(field), &text);
+                None
             }
             // A credential edit is emptied after its one read; it is never form state.
             Effect::ClearCred { field } => {
@@ -430,13 +441,11 @@ impl App {
             // there as from the edit). (2026-11-18, S3 C1–C3 review: before C4 debug builds
             // counted a `ClearField` as a form mismatch, as nothing could emit one yet.)
             // 2026-11-21 (S4 W2, D-4): answered as `Cmd::FieldShown`, as `SetField` is.
+            // 2026-11-24 (S5-6): not answered, as `SetField` (an empty drawn edit; headless the
+            // typed text goes, and the engine's field with it).
             Effect::ClearField { field } => {
-                let id = edit_id_of(field);
-                self.controls.clear_text(id);
-                Some(Cmd::FieldShown {
-                    field,
-                    text: self.controls.text(id, field.cap()).map(Zeroizing::new),
-                })
+                self.controls.clear_text(edit_id_of(field));
+                None
             }
             // S4 B5: the approval window; an open is answered (2026-11-20, S4 P10b: by the drain).
             Effect::Approval(effect) => self.apply_approval_effect(effect),

@@ -13,12 +13,9 @@ use yw_win::ui::controls::{
 };
 use yw_win::ui::{Color, DrawFlags, PaintDc, Rect, Window, scale};
 
-use crate::ui::cmd_table::edit_id_of;
 use crate::ui::theme::{self, FontRole, Fonts, wide};
 use yw_core::lang::Lang;
-use yw_core::secret::Zeroizing;
 use yw_engine::badge::{BADGE_DIP, BADGE_GAP_DIP, Badge, TITLE_BADGE_DIP};
-use yw_engine::form::{EditField, FormSnapshot};
 use yw_engine::screen::Tone;
 
 /// A banner tone's `(background, text, tag)` colors. 2026-11-22 (spec/15 §11.4 S4d E0a): the
@@ -2065,21 +2062,8 @@ impl ControlSet {
             })
     }
 
-    /// What the plain edits show now (S3 B5, Windows-transitional `Cmd::Form`): every
-    /// [`EditField`] whose edit exists, read like [`ControlSet::text`] at the field's cap.
-    /// Masked credential edits are never read here.
-    #[must_use]
-    pub fn form_snapshot(&self) -> FormSnapshot {
-        FormSnapshot(
-            EditField::ALL
-                .iter()
-                .filter_map(|&field| {
-                    self.text(edit_id_of(field), field.cap())
-                        .map(|text| (field, Zeroizing::new(text)))
-                })
-                .collect(),
-        )
-    }
+    // 2026-11-24 (spec/15 §11.4 S5-6): `form_snapshot`, what the plain edits showed (the S3 B5
+    // read-back `Cmd::Form`, Windows-transitional), is gone: the engine keeps what they show.
 
     /// Reads an edit's text into a wiping buffer (RPC tokens and URLs).
     #[must_use]
@@ -2152,6 +2136,13 @@ impl ControlSet {
         }
         #[cfg(test)]
         self.typed.borrow_mut().retain(|(known, _)| *known != id);
+    }
+
+    /// The control id of the control that has the keyboard focus (2026-11-24, spec/15 §11.4
+    /// S5-6: the shell's answer to a render names the plain edit it is, `Cmd::Rendered`).
+    #[must_use]
+    pub fn focused_id(&self) -> Option<u16> {
+        self.controls.get(self.focused()?).map(|(ctl, _)| ctl.id)
     }
 
     /// The index (placed order) of the control that has the keyboard focus.

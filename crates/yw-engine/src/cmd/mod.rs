@@ -99,7 +99,7 @@ use yw_core::secret::Zeroizing;
 use crate::approval::flow::{ApprovalInput, OpenOutcome, ShownId};
 use crate::effect::TimerId;
 use crate::explorer::ExplorerNet;
-use crate::form::{EditField, FormSnapshot, PressInput};
+use crate::form::{EditField, PressInput};
 use crate::received::RecvChain;
 
 mod book;
@@ -168,17 +168,19 @@ pub enum Cmd {
         /// Its text now.
         text: Zeroizing<String>,
     },
-    /// Windows-transitional (goes in S5): what the plain edits show now.
-    Form(FormSnapshot),
-    /// Windows-transitional (goes in S5, with `Form`): what one plain edit shows right after the
-    /// shell applied `Effect::SetField` or `Effect::ClearField` to it (`None`: no such edit); the
-    /// logic puts it into the form state (2026-11-21, S4 W2, plan §3.4, D-4: the shell writes no
-    /// wallet state; before, the effect executor wrote the form state itself, at the same point).
-    FieldShown {
-        /// The field written.
-        field: EditField,
-        /// Its text as the edit holds it now.
-        text: Option<Zeroizing<String>>,
+    // 2026-11-24 (spec/15 §11.3, §11.4 S5-6): the two Windows-transitional read-backs are gone —
+    // `Form(FormSnapshot)`, what the plain edits showed (sent at every press and after every
+    // render), and `FieldShown { field, text }`, one edit read back after `Effect::SetField` or
+    // `Effect::ClearField` (2026-11-21 S4 W2). The engine keeps what the edits show itself
+    // (`form::FormSync`): from `Edit`, the field writes it emitted and `Rendered`.
+    /// Answer to `Effect::Render` (2026-11-24, spec/15 §11.3, §11.4 S5-6): the shell drew the
+    /// screen model the wallet built last (`Wallet::screen`). `focus` is the plain edit that had
+    /// the keyboard focus before the layout (`None`: none, or another control): a drawn edit that
+    /// had it, at a place the layout keeps, keeps what was typed into it (the Windows keep rule,
+    /// `form::FormSync`). Never sent when nothing was drawn (no window: headless tests).
+    Rendered {
+        /// The plain edit that had the keyboard focus.
+        focus: Option<EditField>,
     },
     /// A one-shot timer asked for by `Effect::StartTimer` fired.
     Timer(TimerId),
@@ -299,11 +301,9 @@ impl fmt::Debug for Cmd {
                 .field("field", field)
                 .field("len", &text.len())
                 .finish(),
-            Self::Form(snapshot) => formatter.debug_tuple("Form").field(snapshot).finish(),
-            Self::FieldShown { field, text } => formatter
-                .debug_struct("FieldShown")
-                .field("field", field)
-                .field("len", &text.as_ref().map(|text| text.len()))
+            Self::Rendered { focus } => formatter
+                .debug_struct("Rendered")
+                .field("focus", focus)
                 .finish(),
             Self::Timer(timer) => formatter.debug_tuple("Timer").field(timer).finish(),
             Self::CopyDone { ok, mark } => formatter
@@ -734,26 +734,23 @@ mod tests {
         );
     }
 
-    /// 2026-11-21 (S4 W2): one field's read-back after a field write prints the field and the
-    /// length only.
+    /// 2026-11-24 (S5-6): a render's answer prints the focused field's name only (it carries no
+    /// text). 2026-11-21 (S4 W2) until S5-6 this test checked the read-back `FieldShown`, which
+    /// printed the field and the length.
     #[test]
-    fn field_shown_prints_no_text() {
-        let field = Cmd::FieldShown {
-            field: EditField::WcUri,
-            text: Some(Zeroizing::new("wc:abc@2?symKey=00".to_owned())),
-        };
-        let shown = format!("{field:?}");
-        assert!(!shown.contains("symKey"), "{shown}");
-        assert_eq!(shown, "FieldShown { field: WcUri, len: Some(18) }");
+    fn rendered_prints_the_focus_only() {
         assert_eq!(
             format!(
                 "{:?}",
-                Cmd::FieldShown {
-                    field: EditField::LlmEndpoint,
-                    text: None,
+                Cmd::Rendered {
+                    focus: Some(EditField::WcUri)
                 }
             ),
-            "FieldShown { field: LlmEndpoint, len: None }"
+            "Rendered { focus: Some(WcUri) }"
+        );
+        assert_eq!(
+            format!("{:?}", Cmd::Rendered { focus: None }),
+            "Rendered { focus: None }"
         );
     }
 
@@ -789,13 +786,6 @@ mod tests {
         let shown = format!("{edit:?}");
         assert!(!shown.contains("symKey"), "{shown}");
         assert_eq!(shown, "Edit { field: WcUri, len: 18 }");
-        let form = Cmd::Form(FormSnapshot(vec![(
-            EditField::LlmEndpoint,
-            Zeroizing::new("https://example.com/v1".to_owned()),
-        )]));
-        let shown = format!("{form:?}");
-        assert!(!shown.contains("example"), "{shown}");
-        assert_eq!(shown, "Form(FormSnapshot({LlmEndpoint: 22}))");
         assert_eq!(
             format!(
                 "{:?}",

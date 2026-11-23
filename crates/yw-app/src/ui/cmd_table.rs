@@ -1955,28 +1955,35 @@ mod tests {
         assert!(clip_link(&[0xD800, u16::from(b'w'), u16::from(b'c'), u16::from(b':')]).is_none());
     }
 
-    /// `form_snapshot` reads every plain edit that exists, at its cap, and never a credential
-    /// edit.
+    /// 2026-11-24 (spec/15 §11.4 S5-6): the shell's shadow read of a plain edit
+    /// (`App::check_form_in_step`: `ControlSet::text` at the field's cap) is the engine's cut of
+    /// what the edit holds (`EditField::clamp`), so the engine's form state, which holds that cut,
+    /// can equal it with no read-back; no plain field's edit is a credential edit. (2026-11-18 S3
+    /// B5 until S5-6 this was `form_snapshot_reads_plain_edits_only`, the read of `Cmd::Form`.)
     #[test]
-    fn form_snapshot_reads_plain_edits_only() {
+    fn the_shadow_read_is_the_engine_cut() {
         let controls = ControlSet::default();
+        // A surrogate pair split by the cap, after `cap - 1` ASCII units.
+        let typed = |field: EditField| format!("{}\u{1F600}9", "9".repeat(field.cap() - 1));
         for field in EditField::ALL {
-            controls.type_text(edit_id_of(field), &"9".repeat(field.cap() + 3));
+            controls.type_text(edit_id_of(field), &typed(field));
         }
         for field in CredField::ALL {
             controls.type_text(cred_id_of(field), "secret-value");
         }
-        let snapshot = controls.form_snapshot();
-        assert_eq!(snapshot.0.len(), 58);
-        for (field, text) in &snapshot.0 {
-            assert_eq!(text.as_str(), "9".repeat(field.cap()), "{field:?}");
+        for field in EditField::ALL {
             assert_eq!(
-                controls.text(edit_id_of(*field), field.cap()).as_deref(),
-                Some(text.as_str())
+                controls.text(edit_id_of(field), field.cap()).as_deref(),
+                Some(field.clamp(&typed(field)).as_str()),
+                "{field:?}"
+            );
+            assert!(
+                CredField::ALL
+                    .iter()
+                    .all(|cred| cred_id_of(*cred) != edit_id_of(field)),
+                "{field:?}"
             );
         }
-        assert!(!format!("{snapshot:?}").contains("secret"));
-        assert!(ControlSet::default().form_snapshot().0.is_empty());
     }
 
     /// Table test (2026-11-24, spec/15 §11.4 S5-4): two presses are the same control

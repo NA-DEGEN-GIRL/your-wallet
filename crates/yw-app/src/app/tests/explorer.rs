@@ -283,8 +283,11 @@ fn the_card_stores_overrides_only_and_resets_them() {
     assert!(app.settings.explorers.is_empty());
     // A refused template keeps the form open with the reason.
     assert!(app.on_explorer_command(change));
+    // (2026-11-24, S5-6: typed with its `EN_CHANGE`, as the window sends it; a press no longer
+    // reads the edits.)
     app.controls
         .type_text(ids::EDIT_TX, "http://explorer.example/tx/{hash}");
+    app.on_edit_notify(ids::EDIT_TX);
     assert!(app.on_explorer_command(ids::SAVE));
     assert_eq!(app.explorer_ui.editing, Some(devnet));
     assert!(
@@ -300,6 +303,7 @@ fn the_card_stores_overrides_only_and_resets_them() {
         ids::EDIT_TX,
         "https://explorer.solana.com/tx/{hash}?cluster=devnet",
     );
+    app.on_edit_notify(ids::EDIT_TX);
     assert!(app.on_explorer_command(ids::SAVE));
     assert_eq!(app.explorer_ui.editing, None);
     assert_eq!(

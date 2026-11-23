@@ -657,8 +657,11 @@ fn phrase_label_saves_from_the_label_edit_by_button_and_enter() {
     assert_eq!(app.mnemonic_label(id), "Savings");
     assert_eq!(app.mn.remove_typed, "");
     // Enter in the label edit presses `저장` (`enter_primary`).
+    // (2026-11-24, S5-6: typed with its `EN_CHANGE`, as the window sends it; a press no
+    // longer reads the edits.)
     app.on_command(mn::RENAME_BASE + 1);
     app.controls.type_text(mn::RENAME_EDIT, "Cold");
+    app.on_edit_notify(mn::RENAME_EDIT);
     let edit = ctl(&app.items(), mn::RENAME_EDIT).unwrap();
     app.enter_on(Some(&edit));
     assert_eq!(app.mn.rename, None);
@@ -3064,7 +3067,10 @@ fn walletconnect_file_press_takes_the_shell_image() {
         (quoted.as_str(), Some(refused.clone())),
     ] {
         app.wc.notice = None;
+        // (2026-11-24, S5-6: typed with its `EN_CHANGE`, as the window sends it; a press no
+        // longer reads the edits.)
         app.controls.type_text(wc::FILE_EDIT, path);
+        app.on_edit_notify(wc::FILE_EDIT);
         app.on_command(wc::FILE_QR);
         assert_eq!(app.wc.notice, notice, "{path}");
         assert_eq!(app.wc.file_text, path);
@@ -3295,8 +3301,11 @@ fn enter_presses_the_focused_button_or_the_form_primary() {
     app.enter_on(Some(&rename));
     assert!(app.rename.is_some());
     // In the name edit: `저장`.
+    // (2026-11-24, S5-6: typed with its `EN_CHANGE`, as the window sends it; a press no
+    // longer reads the edits.)
     let edit = ctl(&app.items(), ids::RENAME_EDIT).unwrap();
     app.controls.type_text(ids::RENAME_EDIT, "새 이름");
+    app.on_edit_notify(ids::RENAME_EDIT);
     app.enter_on(Some(&edit));
     assert_eq!(app.rename, None);
     assert_eq!(app.meta.as_ref().unwrap().evm_accounts[0].label, "새 이름");
@@ -3981,6 +3990,9 @@ fn links_and_folders_open_through_effects_answered_in_the_same_borrow() {
 /// (`Cmd::Form`), `EN_CHANGE` sets one (`Cmd::Edit`, cut to the field's cap) — and
 /// `Wallet::form_text` gives what `controls.text` gives; the credential units captured with a press
 /// are gone when it returns, and a masked edit never reaches the form state.
+/// 2026-11-24 (spec/15 §11.4 S5-6): a press no longer reads the edits (`Cmd::Form` is gone): text
+/// typed without its `EN_CHANGE` (which the window always sends) stays out of the form state, and
+/// the shell's debug shadow read counts the difference until the `EN_CHANGE` comes.
 #[test]
 fn form_state_follows_the_edits_and_press_input_ends_with_the_press() {
     use crate::ui::screens::ids::{QN_TOKEN_EDIT, TPL_SAVE};
@@ -3996,12 +4008,26 @@ fn form_state_follows_the_edits_and_press_input_ends_with_the_press() {
         app.form_text(EditField::LlmModel).as_deref(),
         Some(model.as_str())
     );
-    // Typed without `EN_CHANGE` (the window would have sent one): the next press reads it.
+    // Typed without `EN_CHANGE` (the window would have sent one): before S5-6 the next press
+    // read it; now nothing does, and the shadow read counts it.
     app.controls
         .type_text(ENDPOINT_EDIT, "https://llm.example.test/v1");
     assert_eq!(app.form.text(EditField::LlmEndpoint), None);
     app.controls.type_text(QN_TOKEN_EDIT, "token-shaped-0123");
     app.on_command(TPL_SAVE);
+    assert_eq!(app.form_text(EditField::LlmEndpoint), None);
+    #[cfg(debug_assertions)]
+    {
+        assert!(app.form_mismatch.get() > 0);
+        assert!(
+            app.controls
+                .take_shell_log()
+                .iter()
+                .any(|line| line == "form.mismatch LlmEndpoint")
+        );
+        app.form_mismatch.set(0);
+    }
+    app.on_edit_notify(ENDPOINT_EDIT);
     assert_eq!(
         app.form_text(EditField::LlmEndpoint).as_deref(),
         Some("https://llm.example.test/v1")
@@ -4009,7 +4035,8 @@ fn form_state_follows_the_edits_and_press_input_ends_with_the_press() {
     assert!(app.take_press_cred(CredField::QnToken).is_empty());
     #[cfg(debug_assertions)]
     {
-        // The take above had no entry outside a press: one miss, and nothing else differed.
+        // The take above had no entry outside a press: one miss, and nothing else differed
+        // once the edit's `EN_CHANGE` came.
         assert_eq!((app.form_mismatch.get(), app.cred_misses()), (0, 1));
     }
     let shown = format!("{:?}", app.form);
@@ -4024,13 +4051,15 @@ fn form_state_follows_the_edits_and_press_input_ends_with_the_press() {
 /// converted family's draft (before C2/C3 `edit_chain` cleared it to "") and is counted, so it
 /// does not pass a census silently. (S3 C4: `ClearField` has its executor arm now — it empties
 /// the edit and reads it back into the form state; before C4 debug builds counted one as a
-/// mismatch, which this test checked.)
+/// mismatch, which this test checked.) 2026-11-24 (spec/15 §11.4 S5-6): the clear is form state
+/// when emitted (an empty text, as a field write is) and is resolved when the drain takes it: no
+/// edit is drawn headless, so the field goes with the text the test typed (before, the shell read
+/// the edit back, `Cmd::FieldShown`, and the field was there only from `Cmd::Form`).
 #[test]
 #[cfg(debug_assertions)]
 fn missing_edit_notify_is_counted_and_clear_field_clears() {
     use crate::ui::screens_book::ids::ADDR_EDIT;
     use crate::ui::screens_llm::ids::MODEL_EDIT;
-    use yw_engine::cmd::Cmd;
     use yw_engine::effect::Effect;
     use yw_engine::form::EditField;
     let (mut app, dir) = unlocked_app("form-missing-edit", false);
@@ -4045,13 +4074,16 @@ fn missing_edit_notify_is_counted_and_clear_field_clears() {
         "{log:?}"
     );
     app.controls.type_text(ADDR_EDIT, "draft");
-    app.dispatch(Cmd::Form(app.controls.form_snapshot()));
+    app.on_edit_notify(ADDR_EDIT);
     assert_eq!(app.form.text(EditField::BookAddress), Some("draft"));
+    let _ = app.controls.take_shell_log();
     app.emit(Effect::ClearField {
         field: EditField::BookAddress,
     });
-    // 2026-11-20 (S4 P10b): queued until the entry drains.
-    assert_eq!(app.form.text(EditField::BookAddress), Some("draft"));
+    // 2026-11-20 (S4 P10b): queued until the entry drains. 2026-11-24 (S5-6): written first, as
+    // an empty text (before, the field kept its text until the read-back).
+    assert_eq!(app.form.text(EditField::BookAddress), Some(""));
+    assert_eq!(app.outbox().len(), 1);
     app.drain();
     assert_eq!(app.form.text(EditField::BookAddress), None);
     assert_eq!(app.controls.text(ADDR_EDIT, 512), None);
@@ -4068,7 +4100,9 @@ fn missing_edit_notify_is_counted_and_clear_field_clears() {
 /// reads what it wrote before the shell applies the write; the write itself waits in the outbox
 /// until the entry drains, and applying it reads the edit back into the form state as before
 /// (headless, the edit keeps what the test typed). Nothing is coalesced: two writes are two
-/// `set_text` lines, in order.
+/// `set_text` lines, in order. 2026-11-24 (spec/15 §11.4 S5-6): no read-back — the engine resolves
+/// each write when the drain takes it: headless no edit is drawn, so the field shows what the
+/// test typed (and notified; before, the press-time `Cmd::Form` would have read it unnotified).
 #[test]
 fn a_field_write_is_form_state_before_the_shell_applies_it() {
     use crate::ui::screens_book::ids::ADDR_EDIT;
@@ -4077,6 +4111,7 @@ fn a_field_write_is_form_state_before_the_shell_applies_it() {
     let (mut app, dir) = unlocked_app("form-write-first", false);
     let field = EditField::BookAddress;
     app.controls.type_text(ADDR_EDIT, "typed");
+    app.on_edit_notify(ADDR_EDIT);
     let _ = app.controls.take_shell_log();
     let long = "a".repeat(field.cap() + 7);
     app.emit(Effect::SetField {
@@ -4106,8 +4141,9 @@ fn a_field_write_is_form_state_before_the_shell_applies_it() {
     assert_eq!(
         app.form.text(field),
         app.controls.text(ADDR_EDIT, field.cap()).as_deref(),
-        "read back from the edit when applied"
+        "what the edit shows once applied"
     );
+    assert_eq!(app.form.text(field), Some("typed"));
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -5693,7 +5729,10 @@ fn yubikey_backup_copy_removal_and_management_key() {
         ctl(&h.app.items(), yk::CARD_NAME_CLEAR).is_none(),
         "no name yet"
     );
+    // (2026-11-24, S5-6: typed with its `EN_CHANGE`, as the window sends it; a press no
+    // longer reads the edits.)
     h.app.controls.type_text(yk::CARD_NAME_EDIT, "#8800011");
+    h.app.on_edit_notify(yk::CARD_NAME_EDIT);
     h.app.on_command(yk::CARD_NAME_SAVE);
     assert_eq!(
         h.app.info.as_deref(),
@@ -5701,6 +5740,7 @@ fn yubikey_backup_copy_removal_and_management_key() {
     );
     assert!(h.app.meta.as_ref().unwrap().hw_card_names.is_empty());
     h.app.controls.type_text(yk::CARD_NAME_EDIT, " 백업 ");
+    h.app.on_edit_notify(yk::CARD_NAME_EDIT);
     h.app.on_command(yk::CARD_NAME_SAVE);
     yk_pump(&mut h, &mut seen);
     assert_eq!(h.app.card.rename, None);
@@ -5708,6 +5748,7 @@ fn yubikey_backup_copy_removal_and_management_key() {
     assert_eq!(h.app.card_name(8_800_011), "#8800011");
     h.app.on_command(yk::RENAME_CARD_BASE);
     h.app.controls.type_text(yk::CARD_NAME_EDIT, "백업");
+    h.app.on_edit_notify(yk::CARD_NAME_EDIT);
     h.app.on_command(yk::CARD_NAME_SAVE);
     assert!(
         h.app

@@ -614,8 +614,15 @@ pub struct Wallet {
     /// The text of each plain edit (2026-11-18 S3 B5, spec/15 §11.4): kept equal to what the
     /// edits show — read again at every press (`Cmd::Form`), on every `EN_CHANGE`
     /// (`Cmd::Edit`) and after every render (Windows-transitional; engine-owned in S5).
-    /// Handlers read it through [`Wallet::form_text`].
+    /// Handlers read it through [`Wallet::form_text`]. 2026-11-24 (spec/15 §11.4 S5-6): the
+    /// engine's — what the edits show ([`crate::form::FormSync`], `form_sync`) plus the field
+    /// writes still queued (written here when emitted, owner decision O-10); no read-back.
     pub form: FormState,
+    /// What the plain edits show and the plans of the models drawn and built last (2026-11-24,
+    /// spec/15 §11.3, §11.4 S5-6): `Cmd::Edit`, the field writes as the shell takes them
+    /// ([`Wallet::next_effect`]) and `Cmd::Rendered` keep it; [`Wallet::screen`] keeps the plan of
+    /// the model it built.
+    pub(crate) form_sync: crate::form::FormSync,
     /// The credential units captured with the press being handled (S3 B5), wiped when it ends.
     /// 2026-11-23 (S4d final review, A-15): crate-private again (E1 had it `#[doc(hidden)] pub`);
     /// the press comes in with `Cmd::Press`, the tests swap it through `testkit`.
@@ -788,6 +795,7 @@ impl Wallet {
             settings_last: SettingsSection::Security,
             install_commit: None,
             form: FormState::default(),
+            form_sync: crate::form::FormSync::default(),
             input: PressInput::default(),
             evm: crate::wallet::app_evm::EvmUi::default(),
             sol: crate::wallet::app_sol::SolUi::default(),
@@ -1522,10 +1530,19 @@ impl Wallet {
         }
         // A running reset keeps its `Processing` screen until its result, which is taken from
         // any epoch: a lock meanwhile (Windows lock, sleep) never strands it on S07 or S01.
+        // 2026-11-24 (spec/15 §11.4 S5-6, S5 plan O-4): where the lock leaves the screen for S07
+        // or S01 (neither draws a plain edit), the form state goes at once (its `Zeroizing`
+        // texts are wiped now; a read later in this entry sees no field, as the screen's render
+        // would make it). Where the screen stays (a running reset, or no vault and not `NoVault`),
+        // its edits stay drawn and so does the form state.
         if !self.reset.running {
             if vault_present {
+                self.form = FormState::default();
+                self.form_sync.clear();
                 self.set_screen(Screen::Locked);
             } else if self.mode == AppMode::NoVault {
+                self.form = FormState::default();
+                self.form_sync.clear();
                 self.set_screen(Screen::FirstRun);
             }
         }
@@ -3231,17 +3248,26 @@ impl Wallet {
                 }
                 drop(used);
             }
-            Cmd::Form(snapshot) => self.form.replace(snapshot),
-            // One edit's read-back after a field write (2026-11-21, S4 W2: the executor's
-            // answer; before, the executor set the field itself).
-            Cmd::FieldShown { field, text } => self.form.set(field, text),
+            // 2026-11-24 (spec/15 §11.4 S5-6): the read-backs `Cmd::Form` (what the edits
+            // showed, at every press and after every render) and `Cmd::FieldShown` (one edit after
+            // a field write) are gone. The shell drew the model built last: what the edits show
+            // follows the Windows keep rule (`FormSync::drawn`), and the form state is that, as
+            // after `Cmd::Form` (a write queued after the render is resolved when the shell takes
+            // it, `next_effect`).
+            Cmd::Rendered { focus } => {
+                if self.form_sync.drawn(focus) {
+                    self.form = self.form_sync.shown().clone();
+                }
+            }
             // The field's own handler runs after the state has the text.
             // S3 C2: a converted family's handler takes the field and its text. S3 C11: every
             // handler is converted; a field none claims is ignored, as the legacy chain ignored
             // it. S3 D3: the handler is chosen by `match field` (`on_field_edit`).
+            // 2026-11-24 (S5-6): the text is what the edit shows now, too (`FormSync::edited`).
             Cmd::Edit { field, text } => {
                 let text = field.clamp(&text);
                 self.form.set(field, Some(text.clone()));
+                self.form_sync.edited(field, text.clone());
                 let _ = self.on_field_edit(field, &text);
             }
             // The send forms' one-shot check (`Effect::StartTimer`, S3 B4).
@@ -4823,10 +4849,20 @@ impl Wallet {
     /// decision O-10; the shell reads the edit back when it applies the write, as before).
     /// Before P10 this fn applied the effect at once. 2026-11-21 (S4 W3, plan §3.4): the
     /// wallet's (was `App::emit`, the same body); `impl App` code reaches it through `App`.
+    ///
+    /// 2026-11-24 (spec/15 §11.4 S5-6, S5 plan): a field clear (`ClearField`) is written first
+    /// too, as an empty text (before, the form state kept the field's text until the shell's
+    /// read-back after the clear, `Cmd::FieldShown`).
     pub fn emit(&mut self, effect: Effect) {
-        if let Effect::SetField { field, text } = &effect {
-            let field = *field;
-            self.form.set(field, Some(field.clamp(text)));
+        match &effect {
+            Effect::SetField { field, text } => {
+                let field = *field;
+                self.form.set(field, Some(field.clamp(text)));
+            }
+            Effect::ClearField { field } => {
+                self.form.set(*field, Some(Zeroizing::new(String::new())));
+            }
+            _ => {}
         }
         self.outbox.push_back(effect);
     }
@@ -4834,9 +4870,26 @@ impl Wallet {
     /// The oldest queued effect, taken out of the queue (2026-11-21, S4 W3, plan §3.4: the
     /// drain's one read of the outbox; Android's `next()`, spec/15 §3.2). `None` when the queue is
     /// empty.
+    ///
+    /// 2026-11-24 (spec/15 §11.4 S5-6): a field write is resolved here, as the shell takes it to
+    /// apply (`FormSync::written`): the form state's field is then what the edit shows after it —
+    /// the written text when its edit is drawn, else what it showed before (a clear: nothing).
+    /// Before, the shell read the edit back after applying the write (`Cmd::FieldShown`, the same
+    /// value at the same point of the drain: nothing reads the wallet between the two).
     #[must_use]
     pub fn next_effect(&mut self) -> Option<Effect> {
-        self.outbox.pop_front()
+        let effect = self.outbox.pop_front()?;
+        let written = match &effect {
+            Effect::SetField { field, text } => {
+                Some((*field, self.form_sync.written(*field, Some(text))))
+            }
+            Effect::ClearField { field } => Some((*field, self.form_sync.written(*field, None))),
+            _ => None,
+        };
+        if let Some((field, shown)) = written {
+            self.form.set(field, shown);
+        }
+        Some(effect)
     }
 }
 
@@ -4850,12 +4903,19 @@ impl Wallet {
     /// maps of S13 and the `WalletConnect` panel (source check
     /// `the_screen_writes_no_wallet_state`). A shell lowers the list into its own controls
     /// (Windows: yw-app `App::items`, `ui::lower`).
+    ///
+    /// 2026-11-24 (spec/15 §11.3, §11.4 S5-6): it also keeps the plan of the model it built (its
+    /// controls, and each plain edit's limit and model text; `form::FormPlan`) in the one cell
+    /// `form_sync.built`, which the shell's `Cmd::Rendered` takes when it drew that model (source
+    /// check `the_executor_writes_no_wallet_state`, `EXECUTOR_CELL_WRITES`).
     #[must_use]
     pub fn screen(
         &self,
         facts: &dyn crate::screen::facts::ScreenFacts,
     ) -> Vec<crate::screen::model::Item> {
-        crate::screen::build::Screen::new(self, facts).screen_model()
+        let items = crate::screen::build::Screen::new(self, facts).screen_model();
+        *self.form_sync.built.borrow_mut() = Some(crate::form::FormPlan::of(&items));
+        items
     }
 }
 

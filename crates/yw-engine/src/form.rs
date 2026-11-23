@@ -18,10 +18,26 @@
 //! (before, a plain `Vec`), and the `WalletConnect` panel's `이미지 파일에서 QR 읽기` carries the
 //! image file the shell read and decoded with the press ([`ImageInput`]); before, the handler
 //! opened and decoded the file itself.
+//!
+//! 2026-11-24 (spec/15 §11.3, §11.4 S5-6, S5 plan O-3/O-4): the form state is the engine's. The
+//! Windows read-backs are gone (`Cmd::Form` at every press and after every render,
+//! `Cmd::FieldShown` after a field write, and `FormSnapshot`): the engine knows what the plain
+//! edits show from what it was told and what it drew ([`FormSync`]) — `Cmd::Edit` (a user's
+//! change), the field writes it emitted (resolved when the shell takes them from the outbox:
+//! a drawn edit shows the written text, an edit that is not drawn changes nothing), and every
+//! drawn model: the plan of the model it built ([`FormPlan`], kept by `Wallet::screen`) is
+//! compared with the one drawn before by the Windows keep rule (`common_ends` and `keeps_edit`
+//! of yw-app `ui::main_window::ControlSet::sync`) when the shell answers `Effect::Render` with
+//! `Cmd::Rendered { focus }`, the plain edit that had the keyboard focus. The shell's debug
+//! shadow read (yw-app `App::check_form_in_step`) still compares the result with the edits at
+//! the end of every drain.
 
 use core::fmt;
 
 use yw_core::secret::Zeroizing;
+
+use crate::cmd::Press;
+use crate::screen::model::{Act, Ctl, CtlKind, Item};
 
 /// A plain (non-secret, non-credential) edit of the main screens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -333,19 +349,8 @@ impl CredField {
     }
 }
 
-/// What the plain edits show (Windows-transitional `Cmd::Form`).
-#[derive(Clone, Default, PartialEq, Eq)]
-pub struct FormSnapshot(pub Vec<(EditField, Zeroizing<String>)>);
-
-/// Field names and lengths only.
-impl fmt::Debug for FormSnapshot {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("FormSnapshot")
-            .field(&Lengths(&self.0))
-            .finish()
-    }
-}
+// 2026-11-24 (spec/15 §11.4 S5-6): `FormSnapshot`, what the plain edits showed (the
+// Windows-transitional `Cmd::Form`), is gone with that read-back.
 
 /// `{field: len, …}` of a field list.
 struct Lengths<'a>(&'a [(EditField, Zeroizing<String>)]);
@@ -361,18 +366,14 @@ impl fmt::Debug for Lengths<'_> {
 
 /// The text of each plain edit on screen. `None` = no such edit (as the Windows read of a
 /// missing control), so every caller's fallback keeps its meaning. S3: mirrored from the shell;
-/// S5: owned here (Android sends only `Cmd::Edit`).
-#[derive(Default)]
+/// S5: owned here (Android sends only `Cmd::Edit`). 2026-11-24 (S5-6): owned here — kept by
+/// [`FormSync`]; `replace` (the snapshot of `Cmd::Form`) is gone.
+#[derive(Clone, Default)]
 pub struct FormState {
     fields: Vec<(EditField, Zeroizing<String>)>,
 }
 
 impl FormState {
-    /// Takes a whole snapshot (the edits not in it no longer exist).
-    pub fn replace(&mut self, snapshot: FormSnapshot) {
-        self.fields = snapshot.0;
-    }
-
     /// Sets one field; `None` removes it.
     pub fn set(&mut self, field: EditField, text: Option<Zeroizing<String>>) {
         let at = self.fields.iter().position(|(known, _)| *known == field);
@@ -631,6 +632,298 @@ impl fmt::Debug for PressInput {
     }
 }
 
+// ---- What the plain edits show (2026-11-24, spec/15 §11.3, §11.4 S5-6) ------------------------
+
+/// The class of a drawn control: its kind without a button's look, as the Windows shell compares
+/// controls (`ui::main_window::kind_class`: a style change keeps the control).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Class {
+    Button,
+    Check,
+    Radio { first: bool },
+    Edit { password: bool, readonly: bool },
+}
+
+/// One drawn control's place in a [`FormPlan`]: what it does and its class. Two presses are the
+/// same control when [`Press::same_control`] says so (their Windows control id is the same).
+#[derive(Clone, Copy)]
+struct Key {
+    act: Act,
+    class: Class,
+}
+
+impl PartialEq for Key {
+    fn eq(&self, other: &Self) -> bool {
+        self.class == other.class
+            && match (self.act, other.act) {
+                (Act::Press(one), Act::Press(two)) => Press::same_control(one, two),
+                (Act::Field(one), Act::Field(two)) => one == two,
+                (Act::Cred(one), Act::Cred(two)) => one == two,
+                _ => false,
+            }
+    }
+}
+
+/// A drawn plain edit: its field, whether it is masked, its length limit and the text the model
+/// gave it (`Zeroizing`: the `WalletConnect` link and RPC URLs pass through plain edits).
+struct PlanEdit {
+    field: EditField,
+    password: bool,
+    limit: Option<u32>,
+    text: Zeroizing<String>,
+}
+
+/// One drawn control.
+struct Slot {
+    key: Key,
+    /// A plain edit's model ([`Act::Field`] of an edit kind); `None` for every other control,
+    /// credential edits included (their text is never in the model, nor here).
+    edit: Option<PlanEdit>,
+}
+
+/// The controls of one screen model in the order a shell places them (a row's controls, a copy
+/// line's value then its actions, an open drop-down's entries, the toolbar's controls, a badged
+/// item's own): for each, what it does and its class, and for a plain edit its limit and model
+/// text.
+#[derive(Default)]
+pub(crate) struct FormPlan {
+    slots: Vec<Slot>,
+}
+
+impl FormPlan {
+    /// The plan of `items`.
+    pub(crate) fn of(items: &[Item]) -> Self {
+        let mut plan = Self::default();
+        for item in items {
+            plan.item(item);
+        }
+        plan
+    }
+
+    fn item(&mut self, item: &Item) {
+        match item {
+            Item::Row(ctls)
+            | Item::LabeledRow(_, ctls)
+            | Item::Toolbar(_, ctls)
+            | Item::Menu(ctls) => {
+                for ctl in ctls {
+                    self.ctl(ctl);
+                }
+            }
+            Item::CopyLine { value, actions } => {
+                self.ctl(value);
+                for ctl in actions {
+                    self.ctl(ctl);
+                }
+            }
+            Item::Badged(_, inner) => self.item(inner),
+            _ => {}
+        }
+    }
+
+    fn ctl(&mut self, ctl: &Ctl) {
+        let class = match ctl.kind {
+            CtlKind::Button(_) => Class::Button,
+            CtlKind::Check => Class::Check,
+            CtlKind::Radio { first } => Class::Radio { first },
+            CtlKind::Edit { password, readonly } => Class::Edit { password, readonly },
+        };
+        let edit = match (ctl.act, class) {
+            (Act::Field(field), Class::Edit { password, .. }) => Some(PlanEdit {
+                field,
+                password,
+                limit: ctl.limit,
+                text: Zeroizing::new(ctl.text.clone()),
+            }),
+            _ => None,
+        };
+        self.slots.push(Slot {
+            key: Key {
+                act: ctl.act,
+                class,
+            },
+            edit,
+        });
+    }
+
+    /// The first drawn edit of `field`.
+    fn edit(&self, field: EditField) -> Option<&PlanEdit> {
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.edit.as_ref())
+            .find(|edit| edit.field == field)
+    }
+
+    fn keys(&self) -> Vec<Key> {
+        self.slots.iter().map(|slot| slot.key).collect()
+    }
+}
+
+/// The control count and the plain edits' fields and model text lengths only.
+impl fmt::Debug for FormPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FormPlan")
+            .field("controls", &self.slots.len())
+            .field(
+                "edits",
+                &self
+                    .slots
+                    .iter()
+                    .filter_map(|slot| slot.edit.as_ref())
+                    .map(|edit| (edit.field, edit.text.len()))
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+/// How many leading and how many trailing entries `old` and `new` have in common, as
+/// `(prefix, suffix)`, never overlapping: the Windows `ui::main_window::common_ends`, which
+/// decides which controls a changed list keeps.
+fn common_ends<T: PartialEq>(old: &[T], new: &[T]) -> (usize, usize) {
+    let prefix = old
+        .iter()
+        .zip(new)
+        .take_while(|(was, is)| was == is)
+        .count();
+    let room = old.len().min(new.len()).saturating_sub(prefix);
+    let suffix = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take(room)
+        .take_while(|(was, is)| was == is)
+        .count();
+    (prefix, suffix)
+}
+
+/// What the plain edits show, kept by the engine (2026-11-24, spec/15 §11.3, §11.4 S5-6; S5 plan
+/// O-3). The wallet's form state (`Wallet::form`) is this plus the field writes still queued;
+/// with the outbox empty the two are equal.
+///
+/// - A user's change (`Cmd::Edit`) shows at once ([`FormSync::edited`]).
+/// - A field write is resolved when the shell takes it from the outbox ([`FormSync::written`]):
+///   a drawn edit then shows the written text (`SetField`, cut to the field's cap as the edit
+///   reads it) or nothing (`ClearField`); a write to an edit that is not drawn changes nothing,
+///   but a clear removes the field (a headless test's typed text goes with it, as before).
+/// - A drawn model ([`FormSync::drawn`]): `Wallet::screen` keeps the plan of the model it built
+///   (`built`), and the shell's answer `Cmd::Rendered { focus }` (the plain edit that had the
+///   keyboard focus before the layout) compares it with the plan drawn before, as the Windows
+///   `ControlSet::sync` does: the same controls in the same order keep every edit as it is; a
+///   changed list keeps the controls at its common ends ([`common_ends`]) and replaces the
+///   middle; a plain edit at a kept place keeps what it shows only when it had the focus, its
+///   limit is the same and the model gives it the text it gave before (`keeps_edit`); every
+///   other drawn edit shows its model text (cut to the field's cap); a field no edit draws is
+///   gone. A shell without a window (headless tests) answers no render, so nothing drawn changes
+///   there.
+/// - The lock clears it where the lock's screen drops the edits ([`FormSync::clear`], O-4).
+#[derive(Default)]
+pub(crate) struct FormSync {
+    /// What the plain edits show.
+    shown: FormState,
+    /// The plan of the model drawn last.
+    drawn: FormPlan,
+    /// The plan of the model built last (`Wallet::screen`, a `&self` read, keeps it here),
+    /// taken when the shell answers that it drew it.
+    pub(crate) built: core::cell::RefCell<Option<FormPlan>>,
+}
+
+impl FormSync {
+    /// What the plain edits show.
+    pub(crate) const fn shown(&self) -> &FormState {
+        &self.shown
+    }
+
+    /// A user's change of `field` (`Cmd::Edit`, already cut to the cap).
+    pub(crate) fn edited(&mut self, field: EditField, text: Zeroizing<String>) {
+        self.shown.set(field, Some(text));
+    }
+
+    /// A field write taken from the outbox: `Some(text)` for `SetField`, `None` for
+    /// `ClearField`. Returns what the field shows now.
+    pub(crate) fn written(
+        &mut self,
+        field: EditField,
+        text: Option<&str>,
+    ) -> Option<Zeroizing<String>> {
+        if self.drawn.edit(field).is_some() {
+            let text = text.map_or_else(|| Zeroizing::new(String::new()), |text| field.clamp(text));
+            self.shown.set(field, Some(text));
+        } else if text.is_none() {
+            self.shown.set(field, None);
+        }
+        self.shown
+            .text(field)
+            .map(|text| Zeroizing::new(text.to_owned()))
+    }
+
+    /// The shell drew the model built last; `focus` is the plain edit that had the keyboard focus
+    /// before. `false` when no model was built since the last draw (nothing changes).
+    pub(crate) fn drawn(&mut self, focus: Option<EditField>) -> bool {
+        let Some(new) = self.built.get_mut().take() else {
+            return false;
+        };
+        let old = core::mem::replace(&mut self.drawn, new);
+        let (old_keys, new_keys) = (old.keys(), self.drawn.keys());
+        if old_keys == new_keys {
+            return true;
+        }
+        let (prefix, suffix) = common_ends(&old_keys, &new_keys);
+        let new_tail = new_keys.len().saturating_sub(suffix);
+        let old_tail = old_keys.len().saturating_sub(suffix);
+        let mut shown = FormState::default();
+        for (index, slot) in self.drawn.slots.iter().enumerate() {
+            let Some(edit) = slot.edit.as_ref() else {
+                continue;
+            };
+            if shown.text(edit.field).is_some() {
+                continue;
+            }
+            let kept_at = if index < prefix {
+                Some(index)
+            } else if index >= new_tail {
+                Some(old_tail.saturating_add(index.saturating_sub(new_tail)))
+            } else {
+                None
+            };
+            let keeps = kept_at
+                .and_then(|at| old.slots.get(at))
+                .and_then(|slot| slot.edit.as_ref())
+                .is_some_and(|before| {
+                    !before.password
+                        && focus == Some(before.field)
+                        && before.limit == edit.limit
+                        && before.text.as_str() == edit.text.as_str()
+                });
+            let text = match self.shown.text(edit.field) {
+                Some(live) if keeps => Zeroizing::new(live.to_owned()),
+                _ => edit.field.clamp(&edit.text),
+            };
+            shown.set(edit.field, Some(text));
+        }
+        self.shown = shown;
+        true
+    }
+
+    /// The lock dropped the screen with the edits (O-4): nothing is shown. The plan drawn last
+    /// stays (the next render compares with it).
+    pub(crate) fn clear(&mut self) {
+        self.shown = FormState::default();
+    }
+}
+
+/// Field names and lengths only.
+impl fmt::Debug for FormSync {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FormSync")
+            .field("shown", &self.shown)
+            .field("drawn", &self.drawn)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,14 +986,10 @@ mod tests {
         state.set(EditField::EvmSendTo, None);
         assert_eq!(state.text(EditField::EvmSendTo), None);
         state.set(EditField::HcTo, Some(Zeroizing::new("y".to_owned())));
-        state.replace(FormSnapshot(vec![(
-            EditField::SolSendTo,
-            Zeroizing::new("z".to_owned()),
-        )]));
-        assert_eq!(state.text(EditField::HcTo), None);
-        assert_eq!(state.text(EditField::SolSendTo), Some("z"));
+        state.set(EditField::SolSendTo, Some(Zeroizing::new("zz".to_owned())));
+        assert_eq!(state.text(EditField::HcTo), Some("y"));
         let shown = format!("{state:?}");
-        assert_eq!(shown, "FormState { fields: {SolSendTo: 1} }");
+        assert_eq!(shown, "FormState { fields: {HcTo: 1, SolSendTo: 2} }");
     }
 
     #[test]
@@ -794,13 +1083,246 @@ mod tests {
         }
     }
 
+    // ---- FormSync (2026-11-24, spec/15 §11.4 S5-6) ----
+
+    use crate::cmd::CorePress;
+
+    const TO: EditField = EditField::EvmSendTo;
+    const AMOUNT: EditField = EditField::EvmSendAmount;
+
+    fn edit(field: EditField, text: &str) -> Ctl {
+        Ctl::edit(field, text, 200, false, 512)
+    }
+
+    fn lock() -> Item {
+        Item::Row(vec![Ctl::button(CorePress::Lock, "잠금")])
+    }
+
+    /// `items` built, then drawn with `focus` (what `Wallet::screen` and `Cmd::Rendered` do).
+    fn draw(sync: &mut FormSync, items: &[Item], focus: Option<EditField>) -> bool {
+        *sync.built.borrow_mut() = Some(FormPlan::of(items));
+        sync.drawn(focus)
+    }
+
+    fn shown(sync: &FormSync, field: EditField) -> Option<&str> {
+        sync.shown().text(field)
+    }
+
+    fn typed(sync: &mut FormSync, field: EditField, text: &str) {
+        sync.edited(field, Zeroizing::new(text.to_owned()));
+    }
+
+    /// A first draw shows every plain edit's model text, cut to the field's cap; a field no edit
+    /// draws is not there; a credential edit never is.
+    #[test]
+    fn a_first_draw_shows_the_model_texts() {
+        let mut sync = FormSync::default();
+        assert!(!sync.drawn(None), "nothing built, nothing drawn");
+        let long = "x".repeat(EditField::CoreAutoLock.cap() + 4);
+        let items = [
+            lock(),
+            Item::Row(vec![edit(TO, "to")]),
+            Item::Badged(
+                crate::badge::Badge::evm(1, "Ethereum"),
+                Box::new(Item::Row(vec![edit(EditField::CoreAutoLock, &long)])),
+            ),
+            Item::Row(vec![Ctl::edit(
+                CredField::QnToken,
+                "secret",
+                200,
+                true,
+                256,
+            )]),
+        ];
+        assert!(draw(&mut sync, &items, None));
+        assert_eq!(shown(&sync, TO), Some("to"));
+        assert_eq!(
+            shown(&sync, EditField::CoreAutoLock),
+            Some("x".repeat(EditField::CoreAutoLock.cap()).as_str())
+        );
+        assert_eq!(shown(&sync, AMOUNT), None);
+        assert_eq!(sync.shown().fields.len(), 2, "no credential edit");
+    }
+
+    /// The same controls in the same order keep every edit as it is, whatever the model says
+    /// now (Windows: no rebuild, an edit's text is never set again).
+    #[test]
+    fn the_same_controls_keep_every_edit() {
+        let mut sync = FormSync::default();
+        draw(
+            &mut sync,
+            &[lock(), Item::Row(vec![edit(TO, "to"), edit(AMOUNT, "1")])],
+            None,
+        );
+        typed(&mut sync, TO, "typed-to");
+        typed(&mut sync, AMOUNT, "typed-1");
+        draw(
+            &mut sync,
+            &[
+                lock(),
+                Item::Row(vec![edit(TO, "other"), edit(AMOUNT, "2")]),
+            ],
+            None,
+        );
+        assert_eq!(shown(&sync, TO), Some("typed-to"));
+        assert_eq!(shown(&sync, AMOUNT), Some("typed-1"));
+    }
+
+    /// A changed list: an edit at a kept place keeps what was typed only when it had the focus,
+    /// its limit is the same and the model gives it the text it gave before (`keeps_edit`);
+    /// every other edit, and every edit in the changed middle, shows its model text; a field no
+    /// edit draws any more is gone.
+    #[test]
+    fn a_changed_list_keeps_only_the_focused_unchanged_edit() {
+        let mut sync = FormSync::default();
+        let before = [lock(), Item::Row(vec![edit(TO, "to"), edit(AMOUNT, "1")])];
+        draw(&mut sync, &before, None);
+        typed(&mut sync, TO, "typed-to");
+        typed(&mut sync, AMOUNT, "typed-1");
+        // A button opened between the lock and the edits: both edits are at kept places (the
+        // common end after the middle).
+        let opened = Item::Row(vec![Ctl::button(CorePress::OpenSettings, "설정")]);
+        draw(
+            &mut sync,
+            &[
+                lock(),
+                opened.clone(),
+                Item::Row(vec![edit(TO, "to"), edit(AMOUNT, "1")]),
+            ],
+            Some(TO),
+        );
+        assert_eq!(
+            shown(&sync, TO),
+            Some("typed-to"),
+            "focused, same model text"
+        );
+        assert_eq!(shown(&sync, AMOUNT), Some("1"), "not focused: re-created");
+        // The focused edit with another model text is re-created from it.
+        typed(&mut sync, TO, "typed-again");
+        draw(&mut sync, &before, Some(TO));
+        assert_eq!(shown(&sync, TO), Some("typed-again"), "same model text");
+        typed(&mut sync, TO, "typed-third");
+        draw(
+            &mut sync,
+            &[
+                lock(),
+                opened.clone(),
+                Item::Row(vec![edit(TO, "new"), edit(AMOUNT, "1")]),
+            ],
+            Some(TO),
+        );
+        assert_eq!(
+            shown(&sync, TO),
+            Some("new"),
+            "the model gave it another text"
+        );
+        // Another limit re-creates it too.
+        typed(&mut sync, TO, "typed-fourth");
+        draw(
+            &mut sync,
+            &[
+                lock(),
+                Item::Row(vec![
+                    Ctl::edit(TO, "new", 200, false, 64),
+                    edit(AMOUNT, "1"),
+                ]),
+            ],
+            Some(TO),
+        );
+        assert_eq!(shown(&sync, TO), Some("new"), "another limit");
+        // An edit in the changed middle shows its model text, focused or not.
+        typed(&mut sync, TO, "typed-fifth");
+        draw(
+            &mut sync,
+            &[
+                Item::Row(vec![edit(TO, "new")]),
+                opened,
+                Item::Row(vec![edit(AMOUNT, "1")]),
+            ],
+            Some(TO),
+        );
+        assert_eq!(shown(&sync, TO), Some("new"), "moved: in the middle");
+        // A field no edit draws any more is gone.
+        draw(&mut sync, &[lock()], None);
+        assert_eq!(
+            (shown(&sync, TO), shown(&sync, AMOUNT)),
+            (None, None),
+            "gone"
+        );
+    }
+
+    /// A field write resolves to what the edit shows after it: the written text (cut) or
+    /// nothing where the edit is drawn; elsewhere a write changes nothing and a clear removes the
+    /// field.
+    #[test]
+    fn a_field_write_shows_where_its_edit_is_drawn() {
+        let mut sync = FormSync::default();
+        draw(&mut sync, &[Item::Row(vec![edit(TO, "to")])], None);
+        let long = "a".repeat(TO.cap() + 3);
+        assert_eq!(
+            sync.written(TO, Some(&long)).as_deref().map(String::as_str),
+            Some(&long[..TO.cap()])
+        );
+        assert_eq!(
+            sync.written(TO, None).as_deref().map(String::as_str),
+            Some("")
+        );
+        // Not drawn: a write changes nothing (a headless test's typed text stays), a clear
+        // removes the field.
+        assert_eq!(sync.written(AMOUNT, Some("9")), None);
+        typed(&mut sync, AMOUNT, "typed");
+        assert_eq!(
+            sync.written(AMOUNT, Some("9"))
+                .as_deref()
+                .map(String::as_str),
+            Some("typed")
+        );
+        assert_eq!(sync.written(AMOUNT, None), None);
+        assert_eq!(shown(&sync, AMOUNT), None);
+    }
+
+    /// The lock's clear empties what is shown and keeps the plan drawn last; the plan and the
+    /// state print counts and lengths, never a model text, and a credential edit's text is in
+    /// neither.
+    #[test]
+    fn clear_and_debug_keep_no_text() {
+        let mut sync = FormSync::default();
+        let items = [
+            Item::Row(vec![edit(EditField::WcUri, "wc:topic@2?symKey=00")]),
+            Item::Row(vec![Ctl::edit(
+                CredField::LlmKey,
+                "key-secret",
+                200,
+                true,
+                1_024,
+            )]),
+        ];
+        *sync.built.borrow_mut() = Some(FormPlan::of(&items));
+        let built = format!("{:?}", sync.built.borrow());
+        assert_eq!(
+            built,
+            "Some(FormPlan { controls: 2, edits: [(WcUri, 20)] })"
+        );
+        assert!(sync.drawn(None));
+        let printed = format!("{sync:?}");
+        assert!(
+            !printed.contains("symKey") && !printed.contains("secret"),
+            "{printed}"
+        );
+        sync.clear();
+        assert_eq!(shown(&sync, EditField::WcUri), None);
+        // The plan stays: a write to the drawn edit still shows.
+        assert!(sync.written(EditField::WcUri, Some("x")).is_some());
+    }
+
     #[test]
     fn debug_prints_no_text() {
-        let snapshot = FormSnapshot(vec![(
+        let mut state = FormState::default();
+        state.set(
             EditField::WcUri,
-            Zeroizing::new("wc:topic@2?symKey=ab".to_owned()),
-        )]);
-        let shown = format!("{snapshot:?}");
+            Some(Zeroizing::new("wc:topic@2?symKey=ab".to_owned())),
+        );
+        let shown = format!("{state:?}");
         assert!(!shown.contains("symKey"), "{shown}");
         let input = PressInput::new(vec![(
             CredField::LlmKey,

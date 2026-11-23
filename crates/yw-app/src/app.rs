@@ -809,16 +809,18 @@ impl App {
     /// repaints the main window (nothing without a window). 2026-11-20 (S4 P4, critique B-12(b)):
     /// cutting the offset to the content height, and the second layout that cut needs, stay here
     /// in the shell's `Render` arm; the offset a screen entry restores comes from
-    /// `Effect::ScreenEntered` just before.
-    pub(crate) fn render_main(&mut self) {
+    /// `Effect::ScreenEntered` just before. 2026-11-24 (spec/15 §11.4 S5-6): returns whether the
+    /// controls were synced with the model built here (`false`: no window, or no fonts), so the
+    /// `Render` arm answers `Cmd::Rendered` only for a model that was drawn.
+    pub(crate) fn render_main(&mut self) -> bool {
         let Some(main) = self.main.as_ref() else {
-            return;
+            return false;
         };
         let dpi = main.dpi();
         let client = main.client_rect();
         let items = self.items();
         let Some(fonts) = self.fonts.for_dpi(dpi, self.settings.language) else {
-            return;
+            return false;
         };
         let measure = |text: &str, role: FontRole, width: i32| {
             main.measure_text(
@@ -865,6 +867,7 @@ impl App {
         main.set_vscroll_content(self.scroll, client.h, placed.content_height);
         self.placed = placed;
         main.invalidate();
+        true
     }
 
     fn paint_main(&mut self, window: &Window) {
@@ -2404,6 +2407,9 @@ impl App {
     /// them inside the `Enter`/`Back` press (the inner press nested in it); the steps and their
     /// order are the same.
     ///
+    /// 2026-11-24 (spec/15 §11.4 S5-6): the plain edits are no longer read first (`Cmd::Form`
+    /// is gone); the press carries only the credential edits it reads, as before.
+    ///
     /// 2026-11-20 (S4 P10b): the shell's entry for a press — `Cmd::Form` and `Cmd::Press` go in
     /// through `dispatch` (each drains), and it drains before it returns, so the Enter/Esc
     /// resolution and the caller's reads run after the press's effects and their answers, as
@@ -2428,7 +2434,8 @@ impl App {
         let closed = !matches!(id, IDOK | IDCANCEL)
             && !crate::ui::cmd_table::is_picker_button(id)
             && self.wallet.close_pickers();
-        self.dispatch(Cmd::Form(self.controls.form_snapshot()));
+        // 2026-11-24 (spec/15 §11.4 S5-6): no `Cmd::Form` first — the engine keeps what the plain
+        // edits show (`EN_CHANGE` → `Cmd::Edit`, its own field writes, `Cmd::Rendered`).
         let input = cmd_table::capture(id, &self.controls, self.main.as_ref(), &self.wc.file_text);
         if let Some(press) = cmd_table::press_of(id, &self.controls) {
             // Debug builds (2026-11-21, S4 W3, critique B-11): the shell's own read of the masked
@@ -2486,7 +2493,7 @@ impl App {
         let Some(press) = cmd_table::press_of(id, &self.controls).and_then(pick) else {
             return false;
         };
-        self.dispatch(Cmd::Form(self.controls.form_snapshot()));
+        // (2026-11-24, S5-6: no `Cmd::Form` first, as `on_command`.)
         let input = cmd_table::capture(id, &self.controls, self.main.as_ref(), &self.wc.file_text);
         // 2026-11-21 (S4 W3, critique B-11): the shell's own read of the captured edits, as
         // `on_command` keeps it, for the comparison when the drain below starts.
@@ -2559,8 +2566,10 @@ impl App {
     }
 
     /// Debug builds, the shell (2026-11-21, S4 W3, critique B-11): the wallet's form state equals
-    /// what the plain edits show (`controls.text(id, field.cap())`, the read `Cmd::Form` makes) for
-    /// every field; each difference is counted ([`Self::note_form_mismatch`]). Run at the end of
+    /// what the plain edits show (`controls.text(id, field.cap())`, the read `Cmd::Form` made
+    /// until S5-6) for every field; each difference is counted ([`Self::note_form_mismatch`]).
+    /// 2026-11-24 (spec/15 §11.4 S5-6): the shadow of the engine's own form state (no read-back
+    /// feeds it any more), so it is what checks the engine's keep rule. Run at the end of
     /// every drain, when no field write is queued. Before W3 this comparison ran in the wallet's
     /// `form_text`/`form_text_wiping`, for the field read, at each read. Not once the shutdown
     /// has begun (2026-11-21, S4 W3 review): `shutdown` clears the controls and drops the main

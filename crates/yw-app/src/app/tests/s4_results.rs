@@ -1803,11 +1803,22 @@ fn effects_are_never_posted() {
     // 2026-11-21 (S4 W3, plan §3.4): the queue is the wallet's — `emit` and `next_effect` are
     // `impl Wallet` fns, and the drain takes one effect at a time through `next_effect` (before,
     // `while let Some(effect) = self.outbox.pop_front()` on `App`'s queue).
+    // 2026-11-24 (spec/15 §11.4 S5-6): it also resolves a field write in the form state as it
+    // hands it out (`FormSync::written`), and still takes the oldest effect, hands it back
+    // unchanged and applies, drains, answers or queues nothing (before, its body was only
+    // `self.outbox.pop_front()`).
     let next = fn_bodies(wallet_src, "next_effect");
     assert_eq!(next.len(), 1, "one next_effect");
     let next_flat: String = next[0].split_whitespace().collect();
     assert!(
-        next_flat.ends_with("{self.outbox.pop_front()}"),
+        next_flat.contains("->Option<Effect>{leteffect=self.outbox.pop_front()?;")
+            && next_flat.ends_with("Some(effect)}")
+            && next_flat.matches("pop_front").count() == 1
+            && !next_flat.contains("self.apply(")
+            && !next_flat.contains(".drain()")
+            && !next_flat.contains("self.on_cmd(")
+            && !next_flat.contains("self.emit(")
+            && !next_flat.contains("push_"),
         "next_effect takes the oldest effect: {}",
         next[0]
     );
@@ -2142,6 +2153,20 @@ const SCREEN_CELL_WRITES: [(&str, &str, &str); 2] = [
          refilled by the render, read by `WcPress::Disconnect`",
     ),
 ];
+
+/// The wallet cells the executor writes, each as (fn, the cell's receiver, reason); every
+/// `borrow_mut()`/`try_borrow_mut()` in a fn the executor reaches must be listed here, and every
+/// line here must be found ([`the_executor_writes_no_wallet_state`]). 2026-11-24 (spec/15 §11.4
+/// S5-6): one again — from S5-5 until S5-6 the executor wrote no cell (before S5-5 the two
+/// drawn-row maps, now [`SCREEN_CELL_WRITES`]).
+const EXECUTOR_CELL_WRITES: [(&str, &str, &str); 1] = [(
+    "screen",
+    "self.form_sync.built",
+    "the plan of the screen model `Wallet::screen` built (its controls, each plain edit's limit \
+     and model text; `form::FormPlan`), kept for the shell's answer `Cmd::Rendered`, which tells \
+     the wallet that model was drawn: the engine keeps what the plain edits show without a \
+     read-back (spec/15 §11.3; the answer, not this cell, changes the form state)",
+)];
 
 /// The executor fns [`the_executor_writes_no_wallet_state`] must reach (critique A-20). 2026-11-21
 /// (S4 W2 review): `items` and the two fns of `EXECUTOR_CELL_WRITES`, the `&self` render
@@ -2586,7 +2611,9 @@ fn typed_app_names(text: &str) -> BTreeSet<String> {
 /// 2026-11-24 (S5-5 review): since S5-5 the descent ends at `Wallet::screen` (its body calls the
 /// engine's builders, no `self.` fn), so the render helpers are no longer reached here; they are
 /// followed from the builders and scanned the same way by [`the_screen_writes_no_wallet_state`]
-/// ([`screen_scan`]).
+/// ([`screen_scan`]). 2026-11-24 (spec/15 §11.4 S5-6): `Wallet::screen` keeps the plan of the
+/// model it built in one cell, listed in [`EXECUTOR_CELL_WRITES`] with its reason (the shell's
+/// answer `Cmd::Rendered`, not the cell, changes the form state); before S5-6 no cell here.
 #[test]
 fn the_executor_writes_no_wallet_state() {
     let files: Vec<Src> = production_code()
@@ -2646,7 +2673,9 @@ fn the_executor_writes_no_wallet_state() {
         for (file, body, takes_mut) in bodies.into_iter().flatten() {
             // 2026-11-24 (S5-5): no cell write is the executor's any more (the render builders
             // that refilled the two drawn-row maps are the engine's, `SCREEN_CELL_WRITES`).
-            let (findings, listed) = executor_findings(&name, body, *takes_mut, &fields, &[]);
+            // 2026-11-24 (S5-6): but the plan `Wallet::screen` keeps, `EXECUTOR_CELL_WRITES`.
+            let (findings, listed) =
+                executor_findings(&name, body, *takes_mut, &fields, &EXECUTOR_CELL_WRITES);
             assert!(
                 findings.is_empty(),
                 "{file}: the executor's fn {name} changes wallet state: {findings:?}"
@@ -2671,7 +2700,11 @@ fn the_executor_writes_no_wallet_state() {
             }
         }
     }
-    assert_eq!(cells, 0, "the executor writes no wallet cell");
+    assert_eq!(
+        cells,
+        EXECUTOR_CELL_WRITES.len(),
+        "the executor writes only the listed wallet cells, each found once"
+    );
     for composition in [
         "open_display_composed",
         "open_display_window",

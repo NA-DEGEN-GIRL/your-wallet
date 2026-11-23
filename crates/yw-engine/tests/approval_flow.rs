@@ -175,18 +175,19 @@ fn the_model_answers_every_effect_kind() {
     };
     let answers = [
         (Effect::Render, None),
+        // 2026-11-24 (S5-6): a field write has no answer (before, `FieldShown`).
         (
             Effect::SetField {
                 field: EditField::BookLabel,
                 text: "label".to_owned(),
             },
-            Some("field-shown:BookLabel"),
+            None,
         ),
         (
             Effect::ClearField {
                 field: EditField::BookLabel,
             },
-            Some("field-shown:BookLabel"),
+            None,
         ),
         (
             Effect::CopyText {
@@ -219,17 +220,22 @@ fn the_model_answers_every_effect_kind() {
             expected
         );
     }
-    // A field write's answer shows what was written, cut to the field's cap.
-    let Some(Cmd::FieldShown { text, .. }) = shell.apply(
-        &mut wallet,
-        Effect::SetField {
+    // 2026-11-24 (S5-6): a field write is the form state when emitted (O-10) and is resolved
+    // when the shell takes it from the outbox: no edit is drawn here, so the field is what it was
+    // (before, the model answered `FieldShown` with the written text).
+    wallet.emit(Effect::SetField {
+        field: EditField::BookLabel,
+        text: "label".to_owned(),
+    });
+    assert_eq!(wallet.form.text(EditField::BookLabel), Some("label"));
+    assert!(matches!(
+        wallet.next_effect(),
+        Some(Effect::SetField {
             field: EditField::BookLabel,
-            text: "label".to_owned(),
-        },
-    ) else {
-        unreachable!("a field write is answered");
-    };
-    assert_eq!(text.as_deref().map(String::as_str), Some("label"));
+            ..
+        })
+    ));
+    assert_eq!(wallet.form.text(EditField::BookLabel), None);
     // An approval open for a window that is not the shown flow's makes nothing.
     let stale = shell.apply(
         &mut wallet,

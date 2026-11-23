@@ -1564,8 +1564,10 @@ impl RecordingShell {
 
     /// The shell model: applies `effect` the way the Windows shell's executor answers it in the
     /// yw-app headless tests, without a window, and returns the answer. A screen, a timer, a
-    /// field, a scroll, a hold or a lock wait has no window here (no answer, `FieldShown` for a
-    /// field write: the edit shows what was written); a copy and a link succeed; an extension
+    /// field, a scroll, a hold or a lock wait has no window here (no answer; 2026-11-24, S5-6: a
+    /// field write's neither — the wallet resolves it as it hands it out, `Wallet::next_effect`,
+    /// and no edit is drawn here; before, `FieldShown` with the written text); a copy and a link
+    /// succeed; an extension
     /// folder is not found; an approval open makes its window while it is the shown flow's (as
     /// the headless approval host, `Shown { capture_excluded: false }`, wide), else
     /// `Failed(E-APP-009)`; a secret window is made and its capture exclusion verified while its
@@ -1576,11 +1578,6 @@ impl RecordingShell {
     pub fn apply(&mut self, wallet: &mut Wallet, effect: Effect) -> Option<Cmd> {
         self.log.push(effect_name(&effect));
         match effect {
-            Effect::SetField { field, text } => Some(Cmd::FieldShown {
-                field,
-                text: Some(field.clamp(&text)),
-            }),
-            Effect::ClearField { field } => Some(Cmd::FieldShown { field, text: None }),
             Effect::CopyText { mark, .. } => Some(Cmd::CopyDone { ok: true, mark }),
             Effect::OpenUrl { which, .. } => Some(Cmd::Opened { ok: true, which }),
             Effect::OpenFolder(Folder::Extension) => Some(Cmd::FolderMissing),
@@ -1628,10 +1625,13 @@ impl RecordingShell {
                 serial,
                 outcome: wallet.open_display_window(self, serial, kind, step, timeout_note, lang),
             }),
-            // No answer: a screen, a credential edit, a timer, the main window's own work, a
-            // scroll, a hold, the lock's wait, the data and log folders, the other approval and
-            // secret operations (close, rebuild, repaint, form, clip clear).
+            // No answer: a screen, a field write (2026-11-24, S5-6), a credential edit, a timer,
+            // the main window's own work, a scroll, a hold, the lock's wait, the data and log
+            // folders, the other approval and secret operations (close, rebuild, repaint, form,
+            // clip clear).
             Effect::Render
+            | Effect::SetField { .. }
+            | Effect::ClearField { .. }
             | Effect::ClearCred { .. }
             | Effect::StartTimer { .. }
             | Effect::StopTimer { .. }
@@ -1729,7 +1729,6 @@ pub fn answer_name(answer: &Cmd) -> String {
     match answer {
         Cmd::ApprovalOpened { shown, outcome, .. } => format!("opened#{}:{outcome:?}", shown.0),
         Cmd::SecretOpened { serial, outcome } => format!("secret-opened#{serial}:{outcome:?}"),
-        Cmd::FieldShown { field, .. } => format!("field-shown:{field:?}"),
         Cmd::CopyDone { ok, .. } => format!("copy-done:{ok}"),
         Cmd::Opened { ok, .. } => format!("url-opened:{ok}"),
         Cmd::FolderMissing => "folder-missing".to_owned(),
