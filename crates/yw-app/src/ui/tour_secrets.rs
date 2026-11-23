@@ -316,7 +316,7 @@ impl Env {
     /// A key worker outcome of the current lock epoch, as the event drain delivers it.
     fn deliver(&self, outcome: KeyOutcome) {
         let mut app = self.fx.app();
-        let epoch = app.lock_epoch;
+        let epoch = app.lock_epoch();
         app.on_key_result(KeyResult { epoch, outcome });
     }
 

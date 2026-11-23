@@ -3,76 +3,14 @@
 //! Win32 shell (`app`, `ui::main_window`, `ui::secret`) runs in the binary.
 #![forbid(unsafe_code)]
 
-// 2026-11-17 (spec/15 §11.4 S2, spec/01 §2.3b): these modules moved to yw-engine, and the
-// re-exports kept their `crate::…` paths (transitional facade: `errors, logging, network, text,
-// wallet_files, yubikey`; in S2 E2 `apikeys, btc, explain, explorer, flow, hypercore, meta,
-// received, rpc, settings, sol, token_view, zec`; in S2 E3 `events, walletconnect, workers`).
-// 2026-11-23 (S4d E3a/E3b, preflight §2 E3b and critic C16; spec/15 §11.4 S4): yw-app `src` and
-// `tests/` name `yw_engine::…` directly and the facade is gone, but for the entries that the
-// bodies of the tests frozen at F-A name (`app/tests/s4_flow/frozen-tests.txt`, never changed):
-// the A-4 tests of `app/tests/chain_sites.rs` (`crate::{errors, events, flow, network, sol,
-// workers, yubikey}`) and `tests/btc_app_flow.rs` (`yw_app::{btc, errors, events, meta,
-// workers}`). They go in the first commit after the S4 freeze ends; no other code names them
-// (source check `the_kept_facade_is_named_only_by_frozen_tests`).
-#[doc(hidden)]
-pub use yw_engine::{btc, errors, events, meta, workers};
-#[cfg(test)]
-pub(crate) use yw_engine::{flow, network, sol, yubikey};
-
-// 2026-11-23 (spec/15 §11.4 S4d E1, preflight O-1 and critic C2; 주인 상시 결정(2026-11-21):
-// 권고안, spec/15 §18 28): the wallet modules moved to `yw_engine::wallet`. The tests frozen at
-// F-A (`app/tests/s4_flow/frozen-tests.txt`, never changed) and the pinned helpers of the
-// chain-sites test holder name some of their items by the old yw-app paths, so these test-path
-// shims keep exactly those names; they go in the first commit after the S4 freeze ends. Types,
-// consts and texts only; no consent or secret step. `app_btc` is `#[doc(hidden)] pub` because
-// the frozen integration test `tests/btc_app_flow.rs` sees the non-test library.
-#[cfg(test)]
-mod app_browser {
-    pub(crate) use yw_engine::wallet::app_browser::{
-        BrowserUi, GrantWrite, SignWaiter, SiteRows, SiteSigner,
-    };
-}
-#[doc(hidden)]
-pub mod app_btc {
-    pub use yw_engine::wallet::app_btc::{
-        ADDRESS_MODE_BUSY, BtcAction, BtcAddSource, NOT_SENT, REMOVE_BUSY_APPROVAL,
-        REMOVE_BUSY_IN_FLIGHT,
-    };
-}
-#[cfg(test)]
-mod app_card {
-    pub(crate) use yw_engine::wallet::app_card::{
-        CardJobKind, T_CARD_SITE_GONE, T_CARD_SITE_REVOKED, T_CARD_TOUCH, approval_touches,
-        touch_text,
-    };
-}
-#[cfg(test)]
-mod app_evm {
-    pub(crate) use yw_engine::wallet::app_evm::QueuedItem;
-}
-#[cfg(test)]
-mod app_sol_dapp {
-    use yw_core::approval::Approved;
-    use yw_engine::events::SignTicket;
-    use yw_engine::wallet::app_card::PinBuffer;
-    pub(crate) use yw_engine::wallet::app_sol_dapp::SolBroadcast;
-
-    /// The frozen lock test's waiting send (critic C2 ii): the engine's `PendingDappSign` keeps
-    /// its approval and PIN private, so the test builds this and the wallet's map converts it
-    /// through `yw_engine::testkit::pending_dapp_sign`.
-    pub(crate) struct PendingDappSign {
-        pub(crate) ticket: SignTicket,
-        pub(crate) approved: Box<Approved>,
-        pub(crate) pin: Option<PinBuffer>,
-        pub(crate) origin: String,
-    }
-
-    impl From<PendingDappSign> for yw_engine::wallet::app_sol_dapp::PendingDappSign {
-        fn from(test: PendingDappSign) -> Self {
-            yw_engine::testkit::pending_dapp_sign(test.ticket, test.approved, test.pin, test.origin)
-        }
-    }
-}
+// 2026-11-17 (spec/15 §11.4 S2, spec/01 §2.3b): modules moved to yw-engine were re-exported here
+// under their `crate::…` paths (a transitional facade). 2026-11-23 (S4d E3a/E3b): yw-app `src` and
+// `tests/` name `yw_engine::…` directly; the facade stayed only for the entries the bodies of the
+// tests frozen at F-A named (`btc, errors, events, meta, workers` `#[doc(hidden)] pub`, `flow,
+// network, sol, yubikey` `#[cfg(test)]`), with the S4d E1 test-path shims of the wallet modules
+// (`app_browser`, `app_btc`, `app_card`, `app_evm`, `app_sol_dapp`). 2026-11-23 (spec/15 §11.4
+// S5-0, §18 28: "S4 얼림이 끝난 뒤 첫 커밋"): all of them are gone; the frozen bodies name
+// `yw_engine::…` (source check `the_s2_facade_and_test_shims_are_gone`).
 
 pub mod app;
 pub mod app_approval;

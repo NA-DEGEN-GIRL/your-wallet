@@ -142,7 +142,7 @@ impl CardSource for PcscSource {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::{Path, PathBuf};
 
     /// `text` without its inline `#[cfg(test)] [pub(…)] mod name { … }` modules at column 0 (each
@@ -171,20 +171,154 @@ mod tests {
         kept
     }
 
-    /// The source folders the scans read: yw-app's `src`, and yw-engine's once that crate
-    /// exists (2026-11-17 S2 review: `yubikey.rs` and the key worker move there, and the scans
-    /// must keep covering them; a folder that does not exist yet is skipped).
-    /// Every new crate that depends on yw-engine must add its `src` here, so the `MockSource`
-    /// and `testkit` scans keep covering all production code that could reach them (2026-11-17,
-    /// S2 E3 review; spec/01 §2.3b, spec/15 §11.4: today yw-app is the only such crate).
-    fn source_roots() -> Vec<PathBuf> {
+    /// The crates under `crates/` that do not and must not depend on yw-engine (2026-11-23, spec/15
+    /// §11.4 S5-0, §18 31 (다), 주인 결정(2026-11-23); S5 plan critic C4): the only ones the source
+    /// scans leave out. [`every_engine_dependent_crate_is_scanned`] checks that none of them names
+    /// yw-engine in a dependency table, so a new crate (the Android shell) is scanned the day it is
+    /// added, with no list to update.
+    pub(crate) const NO_ENGINE_CRATES: [&str; 5] =
+        ["yw-core", "yw-host", "yw-json", "yw-platform", "yw-win"];
+
+    /// The `crates/` folder (the parent of yw-app's, not `yw-app/..`, so yw-app's `src` is the
+    /// same path as `CARGO_MANIFEST_DIR/src`, which `testkit_is_named_only_by_tests` strips).
+    fn crates_dir() -> PathBuf {
         let app = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut roots = vec![app.join("src")];
-        let engine = app.join("..").join("yw-engine").join("src");
-        if engine.is_dir() {
-            roots.push(engine);
+        app.parent().unwrap_or(app).to_path_buf()
+    }
+
+    /// The crates the source scans read, by folder name and sorted: every folder of `crates/`
+    /// that holds a `Cargo.toml`, but [`NO_ENGINE_CRATES`] (2026-11-23, S5-0). Also the crate list
+    /// of `app::tests::s4_results::production_code`.
+    pub(crate) fn scanned_crates() -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(crates_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.join("Cargo.toml").is_file())
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .filter(|name| !NO_ENGINE_CRATES.contains(&name.as_str()))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The source folders the scans read: the `src` of every [`scanned_crates`] crate.
+    /// 2026-11-17 (S2 review): yw-app's and yw-engine's (`yubikey.rs` and the key worker moved
+    /// there). 2026-11-17 (S2 E3 review): every new crate that depends on yw-engine had to add its
+    /// `src` here by hand. 2026-11-23 (spec/15 §11.4 S5-0, §18 31 (다)): every crate but the
+    /// no-engine list, so a new shell crate is in the `MockSource`, PC/SC and `testkit` scans
+    /// without an edit.
+    fn source_roots() -> Vec<PathBuf> {
+        let crates = crates_dir();
+        let roots: Vec<PathBuf> = scanned_crates()
+            .iter()
+            .map(|name| crates.join(name).join("src"))
+            .filter(|src| src.is_dir())
+            .collect();
+        for name in ["yw-app", "yw-engine"] {
+            assert!(
+                roots.contains(&crates.join(name).join("src")),
+                "{name} is scanned"
+            );
         }
         roots
+    }
+
+    /// Whether `manifest` (a `Cargo.toml`) names yw-engine in a dependency table: any table whose
+    /// header holds `dependencies` (`[dependencies]`, `[dev-dependencies]`,
+    /// `[build-dependencies]`, `[target.'cfg(…)'.dependencies]`, `[dependencies.yw-engine]`, …),
+    /// by its key or by a `package = "yw-engine"` rename (2026-11-23, S5-0, critic C4). Comments
+    /// are not read.
+    fn names_engine_dependency(manifest: &str) -> bool {
+        let mut in_dependencies = false;
+        for line in manifest.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.starts_with('[') {
+                in_dependencies = line.contains("dependencies");
+                if in_dependencies && (line.contains("yw-engine") || line.contains("yw_engine")) {
+                    return true;
+                }
+                continue;
+            }
+            if in_dependencies && (line.contains("yw-engine") || line.contains("yw_engine")) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The source scans leave out only crates that cannot reach yw-engine (2026-11-23, spec/15
+    /// §11.4 S5-0, §18 31 (다); critic C4): each [`NO_ENGINE_CRATES`] crate exists under
+    /// `crates/` and names yw-engine in none of its dependency tables, and every other crate there
+    /// (yw-app and yw-engine today) is a [`source_roots`] root and in
+    /// `s4_results::production_code`. A crate that starts to depend on yw-engine fails here until
+    /// it leaves the no-engine list, and then it is scanned.
+    #[test]
+    fn every_engine_dependent_crate_is_scanned() {
+        let crates = crates_dir();
+        for name in NO_ENGINE_CRATES {
+            let manifest = std::fs::read_to_string(crates.join(name).join("Cargo.toml"));
+            assert!(manifest.is_ok(), "{name} is a crate under crates/");
+            assert!(
+                !names_engine_dependency(&manifest.unwrap()),
+                "{name} names yw-engine in a dependency table: scan it (NO_ENGINE_CRATES)"
+            );
+        }
+        let all: Vec<String> = std::fs::read_dir(&crates)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.join("Cargo.toml").is_file())
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(all.len() >= 7, "{all:?}");
+        let scanned = scanned_crates();
+        let roots = source_roots();
+        for name in &all {
+            if NO_ENGINE_CRATES.contains(&name.as_str()) {
+                continue;
+            }
+            assert!(scanned.contains(name), "{name}");
+            assert!(roots.contains(&crates.join(name).join("src")), "{name}");
+        }
+        assert_eq!(scanned, ["yw-app", "yw-engine"], "the scanned crates today");
+        let production = crate::app::tests::s4_results::production_crates();
+        assert_eq!(
+            production, scanned,
+            "s4_results::production_code reads the same crates"
+        );
+    }
+
+    /// [`names_engine_dependency`] on made-up manifests (it can fail).
+    #[test]
+    fn engine_dependency_on_made_up_manifests() {
+        let cases = [
+            ("[dependencies]\nyw-core.workspace = true\n", false),
+            ("[dependencies]\nyw-engine.workspace = true\n", true),
+            (
+                "[dev-dependencies]\nyw-engine = { path = \"../yw-engine\" }\n",
+                true,
+            ),
+            (
+                "[target.'cfg(target_os = \"android\")'.dependencies]\nyw-engine.workspace = true\n",
+                true,
+            ),
+            (
+                "[dependencies]\nengine = { package = \"yw-engine\", path = \"x\" }\n",
+                true,
+            ),
+            ("[dependencies.yw-engine]\npath = \"../yw-engine\"\n", true),
+            (
+                "[package]\nname = \"yw-engine-docs\"\n[dependencies]\nyw-json = \"1\"\n",
+                false,
+            ),
+            (
+                "[dependencies]\n# yw-engine = \"1\" (not yet)\nyw-json = \"1\"\n",
+                false,
+            ),
+            ("[features]\nyw-engine = []\n", false),
+        ];
+        for (manifest, expected) in cases {
+            assert_eq!(names_engine_dependency(manifest), expected, "{manifest}");
+        }
     }
 
     /// Every `.rs` under `dir`, test code included.

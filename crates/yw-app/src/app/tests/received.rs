@@ -14,6 +14,7 @@ use yw_engine::received::{
     Cursor, Fetched, Found, Incoming, ReceivedEvent, ReceivedJob, RecvChain,
 };
 use yw_engine::screen::Tone;
+use yw_engine::testkit::WalletTestExt;
 use yw_engine::workers::rpc::RpcJob;
 
 fn received(rx: &Receiver<RpcJob>) -> Vec<ReceivedJob> {
@@ -45,7 +46,7 @@ fn row(key: &str, from: &str) -> Incoming {
 fn switch_off_queues_nothing_and_on_reads_the_shown_card() {
     let (mut app, dir) = unlocked_app("received", false);
     let (tx, rx) = std::sync::mpsc::channel();
-    app.rpc_tx = Some(tx);
+    app.set_rpc_tx(tx);
     let url = yw_platform::http::HttpsUrl::parse("https://rpc.example.test/key").unwrap();
     app.wallet
         .apikeys
@@ -419,7 +420,7 @@ fn zcash_unconfirmed_deposits_on_the_card() {
     use yw_core::zec::{ZecNetwork, ZecOutPoint, ZecUtxo};
     let (mut app, dir) = unlocked_app("received-zec", false);
     let (tx, rx) = std::sync::mpsc::channel();
-    app.rpc_tx = Some(tx);
+    app.set_rpc_tx(tx);
     app.meta.as_mut().unwrap().prefs.tab = yw_engine::meta::Tab::Zec;
     app.settings.zcash.enabled = true;
     app.settings.zcash.network = ZecNetwork::Testnet;

@@ -790,7 +790,7 @@ fn the_exit_press_shuts_down_through_the_shell() {
         press: Press::Core(CorePress::Exit),
         input: PressInput::default(),
     });
-    assert_eq!(app.last_press, Press::Core(CorePress::Exit));
+    assert_eq!(app.last_press(), Press::Core(CorePress::Exit));
     assert!(
         matches!(app.mode, AppMode::Unlocked { .. }),
         "the wallet's arm does not shut down"
@@ -1049,7 +1049,7 @@ fn first_setup_connects_quicknode_in_one_step() {
     };
     let (mut app, dir) = unlocked_app("first-setup", false);
     let (tx, rx) = std::sync::mpsc::channel();
-    app.rpc_tx = Some(tx);
+    app.set_rpc_tx(tx);
     app.done_imported = true;
     app.set_screen(Screen::Done);
     let items = app.items();
@@ -2720,7 +2720,7 @@ fn chip_and_account_changes_read_balances_at_the_next_tick() {
     use yw_engine::workers::rpc::RpcJob;
     let (mut app, dir) = unlocked_app("balances-due", false);
     let (tx, rx) = std::sync::mpsc::channel();
-    app.rpc_tx = Some(tx);
+    app.set_rpc_tx(tx);
     let url = yw_platform::http::HttpsUrl::parse("https://rpc.example.test/").unwrap();
     for chain in app.settings.registered_evm() {
         app.apikeys.set_rpc(NetworkId::Eip155(chain), &url);
@@ -2780,7 +2780,7 @@ fn reads_due_starts_a_due_balance_read_without_the_tick() {
     use yw_engine::workers::rpc::RpcJob;
     let (mut app, dir) = unlocked_app("reads-due", false);
     let (tx, rx) = std::sync::mpsc::channel();
-    app.rpc_tx = Some(tx);
+    app.set_rpc_tx(tx);
     let url = yw_platform::http::HttpsUrl::parse("https://rpc.example.test/").unwrap();
     for chain in app.settings.registered_evm() {
         app.apikeys.set_rpc(NetworkId::Eip155(chain), &url);
@@ -3562,7 +3562,7 @@ fn copy_is_answered_at_its_control_and_expires() {
     // The press is kept for the copy it makes (headless: no clipboard, so no mark).
     app.on_command(COPY_ADDRESS);
     let anchor = crate::ui::cmd_table::press_of(COPY_ADDRESS, &app.controls).unwrap();
-    assert_eq!((app.last_press, app.copied), (anchor, None));
+    assert_eq!((app.last_press(), app.copied), (anchor, None));
     let copied = Copied {
         anchor,
         until_ms: 1_000,
@@ -3607,7 +3607,7 @@ fn an_id_that_is_no_press_only_clears_the_copy_mark() {
     use yw_engine::wallet::app_evm::Copied;
     let (mut app, dir) = unlocked_app("no-press", false);
     app.on_command(COPY_ADDRESS);
-    let last = app.last_press;
+    let last = app.last_press();
     let before = (
         format!("{:?}", app.items()),
         format!("{:?}", app.screen),
@@ -3628,7 +3628,7 @@ fn an_id_that_is_no_press_only_clears_the_copy_mark() {
         });
         app.on_command(id);
         assert_eq!(app.copied, None);
-        assert_eq!(app.last_press, last);
+        assert_eq!(app.last_press(), last);
         let after = (
             format!("{:?}", app.items()),
             format!("{:?}", app.screen),
@@ -3711,15 +3711,18 @@ fn a_late_copy_result_marks_the_control_of_its_mark() {
     let (mut app, dir) = unlocked_app("copy-late", false);
     // Headless: the copy emits its effect (logged) and nothing answers it.
     app.on_command(COPY_ADDRESS);
-    assert_eq!(Some(app.last_press), press_of(COPY_ADDRESS, &app.controls));
+    assert_eq!(
+        Some(app.last_press()),
+        press_of(COPY_ADDRESS, &app.controls)
+    );
     assert_eq!(app.copied, None);
     let mark = CopyMark {
-        anchor: app.last_press,
+        anchor: app.last_press(),
         address: true,
         band: None,
     };
     app.on_command(REFRESH);
-    assert_eq!(Some(app.last_press), press_of(REFRESH, &app.controls));
+    assert_eq!(Some(app.last_press()), press_of(REFRESH, &app.controls));
     let failed = ErrorCode::Sec002.text_in(app.settings.language);
     app.dispatch(Cmd::CopyDone { ok: false, mark });
     assert_eq!(
@@ -3736,7 +3739,7 @@ fn a_late_copy_result_marks_the_control_of_its_mark() {
         }) if Some(anchor) == press_of(COPY_ADDRESS, &app.controls)
     ));
     assert_eq!(app.info, None);
-    assert_eq!(Some(app.last_press), press_of(REFRESH, &app.controls));
+    assert_eq!(Some(app.last_press()), press_of(REFRESH, &app.controls));
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -5026,8 +5029,10 @@ mod s4_frozen;
 pub(crate) mod s4_secret;
 
 /// S4 P9 (spec/15 §11.4 S4, 2026-11-20): source check S5 — no handler reads an effect's result
-/// after emitting it (`no_result_read_after_its_emit`).
-mod s4_results;
+/// after emitting it (`no_result_read_after_its_emit`). 2026-11-23 (S5-0): `pub(crate)` for its
+/// crate list `production_crates`, which `card_pcsc`'s `every_engine_dependent_crate_is_scanned`
+/// compares with its own.
+pub(crate) mod s4_results;
 
 /// The tests' id adapters of the families whose files move to the engine (2026-11-22, S4d E0c).
 mod adapters;
@@ -6368,7 +6373,7 @@ fn failed_meta_load_never_saves_a_default_over_the_real_meta() {
     h.app.save_meta();
     h.pump();
 
-    let epoch = h.app.lock_epoch;
+    let epoch = h.app.lock_epoch();
     h.app.on_key_result(KeyResult {
         epoch,
         outcome: KeyOutcome::Meta(Err(VaultError::Storage(StorageError::Io(112)))),
@@ -7318,12 +7323,15 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
         press: Press::Back,
         input: PressInput::default(),
     });
-    assert_eq!(app.last_press, Press::Back);
-    assert_eq!(crate::ui::cmd_table::id_of(app.last_press), super::IDCANCEL);
+    assert_eq!(app.last_press(), Press::Back);
+    assert_eq!(
+        crate::ui::cmd_table::id_of(app.last_press()),
+        super::IDCANCEL
+    );
     assert_eq!(app.screen, Screen::Confirm(Confirm::CopyOn));
     // Through the shell: the overlay's `취소`, its own press; the screen under it where it was.
     app.on_command(super::IDCANCEL);
-    assert_eq!(app.last_press, Press::Core(CorePress::ConfirmNo));
+    assert_eq!(app.last_press(), Press::Core(CorePress::ConfirmNo));
     assert_eq!(app.screen, security);
     assert_eq!((app.scroll, app.scroll_memory.under_overlay), (240, None));
     // A way back opens where the screen was left; a new screen opens at its top.
@@ -7350,11 +7358,11 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
         input: PressInput::default(),
     });
     assert_eq!(
-        (app.last_press, app.rename.is_some()),
+        (app.last_press(), app.rename.is_some()),
         (Press::Enter, false)
     );
     app.enter_on(Some(&Ctl::button(ids::RENAME, "이름 바꾸기")));
-    assert_eq!(Some(app.last_press), press_of(ids::RENAME, &app.controls));
+    assert_eq!(Some(app.last_press()), press_of(ids::RENAME, &app.controls));
     assert!(app.rename.is_some());
     // A lock forgets every remembered offset.
     app.lock(LockReason::Manual);

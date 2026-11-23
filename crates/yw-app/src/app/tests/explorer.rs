@@ -422,7 +422,7 @@ fn english_explorer_chain_and_site_texts() {
     let catalogues: [&[Entry]; 13] = [
         yw_engine::wallet::app_book::text::ALL,
         yw_engine::wallet::app_browser::text::ALL,
-        crate::app_chain_sites::text::ALL,
+        yw_engine::wallet::app_chain_sites::text::ALL,
         yw_engine::wallet::app_evm::text::ALL,
         yw_engine::wallet::app_explorer::text::ALL,
         crate::app_extension::text::ALL,

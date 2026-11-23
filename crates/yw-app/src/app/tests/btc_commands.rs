@@ -56,7 +56,7 @@ fn app(dir: &std::path::Path, settings: Settings, meta: Meta) -> (App, mpsc::Rec
         ..JournalView::default()
     });
     let (tx, rx) = mpsc::channel();
-    app.rpc_tx = Some(tx);
+    app.set_rpc_tx(tx);
     app.screen = Screen::Main;
     (app, rx)
 }

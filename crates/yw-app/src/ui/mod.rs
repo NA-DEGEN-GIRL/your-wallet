@@ -6,15 +6,9 @@
 //! (2026-11-17, spec/15 §11.4 S2: the approval queue and interaction rules, the approval texts,
 //! the text layout and the secret input buffers moved to yw-engine, and in E2 the chain badge;
 //! they were re-exported here under their old names (`approval`, `interaction`, `text_layout`,
-//! `approval_text`, `secure_field`, `badge`, `approval_view`). 2026-11-23 (S4d E3a/E3b, preflight
-//! §2 E3b and critic C16; spec/15 §11.4 S4): yw-app names them as `yw_engine::…`; only
-//! `approval` and `approval_view` stay, because the bodies of tests frozen at F-A name them
-//! (`app/tests/chain_sites.rs`, `tests/btc_app_flow.rs`); they go when the S4 freeze ends.)
-
-#[doc(hidden)]
-pub use yw_engine::approval;
-#[doc(hidden)]
-pub use yw_engine::approval::view as approval_view;
+//! `approval_text`, `secure_field`, `badge`, `approval_view`). 2026-11-23 (S4d E3a/E3b): yw-app
+//! names them as `yw_engine::…`; only `approval` and `approval_view` stayed, for the bodies of
+//! tests frozen at F-A. 2026-11-23 (spec/15 §11.4 S5-0): those two are gone with the S4 freeze.)
 
 pub mod approval_input;
 pub mod cmd_table;

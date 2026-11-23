@@ -80,15 +80,35 @@ const TEST_FILES: [&str; 8] = [
 /// The same for yw-engine's `src` (its `#[cfg(test)]` module files and `testkit`).
 const ENGINE_TEST_FILES: [&str; 3] = ["explain/tests.rs", "testkit.rs", "walletconnect/tests.rs"];
 
-/// Whether `rel` (a `/` path under a crate's `src`) is test code.
-fn is_test_file(engine: bool, rel: &str) -> bool {
-    if engine {
-        return ENGINE_TEST_FILES.contains(&rel) || rel.ends_with("_tests.rs");
+/// Whether `rel` (a `/` path under a crate's `src`) is test code. 2026-11-23 (spec/15 §11.4 S5-0,
+/// §18 31 (다)): by crate; a crate other than yw-app and yw-engine (a new shell crate, scanned
+/// since S5-0) has the test files `card_pcsc`'s scans skip: a `tests.rs`, a file under a `tests`
+/// folder or a `*_tests.rs`.
+fn is_test_file(krate: &str, rel: &str) -> bool {
+    match krate {
+        "yw-engine" => ENGINE_TEST_FILES.contains(&rel) || rel.ends_with("_tests.rs"),
+        "yw-app" => {
+            TEST_FILES.contains(&rel)
+                || rel.starts_with("app/tests/")
+                || rel.starts_with("ui/tour")
+                || rel.ends_with("_tests.rs")
+        }
+        _ => {
+            rel == "tests.rs"
+                || rel.ends_with("/tests.rs")
+                || rel.starts_with("tests/")
+                || rel.contains("/tests/")
+                || rel.ends_with("_tests.rs")
+        }
     }
-    TEST_FILES.contains(&rel)
-        || rel.starts_with("app/tests/")
-        || rel.starts_with("ui/tour")
-        || rel.ends_with("_tests.rs")
+}
+
+/// The crates [`production_code`] reads (2026-11-23, spec/15 §11.4 S5-0, §18 31 (다), critic C4):
+/// every crate under `crates/` but the no-engine list `card_pcsc::tests::NO_ENGINE_CRATES`, the
+/// same as `card_pcsc`'s `source_roots` (`every_engine_dependent_crate_is_scanned`). Today yw-app
+/// and yw-engine; before S5-0 those two by name.
+pub(crate) fn production_crates() -> Vec<String> {
+    crate::card_pcsc::tests::scanned_crates()
 }
 
 /// One scanned source: its `crate/src/path`, its code as [`code_only`] and
@@ -140,11 +160,13 @@ fn blocks_of(code: &[u8]) -> Vec<Block> {
 
 /// The production sources of yw-app and yw-engine. 2026-11-20 (P9 review, critique A-20):
 /// yw-engine's `src` too, so an emitter or reader that moves there (S4c/S4d) stays in the
-/// check.
+/// check. 2026-11-23 (spec/15 §11.4 S5-0, §18 31 (다)): of every crate of [`production_crates`],
+/// so a new shell crate's `src` is in S7 and the other source checks that read all of it.
 fn production_code() -> Vec<Src> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut found = Vec::new();
-    for krate in ["yw-app", "yw-engine"] {
+    for krate in production_crates() {
+        let krate = krate.as_str();
         let src = crates.join(krate).join("src");
         let mut stack = vec![src.clone()];
         while let Some(dir) = stack.pop() {
@@ -158,7 +180,7 @@ fn production_code() -> Vec<Src> {
                         .unwrap()
                         .to_string_lossy()
                         .replace('\\', "/");
-                    if !is_test_file(krate == "yw-engine", &rel) {
+                    if !is_test_file(krate, &rel) {
                         let text = std::fs::read_to_string(&path).unwrap();
                         found.push(Src::new(
                             format!("{krate}/src/{rel}"),
@@ -4976,7 +4998,7 @@ fn test_build_code() -> Vec<Src> {
                     .unwrap()
                     .to_string_lossy()
                     .replace('\\', "/");
-                if !is_test_file(false, &rel) {
+                if !is_test_file("yw-app", &rel) {
                     let text = std::fs::read_to_string(&path).unwrap();
                     found.push(Src::new(format!("yw-app/src/{rel}"), code_only(&text)));
                 }
@@ -5765,11 +5787,21 @@ fn approval_capability_is_engine_only() {
         leaks.is_empty(),
         "pub fns outside the wallet that return an Approved or a carrier: {leaks:?}"
     );
+    // 2026-11-23 (spec/15 §11.4 S5-0, §18 31 (다), 주인 결정(2026-11-23)): every shell crate's
+    // code, not yw-app's by name, so a new shell crate (the Android shell) is held to the same
+    // ban; `production_code` reads every crate but the no-engine list.
     let app: Vec<&Src> = files
         .iter()
-        .filter(|src| src.file.starts_with("yw-app/"))
+        .filter(|src| !src.file.starts_with("yw-engine/"))
         .collect();
-    assert!(app.len() > 50, "{} yw-app files scanned", app.len());
+    assert!(
+        app.iter()
+            .filter(|src| src.file.starts_with("yw-app/"))
+            .count()
+            > 50,
+        "{} shell files scanned",
+        app.len()
+    );
     let mut found = Vec::new();
     for src in app {
         for (at, name) in capability_names(&src.code, &steps, &barred) {
@@ -7091,7 +7123,8 @@ fn the_probe_is_installed_only_by_tests() {
     let mut installs = Vec::new();
     let mut notes = Vec::new();
     let mut scanned = 0_usize;
-    for krate in ["yw-app", "yw-engine"] {
+    // 2026-11-23 (S5-0): every crate of `production_crates` (before, yw-app and yw-engine by name).
+    for krate in production_crates() {
         let root = crates.join(krate);
         let mut stack = vec![root.join("src"), root.join("tests")];
         while let Some(dir) = stack.pop() {
@@ -7147,114 +7180,53 @@ fn the_probe_is_installed_only_by_tests() {
     );
 }
 
-/// The form of a kept facade entry's re-export (2026-11-23, S4 E3b review; critic C16): the
-/// entries a frozen integration test names are `#[doc(hidden)] pub` (that test sees the non-test
-/// library), the entries only frozen unit tests name are `#[cfg(test)] pub(crate)`.
+/// The form of a facade entry's re-export as S4d E3b kept it (2026-11-23, S4 E3b review; critic
+/// C16): `#[doc(hidden)] pub` for the entries a frozen integration test named, `#[cfg(test)]
+/// pub(crate)` for those only frozen unit tests named. Since S5-0 no entry is kept; the forms
+/// stay for the readers' made-up tests.
 const DOC_HIDDEN: &str = "#[doc(hidden)] pub";
 /// See [`DOC_HIDDEN`].
 const TEST_ONLY: &str = "#[cfg(test)] pub(crate)";
 
-/// The facade entries kept for the bodies of the tests frozen at F-A (2026-11-23, S4d E3b,
-/// preflight §2 E3b, critic C16), with the form of their re-export: `yw-app/src/lib.rs`
-/// re-exports these yw-engine modules ...
-const KEPT_LIB_FACADE: [(&str, &str); 9] = [
-    ("btc", DOC_HIDDEN),
-    ("errors", DOC_HIDDEN),
-    ("events", DOC_HIDDEN),
-    ("flow", TEST_ONLY),
-    ("meta", DOC_HIDDEN),
-    ("network", TEST_ONLY),
-    ("sol", TEST_ONLY),
-    ("workers", DOC_HIDDEN),
-    ("yubikey", TEST_ONLY),
+/// The S2 facade entries that S4d E3b kept for the bodies of the tests frozen at F-A
+/// (`yw-app/src/lib.rs`: `btc, errors, events, meta, workers` `#[doc(hidden)] pub`, `flow,
+/// network, sol, yubikey` `#[cfg(test)] pub(crate)`) and the S4d E1 test-path shim modules of
+/// `lib.rs` (`app_browser`, `app_btc`, `app_card`, `app_evm`, `app_sol_dapp`), all gone since
+/// S5-0 (2026-11-23, spec/15 §11.4 S5-0, §18 28: the first commit after the S4 freeze) ...
+const GONE_LIB_FACADE: [&str; 14] = [
+    "app_browser",
+    "app_btc",
+    "app_card",
+    "app_evm",
+    "app_sol_dapp",
+    "btc",
+    "errors",
+    "events",
+    "flow",
+    "meta",
+    "network",
+    "sol",
+    "workers",
+    "yubikey",
 ];
-/// ... and `yw-app/src/ui/mod.rs` these.
-const KEPT_UI_FACADE: [(&str, &str); 2] = [("approval", DOC_HIDDEN), ("approval_view", DOC_HIDDEN)];
+/// ... and those of `yw-app/src/ui/mod.rs` (`#[doc(hidden)] pub`).
+const GONE_UI_FACADE: [&str; 2] = ["approval", "approval_view"];
 
-/// The other `pub`/`pub(…)` re-exports of yw-engine items in yw-app `src` (2026-11-23, S4 E3b
-/// review), as `file|form use path` with the whitespace collapsed; any other is refused, so no
-/// facade entry comes back elsewhere. The S4d E1 test-path shims of the frozen tests (preflight
-/// O-1, spec/15 §18 28; they go when the S4 freeze ends): `app.rs` `TestState` and `AppMode`,
-/// `Purpose`, `Wallet`, the chain-sites test holder's glob, and the `lib.rs` modules
-/// `app_browser`, `app_btc`, `app_card`, `app_evm`, `app_sol_dapp`. And the store's own API
-/// names of the reset (2026-11-17, S2: defined in `wallet_files`, named `crate::store::…` by the
-/// store's callers; items, not a moved module).
-const OTHER_ENGINE_REEXPORTS: [&str; 10] = [
-    "src/app.rs|#[cfg(test)] pub(crate) use yw_engine::wallet::{AppMode, Purpose, Wallet}",
-    "src/app.rs|#[doc(hidden)] pub use yw_engine::wallet::TestState",
-    "src/app_chain_sites.rs|pub(crate) use yw_engine::wallet::app_chain_sites::*",
-    "src/lib.rs|pub use yw_engine::wallet::app_btc::{ ADDRESS_MODE_BUSY, BtcAction, \
-     BtcAddSource, NOT_SENT, REMOVE_BUSY_APPROVAL, REMOVE_BUSY_IN_FLIGHT, }",
-    "src/lib.rs|pub(crate) use yw_engine::wallet::app_browser::{ BrowserUi, GrantWrite, \
-     SignWaiter, SiteRows, SiteSigner, }",
-    "src/lib.rs|pub(crate) use yw_engine::wallet::app_card::{ CardJobKind, T_CARD_SITE_GONE, \
-     T_CARD_SITE_REVOKED, T_CARD_TOUCH, approval_touches, touch_text, }",
-    "src/lib.rs|pub(crate) use yw_engine::wallet::app_evm::QueuedItem",
-    "src/lib.rs|pub(crate) use yw_engine::wallet::app_sol_dapp::SolBroadcast",
+/// The `pub`/`pub(…)` re-exports of yw-engine items in yw-app `src` (2026-11-23, S4 E3b review),
+/// as `file|form use path` with the whitespace collapsed; any other is refused, so no facade
+/// entry or test-path shim comes back. The store's own API names of the reset (2026-11-17, S2:
+/// defined in `wallet_files`, named `crate::store::…` by the store's callers; items, not a moved
+/// module). 2026-11-23 (S5-0): the S4d E1 test-path shims of the frozen tests (`app.rs`
+/// `TestState` and `AppMode`, `Purpose`, `Wallet`, the chain-sites test holder's glob, the
+/// `lib.rs` modules) are gone (10 → 2).
+const OTHER_ENGINE_REEXPORTS: [&str; 2] = [
     "src/store.rs|pub use yw_engine::wallet_files::file_name",
     "src/store/reset.rs|pub use yw_engine::wallet_files::{FOLDER_PREFIX, README_NAME, \
      ResetError, ResetReport}",
 ];
 
-/// The files the tests frozen at F-A are in now where that is not their F-A file, relative to
-/// the crate (`frozen-tests.txt` keeps the F-A path and never changes): the eight A-4 tests of
-/// `app_chain_sites.rs` are in its `#[path]` child `app/tests/chain_sites.rs` since S4 W0
-/// (2026-11-21).
-const FROZEN_MOVED: [(&str, &str); 1] =
-    [("src/app_chain_sites.rs", "src/app/tests/chain_sites.rs")];
-
-/// The (file relative to the crate, fn name) of every yw-app test frozen at F-A, at its file of
-/// now (2026-11-23, S4 E3b review: a pair, not a leaf name alone, so a fn of another file with a
-/// frozen test's name, e.g. one of the `print` recorders, is no frozen test).
-fn frozen_app_tests() -> BTreeSet<(String, String)> {
-    include_str!("s4_flow/frozen-tests.txt")
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let file = parts.next()?.strip_prefix("yw-app/")?;
-            let name = parts.next()?;
-            let file = FROZEN_MOVED
-                .iter()
-                .find(|&&(then, _)| then == file)
-                .map_or(file, |&(_, now)| now);
-            Some((file.to_owned(), name.to_owned()))
-        })
-        .collect()
-}
-
-/// Whether `code` holds `name` as a whole identifier (a frozen test's file names it: in its
-/// `fn`, or in the table of a test-generating macro such as the flow goldens').
-fn names_word(code: &str, name: &str) -> bool {
-    let bytes = code.as_bytes();
-    code.match_indices(name).any(|(at, _)| {
-        let end = at + name.len();
-        (at == 0 || !is_ident(bytes[at - 1])) && bytes.get(end).is_none_or(|&b| !is_ident(b))
-    })
-}
-
-/// Every file of `frozen_app_tests` names each of its frozen tests, so a stale `FROZEN_MOVED`
-/// (a frozen test moved again) fails here instead of allowing nothing.
-fn assert_frozen_files_name_their_tests(
-    frozen: &BTreeSet<(String, String)>,
-    read: &dyn Fn(&str) -> String,
-) {
-    let files: BTreeSet<&str> = frozen.iter().map(|(file, _)| file.as_str()).collect();
-    for file in files {
-        let code = read(file);
-        let missing: Vec<&str> = frozen
-            .iter()
-            .filter(|(now, name)| now == file && !names_word(&code, name))
-            .map(|(_, name)| name.as_str())
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "frozen tests not in {file}: {missing:?}"
-        );
-    }
-}
-
-fn is_kept(list: &[(&str, &str)], name: &str) -> bool {
-    list.iter().any(|&(kept, _)| kept == name)
+fn is_gone(list: &[&str], name: &str) -> bool {
+    list.contains(&name)
 }
 
 /// The identifier that starts at `at` in `code` (empty when none does).
@@ -7291,18 +7263,18 @@ fn group_entries(code: &str, open: usize) -> Vec<usize> {
     leads
 }
 
-/// The kept facade entries a path names whose first segment (or `{ … }` group) starts at `at` of
+/// The gone facade entries a path names whose first segment (or `{ … }` group) starts at `at` of
 /// `code`: `errors::…`, `ui::approval::…`, `{errors::…, ui::{approval::…}}`, `ui::{approval::…,
 /// qr}` (2026-11-23, S4 E3b review: before, a group right after `ui::` was not read).
-fn kept_entries_at(code: &str, at: usize) -> Vec<String> {
+fn gone_entries_at(code: &str, at: usize) -> Vec<String> {
     if code[at..].starts_with('{') {
         return group_entries(code, at)
             .into_iter()
-            .flat_map(|lead| kept_entries_at(code, lead))
+            .flat_map(|lead| gone_entries_at(code, lead))
             .collect();
     }
     let first = ident_at(code, at);
-    if is_kept(&KEPT_LIB_FACADE, first) {
+    if is_gone(&GONE_LIB_FACADE, first) {
         return vec![first.to_owned()];
     }
     let after = at + first.len();
@@ -7318,12 +7290,12 @@ fn kept_entries_at(code: &str, at: usize) -> Vec<String> {
     seconds
         .into_iter()
         .map(|lead| ident_at(code, lead))
-        .filter(|second| is_kept(&KEPT_UI_FACADE, second))
+        .filter(|second| is_gone(&GONE_UI_FACADE, second))
         .map(|second| format!("ui::{second}"))
         .collect()
 }
 
-/// The offsets of every use of a kept facade entry in `code`, with the entry: a path that starts
+/// The offsets of every use of a gone facade entry in `code`, with the entry: a path that starts
 /// at one of `roots` (`crate::` and, for the binary `main.rs`, `yw_app::` in yw-app `src`;
 /// `yw_app::` in `tests/`) or at `super::` (relative paths; no yw-app module has a child of one
 /// of these names), whole or inside `{ … }` groups at any depth.
@@ -7340,35 +7312,13 @@ fn facade_uses(code: &str, roots: &[&str]) -> Vec<(usize, String)> {
                 rest += "super::".len();
             }
             found.extend(
-                kept_entries_at(code, rest)
+                gone_entries_at(code, rest)
                     .into_iter()
                     .map(|entry| (at, entry)),
             );
         }
     }
     found
-}
-
-/// The names of the fns whose bodies hold offset `at` of `code`.
-fn fns_around(code: &str, at: usize) -> Vec<&str> {
-    let bytes = code.as_bytes();
-    let mut names = Vec::new();
-    for (start, _) in code.match_indices("fn ") {
-        if start > at || (start > 0 && is_ident(bytes[start - 1])) {
-            continue;
-        }
-        let rest = &code[start + 3..];
-        let name_at = start + 3 + (rest.len() - rest.trim_start().len());
-        let name = ident_at(code, name_at);
-        let open = code[name_at..].find(['{', ';']).map(|n| name_at + n);
-        if let Some(open) = open.filter(|&open| bytes[open] == b'{' && open < at)
-            && at <= close_of(bytes, open)
-            && !name.is_empty()
-        {
-            names.push(name);
-        }
-    }
-    names
 }
 
 /// The outer attributes and the visibility of the item whose `use` keyword is at `at` of `code`,
@@ -7475,26 +7425,20 @@ fn pub_engine_uses(rel: &str, code: &str, depth0: bool) -> Vec<String> {
     found
 }
 
-/// Source check `the_kept_facade_is_named_only_by_frozen_tests` (2026-11-23, S4d E3b, preflight
-/// §2 E3b "optional source check", critic C16): the S2 facade is gone but for the entries that
-/// the bodies of the tests frozen at F-A name (`s4_flow/frozen-tests.txt`, never changed), and no
-/// other code names them. Every `crate::`/`yw_app::`/`super::` path in yw-app `src` and every
-/// `yw_app::`/`super::` path in yw-app `tests/` that starts with a kept entry (whole or in
-/// `{ … }` groups) lies in the body of a frozen test of that file, and every kept entry has such
-/// a user (an unused one goes). `lib.rs` and `ui/mod.rs` re-export exactly the kept entries from
-/// yw-engine, each in its form (`#[doc(hidden)] pub` or `#[cfg(test)] pub(crate)`), and
-/// `browser/mod.rs` nothing; yw-app `src` has no other public yw-engine re-export than
-/// `OTHER_ENGINE_REEXPORTS`. Finds what it checks (A-20). 2026-11-23 (S4 E3b review): the
-/// groups after `ui::`, the forms, the other re-exports and the (file, fn) pairs were added.
+/// Source check `the_s2_facade_and_test_shims_are_gone` (2026-11-23, spec/15 §11.4 S5-0, §18 28;
+/// was `the_kept_facade_is_named_only_by_frozen_tests`, S4d E3b and its review): the S2 facade
+/// and the S4d E1 test-path shims, which S4 kept for the bodies of the tests frozen at F-A, are
+/// gone with the S4 freeze. No `crate::`/`yw_app::`/`super::` path in yw-app `src` and no
+/// `yw_app::`/`super::` path in yw-app `tests/` starts with a gone entry (whole or in `{ … }`
+/// groups); `lib.rs` and `ui/mod.rs` re-export nothing from yw-engine and `lib.rs` declares no
+/// shim module; `browser/mod.rs` re-exports nothing; and yw-app `src` has no other public
+/// yw-engine re-export than `OTHER_ENGINE_REEXPORTS`. Before S5-0, the kept entries were allowed
+/// inside the bodies of the frozen tests only. Finds what it checks (A-20): over 100 files.
 #[test]
-fn the_kept_facade_is_named_only_by_frozen_tests() {
-    let frozen = frozen_app_tests();
-    assert!(frozen.len() > 50, "frozen yw-app tests: {}", frozen.len());
+fn the_s2_facade_and_test_shims_are_gone() {
     let app = Path::new(env!("CARGO_MANIFEST_DIR"));
     let read = |rel: &str| code_only(&std::fs::read_to_string(app.join(rel)).unwrap());
-    assert_frozen_files_name_their_tests(&frozen, &read);
     let mut scanned = 0_usize;
-    let mut used: BTreeMap<String, usize> = BTreeMap::new();
     let mut stray = Vec::new();
     let mut reexports = Vec::new();
     let src: &[&str] = &["crate::", "yw_app::"];
@@ -7518,57 +7462,33 @@ fn the_kept_facade_is_named_only_by_frozen_tests() {
             if dir == "src" {
                 reexports.extend(pub_engine_uses(&rel, &code, !facade));
             }
-            if facade {
-                continue;
-            }
             scanned += 1;
             for (at, entry) in facade_uses(&code, roots) {
-                if fns_around(&code, at)
-                    .iter()
-                    .any(|&name| frozen.contains(&(rel.clone(), name.to_owned())))
-                {
-                    *used.entry(entry).or_default() += 1;
-                } else {
-                    let line = code[..at].matches('\n').count() + 1;
-                    stray.push(format!("{rel}:{line} {entry}"));
-                }
+                let line = code[..at].matches('\n').count() + 1;
+                stray.push(format!("{rel}:{line} {entry}"));
             }
         }
     }
     assert!(scanned > 100, "scanned {scanned} files");
     assert!(
         stray.is_empty(),
-        "facade paths outside frozen test bodies: {stray:#?}"
+        "paths through the gone facade or shims: {stray:#?}"
     );
-    let kept: BTreeSet<String> = KEPT_LIB_FACADE
-        .iter()
-        .map(|&(name, _)| name.to_owned())
-        .chain(
-            KEPT_UI_FACADE
-                .iter()
-                .map(|&(name, _)| format!("ui::{name}")),
-        )
-        .collect();
-    assert_eq!(
-        used.keys().cloned().collect::<BTreeSet<_>>(),
-        kept,
-        "every kept entry has a frozen user: {used:?}"
-    );
-    let forms = |list: &[(&str, &str)]| -> Vec<(String, String)> {
-        list.iter()
-            .map(|&(name, form)| (name.to_owned(), form.to_owned()))
-            .collect()
-    };
-    assert_eq!(
-        engine_reexports(&read("src/lib.rs")),
-        forms(&KEPT_LIB_FACADE),
-        "lib.rs re-exports and their forms"
-    );
+    let lib = read("src/lib.rs");
+    assert_eq!(engine_reexports(&lib), [], "lib.rs re-exports");
     assert_eq!(
         engine_reexports(&read("src/ui/mod.rs")),
-        forms(&KEPT_UI_FACADE),
-        "ui/mod.rs re-exports and their forms"
+        [],
+        "ui/mod.rs re-exports"
     );
+    let declared: Vec<&str> = GONE_LIB_FACADE
+        .iter()
+        .copied()
+        .filter(|name| {
+            lib.contains(&format!("mod {name} ")) || lib.contains(&format!("mod {name};"))
+        })
+        .collect();
+    assert!(declared.is_empty(), "lib.rs declares {declared:?}");
     assert!(
         !read("src/browser/mod.rs").contains("use "),
         "browser/mod.rs re-exports nothing"
@@ -7581,7 +7501,7 @@ fn the_kept_facade_is_named_only_by_frozen_tests() {
     listed.sort();
     assert_eq!(
         reexports, listed,
-        "the public yw-engine re-exports of yw-app src beside the kept facade"
+        "the public yw-engine re-exports of yw-app src"
     );
 }
 
@@ -7597,9 +7517,6 @@ fn facade_uses_on_made_up_code() {
     let uses = facade_uses(code, &["crate::"]);
     let entries: Vec<&str> = uses.iter().map(|(_, entry)| entry.as_str()).collect();
     assert_eq!(entries, ["errors", "ui::approval", "network", "events"]);
-    assert!(fns_around(code, uses[0].0).is_empty());
-    assert_eq!(fns_around(code, uses[2].0), ["frozen"]);
-    assert_eq!(fns_around(code, uses[3].0), ["other"]);
     assert_eq!(
         engine_reexports(code),
         [("approval_view", ""), ("btc", ""), ("e", "")].map(|(n, f)| (n.to_owned(), f.to_owned())),
@@ -7611,6 +7528,15 @@ fn facade_uses_on_made_up_code() {
         .map(|u| u.1)
         .collect();
     assert_eq!(found, ["ui::approval_view"]);
+    // 2026-11-23 (S5-0): the test-path shim modules; `app_browser_x` and `app::Wallet` are not.
+    let shims = "use crate::app_browser::SignWaiter;\n\
+                 fn f() { crate::app_sol_dapp::SolBroadcast; yw_app::app_btc::NOT_SENT; }\n\
+                 use crate::{app_browser_x::y, app::Wallet};\n";
+    let found: Vec<String> = facade_uses(shims, &["crate::", "yw_app::"])
+        .into_iter()
+        .map(|u| u.1)
+        .collect();
+    assert_eq!(found, ["app_browser", "app_sol_dapp", "app_btc"]);
     // 2026-11-23 (S4 E3b review): groups after `ui::` and groups in groups.
     let groups = "use crate::ui::{approval::QueueOutcome, qr};\n\
                   use crate::{ui::{approval_view::Block}, store::{a, b}};\n\
@@ -7660,17 +7586,4 @@ fn facade_uses_on_made_up_code() {
         4,
         "btc/meta, flow, network, zec; not the private sol"
     );
-    // A frozen test's name alone is no frozen test: the pair names its file of now.
-    let frozen = frozen_app_tests();
-    let pair = |file: &str, name: &str| (file.to_owned(), name.to_owned());
-    assert!(frozen.contains(&pair(
-        "src/app/tests/chain_sites.rs",
-        "signatures_and_hashes_answer_only_while_the_grant_holds"
-    )));
-    assert!(frozen.contains(&pair("src/app_approval_flow_tests.rs", "print")));
-    assert!(!frozen.contains(&pair("src/app/tests/s3_census.rs", "print")));
-    assert!(!frozen.contains(&pair(
-        "src/app_chain_sites.rs",
-        "signatures_and_hashes_answer_only_while_the_grant_holds"
-    )));
 }

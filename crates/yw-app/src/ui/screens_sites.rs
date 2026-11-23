@@ -5,7 +5,7 @@
 //! Solana and Bitcoin connections (spec/05 §4.9: ownership proof only) follow the EVM grants with
 //! their own `연결 해제` rows. The combined list (up to 3 × 256 grants) is shown
 //! [`ids::SITES_PAGE_ROWS`] cards per page; each button disconnects the `(origin, family)` it was
-//! drawn for ([`crate::app_browser::SiteRows`]), never "the n-th row of the list now".
+//! drawn for ([`yw_engine::wallet::app_browser::SiteRows`]), never "the n-th row of the list now".
 //! Also the S07 T-UNLOCK-PENDING line (spec/04 §2.5, §2.16).
 
 use yw_core::lang::Lang;

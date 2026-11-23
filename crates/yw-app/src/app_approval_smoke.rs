@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use yw_engine::testkit::FlowTestExt;
+use yw_engine::testkit::{FlowTestExt, WalletTestExt};
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::evm::address::parse_address;
@@ -213,7 +213,7 @@ fn open_dry_run(name: &str) -> (Rc<RefCell<App>>, std::path::PathBuf) {
         state.mode = AppMode::Unlocked {
             alt_passphrase: false,
         };
-        state.rpc_tx = Some(tx);
+        state.set_rpc_tx(tx);
         state.evm.journal = Some(JournalView {
             records: Vec::new(),
             corrupt: 0,

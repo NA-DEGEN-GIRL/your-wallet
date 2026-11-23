@@ -134,6 +134,7 @@ pub fn yubikey_wallet(
 // made only by an `ApprovalStore`'s `consume` (yw-core).
 
 use std::collections::VecDeque;
+use std::sync::mpsc::Sender;
 
 use yw_core::approval::{
     ApprovalDraft, ApprovalError, ApprovalId, ApprovalRequest, ApprovalStore, Approved,
@@ -151,8 +152,8 @@ use crate::approval::flow::{OpenOutcome, ShownId};
 use crate::approval::interaction::{ApprovalSession, InteractionStatus, PrepareState};
 use crate::browser::{SiteRequest, VaultView, WalletView};
 use crate::cmd::{
-    BookPress, BtcPress, ExplorerPress, HiddenPress, KeysPress, LinksPress, LlmPress, ResetPress,
-    SitesPress, SolPress,
+    BookPress, BtcPress, ExplorerPress, HiddenPress, KeysPress, LinksPress, LlmPress, Press,
+    ResetPress, SitesPress, SolPress,
 };
 use crate::effect::Effect;
 use crate::errors::ErrorCode;
@@ -178,6 +179,7 @@ use crate::wallet::secret_session::{AfterShown, SecretSession};
 use crate::wallet::{Purpose, TestState, Wallet};
 use crate::wallet_files::{ResetError, ResetReport};
 use crate::workers::key::mnemonics::MnOutcome;
+use crate::workers::rpc::RpcJob;
 
 /// The wallet's crate-private steps and buffers as the yw-app tests reach them (tests only).
 pub trait WalletTestExt {
@@ -529,6 +531,16 @@ pub trait WalletTestExt {
     fn form_text(&self, field: EditField) -> Option<String>;
     /// `Wallet::set_rpc_message` (`wallet::mod`).
     fn set_rpc_message(&mut self, network: NetworkId, message: String, state: TestState);
+
+    // 2026-11-23 (spec/15 §11.4 S5-0, §18 31 (가), 주인 결정(2026-11-23)): the three wallet
+    // fields that frozen test bodies wrote or read as fields were `#[doc(hidden)] pub` from S4d E1
+    // until the S4 freeze ended; they are `pub(crate)` and the tests reach them here.
+    /// Gives the wallet the RPC worker's job queue (`Wallet::rpc_tx`).
+    fn set_rpc_tx(&mut self, tx: Sender<RpcJob>);
+    /// The lock epoch (`Wallet::lock_epoch`, read-only).
+    fn lock_epoch(&self) -> u64;
+    /// The last press (`Wallet::last_press`, read-only).
+    fn last_press(&self) -> Press;
 }
 
 impl WalletTestExt for Wallet {
@@ -1147,6 +1159,18 @@ impl WalletTestExt for Wallet {
 
     fn set_rpc_message(&mut self, network: NetworkId, message: String, state: TestState) {
         Self::set_rpc_message(self, network, message, state);
+    }
+
+    fn set_rpc_tx(&mut self, tx: Sender<RpcJob>) {
+        self.rpc_tx = Some(tx);
+    }
+
+    fn lock_epoch(&self) -> u64 {
+        self.lock_epoch
+    }
+
+    fn last_press(&self) -> Press {
+        self.last_press
     }
 }
 

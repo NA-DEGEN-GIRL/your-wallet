@@ -218,7 +218,7 @@ impl Census {
         // 2026-11-20 (S4 P10b): what the build emitted is applied here, so nothing of it is kept.
         app.drain();
         let (tx, rx) = channel();
-        app.rpc_tx = Some(tx);
+        app.set_rpc_tx(tx);
         let _ = app.controls.take_shell_log();
         let _ = key_jobs(&app);
         (app, rx)
@@ -1685,7 +1685,7 @@ fn anchored(out: &mut String, census: &Census, scenario: &Scenario) {
             scenario.name,
             index + 1,
             seen.line(),
-            crate::ui::cmd_table::id_of(app.last_press)
+            crate::ui::cmd_table::id_of(app.last_press())
         );
     }
     drop(app);
@@ -1699,7 +1699,7 @@ fn harness(census: &Census) -> (super::Harness, Receiver<RpcJob>) {
     census.guard();
     let mut app = app_at(&census.data);
     let (tx, rx) = channel();
-    app.rpc_tx = Some(tx);
+    app.set_rpc_tx(tx);
     let worker = yw_engine::workers::key::KeyWorker::new(&census.data, super::file_deps());
     app.key(yw_engine::events::KeyJob::Load);
     let mut harness = super::Harness {

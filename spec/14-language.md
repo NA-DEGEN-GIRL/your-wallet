@@ -56,6 +56,8 @@
 
 (2026-11-23, [15] §11.4 S4d E1) 지갑(`Wallet`과 처리기 묶음, 승인 흐름)이 yw-engine `wallet`으로 옮겨 가면서 그 카탈로그도 엔진 목록 `yw_engine::catalogues`로 옮겼다. 문구와 항목 이름은 그대로이고 이름만 바뀌었다: `yw_app::app_<묶음>::text` → `yw_engine::wallet::app_<묶음>::text`(`app_book`·`app_browser`·`app_btc`·`app_card`·`app_chain_sites`·`app_evm`·`app_explorer`·`app_hidden`·`app_hypercore`·`app_keys`·`app_llm`·`app_mnemonics`·`app_reset`·`app_rpc_plan`·`app_sidecar`·`app_sol`·`app_sol_commands`·`app_sol_dapp`·`app_tokens`·`app_walletconnect`·`app_yubikey`과 그 `connect`·`manage`·`app_zec`). `yw_app::app::text`는 나뉘었다: 지갑이 쓰는 47개는 `yw_engine::wallet::text`로, 셸만 쓰는 여섯 개(`T_CLIP_CLEARED_LATE`·`T_PASSWORD_OLD_COPIES`·`PASTE_CLEARED`·`PASTE_EDGE_SPACE`·`COPY_OFF`·`COPIED_SECRET`)는 `yw_app::app::text`에 남는다. 셸의 카탈로그 `yw_app::app_extension::text`·`yw_app::app_rpc_import::text`와 `yw_app::ui::…`는 그대로다. 아래 표는 그대로 `print_spec14_tables` 출력이다.
 
+(2026-11-23, [15] §11.4 S5-0, 주인 상시 결정(2026-11-21): 권고안 — S5 계획 검토 C6, O-13) 위 E1 기록과 달리 yw-app 목록의 `yw_app::app::text`는 E1부터 엔진의 `yw_engine::wallet::text::ALL`을 가리켰다. 그래서 아래 `yw_app::app::text` 표는 지갑 문구 47개를 `yw_engine::wallet::text` 표와 겹쳐 실었고, 셸만 쓰는 여섯 개(`T_CLIP_CLEARED_LATE`·`T_PASSWORD_OLD_COPIES`·`PASTE_CLEARED`·`PASTE_EDGE_SPACE`·`COPY_OFF`·`COPIED_SECRET`)는 어느 표에도 없었다. S5-0부터 yw-app 목록은 셸 자신의 블록 `crate::app::text::ALL`을 가리키고, 표는 그 여섯 개다. 문구는 그대로다. 아래 표는 그대로 `print_spec14_tables` 출력이다.
+
 <!-- 아래 표는 print_spec14_tables 출력이다. -->
 
 <!-- catalogue: yw_core::evm::risk (rules) -->
@@ -2562,53 +2564,12 @@
 
 | 이름 | 한국어 | English |
 |---|---|---|
-| T_CLIP_NOT_CLEARED | 복사한 복구 단어·개인키를 클립보드에서 지우지 못했습니다(다른 프로그램이 클립보드를 쓰고 있습니다). 아직 클립보드에 남아 있을 수 있으니 다른 텍스트를 복사해 덮어쓰세요. | The copied recovery words or private key could not be cleared from the clipboard (another program is using it). They may still be on the clipboard, so copy some other text over them. |
-| PASSWORD_CHANGED | 비밀번호를 바꾸고 지갑의 암호화 키도 새로 만들었습니다. 이제부터 더하거나 고치는 내용은 바꾸기 전에 만든 지갑 파일 사본(백업한 vault.ywv, 격리된 손상 파일)과 예전 비밀번호로 열 수 없습니다. 그 사본 자체는 예전 비밀번호로 계속 열리고 그 안에 이미 있던 복구 단어·개인키가 드러납니다. 예전 비밀번호가 약했다면 그 사본은 나중에 오프라인으로 풀릴 수 있습니다 — 예전 비밀번호와 사본이 함께 샜을 수 있다면 사본을 지우고 자산을 새로 만든 별도 지갑으로 옮기세요. | The password was changed and the wallet's encryption key was renewed. From now on, what you add or change cannot be opened with wallet file copies made before the change (a backed-up vault.ywv, quarantined damaged files) and the old password. Those copies themselves still open with the old password and reveal the recovery words and private keys they already hold. If the old password was weak, such a copy may be cracked offline later — if the old password and a copy may have leaked together, delete the copy and move your assets to a new, separate wallet. |
-| PASSWORD_CHANGED_PREV | 비밀번호를 바꿨습니다. 지금부터는 새 비밀번호로 엽니다. 다만 일부 파일(이전 복사본 vault.ywv.prev, meta.ywm, journal.ywj)을 새 암호화 키로 아직 다시 쓰지 못했습니다. 그 파일들에는 바꾸기 전 내용만 있고, 다음 잠금 해제나 저장 때 마저 바꿉니다. 그때까지 vault.ywv.prev는 예전 비밀번호로 열릴 수 있습니다. 이미 만들어 둔 지갑 파일 사본은 예전 비밀번호로 계속 열리고(예전 비밀번호가 약했다면 나중에 오프라인으로 풀릴 수 있습니다), 예전 비밀번호와 사본이 함께 샜을 수 있다면 자산을 새로 만든 별도 지갑으로 옮기세요. | The password was changed. From now on the wallet opens with the new password. However, some files (the previous copy vault.ywv.prev, meta.ywm, journal.ywj) could not be rewritten with the new encryption key yet. They hold only the content from before the change and are finished at the next unlock or save. Until then, vault.ywv.prev may open with the old password. Wallet file copies made earlier still open with the old password (if it was weak, they may be cracked offline later); if the old password and a copy may have leaked together, move your assets to a new, separate wallet. |
-| PASSWORD_UNCONFIRMED | 비밀번호 변경이 저장됐는지 확인하지 못해 지갑을 잠갔습니다. 새 비밀번호로 열어 보고, 열리지 않으면 예전 비밀번호로 여세요. 새 비밀번호로 열리면 변경이 적용된 것이고 남은 단계는 그 잠금 해제가 마칩니다. | Whether the password change was saved could not be confirmed, so the wallet was locked. Try the new password; if it does not open, use the old one. If the new password opens it, the change took effect and that unlock finishes the remaining steps. |
-| FLOW_CREATE | 새 지갑 만들기 | Create a new wallet |
-| FLOW_IMPORT | 기존 지갑 가져오기 | Import an existing wallet |
-| FLOW_KEY_START | 개인키로 시작하기 | Start with a private key |
-| FLOW_YK_WALLET | YubiKey 지갑 만들기 | Create a YubiKey wallet |
-| TIMEOUT_BACKUP | (닫혀도 “복구 단어 보고 백업 확인”으로 다시 볼 수 있습니다) | (after it closes, “View recovery words and check backup” shows them again) |
-| TIMEOUT_YK_WORDS | (닫히면 이 단어는 지워집니다) | (when it closes, these words are erased) |
-| TIMEOUT_MNEMONICS | (설정 → 복구 단어에서 다시 볼 수 있습니다) | (Settings → Recovery words shows them again) |
-| IDLE_WIPED | 오래 입력이 없어 입력하던 비밀번호·복구 단어·개인키를 지웠습니다. 처음부터 다시 진행하세요. | Nothing was typed for a long time, so the password, recovery words and private key being entered were erased. Start again from the beginning. |
-| PASSPHRASE_FOR | 복구 단어 {0}개 중 {1}번째의 passphrase를 입력하세요. | Enter the passphrase of recovery phrase {1} of {0}. |
-| LOADING | 불러오는 중… | Loading… |
-| RECOVERED_KEPT |  열리지 않던 지갑 파일은 데이터 폴더에 {0} 이름으로 옮겨 두었습니다. 직접 되돌리는 방법은 복구 안내(recovery-guide)를 보세요. |  The wallet file that would not open was moved in the data folder to the name {0}. To undo this yourself, see the recovery guide (recovery-guide). |
-| RECOVERED_CHECK | 이전 사본(.prev)으로 복구했습니다. 마지막 변경(예: 가져온 개인키)이 빠졌을 수 있으니 확인하세요.{0} | Restored from the previous copy (.prev). The last change (for example an imported private key) may be missing, so check.{0} |
-| RECOVERED | 이전 사본(.prev)으로 복구했습니다.{0} | Restored from the previous copy (.prev).{0} |
-| OPENED | 지갑을 열었습니다. | The wallet was opened. |
-| RECOVERY_NO_PREV | 이전 사본(.prev)이 없어 복구할 수 없습니다. 복구 단어로 지갑을 다시 가져오세요. 데이터 폴더의 파일은 그대로 두었습니다. | There is no previous copy (.prev), so nothing can be restored. Import the wallet again with the recovery words. The files in the data folder were left as they are. |
-| RECOVERY_PREV_DAMAGED | 이전 사본(.prev)도 손상되어 복구할 수 없습니다. 복구 단어로 지갑을 다시 가져오세요. 데이터 폴더의 파일은 그대로 두었습니다. | The previous copy (.prev) is damaged too, so nothing can be restored. Import the wallet again with the recovery words. The files in the data folder were left as they are. |
-| TIMED_OUT | 시간이 지나 창을 닫았습니다. | The window was closed because time ran out. |
-| CREATING | 지갑을 만드는 중입니다. 몇 초 걸립니다. | Creating the wallet. This takes a few seconds. |
-| CHECKING | 확인 중… | Checking… |
-| IMPORTING | 지갑을 가져오는 중입니다. 몇 초 걸립니다. | Importing the wallet. This takes a few seconds. |
-| TPL_SAVED | 템플릿 자격 정보를 저장했습니다. | The template credentials were saved. |
-| TPL_SAVED_NO_ADDRESS |  RPC 주소는 아직 없습니다 — “저장하고 RPC 주소 만들기”를 누르세요. |  There are no RPC addresses yet — press “Save and create RPC addresses”. |
-| IMPORTED_PRIVATE_KEY | 가져온 개인키 | Imported private key |
-| AUTO_LOCK_SAVED | 자동 잠금을 {0}분으로 저장했습니다. | Auto-lock was set to {0} minutes. |
-| AUTO_LOCK_RANGE | 자동 잠금은 1–60분입니다. | Auto-lock must be 1–60 minutes. |
-| ALCHEMY_KEY | 알케미 키 | Alchemy key |
-| PRUNED | 보관 항목 {0}개를 지웠습니다. | {0} kept entries were deleted. |
-| ENTER_ALCHEMY | 위 칸에 알케미 API 키를 넣으세요. | Enter the Alchemy API key in the field above. |
-| ENTER_QUICKNODE | 위 칸에 엔드포인트 이름과 토큰(또는 주소 전체)을 넣으세요. | Enter the endpoint name and token (or the whole address) in the fields above. |
-| GENERATED_NONE | 새로 만든 RPC 주소가 없습니다. 이미 주소가 있는 네트워크는 '기존 주소 덮어쓰기'를 켰을 때만 바꿉니다. | No new RPC addresses were created. Networks that already have an address change only with 'Overwrite existing addresses' on. |
-| GENERATED | RPC 주소 {0}개를 만들었습니다. 연결을 확인하는 중입니다 — 결과는 아래 각 행에 나옵니다. | {0} RPC addresses were created. Their connections are being checked — the results appear on each row below. |
-| GENERATED_SKIPPED |  템플릿 항목이 없는 {0}개는 직접 입력하세요: {1} |  Enter the {0} networks without a template entry yourself: {1} |
-| TESTING | 테스트 중… | Testing… |
-| PASTE_ADDRESS | 주소를 붙여넣으세요. | Paste the address. |
-| YK_KEY_STAYS | YubiKey 계정의 개인키는 YubiKey 밖으로 나오지 않습니다. 백업은 등록할 때 쓴 복구 단어입니다. | The private key of a YubiKey account never leaves the YubiKey. Its backup is the recovery words used at enrolment. |
-| STEP_PASSWORD | 비밀번호 정하기 | Password |
-| STEP_WRITE_WORDS | 복구 단어 적기 | Recovery words |
-| STEP_BACKUP_CHECK | 백업 확인 | Backup check |
-| STEP_ENTER_WORDS | 복구 단어 입력 | Enter words |
-| STEP_FIRST_ADDRESS | 첫 주소 확인 | First address |
-| T_ALT_PASS_RECEIVE | 확인되지 않은 passphrase로 연 지갑에서는 받기를 쓸 수 없습니다. 잠그고 passphrase를 다시 입력하세요. | Receiving is not available in a wallet opened with an unverified passphrase. Lock and enter the passphrase again. |
-| T_WER_UNPROTECTED | Windows 오류 보고(WER) 제외 등록에 실패했습니다. 이 앱이 비정상 종료되면 메모리 덤프가 남을 수 있고, 덤프에는 잠금 해제 중인 지갑 키가 들어 있을 수 있습니다. | Excluding this app from Windows Error Reporting (WER) failed. If the app crashes, a memory dump may be left, and the dump may contain wallet keys of the unlocked session. |
-| T_EXT_MISSING | 확장 폴더를 찾지 못했습니다. 설치 프로그램(install.cmd)을 다시 실행하면 앱 폴더 안에 extension 폴더가 만들어집니다. | The extension folder was not found. Running the installer (install.cmd) again creates the extension folder inside the app folder. |
+| T_CLIP_CLEARED_LATE | 클립보드에 남아 있던 복구 단어·개인키를 지웠습니다. | The recovery words or private key left on the clipboard were cleared. |
+| T_PASSWORD_OLD_COPIES | 비밀번호를 바꾸면 지갑의 암호화 키도 새로 만듭니다. 그래서 바꾼 뒤에 더하거나 고친 내용(새 복구 단어·가져온 키, 계정 이름·주소록·기록)은 예전 사본과 예전 비밀번호로 열 수 없습니다. 2026-11-13 이전 버전에서 바꾼 비밀번호는 키를 그대로 두었으니, 그때 바꿨다면 지금 한 번 더 바꾸세요. 하지만 바꾸기 전에 만든 지갑 파일 사본(백업해 둔 vault.ywv, vault.ywv.corrupt-… 등)은 예전 비밀번호로 계속 열리고, 그 안에 이미 있던 복구 단어·개인키는 그대로 드러납니다. 예전 비밀번호가 약했다면 그런 사본은 나중에라도 오프라인으로 풀릴 수 있습니다. 예전 비밀번호와 사본이 함께 샜을 수 있다면 사본을 지우고, 새 복구 단어로 따로 만든 새 지갑으로 자산을 옮기세요. | Changing the password also renews the wallet's encryption key. So what you add or change afterwards (new recovery words, imported keys, account names, address book, records) cannot be opened with old copies and the old password. Versions before 2026-11-13 kept the key on a password change, so if you changed it then, change it once more now. Wallet file copies made before the change (a backed-up vault.ywv, vault.ywv.corrupt-… etc.) still open with the old password and reveal the recovery words and private keys they already hold. If the old password was weak, such copies may be cracked offline even later. If the old password and a copy may have leaked together, delete the copy and move your assets to a new wallet created separately with new recovery words. |
+| PASTE_CLEARED | 붙여넣은 뒤 클립보드를 비웠습니다. Windows 클립보드 기록(Win+V)을 쓴다면 그 항목도 지우세요. | The clipboard was emptied after pasting. If you use the Windows clipboard history (Win+V), delete that entry too. |
+| PASTE_EDGE_SPACE | 앞/뒤 공백이 포함되어 있습니다. 공백도 그대로 비밀번호·passphrase의 일부가 됩니다. | It starts or ends with a space. Spaces become part of the password or passphrase as they are. |
+| COPY_OFF | 복사가 꺼져 있습니다. 설정에서 바꿀 수 있습니다. | Copying is off. You can change this in settings. |
+| COPIED_SECRET | 클립보드에 복사했습니다. 30초 뒤 지웁니다. | Copied to the clipboard. It is cleared in 30 seconds. |
 
 <!-- catalogue: yw_app::app_extension::text -->
 

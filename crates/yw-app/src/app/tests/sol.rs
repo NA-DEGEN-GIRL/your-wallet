@@ -375,7 +375,7 @@ fn dapp_sends_are_tracked_together_and_do_not_hold_the_send_form() {
     app.sol_schedule_tracking();
     assert_eq!(app.sol.tracking.len(), 2);
     let (rpc, jobs) = std::sync::mpsc::channel();
-    app.rpc_tx = Some(rpc);
+    app.set_rpc_tx(rpc);
     let url = yw_platform::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
     app.apikeys.set_rpc(
         yw_engine::network::NetworkId::Solana(yw_engine::network::SolCluster::Mainnet),

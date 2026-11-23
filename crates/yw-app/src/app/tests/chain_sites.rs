@@ -95,10 +95,10 @@ fn signing_preflight_and_drafts() {
         app.chain_sign_draft(&blocked).unwrap().display.risk,
         RiskLevel::Blocked
     );
-    let waiter = crate::app::Wallet::chain_waiter(&sign, &draft.payload);
+    let waiter = yw_engine::wallet::Wallet::chain_waiter(&sign, &draft.payload);
     assert!(matches!(
         waiter,
-        Some(crate::app_browser::SignWaiter::Chain(_, _))
+        Some(yw_engine::wallet::app_browser::SignWaiter::Chain(_, _))
     ));
     // EVM kinds are not chain kinds.
     assert_eq!(
@@ -206,7 +206,7 @@ fn removed_bitcoin_account_drops_every_grant_listing_its_address() {
     assert!(core.upsert_btc_grant(grant));
     app.write_grants();
     // The key worker reports the account gone (imported key removed).
-    app.btc_apply(vec![crate::app_btc::BtcAction::SetMeta(
+    app.btc_apply(vec![yw_engine::wallet::app_btc::BtcAction::SetMeta(
         None,
         Box::default(),
     )]);
@@ -393,10 +393,10 @@ fn removed_recovery_phrase_drops_its_chain_grants_for_good() {
 /// no account on its way it still ends `NoSolAccount`, never an empty window.
 #[test]
 fn a_solana_connect_waits_for_account_zero() {
-    use crate::app_evm::QueuedItem;
     use yw_engine::approval::QueueSource;
+    use yw_engine::wallet::app_evm::QueuedItem;
     let mut app = app(false);
-    app.mode = crate::app::AppMode::Unlocked {
+    app.mode = yw_engine::wallet::AppMode::Unlocked {
         alt_passphrase: false,
     };
     app.keys.has_mnemonic = true;
@@ -714,9 +714,9 @@ fn site_rows_disconnect_the_grant_they_were_drawn_for_and_page() {
 /// window closed at once with E-UI-001.
 #[test]
 fn chain_message_windows_follow_each_other_after_a_rejection() {
-    use crate::app_evm::QueuedItem;
     use yw_core::btc::{BtcAccountKey, BtcMeta};
     use yw_engine::approval::{QueueSource, field_label, validate_for_display};
+    use yw_engine::wallet::app_evm::QueuedItem;
     for key in 0..=u16::MAX {
         let key = yw_core::approval::FieldKey(key);
         assert!(
@@ -1006,14 +1006,14 @@ fn sol_tx_preflight_backup_and_card_gates() {
 /// answers 4001.
 #[test]
 fn a_failed_preview_is_the_window_failure_and_closing_answers_4001() {
-    use crate::app_evm::QueuedItem;
-    use crate::errors::ErrorCode;
-    use crate::ui::approval::QueueSource;
+    use yw_engine::approval::QueueSource;
+    use yw_engine::errors::ErrorCode;
+    use yw_engine::wallet::app_evm::QueuedItem;
     let mut app = app(true);
-    app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+    app.settings.solana.cluster = yw_engine::network::SolCluster::Devnet;
     let url = yw_platform::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
     app.apikeys.set_rpc(
-        crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
+        yw_engine::network::NetworkId::Solana(yw_engine::network::SolCluster::Devnet),
         &url,
     );
     let (events, frames, conn) = recorded(&mut app);
@@ -1041,12 +1041,12 @@ fn a_failed_preview_is_the_window_failure_and_closing_answers_4001() {
             ..
         }
     ));
-    app.settings.solana.cluster = crate::network::SolCluster::Mainnet;
+    app.settings.solana.cluster = yw_engine::network::SolCluster::Mainnet;
     assert_eq!(
         app.sol_dapp_draft(&request, Ok(preview(1))),
         Err((ErrorCode::Rpc006, false))
     );
-    app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+    app.settings.solana.cluster = yw_engine::network::SolCluster::Devnet;
     // The failed window is closed: the dApp gets 4001.
     let source = QueueSource::Site {
         origin: request.origin.as_str().to_owned(),
@@ -1074,11 +1074,11 @@ fn a_failed_preview_is_the_window_failure_and_closing_answers_4001() {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one request of each kind, in order")]
 fn approved_requests_go_to_the_key_worker_or_the_presign_check() {
-    use crate::app_browser::SignWaiter;
-    use crate::events::KeyJob;
-    use crate::sol::flow::PreSignError;
-    use crate::workers::rpc::RpcJob;
     use yw_core::sol::dapp::PreSignCheck;
+    use yw_engine::events::KeyJob;
+    use yw_engine::sol::flow::PreSignError;
+    use yw_engine::wallet::app_browser::SignWaiter;
+    use yw_engine::workers::rpc::RpcJob;
     let mut app = app(true);
     devnet(&mut app);
     let (events, frames, conn) = recorded(&mut app);
@@ -1108,7 +1108,7 @@ fn approved_requests_go_to_the_key_worker_or_the_presign_check() {
     app.browser.as_mut().unwrap().waiters.clear();
     // A send: its pre-sign check first, nothing signed yet.
     let (rpc, jobs) = std::sync::mpsc::channel();
-    app.rpc_tx = Some(rpc);
+    app.set_rpc_tx(rpc);
     let send = queued_send(&app, &events, conn, 2);
     app.sol_dapp_consumed(approve_site(&app, &send), &send);
     let ticket = {
@@ -1180,14 +1180,14 @@ fn approved_requests_go_to_the_key_worker_or_the_presign_check() {
     assert!(jobs.try_recv().is_err());
     assert!(app.sol.dapp_presign.is_empty());
     // A card send takes one touch and says so as any single-touch step.
-    let kind = crate::app_card::CardJobKind::SolDappSend { cluster: DEVNET };
+    let kind = yw_engine::wallet::app_card::CardJobKind::SolDappSend { cluster: DEVNET };
     assert_eq!(
-        crate::app_card::approval_touches(&approve_site(&app, &late), &kind),
+        yw_engine::wallet::app_card::approval_touches(&approve_site(&app, &late), &kind),
         1
     );
     assert_eq!(
-        crate::app_card::touch_text(&kind, 1),
-        crate::app_card::T_CARD_TOUCH
+        yw_engine::wallet::app_card::touch_text(&kind, 1),
+        yw_engine::wallet::app_card::T_CARD_TOUCH
     );
 }
 
@@ -1201,24 +1201,24 @@ fn approved_requests_go_to_the_key_worker_or_the_presign_check() {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one record's answers, in order")]
 fn a_send_is_answered_after_its_first_round() {
-    use crate::events::SolDappSigned;
-    use crate::workers::rpc::RpcJob;
     use yw_core::sol::broadcast::{LoopState, Outcome};
+    use yw_engine::events::SolDappSigned;
+    use yw_engine::workers::rpc::RpcJob;
     let mut app = app(true);
     devnet(&mut app);
-    app.mode = crate::app::AppMode::Unlocked {
+    app.mode = yw_engine::wallet::AppMode::Unlocked {
         alt_passphrase: false,
     };
     let (events, frames, conn) = recorded(&mut app);
     // The dispatcher already holds the unlocked grants (no unlock merge from meta).
     app.browser.as_mut().unwrap().unlocked = true;
     let (rpc, jobs) = std::sync::mpsc::channel();
-    app.rpc_tx = Some(rpc);
+    app.set_rpc_tx(rpc);
     let record = dapp_pending(public());
     let tx_id = record.signature();
-    app.evm.journal = Some(crate::events::JournalView {
+    app.evm.journal = Some(yw_engine::events::JournalView {
         sol_records: vec![record],
-        ..crate::events::JournalView::default()
+        ..yw_engine::events::JournalView::default()
     });
     let pending = |app: &App| {
         app.browser
@@ -1285,7 +1285,7 @@ fn a_send_is_answered_after_its_first_round() {
     app.sol_rpc_event(first_round(
         tx_id,
         LoopState::default(),
-        Err(crate::errors::ErrorCode::Rpc002),
+        Err(yw_engine::errors::ErrorCode::Rpc002),
     ));
     assert_eq!(
         texts(answers(&frames)),
@@ -1342,11 +1342,11 @@ fn a_send_is_answered_after_its_first_round() {
 /// locked is answered at once.
 #[test]
 fn send_failures_and_the_lock_answer_every_waiter() {
-    use crate::events::{SolDappSigned, SolSignFailure};
     use yw_core::sol::dapp::SolTxSignError;
+    use yw_engine::events::{SolDappSigned, SolSignFailure};
     let mut app = app(true);
     devnet(&mut app);
-    app.mode = crate::app::AppMode::Unlocked {
+    app.mode = yw_engine::wallet::AppMode::Unlocked {
         alt_passphrase: false,
     };
     let (events, frames, conn) = recorded(&mut app);
@@ -1355,9 +1355,9 @@ fn send_failures_and_the_lock_answer_every_waiter() {
     let mut landed = dapp_pending(public());
     landed.state = yw_core::journal::sol::SolTxState::Landed;
     let tx_id = landed.signature();
-    app.evm.journal = Some(crate::events::JournalView {
+    app.evm.journal = Some(yw_engine::events::JournalView {
         sol_records: vec![landed],
-        ..crate::events::JournalView::default()
+        ..yw_engine::events::JournalView::default()
     });
     let mut n = 0_u8;
     let mut next = |app: &mut App| {
@@ -1400,12 +1400,12 @@ fn send_failures_and_the_lock_answer_every_waiter() {
     let approved = approve_site(&app, &site);
     app.sol.dapp_presign.insert(
         41,
-        crate::app_sol_dapp::PendingDappSign {
-            ticket: waiting,
-            approved: Box::new(approved),
-            pin: None,
-            origin: site.origin.as_str().to_owned(),
-        },
+        yw_engine::testkit::pending_dapp_sign(
+            waiting,
+            Box::new(approved),
+            None,
+            site.origin.as_str().to_owned(),
+        ),
     );
     let (ticket, site) = next(&mut app);
     app.browser.as_mut().unwrap().waiters.remove(&ticket);
@@ -1415,7 +1415,7 @@ fn send_failures_and_the_lock_answer_every_waiter() {
         .sol_broadcasts
         .entry([3; 64])
         .or_default()
-        .push(crate::app_sol_dapp::SolBroadcast {
+        .push(yw_engine::wallet::app_sol_dapp::SolBroadcast {
             reply: site.reply,
             public: public(),
             origin: site.origin.clone(),
@@ -1432,7 +1432,7 @@ fn send_failures_and_the_lock_answer_every_waiter() {
     assert!(app.sol.dapp_presign.is_empty());
     assert!(app.browser.as_ref().unwrap().sol_broadcasts.is_empty());
     // A signature that comes after the lock: answered at once (tracked after unlock).
-    app.mode = crate::app::AppMode::Locked;
+    app.mode = yw_engine::wallet::AppMode::Locked;
     let (ticket, _) = next(&mut app);
     app.on_sol_dapp_signed(SolDappSigned {
         ticket,
@@ -1449,8 +1449,8 @@ fn send_failures_and_the_lock_answer_every_waiter() {
 /// lock-cancelled job) gets 4001 like any chain message.
 #[test]
 fn signed_transactions_answer_only_while_the_grant_holds() {
-    use crate::app_browser::SignWaiter;
-    use crate::events::ChainMessageSigned;
+    use yw_engine::events::ChainMessageSigned;
+    use yw_engine::wallet::app_browser::SignWaiter;
     let mut app = app(true);
     let (events, frames, conn) = recorded(&mut app);
     let waiter = |app: &mut App, site: &SiteRequest| {
@@ -1523,9 +1523,9 @@ fn signed_transactions_answer_only_while_the_grant_holds() {
     reason = "one answer per family, held and gone"
 )]
 fn signatures_and_hashes_answer_only_while_the_grant_holds() {
-    use crate::app_browser::SignWaiter;
-    use crate::events::{ChainMessageSigned, MessageSigned};
-    use crate::flow::evm::track::BroadcastOutcome;
+    use yw_engine::events::{ChainMessageSigned, MessageSigned};
+    use yw_engine::flow::evm::track::BroadcastOutcome;
+    use yw_engine::wallet::app_browser::SignWaiter;
     let mut app = app(true);
     let (events, frames, conn) = recorded(&mut app);
     let origin = BrowserOrigin::parse("https://app.example").unwrap();
@@ -1586,7 +1586,7 @@ fn signatures_and_hashes_answer_only_while_the_grant_holds() {
         ticket,
         result: Ok(btc_signature()),
     });
-    app.mode = crate::app::AppMode::Unlocked {
+    app.mode = yw_engine::wallet::AppMode::Unlocked {
         alt_passphrase: false,
     };
     let ticket = app.push_sign_waiter(SignWaiter::Tx(reply(&app), evm_signer()));
@@ -1670,7 +1670,7 @@ fn signatures_and_hashes_answer_only_while_the_grant_holds() {
     let tx = reply(&app);
     let tx = app.push_sign_waiter(SignWaiter::Tx(tx, evm_signer()));
     app.browser_tx_signed(tx, Ok([0x33; 32]));
-    app.mode = crate::app::AppMode::Locked;
+    app.mode = yw_engine::wallet::AppMode::Locked;
     app.browser_broadcast([0x33; 32], BroadcastOutcome::Sent);
     let found = answers(&frames);
     assert!(matches!(found.as_slice(), [Ok(_)]), "{found:?}");
@@ -1684,10 +1684,10 @@ fn signatures_and_hashes_answer_only_while_the_grant_holds() {
 /// signature is answered 4100 once the site is gone, or as usual while the grant holds.
 #[test]
 fn a_card_step_waiting_for_its_pin_ends_when_its_site_goes() {
-    use crate::app_browser::SignWaiter;
-    use crate::app_card::{CardJobKind, T_CARD_SITE_GONE, T_CARD_SITE_REVOKED};
-    use crate::events::MessageSigned;
     use yw_core::secret::Zeroizing;
+    use yw_engine::events::MessageSigned;
+    use yw_engine::wallet::app_browser::SignWaiter;
+    use yw_engine::wallet::app_card::{CardJobKind, T_CARD_SITE_GONE, T_CARD_SITE_REVOKED};
     let mut app = app(true);
     let (events, frames, conn) = recorded(&mut app);
     let origin = BrowserOrigin::parse("https://app.example").unwrap();
@@ -1789,7 +1789,7 @@ fn a_card_step_waiting_for_its_pin_ends_when_its_site_goes() {
     let (id, _) = begin(&mut app);
     core.close_connection(conn);
     for event in events.drain() {
-        if let crate::events::UiEvent::Dapp(event) = event {
+        if let yw_engine::events::UiEvent::Dapp(event) = event {
             app.on_dapp_event(event);
         }
     }
@@ -1812,9 +1812,9 @@ fn a_card_step_waiting_for_its_pin_ends_when_its_site_goes() {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one case per card kind and trigger")]
 fn each_card_step_kind_ends_on_its_own_familys_revoke() {
-    use crate::app_browser::SignWaiter;
-    use crate::app_card::{CardJobKind, T_CARD_SITE_REVOKED};
     use yw_engine::browser::{DappEvent, GrantChange};
+    use yw_engine::wallet::app_browser::SignWaiter;
+    use yw_engine::wallet::app_card::{CardJobKind, T_CARD_SITE_REVOKED};
     let mut app = app(true);
     let (events, frames, conn) = recorded(&mut app);
     let origin = BrowserOrigin::parse("https://app.example").unwrap();
@@ -2013,12 +2013,12 @@ fn each_card_step_kind_ends_on_its_own_familys_revoke() {
 /// no card-error band beside the site notice (it used to reach `on_signed`).
 #[test]
 fn a_refused_pin_after_the_site_went_ends_the_step_quietly() {
-    use crate::app::Purpose;
-    use crate::app_browser::SignWaiter;
-    use crate::app_card::T_CARD_SITE_REVOKED;
-    use crate::events::{EvmSigned, KeyJob, KeyOutcome, KeyResult, SignFailure};
-    use crate::yubikey::CardJobError;
     use yw_core::yubikey::CardError;
+    use yw_engine::events::{EvmSigned, KeyJob, KeyOutcome, KeyResult, SignFailure};
+    use yw_engine::wallet::Purpose;
+    use yw_engine::wallet::app_browser::SignWaiter;
+    use yw_engine::wallet::app_card::T_CARD_SITE_REVOKED;
+    use yw_engine::yubikey::CardJobError;
     let mut app = app(true);
     let (events, frames, conn) = recorded(&mut app);
     let origin = BrowserOrigin::parse("https://app.example").unwrap();
@@ -2047,7 +2047,7 @@ fn a_refused_pin_after_the_site_went_ends_the_step_quietly() {
     assert!(core.remove_grant(&origin));
     let banners = app.banners.len();
     let wrong = CardJobError::Card(CardError::WrongPin { retries: 2 });
-    let epoch = app.lock_epoch;
+    let epoch = app.lock_epoch();
     app.on_key_result(KeyResult {
         epoch,
         outcome: KeyOutcome::CardUnused(approved, wrong),
@@ -2082,7 +2082,7 @@ fn a_refused_pin_after_the_site_went_ends_the_step_quietly() {
 impl App {
     fn push_sign_waiter(
         &mut self,
-        waiter: crate::app_browser::SignWaiter,
+        waiter: yw_engine::wallet::app_browser::SignWaiter,
     ) -> yw_engine::events::SignTicket {
         self.wallet.push_sign_waiter(waiter)
     }

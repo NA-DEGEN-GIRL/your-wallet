@@ -1,9 +1,9 @@
 //! Bitcoin screen contents (M8; spec/04 §2.6–§2.8, §2.11, §2.16, §3.3; spec/08 §2, §3.2, §3.4,
 //! §4.7, §7.3, §7.6, §8.2–§8.3, §9, §11.3, §12.1–§12.2): the S10 Bitcoin tab, the BTC send form
 //! and its result, the fee-bump form, S12 receive and the S15 Bitcoin section. Every text is a
-//! fixed sentence or built by yw-core / the controller ([`crate::app_btc`]); no server string is
-//! shown. Addresses are shown in full in 4-character groups, the first and last 6 characters
-//! bold (spec/04 §3.3); activity addresses have no copy or select buttons.
+//! fixed sentence or built by yw-core / the controller ([`yw_engine::wallet::app_btc`]); no
+//! server string is shown. Addresses are shown in full in 4-character groups, the first and last
+//! 6 characters bold (spec/04 §3.3); activity addresses have no copy or select buttons.
 
 use yw_core::bip32::path::BtcChain;
 use yw_core::btc::meta::FreezeReason;

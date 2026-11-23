@@ -179,7 +179,7 @@ yw-app/src/app/tests/s3_census.rs const EDIT_IDS cef47137e1217c41 mutable
 yw-app/src/app/tests/s3_census.rs const MASKED 980e9977cd0e5bff mutable
 yw-app/src/app/tests/s3_census.rs const SKIPPED 1fce95d34b5e9687 mutable
 yw-app/src/app/tests/s3_census.rs struct Census bdec54fb58ac452f mutable
-yw-app/src/app/tests/s3_census.rs impl Census f444f5fb418b698b mutable
+yw-app/src/app/tests/s3_census.rs impl Census 828af85387903066 mutable
 yw-app/src/app/tests/s3_census.rs struct Seen 1946e68569be6866 mutable
 yw-app/src/app/tests/s3_census.rs impl Seen dc1d586829b57109 mutable
 yw-app/src/app/tests/s3_census.rs impl DropforCensus 692f66a11f09c9dc mutable
@@ -237,8 +237,8 @@ yw-app/src/app/tests/s3_census.rs fn fire bf44fd8169776fac mutable
 yw-app/src/app/tests/s3_census.rs fn reset_phrase f8624cd1bdc5801e mutable
 yw-app/src/app/tests/s3_census.rs fn two_cards b6110e48e255e819 mutable
 yw-app/src/app/tests/s3_census.rs fn timer_copy_scenarios 3e59146143f32c47 mutable
-yw-app/src/app/tests/s3_census.rs fn anchored 34f49d7df04d3315 mutable
-yw-app/src/app/tests/s3_census.rs fn harness 2afd39820a562edb mutable
+yw-app/src/app/tests/s3_census.rs fn anchored a1ff729d9c7992a4 mutable
+yw-app/src/app/tests/s3_census.rs fn harness 46f6415b4e5d1d69 mutable
 yw-app/src/app/tests/s3_census.rs fn observe_harness c2847f7cd23faeb4 mutable
 yw-app/src/app/tests/s3_census.rs fn harness_step 9a8e9947968e96a0 mutable
 yw-app/src/app/tests/s3_census.rs fn lifecycle_golden 64482b8703ecaf63 mutable
@@ -339,7 +339,7 @@ yw-app/src/app_approval_lifecycle_tests.rs fn main_msg 64be74d2ad13445c mutable
 yw-app/src/app_approval_lifecycle_tests.rs fn main_tick 6753d19230d9267f mutable
 yw-app/src/app_approval_lifecycle_tests.rs fn install_events 15dfc82e1003b034 mutable
 yw-app/src/app_approval_lifecycle_tests.rs fn deliver 0f1544ca4dfe6601 mutable
-yw-app/src/app_approval_lifecycle_tests.rs fn deliver_keys 26e24992565ff5c6 mutable
+yw-app/src/app_approval_lifecycle_tests.rs fn deliver_keys cb49b46638d05767 mutable
 yw-app/src/app_approval_lifecycle_tests.rs fn journal_with 245d83563a7e868a mutable
 yw-app/src/app_approval_lifecycle_tests.rs fn deliver_key 0c38c92a59e98807 mutable
 yw-app/src/app_approval_lifecycle_tests.rs struct LockAck 58dd45af28a537be mutable
@@ -511,7 +511,7 @@ yw-app/src/ui/tour_secrets.rs struct Inert b6f343e3d2470de9 mutable
 yw-app/src/ui/tour_secrets.rs impl HandlerforInert 7adfae4bb4d462a7 mutable
 yw-app/src/ui/tour_secrets.rs fn spare 898894a446928355 mutable
 yw-app/src/ui/tour_secrets.rs struct Env e68ff0a768c22649 mutable
-yw-app/src/ui/tour_secrets.rs impl Env 842756ff05abe411 mutable
+yw-app/src/ui/tour_secrets.rs impl Env b0e77ba3c43b2c08 mutable
 yw-app/src/ui/tour_secrets.rs impl DropforEnv d9132a3ae7816a1f mutable
 yw-app/src/ui/tour_secrets.rs struct LockAck 58dd45af28a537be mutable
 yw-app/src/ui/tour_secrets.rs impl LockAck d6394c939fa82569 mutable
@@ -557,14 +557,14 @@ yw-app/src/ui/tour_secrets.rs const LOCK_SCENARIOS 2ecf239c8ef68ed9 mutable
 yw-app/src/ui/tour_secrets.rs fn record 80913ab1ff9a1f59 fixed
 yw-app/src/ui/tour_secrets.rs fn first_difference 0439bc8da566ec25 fixed
 yw-app/src/app_chain_sites.rs const tests::SOL_KEY 78879f5ee2e9194c mutable
-yw-app/src/app_chain_sites.rs fn tests::app e6923af0ce3c00fc mutable
+yw-app/src/app_chain_sites.rs fn tests::app 3aca640c4da5ee6b mutable
 yw-app/src/app_chain_sites.rs fn tests::site 2f60b9248eeb75b9 mutable
 yw-app/src/app_chain_sites.rs fn tests::public 0a9c111340d06094 mutable
 yw-app/src/app_chain_sites.rs fn tests::sol_grant f68ddfbbcd314e59 mutable
 yw-app/src/app_chain_sites.rs fn tests::core e6219ad305f4754b mutable
 yw-app/src/app_chain_sites.rs fn tests::unlocked_view ba95d610f1ea7f36 mutable
 yw-app/src/app_chain_sites.rs fn tests::relock dbabbacf1f04a308 mutable
-yw-app/src/app_chain_sites.rs fn tests::next_window de6b9af1b71a752d mutable
+yw-app/src/app_chain_sites.rs fn tests::next_window 635827a6cea5679f mutable
 yw-app/src/app_chain_sites.rs fn tests::sol_tx 0f644246e242dd5e mutable
 yw-app/src/app_chain_sites.rs const tests::DEVNET b1c42bd3089d265a mutable
 yw-app/src/app_chain_sites.rs fn tests::sol_tx_kind f96b768a8a72dc7b mutable
@@ -573,7 +573,7 @@ yw-app/src/app_chain_sites.rs fn tests::preview 2aa94e5dfe24be21 mutable
 yw-app/src/app_chain_sites.rs fn tests::devnet 16353020e3bee17b mutable
 yw-app/src/app_chain_sites.rs fn tests::approve_site d00d8c36bb340313 mutable
 yw-app/src/app_chain_sites.rs fn tests::queued_send 4854c4dd634a42ba mutable
-yw-app/src/app_chain_sites.rs fn tests::send_waiter 55db8fc765f128f4 mutable
+yw-app/src/app_chain_sites.rs fn tests::send_waiter 84957ecc24cee44c mutable
 yw-app/src/app_chain_sites.rs fn tests::summary 289dd1b7c5466802 mutable
 yw-app/src/app_chain_sites.rs fn tests::first_round c5c5951dcba15673 mutable
 yw-app/src/app_chain_sites.rs fn tests::send_answer_text ccb3778853d9de98 mutable
@@ -583,7 +583,7 @@ yw-app/src/app_chain_sites.rs fn tests::queued_sol_tx dca9889526218838 mutable
 yw-app/src/app_chain_sites.rs fn tests::answers 4743cf2147c8e61b mutable
 yw-app/src/app_chain_sites.rs fn tests::evm_account d2e5c67684eb4e77 mutable
 yw-app/src/app_chain_sites.rs fn tests::evm_grant ea24f4cc0064fab0 mutable
-yw-app/src/app_chain_sites.rs fn tests::evm_signer 5318a462d2a20853 mutable
+yw-app/src/app_chain_sites.rs fn tests::evm_signer 26cc14b0e6b7b797 mutable
 yw-app/src/app_chain_sites.rs fn tests::job_names f3630d8376f958fe mutable
 yw-app/src/app_chain_sites.rs fn tests::approved_card_message f259c9d484bf8c3e mutable
 yw-app/src/app_chain_sites.rs fn tests::approved_card_tx 365adbba3fb7b189 mutable
@@ -614,7 +614,7 @@ yw-app/src/app_approval_flow_support.rs fn foreground_request ad3d4772557fd0fa m
 yw-app/src/app_approval_flow_support.rs fn fail_open 1a69612a6c823361 mutable
 yw-app/src/app_approval_flow_support.rs impl App 6e67dfc1e54b92dd mutable
 yw-app/src/app_approval_flow_support.rs struct Fixture d7ff65971806330f mutable
-yw-app/src/app_approval_flow_support.rs impl Fixture 1b65ca64144ac8d7 mutable
+yw-app/src/app_approval_flow_support.rs impl Fixture f9932e86e0769dd2 mutable
 yw-app/src/app_approval_flow_support.rs impl Fixture c47df6d36212b2e1 mutable
 yw-app/src/app_approval_flow_support.rs impl DropforFixture 0e42d120bf36b5a3 mutable
 yw-app/src/app_approval_flow_support.rs struct Outlet d01b1a9a4d58cc69 mutable
@@ -640,4 +640,4 @@ yw-app/src/app/secret_seam.rs struct SecretFacts 1d3cbdc700db0554 mutable
 yw-app/src/app/secret_seam.rs impl super::App 706e11f6bb4f064f mutable
 yw-app/src/app_approval_input_tests.rs test approval_window_is_topmost_and_eats_activating_clicks 52bbec3e74fe90aa B2,B4a,B4b,B5,E1
 yw-app/src/app_approval_input_tests.rs test approve_enter_is_physical_and_not_injected 4fca4667b660cd7e B2,B4a,B4b,B5
-yw-app/src/app_approval_input_tests.rs test ai_never_touches_the_gate 9854cddfa6342035 B2,B4a,B4b,B5,W14a,W14b,E1
+yw-app/src/app_approval_input_tests.rs test ai_never_touches_the_gate 9854cddfa6342035 B2,B4a,B4b,B5,W14a,W14b,E1,S5-10

@@ -95,7 +95,7 @@ fn open(census: &Census, base: Base, setup: fn(&mut App)) -> (Rc<RefCell<App>>, 
     // emitted applies with no window yet, as before).
     app.borrow_mut().drain();
     let (tx, rx) = channel();
-    app.borrow_mut().rpc_tx = Some(tx);
+    app.borrow_mut().set_rpc_tx(tx);
     App::create_main_window(&app).unwrap();
     {
         let mut state = app.borrow_mut();
@@ -196,10 +196,10 @@ fn enter_key(state: &mut App, id: u16, index: usize, tally: &mut Tally) -> Strin
     if expected != Press::Enter {
         tally.enter_pressed.insert(id);
     }
-    if state.last_press != expected {
+    if state.last_press() != expected {
         tally.differences.push(format!(
             "{what}: Enter pressed {:?}, expected {expected:?}",
-            state.last_press
+            state.last_press()
         ));
     }
     what

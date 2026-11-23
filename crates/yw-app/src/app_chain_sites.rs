@@ -5,12 +5,11 @@
 //! pinned file and its `tests::` prefix stay where `s4_frozen.rs`'s `HELPER_SET` looks
 //! (no re-point needed). `cfg(test)` only.
 //!
-//! The imports below are the wallet module's (the tests reach them through `use super::*`),
-//! written with the paths yw-app reaches them by.
+//! 2026-11-23 (spec/15 §11.4 S5-0, §18 28): the glob `pub(crate) use
+//! yw_engine::wallet::app_chain_sites::*` (an S4d E1 test-path shim) is gone with the S4 freeze;
+//! the test module imports the wallet module's items it names from their engine path.
 
 #![cfg(test)]
-
-pub(crate) use yw_engine::wallet::app_chain_sites::*;
 
 #[cfg(test)]
 mod tests {
@@ -20,9 +19,7 @@ mod tests {
     use yw_engine::testkit::WalletTestExt;
 
     // `BtcRow`: the moved tests of `app_tests` name it as `super::BtcRow` (2026-11-21, S4 W0).
-    use super::{BtcRow, ChainAnswer, ConnectChoice, chain_answer_value, default_protocol};
     use crate::app::{App, Paths};
-    use crate::app_browser::{BrowserUi, GrantWrite};
     use yw_core::approval::{ApprovalKind, RiskLevel};
     use yw_core::btc::msgsign::{BtcMessageProtocol, BtcMessageSignature};
     use yw_core::btc::{BtcPubKey, ScriptType};
@@ -34,6 +31,10 @@ mod tests {
     use yw_engine::events::{ChainSignature, EventQueue};
     use yw_engine::settings::Settings;
     use yw_engine::wallet::app_approval::ConnectState;
+    use yw_engine::wallet::app_browser::{BrowserUi, GrantWrite};
+    use yw_engine::wallet::app_chain_sites::{
+        BtcRow, ChainAnswer, ConnectChoice, chain_answer_value, default_protocol,
+    };
 
     const SOL_KEY: &str = "FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z";
 
@@ -65,7 +66,7 @@ mod tests {
             unlocked: false,
             locking: false,
             grant_write: GrantWrite::default(),
-            site_rows: crate::app_browser::SiteRows::default(),
+            site_rows: yw_engine::wallet::app_browser::SiteRows::default(),
         });
         let mut meta = yw_engine::meta::Meta::default();
         if with_sol {
@@ -192,7 +193,7 @@ mod tests {
     /// What `show_next_approval` does up to the window: the next shown site item that passed its
     /// preflight (items finished by the preflight are answered and skipped).
     fn next_window(app: &mut App) -> Option<SiteRequest> {
-        use crate::app_evm::QueuedItem;
+        use yw_engine::wallet::app_evm::QueuedItem;
         loop {
             let mut finished = Vec::new();
             let shown = app.evm.queue.show_next(0, &mut finished);
@@ -394,7 +395,7 @@ mod tests {
 
     /// The send waiter `sol_dapp_consumed` leaves for `site`.
     fn send_waiter(app: &mut App, site: &SiteRequest) -> yw_engine::events::SignTicket {
-        app.push_sign_waiter(crate::app_browser::SignWaiter::Chain(
+        app.push_sign_waiter(yw_engine::wallet::app_browser::SignWaiter::Chain(
             site.reply,
             Box::new(ChainAnswer::SolTx {
                 public: public(),
@@ -552,8 +553,8 @@ mod tests {
     }
 
     /// [`evm_account`] signing for `https://app.example`.
-    fn evm_signer() -> crate::app_browser::SiteSigner {
-        crate::app_browser::SiteSigner {
+    fn evm_signer() -> yw_engine::wallet::app_browser::SiteSigner {
+        yw_engine::wallet::app_browser::SiteSigner {
             origin: BrowserOrigin::parse("https://app.example").unwrap(),
             account: evm_account(),
         }

@@ -258,7 +258,7 @@ fn max_with_a_failing_quote_asks_once() {
         &yw_platform::http::HttpsUrl::parse("https://rpc.example.test/").unwrap(),
     );
     let (tx, rx) = std::sync::mpsc::channel();
-    app.rpc_tx = Some(tx);
+    app.set_rpc_tx(tx);
     let quotes = |rx: &std::sync::mpsc::Receiver<RpcJob>| {
         rx.try_iter()
             .filter(|job| matches!(job, RpcJob::Quote { .. }))

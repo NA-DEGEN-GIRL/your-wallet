@@ -51,6 +51,21 @@
 //! frozen" meant only the `#[test]` fn text. This file, `frozen-tests.txt` and
 //! `frozen-helpers.txt` are in the FZ frozen-file list (spec/09 §2.1): no `-` line after the
 //! F-A review commit except what a line's rule allows.
+//!
+//! 2026-11-23 (spec/15 §11.4 S5-0, spec/09 §2.1; S5 plan §1.4, owner item O-2 recommended,
+//! 주인 상시 결정(2026-11-21): 권고안): the S4 freeze ends with S4, and these rules carry on as the
+//! S5 safety net. Golden **content** stays byte-equal for all of S5 (`s3_census`, `s4_flow`,
+//! `s4_secret`, the engine/core/app approval goldens). `frozen-tests.txt` is no longer "never
+//! changed": a line's hash column may be re-recorded only by a named S5 commit (a word of
+//! [`PLANNED`]) whose diff of that test is a path, accessor or type rename with the same
+//! assertions, recorded twice with different `TMP` by [`print_frozen_tests`] (which since S5-0
+//! re-computes the hash column only) and listed in the commit body with its reason; the paths,
+//! leaf names, the line count (206) and the run/ignored states never change
+//! ([`frozen_test_names_never_change`]). S5-0 re-recorded the 23 lines whose bodies named the
+//! S4d E1 test-path shims and the S2 facade entries, or the three wallet fields that became
+//! accessors (spec/15 §18 28, 31 (가)). `fixed` lines of `frozen-helpers.txt` stay fixed; `mutable`
+//! lines may be re-recorded by a named S4 or S5 commit; the commit-list lines change only in their
+//! listed commits (S3 gains `S5-10`, declared in S5-0). Gate steps `winui` and `s4fz` stay.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -60,13 +75,20 @@ const FROZEN: &str = include_str!("s4_flow/frozen-tests.txt");
 /// Lines of `frozen-tests.txt` at F-A (the check cannot pass on an emptied file, A-20).
 const FROZEN_LINES: usize = 206;
 
+/// The first 8 bytes (hex) of the SHA-256 of `frozen-tests.txt` without its hash column (each
+/// line's path, leaf name and state, each line ending in a newline): what no S5 re-recording may
+/// change (2026-11-23, S5-0).
+const FROZEN_NAMES_DIGEST: &str = "b5ccc769b0e6d94b";
+
 /// Which tests of a file are frozen.
 enum Pick {
     All,
     Only(&'static [&'static str]),
 }
 
-/// The frozen set at F-A, by the file each test was in then (used by the recorder only).
+/// The frozen set at F-A, by the file each test was in then (the F-A recorder chose the lines
+/// from it; since S5-0 [`print_frozen_tests`] re-computes the hash column of the committed lines
+/// instead, and [`frozen_set_names_the_committed_files`] keeps this list true to the file).
 const FROZEN_SET: [(&str, Pick); 12] = [
     ("yw-engine/tests/approval_interaction.rs", Pick::All),
     ("yw-engine/tests/approval_golden.rs", Pick::All),
@@ -842,12 +864,17 @@ const HELPER_LINES: usize = 643;
 /// flip keeps the `ai_*` text it scans). The words `F14`, `F15`, `F16`, `F17` and `F19` are not
 /// added: no frozen line's rule names those owner-approved fixes; F14 and F15 left every frozen
 /// line byte-equal, and F16, F17 and F19 must too (or stop for the owner).
-const PLANNED: [&str; 57] = [
+/// 2026-11-23 (spec/15 §11.4 S5-0; S5 plan §1.4, §6): 57 → 69, the S5 rows `S5-0` … `S5-10` and
+/// `Z-e`: a `mutable` line or a `frozen-tests.txt` hash column is re-recorded only by a commit of
+/// one of these rows (or of the S4 rows above) that names the line, and a commit-list rule may
+/// name them (S3's list gains `S5-10`, where the AI step becomes a `Cmd::Approval` input).
+const PLANNED: [&str; 69] = [
     "F1", "F2", "B1a", "B1b", "B2", "B3", "B4a", "B4b", "B5", "B6", "B7", "Z-a", "P1", "P2", "P3",
     "P4", "P5", "P6", "P7a1", "P7a2", "P7b", "P8", "P9", "P10", "Z-b", "W0", "W1", "W2", "W3",
     "W3a", "W3b", "W4", "W5", "W6", "W7", "W8", "W9", "W10", "W11", "W12", "W13", "W14a", "W14b",
     "W14c", "W14c-1", "W14c-2", "W15", "Z-c", "E0a", "E0b", "E0c", "E1", "E2", "E3a", "E3b", "E4",
-    "Z-d",
+    "Z-d", "S5-0", "S5-1", "S5-2", "S5-3", "S5-4", "S5-5", "S5-6", "S5-7", "S5-8", "S5-9", "S5-10",
+    "Z-e",
 ];
 
 /// A frozen test file whose non-test items are pinned: its F-A path, the name prefix of the
@@ -973,6 +1000,8 @@ const HELPER_SET: [HelperFile; 14] = [
 /// 2026-11-23 (S4d E1; owner decision 2026-11-21, second batch, pre-approved, spec/15 §18 18): S1
 /// may change in `E1` too, so it follows the flow half to yw-engine (it reads both halves since,
 /// and still asserts `topmost(true)` and `MA_ACTIVATEANDEAT`).
+/// 2026-11-23 (spec/15 §11.4 S5-0; S5 plan §1.4): S3 may change in `S5-10` too, where the AI
+/// panel's step becomes a `Cmd::Approval` input (it still asserts that no AI code names the gate).
 const SOURCE_CHECKS: [(&str, &str); 3] = [
     (
         "approval_window_is_topmost_and_eats_activating_clicks",
@@ -982,7 +1011,10 @@ const SOURCE_CHECKS: [(&str, &str); 3] = [
         "approve_enter_is_physical_and_not_injected",
         "B2,B4a,B4b,B5",
     ),
-    ("ai_never_touches_the_gate", "B2,B4a,B4b,B5,W14a,W14b,E1"),
+    (
+        "ai_never_touches_the_gate",
+        "B2,B4a,B4b,B5,W14a,W14b,E1,S5-10",
+    ),
 ];
 const SOURCE_CHECKS_PATH: &str = "yw-app/src/app_approval_input_tests.rs";
 
@@ -1216,36 +1248,68 @@ fn the_body_hash_ignores_layout_and_comments_only() {
     assert!(tests_of("x.rs", other).is_empty());
 }
 
-/// Writes `frozen-tests.txt` into `YW_S4_FLOW_OUT` (recording at F-A only), else compares the
-/// set computed from `FROZEN_SET` with the committed file.
-#[test]
-#[ignore = "F-A recording of s4_flow/frozen-tests.txt (S4)"]
-fn print_frozen_tests() {
-    let all = all_tests();
-    let mut out = String::new();
-    for (path, pick) in &FROZEN_SET {
-        let in_file: Vec<&Found> = all.iter().filter(|test| test.path == *path).collect();
-        let chosen: Vec<&Found> = match pick {
-            Pick::All => {
-                assert!(!in_file.is_empty(), "no test in {path}");
-                in_file
-            }
-            Pick::Only(names) => {
-                for name in *names {
-                    let count = in_file.iter().filter(|test| test.leaf == *name).count();
-                    assert_eq!(count, 1, "{name} in {path}");
-                }
-                in_file
-                    .into_iter()
-                    .filter(|test| names.contains(&test.leaf.as_str()))
-                    .collect()
-            }
-        };
-        for test in chosen {
-            out.push_str(&test.line());
-            out.push('\n');
-        }
+/// The F-A files whose frozen tests are in another file now (relative to `crates/`): the eight
+/// A-4 tests of `app_chain_sites.rs` are in its `#[path]` child `app/tests/chain_sites.rs` since
+/// S4 W0 (2026-11-21).
+const MOVED: [(&str, &str); 1] = [(
+    "yw-app/src/app_chain_sites.rs",
+    "yw-app/src/app/tests/chain_sites.rs",
+)];
+
+/// `frozen-tests.txt` with each line's hash column re-computed (2026-11-23, S5-0): a line whose
+/// test is unchanged keeps its hash (the same match as [`match_entries`]); every other line takes
+/// the hash of the test of its leaf name in the file that holds that F-A file's frozen tests now
+/// (its F-A file, or [`MOVED`]), in file order, not `#[ignore]`d if it ran at F-A. Paths, leaf
+/// names, states and the line order are the file's own.
+fn rerecorded_frozen_tests() -> String {
+    use std::fmt::Write as _;
+    let frozen = entries();
+    let found = all_tests();
+    let picks = match_entries(&frozen, &found);
+    let mut used = vec![false; found.len()];
+    for k in picks.iter().flatten() {
+        used[*k] = true;
     }
+    let mut out = String::new();
+    for (entry, pick) in frozen.iter().zip(&picks) {
+        let hash = if let Some(k) = pick {
+            found[*k].hash.clone()
+        } else {
+            let home = MOVED
+                .iter()
+                .find(|(then, _)| *then == entry.path)
+                .map_or(entry.path, |(_, now)| *now);
+            let k = found.iter().enumerate().position(|(k, test)| {
+                !used[k]
+                    && test.path == home
+                    && test.leaf == entry.leaf
+                    && (entry.ignored || !test.ignored)
+            });
+            assert!(
+                k.is_some(),
+                "{} {}: no test in {home}",
+                entry.path,
+                entry.leaf
+            );
+            let k = k.unwrap();
+            used[k] = true;
+            found[k].hash.clone()
+        };
+        let state = if entry.ignored { "ignored" } else { "run" };
+        let _ = writeln!(out, "{} {} {state} {hash}", entry.path, entry.leaf);
+    }
+    out
+}
+
+/// Writes `frozen-tests.txt` with its hash column re-computed ([`rerecorded_frozen_tests`]) into
+/// `YW_S4_FLOW_OUT`, else compares that with the committed file. Recording only: at F-A (then
+/// from [`FROZEN_SET`]), and since S5-0 in a named S5 commit, which lists every changed line
+/// (2026-11-23; before, the F-A recorder chose the lines from `FROZEN_SET`, and it could not run
+/// after S4 W0 moved the A-4 tests).
+#[test]
+#[ignore = "re-records the hash column of s4_flow/frozen-tests.txt (S5-0)"]
+fn print_frozen_tests() {
+    let out = rerecorded_frozen_tests();
     if let Some(dir) = std::env::var_os("YW_S4_FLOW_OUT") {
         let dir = PathBuf::from(dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1253,6 +1317,56 @@ fn print_frozen_tests() {
         return;
     }
     assert_eq!(out, FROZEN);
+}
+
+/// What an S5 re-recording may not change (2026-11-23, S5-0): the paths, leaf names, the count
+/// and the run/ignored states of `frozen-tests.txt` ([`FROZEN_NAMES_DIGEST`]).
+#[test]
+fn frozen_test_names_never_change() {
+    use std::fmt::Write as _;
+    let frozen = entries();
+    assert_eq!(frozen.len(), FROZEN_LINES);
+    let mut names = String::new();
+    for entry in &frozen {
+        let state = if entry.ignored { "ignored" } else { "run" };
+        let _ = writeln!(names, "{} {} {state}", entry.path, entry.leaf);
+    }
+    assert_eq!(
+        short_hash(&names),
+        FROZEN_NAMES_DIGEST,
+        "frozen-tests.txt paths, names or states"
+    );
+}
+
+/// [`FROZEN_SET`] names exactly the files of `frozen-tests.txt`, in its order, and each
+/// `Pick::Only` list exactly the leaf names of its file's lines (2026-11-23, S5-0: the recorder
+/// no longer reads the set, so this keeps it true).
+#[test]
+fn frozen_set_names_the_committed_files() {
+    let frozen = entries();
+    let mut files: Vec<&str> = Vec::new();
+    for entry in &frozen {
+        if files.last() != Some(&entry.path) {
+            files.push(entry.path);
+        }
+    }
+    let set: Vec<&str> = FROZEN_SET.iter().map(|(path, _)| *path).collect();
+    assert_eq!(files, set);
+    for (path, pick) in &FROZEN_SET {
+        let leaves: BTreeSet<&str> = frozen
+            .iter()
+            .filter(|entry| entry.path == *path)
+            .map(|entry| entry.leaf)
+            .collect();
+        assert!(!leaves.is_empty(), "{path}");
+        if let Pick::Only(names) = pick {
+            assert_eq!(
+                leaves,
+                names.iter().copied().collect::<BTreeSet<_>>(),
+                "{path}"
+            );
+        }
+    }
 }
 
 /// The helper items are the non-test items of a file, with the inline module path; tests,

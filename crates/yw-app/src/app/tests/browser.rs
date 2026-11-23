@@ -88,7 +88,7 @@ fn signing_results_answer_their_own_ticket() {
     let message = app.push_sign_waiter(SignWaiter::Message(reply(2), signer([1; 20])));
     let sol = app.push_sign_waiter(SignWaiter::Chain(
         reply(4),
-        Box::new(crate::app_chain_sites::ChainAnswer::SolTx {
+        Box::new(yw_engine::wallet::app_chain_sites::ChainAnswer::SolTx {
             public: [1; 32],
             origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
             batch: false,
@@ -503,7 +503,7 @@ fn a_reload_without_a_cards_accounts_drops_them_from_the_grants() {
     };
     let reload = |app: &mut App, meta: yw_engine::meta::Meta| {
         app.on_key_result(KeyResult {
-            epoch: app.lock_epoch,
+            epoch: app.lock_epoch(),
             outcome: KeyOutcome::Meta(Ok(MetaLoaded {
                 meta: Box::new(meta),
                 mismatch: false,
@@ -602,7 +602,7 @@ fn an_unconfirmed_phrase_account_is_tagged_and_refused_before_the_window() {
             .accounts
             .iter()
             .position(|(choice, ..)| {
-                *choice == crate::app_chain_sites::ConnectChoice::Evm(addr(address))
+                *choice == yw_engine::wallet::app_chain_sites::ConnectChoice::Evm(addr(address))
             })
             .unwrap()
     };

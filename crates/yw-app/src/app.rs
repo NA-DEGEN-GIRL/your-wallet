@@ -85,23 +85,21 @@ pub mod text;
 pub(crate) mod secret_seam;
 // 2026-11-23 (spec/15 §11.4 S4d E1): the wallet half of this file (`Wallet`, its types and every
 // `impl Wallet` block, which S4d E0b had split into the child module `app::wallet`) is
-// `yw_engine::wallet`; this file is the Windows shell. The E0b re-exports are gone; the frozen
-// tests' paths `crate::app::{AppMode, Purpose, Wallet}` and `yw_app::app::TestState` stay as
-// test-path shims until the S4 freeze ends (preflight O-1, spec/15 §18 28). (E0b had left a
-// doubled `#[cfg(debug_assertions)]` on the `cred_fingerprint` import, from the removed
-// `CredTaken` re-export; gone with it.)
+// `yw_engine::wallet`; this file is the Windows shell. (E0b had left a doubled
+// `#[cfg(debug_assertions)]` on the `cred_fingerprint` import, from the removed `CredTaken`
+// re-export; gone with it.) 2026-11-23 (spec/15 §11.4 S5-0, §18 28): the test-path shims
+// `crate::app::{AppMode, Purpose, Wallet}` (`#[cfg(test)] pub(crate)`) and
+// `yw_app::app::TestState` (`#[doc(hidden)] pub`), kept from S4d E1 for the bodies of the tests
+// frozen at F-A, are gone with the S4 freeze; those bodies name `yw_engine::wallet::…`.
 use yw_engine::wallet::DisplayCheck;
+#[cfg(test)]
+use yw_engine::wallet::Purpose;
 use yw_engine::wallet::Screen;
-#[doc(hidden)]
-pub use yw_engine::wallet::TestState;
 #[cfg(debug_assertions)]
 use yw_engine::wallet::cred_fingerprint;
 #[cfg(test)]
 use yw_engine::wallet::quicknode_input;
 use yw_engine::wallet::text::T_CLIP_NOT_CLEARED;
-#[cfg(test)]
-pub(crate) use yw_engine::wallet::{AppMode, Purpose, Wallet};
-#[cfg(not(test))]
 use yw_engine::wallet::{AppMode, Wallet};
 
 use text::{PASTE_CLEARED, T_CLIP_CLEARED_LATE};
@@ -2597,8 +2595,10 @@ impl App {
         let shadow = core::mem::take(&mut self.cred_shadow);
         for (field, took_len, took_digest) in self.wallet.take_cred_log() {
             #[cfg(test)]
-            self.cred_reads
-                .push((cmd_table::id_of(self.last_press), field));
+            self.cred_reads.push((
+                cmd_table::id_of(test_steps::last_press(&self.wallet)),
+                field,
+            ));
             if self.mode == AppMode::ShuttingDown {
                 continue;
             }
@@ -2724,6 +2724,14 @@ pub(crate) mod test_steps {
 
     pub(crate) fn on_sites(wallet: &mut Wallet, press: SitesPress) {
         wallet.on_sites(press);
+    }
+
+    /// The last press, for the credential-read record of [`super::App::cred_check`]
+    /// (2026-11-23, spec/15 §11.4 S5-0, §18 31 (가): `Wallet::last_press` is `pub(crate)` since;
+    /// before, the record read the `#[doc(hidden)] pub` field).
+    #[cfg(debug_assertions)]
+    pub(crate) fn last_press(wallet: &Wallet) -> yw_engine::cmd::Press {
+        wallet.last_press()
     }
 }
 

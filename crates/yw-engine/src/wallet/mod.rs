@@ -540,11 +540,14 @@ pub struct Wallet {
     pub clock: Arc<dyn Clock>,
     pub key_queue: Arc<KeyQueue>,
     pub lock_signal: Arc<LockSignal>,
-    #[doc(hidden)]
-    pub rpc_tx: Option<Sender<RpcJob>>,
+    /// 2026-11-23 (spec/15 §11.4 S5-0, §18 31 (가)): `pub(crate)`; from S4d E1 until S5-0
+    /// `#[doc(hidden)] pub` because frozen test bodies wrote it as a field. Tests set it with
+    /// `testkit::WalletTestExt::set_rpc_tx`.
+    pub(crate) rpc_tx: Option<Sender<RpcJob>>,
     pub mode: AppMode,
-    #[doc(hidden)]
-    pub lock_epoch: u64,
+    /// 2026-11-23 (S5-0, §18 31 (가)): `pub(crate)` (was `#[doc(hidden)] pub`); tests read it
+    /// with `testkit::WalletTestExt::lock_epoch`.
+    pub(crate) lock_epoch: u64,
     pub settings: Settings,
     pub apikeys: ApiKeys,
     pub banners: Vec<Banner>,
@@ -561,8 +564,9 @@ pub struct Wallet {
     /// 2026-11-20 (S4 P6): also the last command; the control id field `command` (always
     /// `cmd_table::id_of(last_press)` after a press; S3 D3: an id that is no press changed only
     /// it, which nothing but tests read) is gone, and such an id now only clears the copy mark.
-    #[doc(hidden)]
-    pub last_press: Press,
+    /// 2026-11-23 (S5-0, §18 31 (가)): `pub(crate)` (was `#[doc(hidden)] pub`); tests read it
+    /// with `testkit::WalletTestExt::last_press`.
+    pub(crate) last_press: Press,
     pub mismatch_checked: bool,
     pub overwrite_checked: bool,
     /// 고급 설정 보기 (technical settings and fee details shown).

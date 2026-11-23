@@ -1010,7 +1010,7 @@ fn sol_dapp_approval(
     rpc: &SolDappTourRpc,
 ) {
     let (tx, rx) = mpsc::channel();
-    entry(app).rpc_tx = Some(tx);
+    entry(app).set_rpc_tx(tx);
     dapp_request(
         app,
         "https://app.example.org",
@@ -1046,7 +1046,7 @@ fn sol_approval(app: &Rc<RefCell<App>>) {
     let (tx, rx) = mpsc::channel();
     {
         let mut state = entry(app);
-        state.rpc_tx = Some(tx);
+        state.set_rpc_tx(tx);
         state.sol_review();
         state.drain();
     }
@@ -1067,7 +1067,7 @@ fn approval(app: &Rc<RefCell<App>>, fixture_name: &str) {
     let (tx, rx) = mpsc::channel();
     {
         let mut state = entry(app);
-        state.rpc_tx = Some(tx);
+        state.set_rpc_tx(tx);
         state.enqueue_app(AppApproval {
             chain_id: SEPOLIA,
             account: evm_address(0),
@@ -1234,7 +1234,7 @@ fn site_approval(app: &Rc<RefCell<App>>) {
     let (tx, rx) = mpsc::channel();
     {
         let mut state = entry(app);
-        state.rpc_tx = Some(tx);
+        state.set_rpc_tx(tx);
         let site = SiteRequest {
             reply: Reply {
                 conn: 1,

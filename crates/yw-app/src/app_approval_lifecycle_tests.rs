@@ -101,7 +101,7 @@ fn deliver(fx: &Fixture, main: &Window, event: UiEvent) {
 /// Key worker outcomes of the current lock epoch, in order, through one event drain (one job's
 /// outcomes: a signature, then the journal view it committed).
 fn deliver_keys(fx: &Fixture, main: &Window, outcomes: Vec<KeyOutcome>) {
-    let epoch = fx.app.borrow().lock_epoch;
+    let epoch = fx.app.borrow().lock_epoch();
     let queue = fx.app.borrow().events.clone().expect("an event queue");
     for outcome in outcomes {
         assert!(

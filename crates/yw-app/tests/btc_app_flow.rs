@@ -880,7 +880,7 @@ fn testnet4_send_end_to_end() -> TestResult {
         ui.approval_finished(
             yw_core::lang::Lang::Ko,
             &bump,
-            yw_app::ui::approval::QueueOutcome::Rejected,
+            yw_engine::approval::QueueOutcome::Rejected,
         );
         Vec::new()
     });
@@ -1042,7 +1042,7 @@ fn send_stopped_by_chain_check_stays_broadcasting() -> TestResult {
     assert!(
         flow.note
             .as_deref()
-            .is_some_and(|note| note.starts_with(yw_app::app_btc::NOT_SENT.ko))
+            .is_some_and(|note| note.starts_with(yw_engine::wallet::app_btc::NOT_SENT.ko))
     );
     let view = view_of(&harness, &record.txid)?;
     assert!(view.can_rebroadcast && !view.can_abandon);
@@ -1069,7 +1069,7 @@ fn comm_failure_survives_restart() -> TestResult {
     assert!(view_of(&harness, &record.txid)?.can_esplora);
     // "Restart": the session flows are gone; a refresh verifies the indexer again.
     harness.ui = BtcUi::default();
-    harness.run(|ui, ctx| ui.refresh(ctx, yw_app::btc::Trigger::User));
+    harness.run(|ui, ctx| ui.refresh(ctx, yw_engine::btc::Trigger::User));
     assert!(harness.ui.indexer_verified);
     assert!(harness.ui.flow(&record.txid).is_none());
     assert!(view_of(&harness, &record.txid)?.can_esplora);
@@ -1139,7 +1139,7 @@ fn reset_tip_after_regression() -> TestResult {
     if let Some(stored) = harness.meta.as_mut() {
         stored.btc = Some(Box::new(raised));
     }
-    harness.run(|ui, ctx| ui.refresh(ctx, yw_app::btc::Trigger::User));
+    harness.run(|ui, ctx| ui.refresh(ctx, yw_engine::btc::Trigger::User));
     assert!(harness.ui.tip_regressed, "{:?}", harness.ui.blocked);
     let confirms = harness.confirms;
     harness.run(BtcUi::reset_tip);
@@ -1163,7 +1163,7 @@ fn look_alike_recipient_needs_ack() -> TestResult {
     if let Some(meta) = harness.meta.as_mut() {
         meta.upsert_activity(
             "bitcoin:testnet4",
-            &yw_app::meta::ActivityEntry {
+            &yw_engine::meta::ActivityEntry {
                 account: String::new(),
                 tx_id: "11".repeat(32),
                 title: "[Bitcoin testnet4] 보내기: 0.00010000 BTC".to_owned(),
@@ -1255,8 +1255,8 @@ fn network_mismatch_blocks() -> TestResult {
         events.first(),
         Some(UiEvent::Rpc(RpcEvent::Btc(event))) if matches!(
             **event,
-            BtcRpcEvent::Refreshed { result: Err(yw_app::btc::BtcError::Blocked(
-                yw_app::btc::BtcBlock::NetworkMismatch
+            BtcRpcEvent::Refreshed { result: Err(yw_engine::btc::BtcError::Blocked(
+                yw_engine::btc::BtcBlock::NetworkMismatch
             )), .. }
         )
     ));
@@ -1301,7 +1301,7 @@ fn locked_no_btc_calls_except_esplora_test() -> TestResult {
     assert_eq!(last.path(), "/block-height/0");
     let (net, message, state) = harness.ui.esplora_tests.first().cloned().ok_or("message")?;
     assert_eq!(net, BtcNetwork::Testnet4);
-    assert_eq!(state, yw_app::app::TestState::Works);
+    assert_eq!(state, yw_engine::wallet::TestState::Works);
     assert_eq!(
         message,
         "Esplora 서버가 작동합니다. (Bitcoin testnet4, genesis 일치)"
@@ -1429,11 +1429,11 @@ fn approval_view_shows_btc_money_rows() -> TestResult {
         look_alike: None,
     };
     let draft = BtcUi::draft(yw_core::lang::Lang::Ko, &item, ApprovalId::random()?)
-        .map_err(yw_app::errors::ErrorCode::code)?;
+        .map_err(yw_engine::errors::ErrorCode::code)?;
     let request = ApprovalStore::new().issue(draft, 1, 1_793_074_713_000)?;
     // Folded (`자세히` closed): the summary, the money rows and the critical fields only.
-    let folded = yw_app::ui::approval_view::signing_view(&request, false, true, Vec::new(), false)
-        .map_err(yw_app::errors::ErrorCode::code)?;
+    let folded = yw_engine::approval::view::signing_view(&request, false, true, Vec::new(), false)
+        .map_err(yw_engine::errors::ErrorCode::code)?;
     let folded_labels: Vec<String> = folded
         .blocks
         .iter()
@@ -1459,8 +1459,8 @@ fn approval_view_shows_btc_money_rows() -> TestResult {
         folded.blocks.first(),
         Some(Block::Summary { sentence, address: Some(_), .. }) if sentence.contains("아래 주소로 보냅니다")
     ));
-    let view = yw_app::ui::approval_view::signing_view(&request, true, true, Vec::new(), false)
-        .map_err(yw_app::errors::ErrorCode::code)?;
+    let view = yw_engine::approval::view::signing_view(&request, true, true, Vec::new(), false)
+        .map_err(yw_engine::errors::ErrorCode::code)?;
     let sections: Vec<&str> = view
         .blocks
         .iter()
@@ -1514,7 +1514,7 @@ fn approval_view_shows_btc_money_rows() -> TestResult {
             .any(|(_, value)| value.contains("BITCOIN TESTNET4"))
     );
     assert_eq!(
-        yw_app::ui::approval_view::BtcBanner::of(BtcNetwork::Mainnet).text(yw_core::lang::Lang::Ko),
+        yw_engine::approval::view::BtcBanner::of(BtcNetwork::Mainnet).text(yw_core::lang::Lang::Ko),
         "BITCOIN MAINNET"
     );
     Ok(())
@@ -1715,7 +1715,7 @@ fn every_address_type_end_to_end() -> TestResult {
         assert!(harness.ui.add_account_open);
         assert_eq!(
             harness.ui.add_source,
-            yw_app::app_btc::BtcAddSource::Standard
+            yw_engine::wallet::app_btc::BtcAddSource::Standard
         );
         harness.run(|ui, ctx| ui.add_account(ctx, script_type));
         assert!(!harness.ui.add_account_open);
@@ -2283,13 +2283,13 @@ fn imported_key_removal() -> TestResult {
     assert!(harness.ui.slot);
     assert_eq!(
         harness.ctx().remove_block(id, harness.ui.slot),
-        Some(yw_app::app_btc::REMOVE_BUSY_APPROVAL.ko)
+        Some(yw_engine::wallet::app_btc::REMOVE_BUSY_APPROVAL.ko)
     );
     harness.approve()?;
     // In flight: the UI and the key worker both refuse; nothing is removed.
     assert_eq!(
         harness.ctx().remove_block(id, harness.ui.slot),
-        Some(yw_app::app_btc::REMOVE_BUSY_IN_FLIGHT.ko)
+        Some(yw_engine::wallet::app_btc::REMOVE_BUSY_IN_FLIGHT.ko)
     );
     let outcomes = harness.key.handle(KeyJob::RemoveImportedKey {
         password: Zeroizing::new(PASSWORD.to_vec()),
@@ -2480,7 +2480,7 @@ fn hostile_rpc_rejection_after_receiving_constrains_next_send() -> TestResult {
 /// job, no RPC call.
 #[test]
 fn cancel_after_precheck_failure_constrains_next_send() -> TestResult {
-    use yw_app::workers::journal::btc::BtcJournalOp;
+    use yw_engine::workers::journal::btc::BtcJournalOp;
     let mut harness = Harness::new("cancel-disclosed")?;
     let small = add_second_funding(&harness, 60_000)?;
     let big = funding_outpoint()?;
@@ -2642,7 +2642,7 @@ fn remove_bypassing_block(harness: &mut Harness, id: [u8; 16]) -> TestResult {
 /// so at most one of the two can confirm.
 #[test]
 fn reimported_key_must_conflict_with_its_abandoned_send() -> TestResult {
-    use yw_app::workers::journal::btc::BtcJournalOp;
+    use yw_engine::workers::journal::btc::BtcJournalOp;
     let info = imported_info(BIP49_TEST_WIF, ScriptType::P2wpkh)?;
     let ours = script_pubkey(&info.kind);
     let mut harness = Harness::new("reimport-abandoned")?;
@@ -2687,7 +2687,7 @@ fn reimported_key_must_conflict_with_its_abandoned_send() -> TestResult {
     // It may still confirm: the key stays (UI before the password, and the key worker).
     assert_eq!(
         harness.ctx().remove_block(id, harness.ui.slot),
-        Some(yw_app::app_btc::REMOVE_BUSY_IN_FLIGHT.ko)
+        Some(yw_engine::wallet::app_btc::REMOVE_BUSY_IN_FLIGHT.ko)
     );
     let record_id = yw_core::vault::RecordId::from_bytes(id);
     let outcomes = harness.key.handle(KeyJob::RemoveImportedKey {
@@ -2731,7 +2731,7 @@ fn reimported_key_must_conflict_with_its_abandoned_send() -> TestResult {
             },
             harness.ui.slot
         ),
-        Some(yw_app::app_btc::REMOVE_BUSY_IN_FLIGHT.ko)
+        Some(yw_engine::wallet::app_btc::REMOVE_BUSY_IN_FLIGHT.ko)
     );
     // Unconstrained, the smallest sufficient input (60,000) would be chosen.
     send_form(&mut harness, "20000", "3");
@@ -2756,7 +2756,7 @@ fn reimported_key_must_conflict_with_its_abandoned_send() -> TestResult {
 /// address type is a different address and is imported.
 #[test]
 fn wif_of_an_hd_address_is_refused() -> TestResult {
-    use yw_app::events::ImportedAccount;
+    use yw_engine::events::ImportedAccount;
     let mut harness = Harness::new("wif-alias")?;
     harness.enable();
     harness.run(|ui, ctx| ui.add_account(ctx, ScriptType::P2shP2wpkh));
@@ -2941,7 +2941,7 @@ fn fixed_address_mode_end_to_end() -> TestResult {
     harness.run(|ui, ctx| ui.set_address_mode(ctx, true));
     assert_eq!(
         harness.ui.account_message.as_deref(),
-        Some(yw_app::app_btc::ADDRESS_MODE_BUSY.ko)
+        Some(yw_engine::wallet::app_btc::ADDRESS_MODE_BUSY.ko)
     );
     assert!(!harness.btc_meta().ok_or("meta")?.fixed_address());
     harness.ui.slot = false;
@@ -2998,11 +2998,11 @@ fn evm_shared_account_end_to_end() -> TestResult {
         });
         assert_eq!(
             harness.ui.add_source,
-            yw_app::app_btc::BtcAddSource::Standard
+            yw_engine::wallet::app_btc::BtcAddSource::Standard
         );
         // (b) needs the explicit choice and the confirmation.
         harness.run(|ui, ctx| {
-            ui.set_add_source(yw_app::app_btc::BtcAddSource::EvmShared);
+            ui.set_add_source(yw_engine::wallet::app_btc::BtcAddSource::EvmShared);
             ui.set_add_evm_index(ctx, 0);
             Vec::new()
         });
@@ -3082,7 +3082,7 @@ fn evm_shared_account_end_to_end() -> TestResult {
         let before = harness.meta.as_ref().ok_or("meta")?.btc_accounts.clone();
         harness.run(|ui, ctx| {
             ui.open_add_account(ctx);
-            ui.set_add_source(yw_app::app_btc::BtcAddSource::EvmShared);
+            ui.set_add_source(yw_engine::wallet::app_btc::BtcAddSource::EvmShared);
             Vec::new()
         });
         harness.run(|ui, ctx| ui.add_account(ctx, script_type));
@@ -3112,7 +3112,7 @@ fn evm_shared_account_end_to_end() -> TestResult {
     let before = harness.meta.as_ref().ok_or("meta")?.btc_accounts.clone();
     harness.run(|ui, ctx| {
         ui.open_add_account(ctx);
-        ui.set_add_source(yw_app::app_btc::BtcAddSource::EvmShared);
+        ui.set_add_source(yw_engine::wallet::app_btc::BtcAddSource::EvmShared);
         Vec::new()
     });
     harness.run(|ui, ctx| ui.add_account(ctx, ScriptType::P2wpkh));
@@ -3122,7 +3122,7 @@ fn evm_shared_account_end_to_end() -> TestResult {
     // Another type of the same key is another address: allowed.
     harness.run(|ui, ctx| {
         ui.open_add_account(ctx);
-        ui.set_add_source(yw_app::app_btc::BtcAddSource::EvmShared);
+        ui.set_add_source(yw_engine::wallet::app_btc::BtcAddSource::EvmShared);
         Vec::new()
     });
     harness.run(|ui, ctx| ui.add_account(ctx, ScriptType::P2tr));

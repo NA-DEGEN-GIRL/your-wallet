@@ -586,7 +586,7 @@ impl<'a> Run<'a> {
 
     /// Key worker outcomes of the current lock epoch, in order, through one event drain.
     fn deliver_keys(&self, outcomes: Vec<KeyOutcome>) {
-        let epoch = self.fx.app.borrow().lock_epoch;
+        let epoch = self.fx.app.borrow().lock_epoch();
         let queue = self.fx.app.borrow().events.clone().expect("an event queue");
         for outcome in outcomes {
             assert!(
@@ -1882,7 +1882,7 @@ fn unlock_with_meta(fx: &Fixture, meta: yw_engine::meta::Meta) {
     app.mode = AppMode::Unlocked {
         alt_passphrase: false,
     };
-    let epoch = app.lock_epoch;
+    let epoch = app.lock_epoch();
     app.on_key_result(KeyResult {
         epoch,
         outcome: KeyOutcome::Meta(Ok(MetaLoaded {
@@ -2075,7 +2075,7 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
     let mut disk = DiskWorker::new(&fx);
     // Both grants are in meta (the document a later unlock reads).
     fx.app().write_grants();
-    let epoch = fx.app.borrow().lock_epoch;
+    let epoch = fx.app.borrow().lock_epoch();
     assert_eq!(disk.run(&fx), [format!("MetaSaved@{epoch}")]);
     assert_eq!(
         saved_origins(&disk.saved()).len(),
@@ -2147,7 +2147,7 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
     assert_eq!(fx.app.borrow().screen, Screen::Locked);
     // The worker's `Lock` (at the front) writes the revoke's save first, then wipes; the
     // lock's `Load` follows.
-    let lock_epoch = fx.app.borrow().lock_epoch;
+    let lock_epoch = fx.app.borrow().lock_epoch();
     assert_eq!(lock_epoch, epoch + 1, "one lock");
     assert_eq!(
         queued(&fx),
@@ -2270,7 +2270,7 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
         assert!(chain_grant(&core, &other, sol), "{tag}: granted");
         let mut disk = DiskWorker::new(&fx);
         fx.app().write_grants();
-        let epoch = fx.app.borrow().lock_epoch;
+        let epoch = fx.app.borrow().lock_epoch();
         assert_eq!(
             queued_saves(&fx).iter().map(sites).collect::<Vec<_>>(),
             [1],
@@ -2337,7 +2337,7 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
         }
         // The worker's `Lock` (at the front) writes the revoke's save first, then wipes; the
         // lock's `Load` follows.
-        let lock_epoch = fx.app.borrow().lock_epoch;
+        let lock_epoch = fx.app.borrow().lock_epoch();
         assert_eq!(lock_epoch, epoch + 1, "{tag}: one lock");
         assert_eq!(
             queued(&fx),
@@ -2412,7 +2412,7 @@ fn a_shutdown_writes_a_coalesced_chain_switch_first() {
     let mut disk = DiskWorker::new(&fx);
     // A grant write now: the switch below falls inside the coalescing interval.
     fx.app().write_grants();
-    let before = fx.app.borrow().lock_epoch;
+    let before = fx.app.borrow().lock_epoch();
     assert_eq!(disk.run(&fx), [format!("MetaSaved@{before}")]);
     assert_eq!(
         saved_chain(&disk.saved(), "https://app.example"),
@@ -2464,7 +2464,7 @@ fn a_shutdown_writes_a_coalesced_chain_switch_first() {
                 .is_some_and(|browser| !browser.grant_write.pending()),
             "the shutdown took the waiting write"
         );
-        app.lock_epoch
+        app.lock_epoch()
     };
     assert_eq!(lock_epoch, before + 1, "one lock");
     // The lock is first in the queue, then the shutdown's one meta save (queued before the
@@ -2524,7 +2524,7 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
     grant(&fx, OTHER, ACCOUNT_B);
     let mut disk = DiskWorker::new(&fx);
     fx.app().write_grants();
-    let before = fx.app.borrow().lock_epoch;
+    let before = fx.app.borrow().lock_epoch();
     assert_eq!(disk.run(&fx), [format!("MetaSaved@{before}")]);
     assert_eq!(
         saved_origins(&disk.saved()).len(),
@@ -2588,7 +2588,7 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
             "the shutdown wrote the revoke"
         );
     }
-    let lock_epoch = fx.app.borrow().lock_epoch;
+    let lock_epoch = fx.app.borrow().lock_epoch();
     assert_eq!(lock_epoch, before + 1, "one lock");
     // The worker's `Lock` (at the front) writes the shutdown's meta save before its wipe.
     assert_eq!(

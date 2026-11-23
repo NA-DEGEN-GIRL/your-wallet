@@ -8,7 +8,10 @@
 //! `WalletConnect` worker and key/journal worker texts. 2026-11-20, S4 P7a1: the secret windows'
 //! texts, before `yw_app::ui::secret_text`, are `yw_engine::secret::text`. 2026-11-23, S4d E1: the
 //! catalogues of the wallet modules, before `yw_app::app_*::text` and the wallet's half of
-//! `yw_app::app::text`, are `yw_engine::wallet::…::text`.)
+//! `yw_app::app::text`, are `yw_engine::wallet::…::text`. 2026-11-23, spec/15 §11.4 S5-0 (S5 plan
+//! critic C6, O-13): `yw_app::app::text` names the shell's own block `crate::app::text::ALL`;
+//! from E1 until S5-0 it named `yw_engine::wallet::text::ALL`, which the engine lists under its
+//! own name too, so the six shell texts were in no table.)
 
 use yw_core::lang::Entry;
 
@@ -19,7 +22,7 @@ pub fn catalogues() -> Vec<(&'static str, &'static [Entry])> {
 }
 
 const CATALOGUES: &[(&str, &[Entry])] = &[
-    ("yw_app::app::text", yw_engine::wallet::text::ALL),
+    ("yw_app::app::text", crate::app::text::ALL),
     (
         "yw_app::app_extension::text",
         crate::app_extension::text::ALL,

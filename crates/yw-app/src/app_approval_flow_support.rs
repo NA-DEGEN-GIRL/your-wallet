@@ -61,7 +61,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use yw_engine::testkit::FlowTestExt;
+use yw_engine::testkit::{FlowTestExt, WalletTestExt};
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::evm::address::parse_address;
@@ -438,7 +438,7 @@ impl Fixture {
             state.mode = AppMode::Unlocked {
                 alt_passphrase: false,
             };
-            state.rpc_tx = Some(tx);
+            state.set_rpc_tx(tx);
             state.evm.journal = Some(JournalView {
                 records: Vec::new(),
                 corrupt: 0,
