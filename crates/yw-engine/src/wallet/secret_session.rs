@@ -159,6 +159,13 @@ impl SecretSession {
         self.display.take()
     }
 
+    /// Whether a display secret is held (a flag, never the secret; 2026-11-24, S5-1: for
+    /// `testkit::WalletTestExt::holds_display_secret`, which replaced the tests' take).
+    #[must_use]
+    pub(crate) const fn holds_display(&self) -> bool {
+        self.display.is_some()
+    }
+
     /// The step to take once the window is shown (replaces one set before). 2026-11-20 (S4 P9):
     /// no longer `const` (the step it replaces may hold texts to drop). 2026-11-23 (S4d E1
     /// review): crate-private (E1 had it `#[doc(hidden)] pub`); tests reach it through

@@ -95,7 +95,9 @@ use crate::form::{CredField, EditField, FormState, PressInput};
 // `crate::app::SettingsSection` and `crate::app_scroll::ScrollPlace`; 2026-11-21 (S4b final
 // review, AGENTS.md §4 "no new re-exports"): the callers name `yw_engine::screen` directly.
 use crate::screen::{EnteredAt, ScrollPlace, SettingsSection, Tone};
-use crate::secret::{DisplaySecret, SecretEffect, SecretFormOp, SecretKind, SecretStep};
+use crate::secret::{
+    DisplayHost, DisplayMade, DisplaySecret, SecretEffect, SecretFormOp, SecretKind, SecretStep,
+};
 use crate::services::Services;
 
 use text::T_CLIP_NOT_CLEARED;
@@ -475,18 +477,6 @@ pub struct SettingsGuard {
     pub vault_file: Option<(u64, u64)>,
     /// `(seen, found)`: the meta remembers a newer `vault.ywv` generation than the file has.
     pub(crate) rollback: Option<(u64, u64)>,
-}
-
-/// What the shell read back from a display window it made (the D-4 hand-off,
-/// [`Wallet::hand_display_secret`]; 2026-11-23, S4d E1). 2026-11-23 (S4d E1 review): a plain
-/// value the shell passes, so the engine trusts the shell's read-back; it is not a token only
-/// the capture-exclusion check can make.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DisplayCheck {
-    /// The window exists and its capture exclusion was read back as 0x11.
-    Verified,
-    /// Refused, failed, or made but not excluded: the secret is wiped.
-    Unverified,
 }
 
 /// Import flow buffers held on the UI thread until `PreviewImport` moves them.
@@ -2331,7 +2321,9 @@ impl Wallet {
     // `with_form`) and the lock's clip clear is `SecretEffect::ClearClip`. 2026-11-21 (S4 W2):
     // the take is the composition's (`display_window_handoff`, which `App::drain` reaches through
     // `open_display_composed`), after the shell's `make_display_window` verified the exclusion;
-    // before, the shell's `open_display_window` took it itself.
+    // before, the shell's `open_display_window` took it itself. 2026-11-24 (S5-1, spec/15 §18 30
+    // (나)): the take is the wallet's own `Wallet::open_display_window`, which asks the shell's
+    // `secret::DisplayHost` to make the window and moves the secret into a verified one only.
 
     /// Starts the secret session of a window (a fresh serial, never reused); the caller closed the
     /// previous one first. 2026-11-20 (S4 P7a1): the serial was counted in `create_secret` before.
@@ -2467,7 +2459,8 @@ impl Wallet {
     /// same order as before P7b, when this fn made the window and filled it itself — with one
     /// exception (2026-11-20, P7b review): a window that was made but whose exclusion was not
     /// read back (`Refuse` with a window) is now destroyed inside `open_display_window` (2026-11-21,
-    /// S4 W2: `display_window_handoff`, after the wipe as before), so
+    /// S4 W2: `display_window_handoff`, after the wipe as before; 2026-11-24, S5-1: the wallet's
+    /// [`Self::open_display_window`] with the shell's `DisplayHost`, after the wipe as before), so
     /// before the answer's banner and the S04 change; before P7b it was destroyed after them, at
     /// the end of this fn's match. It is still destroyed after the wipe, was never shown and never
     /// held the secret, so nothing reaches the screen either way.
@@ -2525,6 +2518,8 @@ impl Wallet {
     /// handoff, critique A-3). Called only after the shell verified the window's capture
     /// exclusion; `None` for an ended or another session. 2026-11-21 (S4 W2): called by the
     /// composition `display_window_handoff` (before, by the shell's `open_display_window`).
+    /// 2026-11-24 (S5-1): called only by [`Self::open_display_window`] (for a verified window)
+    /// and [`Self::drop_display_secret`] (before, by `hand_display_secret`).
     #[must_use]
     pub(crate) fn take_display_secret(&mut self, serial: u64) -> Option<DisplaySecret> {
         self.secret_session
@@ -2535,7 +2530,8 @@ impl Wallet {
 
     /// Drops (wipes) the display secret of session `serial` now: its window was refused or
     /// failed (2026-11-20, S4 P7b; `open_display` dropped it itself before). 2026-11-21 (S4 W2):
-    /// called by the composition `display_window_handoff`.
+    /// called by the composition `display_window_handoff`. 2026-11-24 (S5-1): called only by
+    /// [`Self::open_display_window`] for an unverified window (before, by `hand_display_secret`).
     pub(crate) fn drop_display_secret(&mut self, serial: u64) {
         if let Some(display) = self.take_display_secret(serial) {
             // 2026-11-23 (S4d E0b, preflight O-4): a probe note, which the tests' secret seam
@@ -2545,38 +2541,67 @@ impl Wallet {
         }
     }
 
-    /// The D-4 hand-off of a display window's secret (2026-11-23, spec/15 §11.4 S4d E1, preflight
-    /// O-3, 주인 상시 결정(2026-11-21): 권고안, spec/15 §18 28): `check` is what the shell read back
-    /// from the window it made for session `serial`. Only a `Verified` window (made, its capture
-    /// exclusion read back as 0x11) gets the secret, moved out once while `serial` is the open,
-    /// unshown session ([`Self::take_display_secret`]); for an `Unverified` one the secret is
-    /// dropped (wiped) here and `None` comes back. The engine's one way for a shell to the secret:
-    /// `take_display_secret` and `drop_display_secret` stay crate-private (critique A-15). Before
-    /// E1 the shell's composition called those two itself (one crate).
+    /// A display window's open (W08/W09), the one way a display secret leaves the wallet
+    /// (2026-11-24, spec/15 §11.4 S5-1, §18 30 (나), 주인 결정(2026-11-23); spec/04 §4.5 item 4;
+    /// D-4). Only the open of the open, unshown session `serial` goes on (critique A-3: a stale
+    /// or second open makes no window and is `Refused(E-SEC-001)`). The shell's `host` makes the
+    /// window and reads its capture exclusion back ([`DisplayHost::make`]); only a
+    /// [`DisplayMade::Verified`] window gets the secret, moved out of the session once
+    /// ([`Self::take_display_secret`]) and into the host's [`DisplayHost::fill_and_show`] by value,
+    /// with the wallet's clock read right before; the answer is then `Shown { capture_excluded:
+    /// true }`. On [`DisplayMade::Unverified`] the session's secret is dropped (wiped,
+    /// [`Self::drop_display_secret`]) first, then the made window, if any, is dropped (the shell
+    /// destroys it), and the host's outcome is the answer. A verified window whose session holds
+    /// no secret is dropped and refused. Nothing here returns the secret.
     ///
-    /// 2026-11-23 (S4d E1 review): E1 called this "engine-enforced". It is not: the engine trusts
-    /// the `check` the shell passes, so a shell that passes `Verified` gets the secret (this is
-    /// in effect a `pub take_display_secret` that wipes on `Unverified`). That only the shell's
-    /// composition `display_window_handoff` calls it, right after its own read-back, is the
-    /// source check `the_display_secret_moves_only_in_the_composition`; the behaviour is pinned
-    /// by the `s4_secret` goldens.
-    ///
-    /// 2026-11-23 (S4d E2 review): one other caller, test-only: the shell model of
-    /// `testkit::RecordingShell` (S4d E2) takes the secret with `Verified` for a window it made
-    /// for the open, unshown session and wipes it at once; `testkit_is_named_only_by_tests`
-    /// keeps testkit out of production, and the source check names it as its one exception
-    /// (any receiver, not only `self.`).
-    #[must_use]
-    pub fn hand_display_secret(
+    /// Before S5-1 (S4d E1, E1 review) the shell made and read back the window itself, then
+    /// asked for the secret with `hand_display_secret(serial, DisplayCheck::Verified)`, whose
+    /// return value was the secret — any crate could call it with `Verified` (in effect a `pub`
+    /// take), and testkit's `WalletTestExt::take_display_secret` was a second `pub` way to it.
+    /// Both are gone. The engine still trusts what the host reports (spec/15 §18 30); which hosts
+    /// exist, and that only the Windows shell's composition `App::open_display_composed` (and
+    /// testkit's `RecordingShell`) calls this, is the source check
+    /// `the_display_secret_moves_only_in_the_composition`; the behaviour is pinned by the
+    /// `s4_secret` goldens.
+    pub fn open_display_window<H: DisplayHost + ?Sized>(
         &mut self,
+        host: &mut H,
         serial: u64,
-        check: DisplayCheck,
-    ) -> Option<DisplaySecret> {
-        match check {
-            DisplayCheck::Verified => self.take_display_secret(serial),
-            DisplayCheck::Unverified => {
+        kind: SecretKind,
+        step: Option<SecretStep>,
+        timeout_note: Option<&'static str>,
+        lang: Lang,
+    ) -> OpenOutcome {
+        if !self.secret_unshown(serial) {
+            return OpenOutcome::Refused(ErrorCode::Sec001);
+        }
+        match host.make(serial, kind, lang) {
+            DisplayMade::Verified(window) => {
+                let Some(secret) = self.take_display_secret(serial) else {
+                    drop(window);
+                    return OpenOutcome::Refused(ErrorCode::Sec001);
+                };
+                let now_ms = self.clock.now_ms();
+                host.fill_and_show(
+                    serial,
+                    window,
+                    kind,
+                    secret,
+                    step,
+                    timeout_note,
+                    lang,
+                    now_ms,
+                );
+                OpenOutcome::Shown {
+                    capture_excluded: true,
+                }
+            }
+            // A window made but not excluded is destroyed after the wipe and before the answer
+            // (the order of the shell's arm before S5-1; 2026-11-20, P7b review).
+            DisplayMade::Unverified { outcome, window } => {
                 self.drop_display_secret(serial);
-                None
+                drop(window);
+                outcome
             }
         }
     }

@@ -14,7 +14,11 @@
 //!   window's `SecretForm` (built exactly as `open_input_window` / `open_display_window` build it;
 //!   a display secret moves out of the session only in that arm, `take_display_secret`; since
 //!   2026-11-21 (S4 W2) the shell's display open is `make_display_window` + `show_display` with
-//!   the composition `display_window_handoff` between, and the host's one fn mirrors all three), logs
+//!   the composition `display_window_handoff` between, and the host's one fn mirrors all three;
+//!   since 2026-11-24 (S5-1, spec/15 §18 30 (나)) the wallet's `open_display_window` moves the
+//!   secret into a `DisplayHost`'s verified window — the shell's `WinDisplayHost` or, while this
+//!   host makes windows, its [`host::DisplayHeadless`], both handed over by
+//!   `open_display_composed`, and the host's `make`/`fill_and_show` mirror the shell's), logs
 //!   `create:` and `show:` as `create_secret` / `show_secret` do, and answers `Shown`. Its
 //!   messages go through [`host::deliver`], the window-free arms of `on_secret` (character, key,
 //!   timer, close box) with the same form calls and the same `apply_form_action`; its form
@@ -43,7 +47,8 @@
 //! the same goldens but the lines [`SECRET_DEFERRED_DIFFERENCES`] lists with a reason; the run
 //! above is the immediate (Windows) schedule, unchanged.
 //!
-//! The copies of the shell's code here (`open_input_window`'s `Ok(window)` arm, `open_display_window`,
+//! The copies of the shell's code here (`open_input_window`'s `Ok(window)` arm, `open_display_window`
+//! — 2026-11-24, S5-1: `WinDisplayHost`'s `make` and `fill_and_show` —,
 //! `show_secret`'s log, `close_secret_window`'s wipe, `apply_form_op`'s match and `on_secret`'s
 //! arms) are pinned by [`the_headless_secret_host_mirrors_the_shell`], which reads `app.rs` and
 //! this file: each shell statement the host copies is still in the shell fn and, with the
@@ -66,13 +71,14 @@ pub(crate) mod host {
     use yw_core::lang::Lang;
     use yw_engine::approval::flow::OpenOutcome;
     use yw_engine::cmd::Cmd;
-    use yw_engine::secret::{SecretEffect, SecretFormOp, SecretKind, SecretStep};
-    use yw_engine::wallet::DisplayCheck;
+    use yw_engine::secret::{
+        DisplayHost, DisplayMade, DisplaySecret, SecretEffect, SecretFormOp, SecretKind, SecretStep,
+    };
     #[cfg(debug_assertions)]
     use yw_win::ui::{Msg, Reply};
 
-    use crate::app::App;
     use crate::app::secret_seam::{self, Op, Refuse};
+    use crate::app::{App, SecretWin};
     #[cfg(debug_assertions)]
     use crate::app::{VK_CONTROL, VK_MENU, VK_SHIFT, secret_modifier};
     use crate::ui::secret::{CaptureDecision, SecretForm, capture_decision};
@@ -244,9 +250,11 @@ pub(crate) mod host {
         outcome
     }
 
-    /// `show_secret` without a window: the log line and the window record (the host's).
-    fn show(app: &App, serial: u64, form: SecretForm) {
-        debug_assert!(app.secret.is_none(), "a secret window is already open");
+    /// `show_secret_window` without a window: the log line and the window record (the host's).
+    /// 2026-11-24 (S5-1): takes the shell's window record `secret` (was the whole `App`), as
+    /// `show_secret_window` takes its slot.
+    fn show(secret: Option<&SecretWin>, serial: u64, form: SecretForm) {
+        debug_assert!(secret.is_none(), "a secret window is already open");
         secret_seam::log(Op::Show {
             kind: form.kind().id(),
         });
@@ -277,7 +285,7 @@ pub(crate) mod host {
             CaptureDecision::Show { warning } => {
                 let mut form = SecretForm::new(kind, lang, app.clock.now_ms(), !warning);
                 form.set_step(step);
-                show(app, serial, form);
+                show(app.secret.as_ref(), serial, form);
                 OpenOutcome::Shown {
                     capture_excluded: !warning,
                 }
@@ -287,53 +295,90 @@ pub(crate) mod host {
         Some(answered(outcome))
     }
 
-    /// `display_window_handoff`'s hook (2026-11-21, S4 W2: was `open_display_window`'s): as
-    /// [`open_input`], its decision on the window the host says
-    /// was made; the secret leaves the session only in the verified arm, every other arm drops it.
-    pub(crate) fn open_display(
-        app: &mut App,
-        serial: u64,
-        kind: SecretKind,
-        step: Option<SecretStep>,
-        timeout_note: Option<&'static str>,
-        lang: Lang,
-    ) -> Option<OpenOutcome> {
-        let made = made()?;
-        let refused = secret_seam::create(serial, kind, false);
-        assert!(refused.is_none(), "no refusal while the host makes windows");
-        let excluded: Result<bool, ()> = Ok(made);
-        App::log_capture(kind, made);
-        let outcome = match capture_decision(kind, excluded) {
-            CaptureDecision::Show { warning: false } => {
-                let Some(display) = app
-                    .wallet
-                    .hand_display_secret(serial, DisplayCheck::Verified)
-                else {
-                    return Some(answered(OpenOutcome::Refused(ErrorCode::Sec001)));
-                };
-                note(format!("{display:?}"));
-                let mut form = SecretForm::display(kind, lang, app.clock.now_ms(), display);
-                form.set_step(step);
-                form.set_timeout_note(timeout_note);
-                show(app, serial, form);
-                OpenOutcome::Shown {
-                    capture_excluded: true,
+    /// The headless display host (2026-11-24, spec/15 §11.4 S5-1, §18 30 (나), critic C2): what
+    /// `open_display_composed` hands `Wallet::open_display_window` instead of the Windows shell's
+    /// `WinDisplayHost` while [`made`] answers. It borrows the shell's window record only (for
+    /// [`show`]'s check), never the `App` or the wallet. Before S5-1, `display_window_handoff`'s
+    /// hook `open_display(app: &mut App, …)` took the secret itself with
+    /// `hand_display_secret(serial, DisplayCheck::Verified)`.
+    pub(in crate::app) struct DisplayHeadless<'a> {
+        /// The shell's window record (`App::secret`), read by [`show`]'s check.
+        secret: Option<&'a SecretWin>,
+        /// The made window is excluded from capture ([`not_excluded`] off).
+        excluded: bool,
+        /// A verified window was made and has not been filled yet: were it dropped unfilled (the
+        /// session held no secret), the open's answer is `Refused(E-SEC-001)`, as before.
+        unfilled: bool,
+    }
+
+    /// The headless display host for `open_display_composed` (`None`: the production path
+    /// runs, refusals included).
+    pub(in crate::app) fn display_host(secret: Option<&SecretWin>) -> Option<DisplayHeadless<'_>> {
+        let excluded = made()?;
+        Some(DisplayHeadless {
+            secret,
+            excluded,
+            unfilled: false,
+        })
+    }
+
+    /// `WinDisplayHost`'s decision on the window the host says was made (as [`open_input`]);
+    /// the secret goes into the verified window only (`fill_and_show`), every other result leaves
+    /// it to the wallet, which drops it.
+    impl DisplayHost for DisplayHeadless<'_> {
+        type Window = ();
+
+        fn make(&mut self, serial: u64, kind: SecretKind, _lang: Lang) -> DisplayMade<()> {
+            let refused = secret_seam::create(serial, kind, false);
+            assert!(refused.is_none(), "no refusal while the host makes windows");
+            let excluded = self.excluded;
+            App::log_capture(kind, excluded);
+            let decision = capture_decision(kind, Ok(excluded));
+            match decision {
+                CaptureDecision::Show { warning: false } => {
+                    self.unfilled = true;
+                    DisplayMade::Verified(())
                 }
+                CaptureDecision::Show { warning: true } => DisplayMade::Unverified {
+                    outcome: answered(OpenOutcome::Refused(ErrorCode::Sec001)),
+                    window: None,
+                },
+                CaptureDecision::Refuse(code) => DisplayMade::Unverified {
+                    outcome: answered(OpenOutcome::Refused(code)),
+                    window: None,
+                },
             }
-            CaptureDecision::Show { warning: true } => {
-                let _none = app
-                    .wallet
-                    .hand_display_secret(serial, DisplayCheck::Unverified);
-                OpenOutcome::Refused(ErrorCode::Sec001)
+        }
+
+        fn fill_and_show(
+            &mut self,
+            serial: u64,
+            (): (),
+            kind: SecretKind,
+            display: DisplaySecret,
+            step: Option<SecretStep>,
+            timeout_note: Option<&'static str>,
+            lang: Lang,
+            now_ms: u64,
+        ) {
+            self.unfilled = false;
+            note(format!("{display:?}"));
+            let mut form = SecretForm::display(kind, lang, now_ms, display);
+            form.set_step(step);
+            form.set_timeout_note(timeout_note);
+            show(self.secret, serial, form);
+            let _shown = answered(OpenOutcome::Shown {
+                capture_excluded: true,
+            });
+        }
+    }
+
+    impl Drop for DisplayHeadless<'_> {
+        fn drop(&mut self) {
+            if self.unfilled {
+                let _refused = answered(OpenOutcome::Refused(ErrorCode::Sec001));
             }
-            CaptureDecision::Refuse(code) => {
-                let _none = app
-                    .wallet
-                    .hand_display_secret(serial, DisplayCheck::Unverified);
-                OpenOutcome::Refused(code)
-            }
-        };
-        Some(answered(outcome))
+        }
     }
 
     /// `close_secret_window`'s hook: the held window of session `serial` is wiped and closed
@@ -888,15 +933,23 @@ fn a_made_but_unexcluded_display_window_drops_its_secret() {
 /// `app.rs` still holds, in order and whitespace aside (comments dropped), the statements the host
 /// copies, and its hook comes first. A change to one of them fails here until the host's copy
 /// follows it. 2026-11-20 (S4 P8 review): the host's side too — each host fn of this file
-/// (`open_input`, `open_display`, `show`, `close`, `form_op`, `deliver`) holds the same shell
-/// statements in the same order, spelled with the documented renames (`self.show_secret(serial,
-/// window, form)` → `show(app, serial, form)`, `secret_seam::Op::` → `Op::`, `self.` → `app.`,
-/// `Self::` → `App::`); before, a change made only in the host (say, its `Refuse` arm no longer
-/// dropping the display secret) passed here.
+/// (`open_input`, the display host's `make` and `fill_and_show`, `show`, `close`, `form_op`,
+/// `deliver`) holds the same shell statements in the same order, spelled with the documented
+/// renames (`self.show_secret(serial, window, form)` → `show(app.secret.as_ref(), serial, form)`,
+/// `secret_seam::Op::` → `Op::`, `self.` → `app.`, `Self::` → `App::`); before, a change made only
+/// in the host (say, its `Refuse` arm no longer dropping the display secret) passed here.
+/// 2026-11-24 (spec/15 §11.4 S5-1, §18 30 (나)): a display window's open is the wallet's
+/// `Wallet::open_display_window` with a `DisplayHost`: the shell's `WinDisplayHost` (`make`,
+/// `fill_and_show`, over the free fns `create_secret_window` and `show_secret_window`, which hold
+/// the bodies of `App::create_secret`/`App::show_secret` of before) and the host's
+/// `DisplayHeadless` (the same two fns), both handed over by `open_display_composed`; the
+/// engine's half (`open_display_window`) is pinned by `the_display_secret_moves_only_in_the_composition`.
+/// Before, the composition `display_window_handoff` with its hook `host::open_display(self, …)`,
+/// the shell's `make_display_window` and `show_display`, and the engine's `hand_display_secret`.
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "two tables of the shell statements the host copies"
+    reason = "three tables of the shell statements the host copies"
 )]
 fn the_headless_secret_host_mirrors_the_shell() {
     /// The body of `fn name` in `source` (from `fn name(` to its closing brace), without `//`
@@ -951,7 +1004,7 @@ fn the_headless_secret_host_mirrors_the_shell() {
         squeeze(part)
             .replace(
                 "self.show_secret(serial,window,form)",
-                "show(app,serial,form)",
+                "show(app.secret.as_ref(),serial,form)",
             )
             .replace("secret_seam::Op::", "Op::")
             .replace("self.", "app.")
@@ -960,7 +1013,7 @@ fn the_headless_secret_host_mirrors_the_shell() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let source = std::fs::read_to_string(src.join("app.rs")).unwrap();
     let host_source = std::fs::read_to_string(src.join("app/tests/s4_secret.rs")).unwrap();
-    let checks: [(&str, &[&str]); 10] = [
+    let checks: [(&str, &[&str]); 12] = [
         (
             "open_input_window",
             &[
@@ -975,63 +1028,74 @@ fn the_headless_secret_host_mirrors_the_shell() {
                  drop(window); OpenOutcome::Refused(code) } } }",
             ],
         ),
-        // 2026-11-21 (S4 W2, plan §3.4, D-4): a display window's open is the composition's
-        // (`display_window_handoff`, called by `open_display_composed` from `App::drain`), with
-        // the shell's two halves `make_display_window` and `show_display`; before, one shell fn
-        // `open_display_window` held all of it, in this order. 2026-11-22 (S4c W15): the take and
-        // the drop are named on the wallet (`self.wallet.`; non-test builds have no `DerefMut`),
-        // and the host spells them the same way. 2026-11-23 (S4d E1, preflight O-3): the take and
-        // the drop are the engine's one hand-off `hand_display_secret` with the shell's check
-        // (`DisplayCheck::Verified` / `Unverified`); `take_display_secret`/`drop_display_secret`
-        // are crate-private in yw-engine.
+        // 2026-11-21 (S4 W2, plan §3.4, D-4): a display window's open is the composition's,
+        // called by `App::drain`. 2026-11-24 (S5-1, spec/15 §18 30 (나)): the composition hands
+        // the open to the wallet's `open_display_window` with the host's `DisplayHeadless` while
+        // it is installed (first), else with the shell's `WinDisplayHost` over the shell fields
+        // `main`, `self_ref` and `secret` (never the wallet); the guard (an open, unshown session)
+        // is the wallet's now. Before, the guard was here and `display_window_handoff` made the
+        // window, took the secret from `hand_display_secret` and showed it.
         (
-            "display_window_handoff",
+            "open_display_composed",
             &[
-                "#[cfg(test)] if let Some(outcome) = tests::s4_secret::host::open_display(self, \
-                 serial, kind, step, timeout_note, lang) { return outcome; }",
-                "match self.make_display_window(serial, kind, lang) { \
-                 DisplayWindow::Verified(window) => { let Some(display) = \
-                 self.wallet.hand_display_secret(serial, DisplayCheck::Verified) else { \
-                 drop(window); return \
-                 OpenOutcome::Refused(ErrorCode::Sec001); }; self.show_display(serial, window, \
-                 kind, display, step, timeout_note, lang); OpenOutcome::Shown { \
-                 capture_excluded: true, } }",
-                "DisplayWindow::Unverified { outcome, window } => { \
-                 let _none = self.wallet.hand_display_secret(serial, DisplayCheck::Unverified); \
-                 drop(window); outcome }",
+                "#[cfg(test)] tests::s4_secret::host::saw(&SecretEffect::OpenDisplay { serial, \
+                 kind, step, timeout_note, lang, });",
+                "#[cfg(test)] if let Some(mut host) = \
+                 tests::s4_secret::host::display_host(self.secret.as_ref()) { let outcome = self.wallet \
+                 .open_display_window(&mut host, serial, kind, step, timeout_note, lang); return \
+                 Self::display_answer(serial, outcome); }",
+                "let mut host = WinDisplayHost { main: self.main.as_ref(), self_ref: \
+                 &self.self_ref, secret: &mut self.secret, }; let outcome = self .wallet \
+                 .open_display_window(&mut host, serial, kind, step, timeout_note, lang); \
+                 Self::display_answer(serial, outcome)",
             ],
         ),
         (
-            "make_display_window",
+            "display_answer",
             &[
-                "let created = self.create_secret(serial, kind, false, lang); let excluded = \
+                "let answer = Cmd::SecretOpened { serial, outcome };",
+                "#[cfg(test)] tests::s4_secret::host::saw_cmd(&answer); answer",
+            ],
+        ),
+        // `WinDisplayHost::make` (2026-11-24, S5-1; `make_display_window` before).
+        (
+            "make",
+            &[
+                "let created = create_secret_window(self.main, self.self_ref, serial, kind, \
+                 false, lang); let excluded = \
                  created.as_ref().map(Window::capture_excluded).map_err(|_| ()); \
-                 Self::log_capture(kind, excluded.unwrap_or(false)); let decision = \
+                 App::log_capture(kind, excluded.unwrap_or(false)); let decision = \
                  capture_decision(kind, excluded);",
-                "(CaptureDecision::Show { warning: false }, Ok(window)) => { \
-                 DisplayWindow::Verified(window) }",
+                "(CaptureDecision::Show { warning: false }, Ok(window)) => \
+                 DisplayMade::Verified(window),",
                 "(CaptureDecision::Show { warning: true }, Ok(window)) => { drop(window); \
-                 DisplayWindow::Unverified { outcome: OpenOutcome::Refused(ErrorCode::Sec001), \
+                 DisplayMade::Unverified { outcome: OpenOutcome::Refused(ErrorCode::Sec001), \
                  window: None, } }",
-                "(CaptureDecision::Refuse(code), window) => DisplayWindow::Unverified { outcome: \
+                "(CaptureDecision::Refuse(code), window) => DisplayMade::Unverified { outcome: \
                  OpenOutcome::Refused(code), window: window.ok(), },",
             ],
         ),
+        // `WinDisplayHost::fill_and_show` (2026-11-24, S5-1; `show_display` before, which read the
+        // clock itself).
         (
-            "show_display",
+            "fill_and_show",
             &[
-                "let mut form = SecretForm::display(kind, lang, self.clock.now_ms(), display); \
+                "let mut form = SecretForm::display(kind, lang, now_ms, display); \
                form.set_step(step); form.set_timeout_note(timeout_note); \
-               self.show_secret(serial, window, form);",
+               show_secret_window(self.main, self.secret, serial, window, form);",
+            ],
+        ),
+        (
+            "show_secret_window",
+            &[
+                "debug_assert!(slot.is_none(), \"a secret window is already open\");",
+                "#[cfg(test)] secret_seam::log(secret_seam::Op::Show { kind: form.kind().id(), \
+                 }); *slot = Some(SecretWin { serial, window, form, });",
             ],
         ),
         (
             "show_secret",
-            &[
-                "debug_assert!(self.secret.is_none(), \"a secret window is already open\");",
-                "#[cfg(test)] secret_seam::log(secret_seam::Op::Show { kind: form.kind().id(), \
-                 }); self.secret = Some(SecretWin { serial, window, form, });",
-            ],
+            &["show_secret_window(self.main.as_ref(), &mut self.secret, serial, window, form);"],
         ),
         (
             "close_secret_window",
@@ -1085,17 +1149,14 @@ fn the_headless_secret_host_mirrors_the_shell() {
                  OpenOutcome::Refused(ErrorCode::Sec001) };",
             ],
         ),
-        // 2026-11-21 (S4 W2): the display open's guard, in the composition (was the
-        // `apply_secret_effect` arm's, calling `open_display_window`).
+        // 2026-11-24 (S5-1): `App::create_secret`'s body of before, over two shell fields.
         (
-            "open_display_composed",
+            "create_secret_window",
             &[
-                "#[cfg(test)] tests::s4_secret::host::saw(&SecretEffect::OpenDisplay { serial, \
-                 kind, step, timeout_note, lang, });",
-                "let unshown = self.secret_unshown(serial); let outcome = if unshown { \
-                 self.display_window_handoff(serial, kind, step, timeout_note, lang) } else { \
-                 OpenOutcome::Refused(ErrorCode::Sec001) };",
-                "#[cfg(test)] tests::s4_secret::host::saw_cmd(&answer);",
+                "#[cfg(test)] if let Some(refused) = secret_seam::create(serial, kind, topmost) \
+                 { return Err(refused); }",
+                "let Some(owner) = main.map(Window::hwnd) else { return \
+                 Err(UiError::CaptureExclusionFailed); };",
             ],
         ),
     ];
@@ -1104,9 +1165,16 @@ fn the_headless_secret_host_mirrors_the_shell() {
         assert!(text.len() > 40, "fn {name} found");
         holds_in_order(name, &text, parts);
     }
+    assert!(
+        squeeze(&source).contains(
+            "structWinDisplayHost<'a>{main:Option<&'aWindow>,self_ref:&'aWeak<RefCell<App>>,\
+             secret:&'amutOption<SecretWin>,}"
+        ),
+        "WinDisplayHost borrows the shell's main window, weak self and window record only"
+    );
     // 2026-11-20 (S4 P8 review): the statements both sides hold, in the shell's spelling: each
     // is in the shell fn (`app.rs`) and, renamed, in the host fn (this file), in this order.
-    let shared: [(&str, &str, &[&str]); 8] = [
+    let shared: [(&str, &str, &[&str]); 7] = [
         (
             "open_input_window",
             "open_input",
@@ -1120,16 +1188,17 @@ fn the_headless_secret_host_mirrors_the_shell() {
                 "OpenOutcome::Refused(code)",
             ],
         ),
-        // 2026-11-21 (S4 W2): the host's one `open_display` against the shell's
-        // `make_display_window` (the decision), the composition's `display_window_handoff` (the
-        // secret's move and drop) and the shell's `show_display` (the form); before, against the
-        // one `open_display_window`.
+        // 2026-11-24 (S5-1): the two display hosts' `make` (the decision) and `fill_and_show`
+        // (the form); before (S4 W2), the host's one `open_display` against the shell's
+        // `make_display_window`, the composition's `display_window_handoff` and `show_display`.
         (
-            "make_display_window",
-            "open_display",
+            "make",
+            "make",
             &[
-                "capture_decision(kind, excluded)",
+                "App::log_capture(kind,",
+                "let decision = capture_decision(kind,",
                 "CaptureDecision::Show { warning: false }",
+                "DisplayMade::Verified(",
                 "CaptureDecision::Show { warning: true }",
                 "OpenOutcome::Refused(ErrorCode::Sec001)",
                 "CaptureDecision::Refuse(code)",
@@ -1137,31 +1206,18 @@ fn the_headless_secret_host_mirrors_the_shell() {
             ],
         ),
         (
-            "display_window_handoff",
-            "open_display",
+            "fill_and_show",
+            "fill_and_show",
             &[
-                "let Some(display) = self.wallet.hand_display_secret(serial, \
-                 DisplayCheck::Verified) else {",
-                "OpenOutcome::Refused(ErrorCode::Sec001)",
-                "OpenOutcome::Shown { capture_excluded: true, }",
-                "let _none = self.wallet.hand_display_secret(serial, \
-                 DisplayCheck::Unverified);",
+                "let mut form = SecretForm::display(kind, lang, now_ms, display); \
+               form.set_step(step); form.set_timeout_note(timeout_note);",
             ],
         ),
         (
-            "show_display",
-            "open_display",
-            &[
-                "let mut form = SecretForm::display(kind, lang, self.clock.now_ms(), display); \
-               form.set_step(step); form.set_timeout_note(timeout_note); \
-               self.show_secret(serial, window, form);",
-            ],
-        ),
-        (
-            "show_secret",
+            "show_secret_window",
             "show",
             &[
-                "debug_assert!(self.secret.is_none(), \"a secret window is already open\");",
+                ".is_none(), \"a secret window is already open\");",
                 "secret_seam::log(secret_seam::Op::Show { kind: form.kind().id(), });",
             ],
         ),
@@ -1214,25 +1270,49 @@ fn the_headless_secret_host_mirrors_the_shell() {
             ],
         ),
     ];
+
     for (shell, host, parts) in shared {
         let text = body(&source, shell);
+        let host_text = body(&host_source, host);
+        assert!(host_text.len() > 40, "host fn {host} found");
         assert!(text.len() > 40, "fn {shell} found");
         holds_in_order(shell, &text, parts);
-        let text = body(&host_source, host);
-        assert!(text.len() > 40, "host fn {host} found");
         let renamed: Vec<String> = parts.iter().map(|part| host_spelling(part)).collect();
         let renamed: Vec<&str> = renamed.iter().map(String::as_str).collect();
-        holds_in_order(&format!("host::{host}"), &text, &renamed);
+        holds_in_order(&format!("host::{host}"), &host_text, &renamed);
+    }
+    // 2026-11-24 (S5-1): the host's own steps around the shared ones — the window record is the
+    // only shell state its display host borrows, its window is shown with it, and a verified
+    // window gets the secret only in `fill_and_show` (noted for the scan first).
+    for (host, parts) in [
+        (
+            "display_host",
+            &[
+                "let excluded = made()?; Some(DisplayHeadless { secret, excluded, unfilled: \
+               false, })",
+            ][..],
+        ),
+        (
+            "fill_and_show",
+            &[
+                "self.unfilled = false; note(format!(\"{display:?}\"));",
+                "show(self.secret, serial, form);",
+                "OpenOutcome::Shown { capture_excluded: true, }",
+            ][..],
+        ),
+        (
+            "open_input",
+            &["show(app.secret.as_ref(), serial, form);"][..],
+        ),
+    ] {
+        let text = body(&host_source, host);
+        holds_in_order(&format!("host::{host}"), &text, parts);
     }
     // The hooks are the fns' first statements (nothing of the shell runs before the host).
     for (name, hook) in [
         (
             "open_input_window",
             "{#[cfg(test)]iflet Some(outcome)=tests::s4_secret::host::open_input(",
-        ),
-        (
-            "display_window_handoff",
-            "{#[cfg(test)]iflet Some(outcome)=tests::s4_secret::host::open_display(",
         ),
         (
             "close_secret_window",

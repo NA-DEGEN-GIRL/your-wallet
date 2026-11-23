@@ -27,6 +27,11 @@
 //! in an effect, and its `Debug` prints `[REDACTED]`) and [`backup_retry_text`] (T-BACKUP-FAIL)
 //! moved from yw-app `ui::secret` and `ui::screens` unchanged, so the wallet code names no shell
 //! module for them. The window's form (`SecretForm`) and the submission stay in yw-app.
+//!
+//! 2026-11-24 (spec/15 §11.4 S5-1, §18 30 (나), 주인 결정(2026-11-23); spec/04 §4.5 item 4):
+//! [`DisplayHost`] and [`DisplayMade`], the shell's half of a display window's open. The wallet
+//! (`Wallet::open_display_window`) asks the host to make the window and moves the secret into it
+//! only when the host reported its capture exclusion verified; no call hands the secret back.
 
 use core::fmt;
 
@@ -34,6 +39,7 @@ use yw_core::keyimport::ImportChain;
 use yw_core::lang::Lang;
 use yw_core::secret::{SecretString, Zeroizing};
 
+use crate::approval::flow::OpenOutcome;
 use crate::yubikey::PinTarget;
 
 pub mod text;
@@ -269,9 +275,12 @@ pub enum SecretEffect {
     },
     /// Open the display window of secret session `serial` (W08/W09, 2026-11-20 S4 P7b; one
     /// window at a time: the logic closed the previous one first). The shell creates it, checks
-    /// its capture exclusion (spec/04 §4.5: `Required`) and only then takes the secret from the
-    /// session (Windows: `Wallet::take_display_secret`), fills the form and shows it; on any other
-    /// result it keeps no window and the session's secret is wiped. Answered with
+    /// its capture exclusion (spec/04 §4.5: `Required`) and only then gets the secret from the
+    /// session, fills the form and shows it; on any other result it keeps no window and the
+    /// session's secret is wiped. 2026-11-24 (S5-1): the shell hands the open to
+    /// `Wallet::open_display_window` with its [`DisplayHost`], which makes the window and, only
+    /// for a verified one, moves the secret into it (before, the shell took it with
+    /// `Wallet::take_display_secret`, then `hand_display_secret`). Answered with
     /// `Cmd::SecretOpened { serial, outcome }`: `Shown { capture_excluded: true }`,
     /// `Refused(E-SEC-001)` (not excluded, or refused by the platform) or `Failed(E-APP-009)`. A
     /// `serial` that is no longer the logic's open, unshown session makes nothing (answered
@@ -495,6 +504,64 @@ impl core::fmt::Debug for Submission {
             self.values.len()
         )
     }
+}
+
+/// What a shell made for a display window (W08/W09) when [`DisplayHost::make`] was asked for one
+/// (2026-11-24, spec/15 §11.4 S5-1, §18 30 (나); spec/04 §4.5 item 4). Before S5-1 the shell read
+/// it back itself and told the engine with a plain value (`wallet::DisplayCheck`, gone).
+#[derive(Debug)]
+pub enum DisplayMade<W> {
+    /// Made (hidden), and its capture exclusion set and read back as 0x11 (spec/04 §4.5 items
+    /// 1–2). Only such a window gets the secret ([`DisplayHost::fill_and_show`]).
+    Verified(W),
+    /// Refused, failed, or made but not verified as excluded: no secret goes in. `outcome` is the
+    /// open's answer; `window`, a made window that is not excluded, is destroyed after the
+    /// session's secret was wiped (it was never shown and never held the secret).
+    Unverified {
+        /// The open's answer (`Refused(E-SEC-001)`, `Refused(code)` or `Failed(E-APP-009)`).
+        outcome: OpenOutcome,
+        /// A made window that is not excluded, to destroy after the wipe (`None`: none made).
+        window: Option<W>,
+    },
+}
+
+/// The shell's half of a display window's open (2026-11-24, spec/15 §11.4 S5-1, §18 30 (나),
+/// 주인 결정(2026-11-23); spec/04 §4.5 item 4). The wallet calls it from
+/// `Wallet::open_display_window`, the one way a display secret leaves the wallet: first
+/// [`Self::make`], then — only for a [`DisplayMade::Verified`] window of the open, unshown
+/// session — [`Self::fill_and_show`], which takes the secret by value into the window and never
+/// hands it back. The order make → verify → move → show is the engine's code, and no call returns
+/// the secret (before S5-1 the shell asked for it with `Wallet::hand_display_secret`, whose return
+/// value was the secret). The engine still trusts what `make` reports (spec/15 §18 30: every
+/// design must trust the shell's capture read-back); which impls exist is a source check
+/// (`the_display_secret_moves_only_in_the_composition`: one in the Windows shell, one in
+/// `testkit`, the rest in tests).
+pub trait DisplayHost {
+    /// The shell's window (Windows: `yw_win::ui::Window`, destroyed when dropped).
+    type Window;
+
+    /// Makes the hidden display window of secret session `serial` and reads its capture exclusion
+    /// back (`Required`, spec/04 §4.5). Holds no secret.
+    fn make(&mut self, serial: u64, kind: SecretKind, lang: Lang) -> DisplayMade<Self::Window>;
+
+    /// Fills the verified `window`'s form with `secret` (moved in; the form wipes it) and shows
+    /// the window. `now_ms` is the wallet's clock, read right before (2026-11-24, S5-1: the shell
+    /// read it itself before).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the open effect's fields, the window, the secret and the clock"
+    )]
+    fn fill_and_show(
+        &mut self,
+        serial: u64,
+        window: Self::Window,
+        kind: SecretKind,
+        secret: DisplaySecret,
+        step: Option<SecretStep>,
+        timeout_note: Option<&'static str>,
+        lang: Lang,
+        now_ms: u64,
+    );
 }
 
 /// The secret shown by W08/W09.

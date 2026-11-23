@@ -188,8 +188,10 @@ fn a_display_secret_moves_only_into_a_verified_window_under_both_schedules() {
             log.contains(&format!("display-handed#{serial}")),
             "{schedule:?}: {log:?}"
         );
+        // 2026-11-24 (S5-1): a flag (`holds_display_secret`); before, the test took the secret
+        // (`WalletTestExt::take_display_secret`, gone with spec/15 §18 30 (나)).
         assert!(
-            wallet.take_display_secret(serial).is_none(),
+            !wallet.holds_display_secret(),
             "{schedule:?}: the secret left the session once"
         );
     }

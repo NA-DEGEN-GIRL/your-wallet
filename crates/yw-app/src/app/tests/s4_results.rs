@@ -2131,8 +2131,11 @@ const EXECUTOR_CELL_WRITES: [(&str, &str, &str); 2] = [
 
 /// The executor fns [`the_executor_writes_no_wallet_state`] must reach (critique A-20). 2026-11-21
 /// (S4 W2 review): `items` and the two fns of [`EXECUTOR_CELL_WRITES`], the `&self` render
-/// builders, which the check now follows too.
-const EXECUTOR_TARGETS: [&str; 24] = [
+/// builders, which the check now follows too. 2026-11-24 (spec/15 §11.4 S5-1): without
+/// `make_display_window` and `show_display`, which became the `DisplayHost` impl `WinDisplayHost`
+/// (no `impl App` fn; it borrows shell fields only, checked in
+/// [`the_display_secret_moves_only_in_the_composition`]).
+const EXECUTOR_TARGETS: [&str; 22] = [
     "items",
     "sites_page",
     "wc_session_cards",
@@ -2142,8 +2145,6 @@ const EXECUTOR_TARGETS: [&str; 24] = [
     "close_approval_shell",
     "apply_secret_effect",
     "open_input_window",
-    "make_display_window",
-    "show_display",
     "show_secret",
     "apply_form_op",
     "close_secret_window",
@@ -2535,7 +2536,9 @@ fn typed_app_names(text: &str) -> BTreeSet<String> {
 /// §3 W2, spec/04 §1.3): `App` is the wallet ([`wallet_fields`]: `pub struct Wallet`) plus the
 /// shell's fields, and the effect executor — `App::apply` and every fn of `impl App` it reaches
 /// through `self.` calls, plus the display window's shell halves `make_display_window` and
-/// `show_display` — writes no wallet field ([`wallet_writes`]), takes no whole wallet
+/// `show_display` (2026-11-24, S5-1: gone; their bodies are the `DisplayHost` impl
+/// `WinDisplayHost`, which borrows shell fields only) — writes no wallet field
+/// ([`wallet_writes`]), takes no whole wallet
 /// ([`whole_wallet`]), calls only [`READ_ONLY_CALLS`] on a wallet field where it takes
 /// `&mut self` ([`wallet_calls`]), borrows no cell mutably but [`EXECUTOR_CELL_WRITES`]
 /// ([`cell_writes`]) and calls into the wallet's `impl App` fns only as
@@ -2552,7 +2555,9 @@ fn typed_app_names(text: &str) -> BTreeSet<String> {
 /// stands in for it. The one value that moves from the wallet into the shell, a display window's
 /// secret, is the composition's: only `display_window_handoff` (called by
 /// `open_display_composed`, which only `App::drain` calls) takes or drops it, and the executor
-/// reaches none of the three. The scanners are tried on made-up code
+/// reaches none of the three (2026-11-24, S5-1: the composition `open_display_composed` hands
+/// the open to the wallet's `open_display_window`, which alone takes or drops it; the executor
+/// reaches neither). The scanners are tried on made-up code
 /// ([`wallet_writes_and_self_calls_on_made_up_code`]: they can fail) and the
 /// check finds its targets (it cannot pass on nothing, critique A-20). 2026-11-22 (S4c
 /// W14c-2): the wallet's fns are `impl Wallet` now, so a wallet fn the executor calls is found
@@ -2600,11 +2605,9 @@ fn the_executor_writes_no_wallet_state() {
     assert!(wallet_writers.contains("emit") && !wallet_writers.contains("main_hidden"));
     let mut reached = BTreeSet::new();
     let mut cells = 0;
-    let mut todo = vec![
-        "apply".to_owned(),
-        "make_display_window".to_owned(),
-        "show_display".to_owned(),
-    ];
+    // 2026-11-24 (S5-1): `make_display_window` and `show_display` went (they are the
+    // `DisplayHost` impl `WinDisplayHost` now, which borrows no wallet field).
+    let mut todo = vec!["apply".to_owned()];
     while let Some(name) = todo.pop() {
         if !reached.insert(name.clone()) {
             continue;
@@ -2650,10 +2653,9 @@ fn the_executor_writes_no_wallet_state() {
     );
     for composition in [
         "open_display_composed",
-        "display_window_handoff",
+        "open_display_window",
         "take_display_secret",
         "drop_display_secret",
-        "hand_display_secret",
         "on_cmd",
         "emit",
     ] {
@@ -2780,38 +2782,47 @@ fn wallet_writes_and_self_calls_on_made_up_code() {
     );
 }
 
-/// The rest of [`the_executor_writes_no_wallet_state`]: only `display_window_handoff` takes or
-/// drops a display secret, and only `App::drain` calls the composition `open_display_composed`.
+/// The rest of [`the_executor_writes_no_wallet_state`]: only the wallet's `open_display_window`
+/// takes or drops a display secret, and only `App::drain` calls the composition
+/// `open_display_composed`, which alone calls `open_display_window`.
+///
+/// 2026-11-24 (spec/15 §11.4 S5-1, §18 30 (나), 주인 결정(2026-11-23), critic C1): the secret
+/// reaches a shell only through `secret::DisplayHost::fill_and_show`, a call the wallet makes
+/// after the host's `make` reported the window verified, and never comes back as a value. Pinned
+/// here: (1) the crate-private take and drop are called only by `open_display_window` (and the
+/// drop's own take); (2) `open_display_window` makes, verifies, moves and shows in that order and
+/// nothing else of the host is called; (3) it is called only by `open_display_composed` in
+/// production and by testkit's `RecordingShell` once; (4) there is exactly one non-test
+/// `DisplayHost` impl outside yw-engine (`WinDisplayHost`, whose fields are shell state only) and
+/// in yw-engine only testkit's `RecordingShell`; (5) `DisplayMade::Verified(` is built in the
+/// shell only in `WinDisplayHost::make`'s `Show { warning: false }` arm on the created window;
+/// (6) its `fill_and_show` hands the secret only to the form and the form only to
+/// `show_secret_window`; (7) no `pub` fn or trait method of yw-engine (testkit included) returns
+/// a `DisplaySecret`. Before S5-1 the composition `display_window_handoff` called the engine's
+/// `pub` hand-off `hand_display_secret(serial, DisplayCheck::Verified)`, which returned the
+/// secret, and testkit's `WalletTestExt::take_display_secret` was a second `pub` way to it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "seven rules of the display secret's one way, each with its count"
+)]
 fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
-    // The secret's move: only the composition takes or drops it.
-    // 2026-11-22 (S4c W15): through `self.` or `self.wallet.` ([`normalized`]); the composition
-    // names the wallet since non-test builds have no `DerefMut`.
-    // 2026-11-23 (S4d E1, preflight O-3): the shell's composition calls the engine's hand-off
-    // `hand_display_secret` (a verified window's take, any other's drop), which alone calls the
-    // crate-private take and drop (before, the composition called those two itself).
-    // 2026-11-23 (S4d E2 review): a call on any receiver counts (a method call `x.call(` or a
-    // path call `X::call(`); before, only `self.`/`self.wallet.`, so a call through a local
-    // binding (`let w = &mut self.wallet; w.hand_display_secret(..)`) was not seen. The one
-    // exception is testkit's test-only shell model, checked below.
+    let squeeze = |text: &str| -> String { text.split_whitespace().collect() };
+    // (1) The secret's move: only the wallet's `open_display_window` takes or drops it (and the
+    // drop takes it to wipe it). A call on any receiver counts (a method call `x.call(` or a path
+    // call `X::call(`; 2026-11-23, S4d E2 review).
     let calls_it = |body: &str, call: &str| {
         body.contains(&format!(".{call}")) || body.contains(&format!("::{call}"))
     };
-    let mut handoffs = 0;
-    for src in files {
+    let all = production_code();
+    let mut moves = 0;
+    for src in &all {
         for (name, body) in fn_blocks(src) {
             let body = normalized(body);
-            for call in [
-                "take_display_secret(",
-                "drop_display_secret(",
-                "hand_display_secret(",
-            ] {
+            for call in ["take_display_secret(", "drop_display_secret("] {
                 if calls_it(&body, call) {
-                    handoffs += 1;
+                    moves += 1;
                     assert!(
-                        (name == "display_window_handoff" && call == "hand_display_secret(")
-                            || (name == "hand_display_secret"
-                                && (call == "take_display_secret("
-                                    || call == "drop_display_secret("))
+                        name == "open_display_window"
                             || (name == "drop_display_secret" && call == "take_display_secret("),
                         "{}: fn {name} calls {call}",
                         src.file
@@ -2821,43 +2832,193 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
         }
     }
     assert_eq!(
-        handoffs, 4,
-        "the composition's hand-off, the hand-off's take and drop, and the drop's take"
+        moves, 3,
+        "the open's take and drop, and the drop's take (wallet `open_display_window`)"
     );
-    // The named exception (2026-11-23, S4d E2 review): `yw_engine::testkit` (test code, not in
-    // `files`; `testkit_is_named_only_by_tests` keeps it out of production) calls the hand-off
-    // once, in its shell model with `Verified` for a window it made, and wipes the secret at
-    // once; and its `WalletTestExt` wraps the crate-private take once for the engine's tests.
-    let testkit = normalized(&code_only(
-        &std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../yw-engine/src/testkit.rs"),
-        )
-        .unwrap(),
-    ));
+    // (2) The wallet's order: the guard, the host's `make`, the take for a verified window only,
+    // the clock, the host's `fill_and_show` with the secret by value; on an unverified window the
+    // wipe, then the window's drop. No other host call.
+    let wallet = src_of(&all, "yw-engine/src/wallet/mod.rs");
+    let open = fn_bodies(wallet, "open_display_window");
+    assert_eq!(open.len(), 1, "one open_display_window");
+    let open = squeeze(open[0]);
+    let mut from = 0;
+    for part in [
+        "if!self.secret_unshown(serial){returnOpenOutcome::Refused(ErrorCode::Sec001);}",
+        "matchhost.make(serial,kind,lang){DisplayMade::Verified(window)=>{letSome(secret)=\
+         self.take_display_secret(serial)else{drop(window);returnOpenOutcome::Refused(\
+         ErrorCode::Sec001);};letnow_ms=self.clock.now_ms();host.fill_and_show(serial,window,\
+         kind,secret,step,timeout_note,lang,now_ms,);OpenOutcome::Shown{capture_excluded:true,}}",
+        "DisplayMade::Unverified{outcome,window}=>{self.drop_display_secret(serial);drop(window);\
+         outcome}",
+    ] {
+        let at = open[from..].find(part);
+        assert!(
+            at.is_some(),
+            "open_display_window no longer holds (in order): {part}"
+        );
+        from += at.unwrap_or_default() + part.len();
+    }
+    assert_eq!(
+        open.matches("host.").count(),
+        2,
+        "make and fill_and_show only"
+    );
+    assert_eq!(
+        open.matches("secret,").count(),
+        1,
+        "the secret goes to the host once"
+    );
+    // (3) Its callers: the composition (production) and testkit's shell model once.
+    let callers: Vec<String> = all
+        .iter()
+        .flat_map(|src| {
+            fn_blocks(src)
+                .into_iter()
+                .filter(|(_, body)| calls_it(&normalized(body), "open_display_window("))
+                .map(move |(name, _)| format!("{}:{name}", src.file))
+        })
+        .collect();
+    assert_eq!(callers, ["yw-app/src/app.rs:open_display_composed"]);
+    let testkit_raw = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../yw-engine/src/testkit.rs"),
+    )
+    .unwrap();
+    let testkit = normalized(&code_only(&testkit_raw));
     let count = |pattern: &str| testkit.matches(pattern).count();
     assert_eq!(
         (
-            count(".hand_display_secret("),
-            count(".hand_display_secret(serial, DisplayCheck::Verified)"),
-            count("::hand_display_secret("),
+            count(".open_display_window("),
+            count("wallet.open_display_window(self, serial, kind, step, timeout_note, lang)"),
+            count("::open_display_window("),
         ),
         (1, 1, 0),
-        "testkit's model: one verified hand-off"
+        "testkit's shell model: one open, with itself as the host"
     );
+    for call in [
+        "take_display_secret(",
+        "drop_display_secret(",
+        "hand_display_secret(",
+    ] {
+        assert_eq!(count(call), 0, "testkit names {call}");
+    }
+    // (4) The hosts: one non-test impl outside yw-engine, none in yw-engine's production code,
+    // and testkit's `RecordingShell` (test code, kept out of production by
+    // `testkit_is_named_only_by_tests`).
+    let impls: Vec<String> = all
+        .iter()
+        .flat_map(|src| {
+            let code = squeeze(&src.code);
+            code.match_indices("DisplayHostfor")
+                .map(|(at, _)| {
+                    let rest = &code[at + "DisplayHostfor".len()..];
+                    let target: String = rest.chars().take_while(|&c| c != '{').collect();
+                    format!("{}:{target}", src.file)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(impls, ["yw-app/src/app.rs:WinDisplayHost<'_>"]);
     assert_eq!(
-        (
-            count(".take_display_secret("),
-            count("Self::take_display_secret(self, serial)"),
-            count("::take_display_secret("),
+        squeeze(&code_only(&testkit_raw))
+            .matches("DisplayHostfor")
+            .count(),
+        1,
+        "testkit: one DisplayHost"
+    );
+    assert!(
+        squeeze(&code_only(&testkit_raw)).contains("implDisplayHostforRecordingShell{"),
+        "testkit's DisplayHost is RecordingShell"
+    );
+    let app = src_of(&all, "yw-app/src/app.rs");
+    assert!(
+        squeeze(&app.code).contains(
+            "structWinDisplayHost<'a>{main:Option<&'aWindow>,self_ref:&'aWeak<RefCell<App>>,\
+             secret:&'amutOption<SecretWin>,}"
         ),
-        (0, 1, 1),
-        "testkit: the test extension's one wrapper of the take"
+        "WinDisplayHost borrows the shell's main window, weak self and window record only"
     );
+    // (5) `DisplayMade::Verified(` in the shell: only `WinDisplayHost::make`'s verified arm on
+    // the created window; in yw-engine's production code only `open_display_window`'s match.
+    let mut verified = Vec::new();
+    for src in &all {
+        for (name, body) in fn_blocks(src) {
+            let body = squeeze(body);
+            for _ in body.matches("DisplayMade::Verified(") {
+                verified.push(format!("{}:{name}", src.file));
+            }
+        }
+    }
     assert_eq!(
-        count("drop_display_secret("),
-        0,
-        "testkit drops no display secret itself"
+        verified,
+        [
+            "yw-app/src/app.rs:make",
+            "yw-engine/src/wallet/mod.rs:open_display_window"
+        ]
     );
+    let make = fn_blocks(app)
+        .into_iter()
+        .filter(|(name, _)| name == "make")
+        .map(|(_, body)| squeeze(body))
+        .collect::<Vec<_>>();
+    assert_eq!(make.len(), 1, "one make in app.rs");
+    assert!(
+        make[0].contains(
+            "(CaptureDecision::Show{warning:false},Ok(window))=>DisplayMade::Verified(window),"
+        ),
+        "the verified arm is Show without the warning on the created window"
+    );
+    // (6) The secret goes only into the form, and the form only into the window record.
+    let fill = fn_blocks(app)
+        .into_iter()
+        .filter(|(name, _)| name == "fill_and_show")
+        .map(|(_, body)| squeeze(body))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        fill,
+        [
+            "{letmutform=SecretForm::display(kind,lang,now_ms,display);form.set_step(step);\
+          form.set_timeout_note(timeout_note);show_secret_window(self.main,self.secret,serial,\
+          window,form);}"
+        ],
+        "WinDisplayHost::fill_and_show"
+    );
+    // (7) No `pub` fn or trait method of yw-engine (every `src` file, testkit and test modules
+    // included) returns a `DisplaySecret`: each fn whose return type names it is `pub(crate)`.
+    let engine = Path::new(env!("CARGO_MANIFEST_DIR")).join("../yw-engine/src");
+    let mut returners = Vec::new();
+    let mut stack = vec![engine.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let code = code_only(&std::fs::read_to_string(&path).unwrap());
+            for (name, prefix) in display_secret_returners(&code) {
+                let rel = path
+                    .strip_prefix(&engine)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                returners.push(format!("{rel}:{name}:{prefix}"));
+            }
+        }
+    }
+    returners.sort();
+    assert_eq!(
+        returners,
+        [
+            "wallet/mod.rs:take_display_secret:pub(crate)",
+            "wallet/secret_session.rs:take_display:pub(crate)",
+        ],
+        "every fn that returns a DisplaySecret is crate-private"
+    );
+    // The composition: only `App::drain` calls it.
     let effects = src_of(files, "yw-app/src/app_effects.rs");
     let drain = fn_bodies(effects, "drain");
     assert_eq!(drain.len(), 1, "one drain");
@@ -2878,6 +3039,57 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
         .map(|(src, name, _)| format!("{}:{name}", src.file))
         .collect::<Vec<_>>();
     assert_eq!(callers, ["yw-app/src/app_effects.rs:drain"]);
+}
+
+/// The fns of `code` (comments and literals blanked) whose return type names `DisplaySecret`, as
+/// (name, the words before `fn` on its line: its visibility) (2026-11-24, S5-1). A trait method
+/// has no visibility word, so it never passes as `pub(crate)`.
+fn display_secret_returners(code: &str) -> Vec<(String, String)> {
+    let bytes = code.as_bytes();
+    let mut found = Vec::new();
+    for (at, _) in code.match_indices("fn ") {
+        if at > 0 && is_ident(bytes[at - 1]) {
+            continue;
+        }
+        let rest = &code[at..];
+        let end = rest.find(['{', ';']).unwrap_or(rest.len());
+        let Some((_, returns)) = rest[..end].split_once("->") else {
+            continue;
+        };
+        if !returns.contains("DisplaySecret") {
+            continue;
+        }
+        let name: String = rest["fn ".len()..]
+            .chars()
+            .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+            .collect();
+        let line = code[..at].rfind('\n').map_or(0, |n| n + 1);
+        let prefix = code[line..at]
+            .trim()
+            .trim_end_matches("const")
+            .trim()
+            .to_owned();
+        found.push((name, prefix));
+    }
+    found
+}
+
+/// [`display_secret_returners`] on made-up code: it finds `pub`, trait and crate-private ones.
+#[test]
+fn display_secret_returners_on_made_up_code() {
+    assert_eq!(
+        display_secret_returners(
+            "pub fn a() -> DisplaySecret { x }\n    pub(crate) const fn b(&self) -> \
+             Option<DisplaySecret> { x }\n    fn c(&mut self) -> Option<&DisplaySecret>;\n\
+             fn d(s: DisplaySecret) -> u8 { 0 }\n pub fn e() -> Vec<DisplaySecret> { v }"
+        ),
+        [
+            ("a".to_owned(), "pub".to_owned()),
+            ("b".to_owned(), "pub(crate)".to_owned()),
+            ("c".to_owned(), String::new()),
+            ("e".to_owned(), "pub".to_owned()),
+        ]
+    );
 }
 
 // ---- The shell's way into the wallet (2026-11-22, S4c W15; plan §3.3–§3.4, D-21) ---------------
@@ -3054,11 +3266,15 @@ const SHELL_WALLET_CALLS: [(&str, &str, &str); 46] = [
     ),
     // 2026-11-23 (S4d E1, preflight O-3): the engine's one hand-off `hand_display_secret` (the
     // take for a verified window, the drop for any other); before, the two calls below.
+    // 2026-11-24 (spec/15 §11.4 S5-1, §18 30 (나)): the wallet's `open_display_window` with the
+    // shell's `DisplayHost`, called by the composition itself (was `display_window_handoff` →
+    // `hand_display_secret`, whose return value was the secret).
     (
-        "display_window_handoff",
-        "hand_display_secret",
-        "the display secret moves into a window verified as capture-excluded (D-4, §7.2); any \
-         other window result drops (wipes) it",
+        "open_display_composed",
+        "open_display_window",
+        "the display secret moves into a window the shell's `DisplayHost` made and verified as \
+         capture-excluded, by value, never back (D-4, §7.2, spec/15 §18 30 (나)); any other \
+         window result drops (wipes) it",
     ),
     (
         "apply_form_action",
@@ -4567,7 +4783,9 @@ static WALLET_FNS: [(&str, &str); 989] = [
     // of an open, unshown session and of the queue's length, and the read-only accessors the
     // test traits (`yw_engine::testkit`) use. 2026-11-23 (S4d E1 review): `test_secret_session_mut`,
     // the slot itself, became the setup steps `test_set_secret_session`/`test_open_secret_session`.
-    ("E1", "hand_display_secret"),
+    // 2026-11-24 (spec/15 §11.4 S5-1, §18 30 (나)): the display window's open with the shell's
+    // `DisplayHost` replaced the hand-off `hand_display_secret`.
+    ("S5-1", "open_display_window"),
     ("E1", "secret_unshown"),
     ("E1", "queued_effects"),
     ("E1", "test_secret_session"),

@@ -8041,7 +8041,10 @@ fn w12_reads_its_card_counters_only_once_shown() {
 /// session (a lock between the request and its effect) or another serial makes no window and
 /// takes nothing. W08 of a new `YubiKey` wallet marks its words shown only when `Shown`. The lock
 /// clears the secret copy (`ClearClip`, at exit `:exit`) before the approval close and waits for
-/// the key worker last (`AwaitKeyLock`, `Suspend` only).
+/// the key worker last (`AwaitKeyLock`, `Suspend` only). 2026-11-24 (spec/15 §11.4 S5-1, §18 30
+/// (나), critic C1): the move is seen through the wallet's `open_display_window` with a recording
+/// `DisplayHost` (no `pub` way returns the secret any more), and an unverified window's secret is
+/// wiped (`display-dropped`) with nothing moved.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -8057,9 +8060,54 @@ fn display_secrets_move_only_into_verified_windows() {
 
     use super::secret_seam;
     use yw_engine::errors::ErrorCode;
-    use yw_engine::secret::DisplaySecret;
+    use yw_engine::secret::{DisplayHost, DisplayMade, DisplaySecret, SecretStep};
     use yw_engine::wallet::app_yubikey::{YkPurpose, YkWords};
     use yw_engine::wallet::secret_session::AfterShown;
+
+    /// A recording display host (2026-11-24, S5-1): its windows are verified unless `refuse` is
+    /// set (then made but not verified, answered `refuse`); a secret moved in is counted and wiped
+    /// at once, never kept.
+    #[derive(Default)]
+    struct Recording {
+        made: u32,
+        filled: u32,
+        refuse: Option<OpenOutcome>,
+    }
+
+    impl DisplayHost for Recording {
+        type Window = ();
+
+        fn make(
+            &mut self,
+            _serial: u64,
+            _kind: SecretKind,
+            _lang: yw_core::lang::Lang,
+        ) -> DisplayMade<()> {
+            self.made += 1;
+            match self.refuse {
+                Some(outcome) => DisplayMade::Unverified {
+                    outcome,
+                    window: Some(()),
+                },
+                None => DisplayMade::Verified(()),
+            }
+        }
+
+        fn fill_and_show(
+            &mut self,
+            _serial: u64,
+            (): (),
+            _kind: SecretKind,
+            secret: DisplaySecret,
+            _step: Option<SecretStep>,
+            _timeout_note: Option<&'static str>,
+            _lang: yw_core::lang::Lang,
+            _now_ms: u64,
+        ) {
+            self.filled += 1;
+            drop(secret);
+        }
+    }
 
     let dir = temp_dir("secret-display-seam");
     let mut app = app_at(&dir);
@@ -8102,12 +8150,58 @@ fn display_secrets_move_only_into_verified_windows() {
     assert_eq!(app.screen, Screen::Starting);
     app.banners.clear();
 
-    // The secret moves out once, only for the open session's serial.
+    // The secret moves out once, only for the open session's serial. 2026-11-24 (spec/15 §11.4
+    // S5-1, §18 30 (나), critic C1): through the wallet's `open_display_window` with a recording
+    // `DisplayHost` of this test (its windows all verified; a secret moved in is counted and
+    // wiped); before, the test took it with `WalletTestExt::take_display_secret`, a `pub` way to
+    // the secret that is gone.
+    let lang = app.settings.language;
+    let moved = |app: &mut App, serial: u64| -> (u32, u32, OpenOutcome) {
+        let mut host = Recording::default();
+        let outcome = app.wallet.open_display_window(
+            &mut host,
+            serial,
+            SecretKind::ShowKey,
+            None,
+            None,
+            lang,
+        );
+        (host.made, host.filled, outcome)
+    };
     let serial = app.begin_secret(SecretKind::ShowKey, Purpose::ShowRevealed, false);
     app.hold_display_secret(display());
-    assert!(app.take_display_secret(serial + 1).is_none());
-    assert!(app.take_display_secret(serial).is_some());
-    assert!(app.take_display_secret(serial).is_none(), "taken twice");
+    let refused = OpenOutcome::Refused(ErrorCode::Sec001);
+    let shown = OpenOutcome::Shown {
+        capture_excluded: true,
+    };
+    assert_eq!(
+        moved(&mut app, serial + 1),
+        (0, 0, refused),
+        "another serial"
+    );
+    assert_eq!(moved(&mut app, serial), (1, 1, shown));
+    assert_eq!(moved(&mut app, serial), (1, 0, refused), "taken twice");
+    assert!(!app.holds_display_secret());
+    // An unverified window wipes the held secret (before its window goes) and makes nothing.
+    app.hold_display_secret(display());
+    let mut unverified = Recording {
+        refuse: Some(OpenOutcome::Failed(ErrorCode::App009)),
+        ..Recording::default()
+    };
+    assert_eq!(
+        app.wallet.open_display_window(
+            &mut unverified,
+            serial,
+            SecretKind::ShowKey,
+            None,
+            None,
+            lang
+        ),
+        OpenOutcome::Failed(ErrorCode::App009)
+    );
+    assert_eq!((unverified.made, unverified.filled), (1, 0));
+    assert!(!app.holds_display_secret(), "dropped");
+    assert_eq!(ops(), ["display-dropped"]);
     // Once shown, a held secret is never handed out again.
     app.hold_display_secret(display());
     app.dispatch(Cmd::SecretOpened {
@@ -8116,7 +8210,7 @@ fn display_secrets_move_only_into_verified_windows() {
             capture_excluded: true,
         },
     });
-    assert!(app.take_display_secret(serial).is_none(), "a shown session");
+    assert_eq!(moved(&mut app, serial), (0, 0, refused), "a shown session");
     app.close_secret();
     app.drain();
     let _ = ops();
@@ -8124,7 +8218,6 @@ fn display_secrets_move_only_into_verified_windows() {
     // An open effect of another serial makes no window and takes nothing (A-3).
     let serial = app.begin_secret(SecretKind::ShowKey, Purpose::ShowRevealed, false);
     app.hold_display_secret(display());
-    let lang = app.settings.language;
     let open = |serial: u64| SecretEffect::OpenDisplay {
         serial,
         kind: SecretKind::ShowKey,
@@ -8159,8 +8252,13 @@ fn display_secrets_move_only_into_verified_windows() {
     ));
     assert!(ops().is_empty(), "the executor's arm asked for a window");
     assert!(
-        app.take_display_secret(serial).is_some(),
+        app.holds_display_secret(),
         "the stale open or the executor's arm took it"
+    );
+    assert_eq!(
+        moved(&mut app, serial),
+        (1, 1, shown),
+        "still there to move"
     );
     app.close_secret();
     app.drain();
@@ -8176,9 +8274,11 @@ fn display_secrets_move_only_into_verified_windows() {
     app.lock(LockReason::Manual);
     app.drain();
     assert_eq!(ops(), ["clear-clip", "approval-close:none"]);
-    assert!(
-        app.take_display_secret(serial).is_none(),
-        "the lock left the secret"
+    assert!(!app.holds_display_secret(), "the lock left the secret");
+    assert_eq!(
+        moved(&mut app, serial),
+        (0, 0, refused),
+        "the lock left the session"
     );
     let late = composed(&mut app, serial);
     assert!(matches!(

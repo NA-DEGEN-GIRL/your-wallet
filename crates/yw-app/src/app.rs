@@ -54,7 +54,9 @@ use yw_engine::form::{CredField, EditField};
 // `crate::app::SettingsSection` and `crate::app_scroll::ScrollPlace`; 2026-11-21 (S4b final
 // review, AGENTS.md §4 "no new re-exports"): the callers name `yw_engine::screen` directly.
 use yw_engine::screen::{SettingsSection, Tone};
-use yw_engine::secret::{DisplaySecret, SecretEffect, SecretFormOp, SecretKind, SecretStep};
+use yw_engine::secret::{
+    DisplayHost, DisplayMade, DisplaySecret, SecretEffect, SecretFormOp, SecretKind, SecretStep,
+};
 use yw_engine::services::Services;
 
 /// Main window class.
@@ -91,7 +93,6 @@ pub(crate) mod secret_seam;
 // `crate::app::{AppMode, Purpose, Wallet}` (`#[cfg(test)] pub(crate)`) and
 // `yw_app::app::TestState` (`#[doc(hidden)] pub`), kept from S4d E1 for the bodies of the tests
 // frozen at F-A, are gone with the S4 freeze; those bodies name `yw_engine::wallet::…`.
-use yw_engine::wallet::DisplayCheck;
 #[cfg(test)]
 use yw_engine::wallet::Purpose;
 use yw_engine::wallet::Screen;
@@ -124,19 +125,6 @@ struct SecretWin {
     serial: u64,
     window: Window,
     form: SecretForm,
-}
-
-/// What the shell made for a display window (2026-11-21, S4 W2, plan §3.4): the composition
-/// (`App::display_window_handoff`) moves the secret into a verified window only.
-enum DisplayWindow {
-    /// Made, and its capture exclusion read back as 0x11.
-    Verified(Window),
-    /// Not made, or not verified: no secret goes in. `window` (made, not excluded) is destroyed
-    /// after the secret is dropped; `outcome` is the open's answer.
-    Unverified {
-        outcome: OpenOutcome,
-        window: Option<Window>,
-    },
 }
 
 /// A secret copy still to be cleared from the clipboard (spec/04 §4.8).
@@ -1712,10 +1700,90 @@ impl App {
     }
 }
 
+/// The shell makes the window of secret session `serial` (hidden; yw-win applies and checks the
+/// capture exclusion before the handler exists). Without a main window (headless tests, the
+/// census) it refuses as yw-win refuses a `Required` window whose exclusion failed. 2026-11-24
+/// (spec/15 §11.4 S5-1): the body of `App::create_secret` before, over the two shell fields it
+/// reads (`main`, `self_ref`), so the display host ([`WinDisplayHost`]) makes its window while
+/// the wallet is borrowed by `Wallet::open_display_window`; `App::create_secret` calls it.
+fn create_secret_window(
+    main: Option<&Window>,
+    self_ref: &Weak<RefCell<App>>,
+    serial: u64,
+    kind: SecretKind,
+    topmost: bool,
+    lang: Lang,
+) -> Result<Window, UiError> {
+    // 2026-11-18 (S4 A7): the cfg(test) seam logs the request and can refuse it as yw-win
+    // would; release builds have no such line. 2026-11-20 (S4 P8): the refusal is the
+    // recording secret host's answer (`app::tests::s4_secret::host::refuse`; was the
+    // thread-local `TEST_SECRET_REFUSE`).
+    // 2026-11-20 (S4 P7a1 review): it runs before the main-window check (it ran after), so a
+    // headless test sees every window the shell was asked for (the A-3 stale-open pin). With
+    // a main window (the windowed runs) the order changes nothing.
+    #[cfg(test)]
+    if let Some(refused) = secret_seam::create(serial, kind, topmost) {
+        return Err(refused);
+    }
+    let Some(owner) = main.map(Window::hwnd) else {
+        return Err(UiError::CaptureExclusionFailed);
+    };
+    let (w, h) = window_size(kind);
+    let class = if kind.is_display() {
+        SECRET_VIEW_CLASS
+    } else {
+        SECRET_INPUT_CLASS
+    };
+    let spec = WindowSpec::new(class, WindowKind::Owned { owner })
+        .title(&format!("Your Wallet — {}", kind.title(lang)))
+        .size(w, h)
+        .topmost(topmost);
+    let handler = Box::new(Forward {
+        app: self_ref.clone(),
+        target: Target::Secret(serial),
+    });
+    create_window(&spec, handler)
+}
+
+/// The shell shows a made secret window with its form and keeps the window record in `slot`
+/// (`App::secret`). 2026-11-24 (spec/15 §11.4 S5-1): the body of `App::show_secret` before, over
+/// the two shell fields it uses (`main`, `secret`), for the display host ([`WinDisplayHost`]);
+/// `App::show_secret` calls it.
+fn show_secret_window(
+    main: Option<&Window>,
+    slot: &mut Option<SecretWin>,
+    serial: u64,
+    window: Window,
+    form: SecretForm,
+) {
+    // 2026-11-20 (S4 P7a1 review): every open closes the previous window first, so a second
+    // window record never silently replaces the first (its timer and the main window's
+    // enable would be left unpaired).
+    debug_assert!(slot.is_none(), "a secret window is already open");
+    let _ = window.set_timer(SECRET_TIMER_ID, SECRET_TIMER_MS);
+    if let Some(main) = main {
+        main.enable(false);
+    }
+    window.show();
+    if !window.set_foreground() {
+        window.flash();
+    }
+    window.set_focus();
+    window.invalidate();
+    #[cfg(test)]
+    secret_seam::log(secret_seam::Op::Show {
+        kind: form.kind().id(),
+    });
+    *slot = Some(SecretWin {
+        serial,
+        window,
+        form,
+    });
+}
+
 impl App {
-    /// The shell makes the window of secret session `serial` (hidden; yw-win applies and checks
-    /// the capture exclusion before the handler exists). Without a main window (headless tests,
-    /// the census) it refuses as yw-win refuses a `Required` window whose exclusion failed.
+    /// The shell makes the window of secret session `serial` ([`create_secret_window`], the body
+    /// of this fn before 2026-11-24, S5-1).
     fn create_secret(
         &self,
         serial: u64,
@@ -1723,61 +1791,20 @@ impl App {
         topmost: bool,
         lang: Lang,
     ) -> Result<Window, UiError> {
-        // 2026-11-18 (S4 A7): the cfg(test) seam logs the request and can refuse it as yw-win
-        // would; release builds have no such line. 2026-11-20 (S4 P8): the refusal is the
-        // recording secret host's answer (`app::tests::s4_secret::host::refuse`; was the
-        // thread-local `TEST_SECRET_REFUSE`).
-        // 2026-11-20 (S4 P7a1 review): it runs before the main-window check (it ran after), so a
-        // headless test sees every window the shell was asked for (the A-3 stale-open pin). With
-        // a main window (the windowed runs) the order changes nothing.
-        #[cfg(test)]
-        if let Some(refused) = secret_seam::create(serial, kind, topmost) {
-            return Err(refused);
-        }
-        let Some(owner) = self.main.as_ref().map(Window::hwnd) else {
-            return Err(UiError::CaptureExclusionFailed);
-        };
-        let (w, h) = window_size(kind);
-        let class = if kind.is_display() {
-            SECRET_VIEW_CLASS
-        } else {
-            SECRET_INPUT_CLASS
-        };
-        let spec = WindowSpec::new(class, WindowKind::Owned { owner })
-            .title(&format!("Your Wallet — {}", kind.title(lang)))
-            .size(w, h)
-            .topmost(topmost);
-        let handler = Box::new(Forward {
-            app: self.self_ref.clone(),
-            target: Target::Secret(serial),
-        });
-        create_window(&spec, handler)
+        create_secret_window(
+            self.main.as_ref(),
+            &self.self_ref,
+            serial,
+            kind,
+            topmost,
+            lang,
+        )
     }
 
+    /// The shell shows a made secret window ([`show_secret_window`], the body of this fn before
+    /// 2026-11-24, S5-1).
     fn show_secret(&mut self, serial: u64, window: Window, form: SecretForm) {
-        // 2026-11-20 (S4 P7a1 review): every open closes the previous window first, so a second
-        // window record never silently replaces the first (its timer and the main window's
-        // enable would be left unpaired).
-        debug_assert!(self.secret.is_none(), "a secret window is already open");
-        let _ = window.set_timer(SECRET_TIMER_ID, SECRET_TIMER_MS);
-        if let Some(main) = self.main.as_ref() {
-            main.enable(false);
-        }
-        window.show();
-        if !window.set_foreground() {
-            window.flash();
-        }
-        window.set_focus();
-        window.invalidate();
-        #[cfg(test)]
-        secret_seam::log(secret_seam::Op::Show {
-            kind: form.kind().id(),
-        });
-        self.secret = Some(SecretWin {
-            serial,
-            window,
-            form,
-        });
+        show_secret_window(self.main.as_ref(), &mut self.secret, serial, window, form);
     }
 
     fn log_capture(kind: SecretKind, excluded: bool) {
@@ -1942,10 +1969,18 @@ impl App {
 impl App {
     /// A display window's open, the composition's (2026-11-21, S4 W2, plan §3.4, D-4: called
     /// only by `App::drain`; before, the executor's `apply_secret_effect` arm, which moved the
-    /// secret in `open_display_window`). Only the open of the open, unshown session goes on (the
-    /// same guard as an input window's open: a stale or second open makes nothing and is refused,
-    /// critique A-3); the window's way is [`Self::display_window_handoff`]. Answered with
-    /// `Cmd::SecretOpened`, as before.
+    /// secret in `open_display_window`). Answered with `Cmd::SecretOpened`, as before.
+    ///
+    /// 2026-11-24 (spec/15 §11.4 S5-1, §18 30 (나), 주인 결정(2026-11-23); spec/04 §4.5 item 4):
+    /// the open goes to the wallet's `Wallet::open_display_window` with the shell's display host
+    /// ([`WinDisplayHost`], over the shell fields `main`, `self_ref` and `secret` only, borrowed
+    /// beside the wallet). The wallet checks the open, unshown session (critique A-3: a stale or
+    /// second open makes nothing and is refused), has the host make the window and read its
+    /// capture exclusion back, and moves the secret into a verified window only, by value; no call
+    /// hands it back to the shell. Before S5-1 the guard was here (`self.secret_unshown`) and the
+    /// composition `display_window_handoff` made the window (`make_display_window`), asked the
+    /// engine for the secret (`hand_display_secret(serial, DisplayCheck::Verified)`, which
+    /// returned it) and showed it (`show_display`) — the same steps in the same order.
     pub(crate) fn open_display_composed(
         &mut self,
         serial: u64,
@@ -1964,12 +1999,31 @@ impl App {
             timeout_note,
             lang,
         });
-        let unshown = self.secret_unshown(serial);
-        let outcome = if unshown {
-            self.display_window_handoff(serial, kind, step, timeout_note, lang)
-        } else {
-            OpenOutcome::Refused(ErrorCode::Sec001)
+        // 2026-11-20 (S4 P8): the headless secret host of the tests makes the window without
+        // Win32 (2026-11-24, S5-1: a `DisplayHost` of its own over the window record, was a hook
+        // of `display_window_handoff` taking the whole `App`); release builds have no such line,
+        // and with no host (or the windowed run) this is `None`.
+        #[cfg(test)]
+        if let Some(mut host) = tests::s4_secret::host::display_host(self.secret.as_ref()) {
+            let outcome =
+                self.wallet
+                    .open_display_window(&mut host, serial, kind, step, timeout_note, lang);
+            return Self::display_answer(serial, outcome);
+        }
+        let mut host = WinDisplayHost {
+            main: self.main.as_ref(),
+            self_ref: &self.self_ref,
+            secret: &mut self.secret,
         };
+        let outcome =
+            self.wallet
+                .open_display_window(&mut host, serial, kind, step, timeout_note, lang);
+        Self::display_answer(serial, outcome)
+    }
+
+    /// The display open's answer (2026-11-24, S5-1: the tail of `open_display_composed`, which
+    /// has two hosts since S5-1).
+    fn display_answer(serial: u64, outcome: OpenOutcome) -> Cmd {
         let answer = Cmd::SecretOpened { serial, outcome };
         // 2026-11-20 (S4 P8 review): the recording secret host notes the answer's `Debug` too
         // (its scan for secrets); release builds have no such line.
@@ -1977,105 +2031,65 @@ impl App {
         tests::s4_secret::host::saw_cmd(&answer);
         answer
     }
+}
 
-    /// The secret's way into a display window (2026-11-21, S4 W2: `open_display_window` before,
-    /// the same steps in the same order, now split between the shell's two fns and this
-    /// composition). The shell makes the window (hidden; yw-win applies and checks the capture
-    /// exclusion before the handler exists, spec/04 §4.5 items 1–2) and decides by it
-    /// (`Required`; [`Self::make_display_window`]). Only a window verified as excluded gets the
-    /// secret: it moves out of the session (`take_display_secret`) into the window's form, which
-    /// the shell then shows ([`Self::show_display`]). On every other result no window is kept and
-    /// the session's secret is dropped (wiped) at once (`drop_display_secret`), before a made
-    /// window is destroyed and before the answer. Never a secret in a window that is not excluded
-    /// from capture.
-    fn display_window_handoff(
-        &mut self,
-        serial: u64,
-        kind: SecretKind,
-        step: Option<SecretStep>,
-        timeout_note: Option<&'static str>,
-        lang: Lang,
-    ) -> OpenOutcome {
-        // 2026-11-20 (S4 P8): as in `open_input_window`, the headless secret host of the tests;
-        // release builds have no such line.
-        #[cfg(test)]
-        if let Some(outcome) =
-            tests::s4_secret::host::open_display(self, serial, kind, step, timeout_note, lang)
-        {
-            return outcome;
-        }
-        match self.make_display_window(serial, kind, lang) {
-            DisplayWindow::Verified(window) => {
-                let Some(display) = self
-                    .wallet
-                    .hand_display_secret(serial, DisplayCheck::Verified)
-                else {
-                    drop(window);
-                    return OpenOutcome::Refused(ErrorCode::Sec001);
-                };
-                self.show_display(serial, window, kind, display, step, timeout_note, lang);
-                OpenOutcome::Shown {
-                    capture_excluded: true,
-                }
-            }
-            // A window made but not excluded is destroyed after the wipe and before the answer
-            // (2026-11-20, P7b review: before P7b, after the banner and the S04 change; it was
-            // never shown and never held the secret).
-            DisplayWindow::Unverified { outcome, window } => {
-                let _none = self
-                    .wallet
-                    .hand_display_secret(serial, DisplayCheck::Unverified);
-                drop(window);
-                outcome
-            }
-        }
-    }
+/// The Windows shell's display host (2026-11-24, spec/15 §11.4 S5-1, §18 30 (나), 주인
+/// 결정(2026-11-23); spec/04 §4.5 items 1–4): the shell fields a display window's open uses —
+/// the main window (the owner, disabled while the window is open), the `App`'s weak self (the
+/// window's `Forward`) and the secret window record — borrowed beside the wallet, never a
+/// wallet field. [`DisplayHost::make`] is `App::make_display_window` of before (the window made
+/// hidden, its exclusion read back, the decision), [`DisplayHost::fill_and_show`] is
+/// `App::show_display` of before (the form filled with the secret the wallet moved in, then
+/// shown). The only non-test `DisplayHost` (source check
+/// `the_display_secret_moves_only_in_the_composition`).
+struct WinDisplayHost<'a> {
+    main: Option<&'a Window>,
+    self_ref: &'a Weak<RefCell<App>>,
+    secret: &'a mut Option<SecretWin>,
+}
+
+impl DisplayHost for WinDisplayHost<'_> {
+    type Window = Window;
 
     /// The shell makes a display window for session `serial` and reads its capture exclusion
     /// back (2026-11-21, S4 W2: the window part of `open_display_window` before, which also moved
-    /// the secret). Holds no secret.
-    fn make_display_window(&self, serial: u64, kind: SecretKind, lang: Lang) -> DisplayWindow {
-        let created = self.create_secret(serial, kind, false, lang);
+    /// the secret; 2026-11-24, S5-1: `App::make_display_window` before). Holds no secret.
+    fn make(&mut self, serial: u64, kind: SecretKind, lang: Lang) -> DisplayMade<Window> {
+        let created = create_secret_window(self.main, self.self_ref, serial, kind, false, lang);
         let excluded = created
             .as_ref()
             .map(Window::capture_excluded)
             .map_err(|_| ());
-        Self::log_capture(kind, excluded.unwrap_or(false));
+        App::log_capture(kind, excluded.unwrap_or(false));
         let decision = capture_decision(kind, excluded);
         match (decision, created) {
             // Verified: `Show` without the warning is a window whose exclusion was read back as
             // 0x11 (`capture_decision`, `Required`).
-            (CaptureDecision::Show { warning: false }, Ok(window)) => {
-                DisplayWindow::Verified(window)
-            }
+            (CaptureDecision::Show { warning: false }, Ok(window)) => DisplayMade::Verified(window),
             // A display kind never shows with the warning (`capture_decision`); were it to, the
             // window is dropped like a refused one (fail closed), before the secret is.
             (CaptureDecision::Show { warning: true }, Ok(window)) => {
                 drop(window);
-                DisplayWindow::Unverified {
+                DisplayMade::Unverified {
                     outcome: OpenOutcome::Refused(ErrorCode::Sec001),
                     window: None,
                 }
             }
-            (CaptureDecision::Refuse(code), window) => DisplayWindow::Unverified {
+            (CaptureDecision::Refuse(code), window) => DisplayMade::Unverified {
                 outcome: OpenOutcome::Refused(code),
                 window: window.ok(),
             },
-            (CaptureDecision::Show { .. }, Err(_)) => DisplayWindow::Unverified {
+            (CaptureDecision::Show { .. }, Err(_)) => DisplayMade::Unverified {
                 outcome: OpenOutcome::Failed(ErrorCode::App009),
                 window: None,
             },
         }
     }
 
-    /// The shell fills a verified display window's form with the secret the composition moved
-    /// in, and shows the window (2026-11-21, S4 W2: the verified arm of `open_display_window`
-    /// before).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the open effect's fields, the window and the secret"
-    )]
-    fn show_display(
+    /// The shell fills a verified display window's form with the secret the wallet moved in, and
+    /// shows the window (2026-11-21, S4 W2: the verified arm of `open_display_window` before;
+    /// 2026-11-24, S5-1: `App::show_display` before, which read the wallet's clock itself).
+    fn fill_and_show(
         &mut self,
         serial: u64,
         window: Window,
@@ -2084,11 +2098,12 @@ impl App {
         step: Option<SecretStep>,
         timeout_note: Option<&'static str>,
         lang: Lang,
+        now_ms: u64,
     ) {
-        let mut form = SecretForm::display(kind, lang, self.clock.now_ms(), display);
+        let mut form = SecretForm::display(kind, lang, now_ms, display);
         form.set_step(step);
         form.set_timeout_note(timeout_note);
-        self.show_secret(serial, window, form);
+        show_secret_window(self.main, self.secret, serial, window, form);
     }
 }
 

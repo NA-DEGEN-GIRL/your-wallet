@@ -216,8 +216,12 @@ pub trait WalletTestExt {
     fn on_submit(&mut self, purpose: Purpose, submission: Submission);
     /// `Wallet::on_cancel`: a secret window's cancel for `purpose`.
     fn on_cancel(&mut self, purpose: Purpose);
-    /// `Wallet::take_display_secret`: the display secret of session `serial`, moved out once.
-    fn take_display_secret(&mut self, serial: u64) -> Option<DisplaySecret>;
+    /// Whether the open secret session still holds a display secret (a flag, never the secret).
+    /// 2026-11-24 (spec/15 §11.4 S5-1, §18 30 (나); critic C1): replaces
+    /// `take_display_secret`, which handed the secret out (a `pub` trait method of an
+    /// always-compiled module); a test that wants to see the secret move opens a display window
+    /// through `Wallet::open_display_window` with a `secret::DisplayHost` of its own.
+    fn holds_display_secret(&self) -> bool;
     /// The open secret session (read-only; preflight O-11).
     fn secret_session(&self) -> Option<&SecretSession>;
     /// Puts `session` in the secret session slot (the one before is dropped and wiped here, never
@@ -591,8 +595,9 @@ impl WalletTestExt for Wallet {
         Self::on_cancel(self, purpose);
     }
 
-    fn take_display_secret(&mut self, serial: u64) -> Option<DisplaySecret> {
-        Self::take_display_secret(self, serial)
+    fn holds_display_secret(&self) -> bool {
+        self.test_secret_session()
+            .is_some_and(SecretSession::holds_display)
     }
 
     fn secret_session(&self) -> Option<&SecretSession> {
@@ -1376,8 +1381,7 @@ impl StoreProbe<'_> {
 use crate::approval::flow::ApprovalEffect;
 use crate::cmd::Cmd;
 use crate::effect::Folder;
-use crate::secret::SecretEffect;
-use crate::wallet::DisplayCheck;
+use crate::secret::{DisplayHost, DisplayMade, SecretEffect, SecretStep};
 
 /// When a shell applies the effects one entry queued, and when their answers go back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1566,8 +1570,9 @@ impl RecordingShell {
     /// the headless approval host, `Shown { capture_excluded: false }`, wide), else
     /// `Failed(E-APP-009)`; a secret window is made and its capture exclusion verified while its
     /// serial is the open, unshown session (else `Refused(E-SEC-001)`, critique A-3), and a
-    /// display window's secret is handed over only then (`DisplayCheck::Verified`) and wiped at
-    /// once.
+    /// display window's secret is handed over only then (2026-11-24, S5-1: by the wallet's
+    /// `open_display_window` into this model's [`DisplayHost::fill_and_show`]; before,
+    /// `DisplayCheck::Verified`) and wiped at once.
     pub fn apply(&mut self, wallet: &mut Wallet, effect: Effect) -> Option<Cmd> {
         self.log.push(effect_name(&effect));
         match effect {
@@ -1608,29 +1613,21 @@ impl RecordingShell {
                     OpenOutcome::Refused(ErrorCode::Sec001)
                 },
             }),
-            Effect::Secret(SecretEffect::OpenDisplay { serial, .. }) => {
-                let shown = wallet.secret_unshown(serial)
-                    && wallet
-                        .hand_display_secret(serial, DisplayCheck::Verified)
-                        .is_some_and(|display| {
-                            // The model's window: the secret is wiped here, never kept.
-                            drop(display);
-                            true
-                        });
-                if shown {
-                    self.log.push(format!("display-handed#{serial}"));
-                }
-                Some(Cmd::SecretOpened {
-                    serial,
-                    outcome: if shown {
-                        OpenOutcome::Shown {
-                            capture_excluded: true,
-                        }
-                    } else {
-                        OpenOutcome::Refused(ErrorCode::Sec001)
-                    },
-                })
-            }
+            // 2026-11-24 (S5-1, spec/15 §18 30 (나)): through the wallet's
+            // `open_display_window` with this model as its `DisplayHost` (the window made and
+            // verified, the secret wiped in `fill_and_show`); before, the model took the secret
+            // with `hand_display_secret(serial, DisplayCheck::Verified)` after its own
+            // `secret_unshown` check. The same answers and log lines.
+            Effect::Secret(SecretEffect::OpenDisplay {
+                serial,
+                kind,
+                step,
+                timeout_note,
+                lang,
+            }) => Some(Cmd::SecretOpened {
+                serial,
+                outcome: wallet.open_display_window(self, serial, kind, step, timeout_note, lang),
+            }),
             // No answer: a screen, a credential edit, a timer, the main window's own work, a
             // scroll, a hold, the lock's wait, the data and log folders, the other approval and
             // secret operations (close, rebuild, repaint, form, clip clear).
@@ -1652,6 +1649,34 @@ impl RecordingShell {
             | Effect::Approval(_)
             | Effect::Secret(_) => None,
         }
+    }
+}
+
+/// The shell model's display host (2026-11-24, spec/15 §11.4 S5-1, §18 30 (나)): every window it
+/// is asked for is made and verified (a model window, `()`), and the secret the wallet moves into
+/// it is wiped at once and logged as `display-handed#<serial>` (never kept). The one
+/// `DisplayHost` of yw-engine (source check `the_display_secret_moves_only_in_the_composition`).
+impl DisplayHost for RecordingShell {
+    type Window = ();
+
+    fn make(&mut self, _serial: u64, _kind: SecretKind, _lang: Lang) -> DisplayMade<()> {
+        DisplayMade::Verified(())
+    }
+
+    fn fill_and_show(
+        &mut self,
+        serial: u64,
+        (): (),
+        _kind: SecretKind,
+        secret: DisplaySecret,
+        _step: Option<SecretStep>,
+        _timeout_note: Option<&'static str>,
+        _lang: Lang,
+        _now_ms: u64,
+    ) {
+        // The model's window: the secret is wiped here, never kept.
+        drop(secret);
+        self.log.push(format!("display-handed#{serial}"));
     }
 }
 
