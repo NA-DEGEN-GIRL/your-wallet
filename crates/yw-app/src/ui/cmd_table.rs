@@ -127,9 +127,10 @@ pub const fn id_of(press: Press) -> u16 {
 /// Whether `id` is the selector of a drop-down (an account one or S10's network one): the shell's
 /// Enter and Esc resolution asks it (`App::on_command`). 2026-11-24 (spec/15 §11.4 S5-4): moved
 /// here from `ui::screens_links` (`App::is_picker_button`), unchanged, when the screens stopped
-/// naming control ids.
+/// naming control ids. (2026-11-24 S5-4 review: `pub(crate)`, as it was on `App`; the move had
+/// made it `pub`.)
 #[must_use]
-pub fn is_picker_button(id: u16) -> bool {
+pub(crate) fn is_picker_button(id: u16) -> bool {
     screens_links::ids::FIXED.contains(&id) || id == screens_evm::ids::NETWORK_PICKER
 }
 

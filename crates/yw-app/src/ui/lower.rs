@@ -22,6 +22,12 @@
 //! S5-4 commit drew the ids the screens still named through a transitional act, gone since the
 //! last; source check `the_screen_model_names_no_control_id`). Both counts go to
 //! `App::press_mismatch` (debug builds), which the census asserts 0 at every observation.
+//!
+//! 2026-11-24 (S5-4 review): a press that does not map back is lowered disabled in every build
+//! (still counted), so its click can never send another control's press; before, it was drawn
+//! enabled at the colliding id. No screen draws one (the lists are bounded by `screen::rows`,
+//! pinned to the id spans by `screen_rows_are_the_id_ranges`), so the lists are unchanged.
+//! The tests' [`lowered`] asserts both counts 0.
 
 use yw_engine::screen::model::{self, Act, CtlKind, Style};
 use yw_win::ui::controls::{ButtonStyle, ControlKind};
@@ -85,11 +91,22 @@ impl App {
 }
 
 /// Tests: the Windows item list of `items` (tests that call a screen builder directly; 2026-11-24,
-/// S5-4).
+/// S5-4). It asserts both counts 0 (2026-11-24 S5-4 review: before, it dropped them, so a builder
+/// reached only by such a test, and by no census scene, never had its press round trip checked).
+///
+/// # Panics
+///
+/// When a drawn press does not map back to its control or a credential edit came with text.
 #[cfg(test)]
 #[must_use]
 pub fn lowered(items: Vec<model::Item>) -> Vec<Item> {
-    lower(items).items
+    let lowered = lower(items);
+    assert_eq!(
+        (lowered.press_mismatch, lowered.cred_text),
+        (0, 0),
+        "press mismatches, credential texts"
+    );
+    lowered.items
 }
 
 /// The button style of `style`.
@@ -114,18 +131,21 @@ struct Lowering {
 }
 
 impl Lowering {
-    fn id(&mut self, act: Act) -> u16 {
+    /// The control id of `act`, and whether it maps back to the same control (a press whose id
+    /// is another control's, or no press's, does not; it is counted).
+    fn id(&mut self, act: Act) -> (u16, bool) {
         match act {
             Act::Press(press) => {
                 let id = cmd_table::id_of(press);
                 let back = cmd_table::press_of(id, &self.controls);
-                if !back.is_some_and(|back| back.same_control(press)) {
+                let same = back.is_some_and(|back| back.same_control(press));
+                if !same {
                     self.press_mismatch = self.press_mismatch.saturating_add(1);
                 }
-                id
+                (id, same)
             }
-            Act::Field(field) => cmd_table::edit_id_of(field),
-            Act::Cred(field) => cmd_table::cred_id_of(field),
+            Act::Field(field) => (cmd_table::edit_id_of(field), true),
+            Act::Cred(field) => (cmd_table::cred_id_of(field), true),
         }
     }
 
@@ -153,8 +173,12 @@ impl Lowering {
         } else {
             text
         };
+        // 2026-11-24 (S5-4 review): a press that does not map back is drawn disabled in every
+        // build, so its click can never send another control's press (before, it was only
+        // counted, in debug builds, and drawn enabled at the colliding id).
+        let (id, same) = self.id(act);
         Ctl {
-            id: self.id(act),
+            id,
             kind: match kind {
                 CtlKind::Button(style) => ControlKind::Button(button_style(style)),
                 CtlKind::Check => ControlKind::CheckBox,
@@ -165,7 +189,7 @@ impl Lowering {
             },
             text,
             width,
-            enabled,
+            enabled: enabled && same,
             checked,
             limit,
             backdrop: None,
@@ -419,6 +443,18 @@ mod tests {
             Item::Menu(vec![Ctl::button(Press::Core(CorePress::Lock), "ok")]),
         ]);
         assert_eq!(lowered.press_mismatch, 1);
+        // 2026-11-24 (S5-4 review): it is drawn disabled, so its click sends nothing; the
+        // press that maps back stays enabled.
+        let lock = cmd_table::id_of(Press::Core(CorePress::Lock));
+        assert_eq!(
+            lowered.items,
+            vec![
+                win::Item::Row(vec![
+                    win::Ctl::button(cmd_table::id_of(past), "x").enabled(false)
+                ]),
+                win::Item::Menu(vec![win::Ctl::button(lock, "ok")]),
+            ]
+        );
     }
     /// A credential edit whose text was set on the model after its builder is lowered with
     /// empty text and counted (2026-11-24 S5-2 review): no credential text reaches the Windows

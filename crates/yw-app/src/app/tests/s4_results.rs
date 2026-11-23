@@ -8418,11 +8418,16 @@ fn control_id_reach(code: &str) -> Vec<String> {
     let bytes = code.as_bytes();
     let mut found = Vec::new();
     for (at, _) in code.match_indices("ids") {
-        if (at == 0 || !is_ident(bytes[at - 1]))
-            && bytes.get(at + 3).is_none_or(|&b| !is_ident(b))
-            && code[at + 3..].trim_start().starts_with("::")
+        if (at == 0 || !is_ident(bytes[at - 1])) && bytes.get(at + 3).is_none_or(|&b| !is_ident(b))
         {
-            found.push("path ids::".to_owned());
+            let rest = code[at + 3..].trim_start();
+            if rest.starts_with("::") {
+                found.push("path ids::".to_owned());
+            } else if starts_with_word(rest, "as") {
+                // 2026-11-24 (S5-4 review): an alias (`use …::ids as z;`, `{ids as z}`) whose
+                // `z::` paths the line above does not see.
+                found.push("alias ids as".to_owned());
+            }
         }
     }
     if has_word(code, "Legacy") {
@@ -8542,12 +8547,15 @@ fn control_id_reach_on_made_up_code() {
         "impl From < u16 > for Act { fn from(id: u16) -> Self { todo() } }\n",
         "pub const ROW_BASE: u16 = 1; const LOCK_ID : u16 = 2; const X_SPAN: u16 = 3;\n",
         "// ids::LOCK and Legacy in a comment\n",
+        "use crate::ui::screens_zec::ids as z; use crate::ui::screens::{ids  as c, x};\n",
     ));
     assert_eq!(
         control_id_reach(&code),
         [
             "path ids::",
             "path ids::",
+            "alias ids as",
+            "alias ids as",
             "word Legacy",
             "an id as u16",
             "From<u16> for Act",
