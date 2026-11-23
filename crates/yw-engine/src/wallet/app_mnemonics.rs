@@ -172,14 +172,14 @@ impl Wallet {
 
     /// The label of the primary mnemonic.
     #[must_use]
-    pub fn primary_mnemonic_label(&self) -> Option<String> {
+    pub(crate) fn primary_mnemonic_label(&self) -> Option<String> {
         let primary = self.mn.infos.iter().find(|info| info.primary)?;
         Some(self.mnemonic_label(primary.id))
     }
 
     /// The wallet has more than one recovery phrase (account rows then name their source).
     #[must_use]
-    pub fn several_mnemonics(&self) -> bool {
+    pub(crate) fn several_mnemonics(&self) -> bool {
         self.mn.infos.len() > 1
     }
 
@@ -187,7 +187,7 @@ impl Wallet {
     /// mnemonic `mnemonic`'s label, or for the primary mnemonic's account (`None`) its label when
     /// the wallet has several (as the EVM rows); `label` unchanged otherwise.
     #[must_use]
-    pub fn mnemonic_tagged(&self, label: &str, mnemonic: Option<[u8; 16]>) -> String {
+    pub(crate) fn mnemonic_tagged(&self, label: &str, mnemonic: Option<[u8; 16]>) -> String {
         self.mnemonic_tag(mnemonic)
             .map_or_else(|| label.to_owned(), |tag| format!("{label}  [{tag}]"))
     }
@@ -195,7 +195,7 @@ impl Wallet {
     /// The source tag of [`Self::mnemonic_tagged`] alone (`None` when it adds none; the account
     /// drop-downs write `계정 1 · 니모닉 2`, 2026-11-11).
     #[must_use]
-    pub fn mnemonic_tag(&self, mnemonic: Option<[u8; 16]>) -> Option<String> {
+    pub(crate) fn mnemonic_tag(&self, mnemonic: Option<[u8; 16]>) -> Option<String> {
         match mnemonic {
             Some(id) => Some(self.mnemonic_label(RecordId::from_bytes(id))),
             None => self
@@ -251,7 +251,7 @@ impl Wallet {
     /// first phrase's is in `evm_accounts`) —, what W08 and the phrase's card show to compare
     /// with the paper (2026-11-10). Nothing is derived here; `None` when the meta has none.
     #[must_use]
-    pub fn mnemonic_first_address(&self, id: RecordId) -> Option<Address> {
+    pub(crate) fn mnemonic_first_address(&self, id: RecordId) -> Option<Address> {
         let meta = self.meta.as_ref()?;
         let primary = self
             .mn
@@ -274,7 +274,7 @@ impl Wallet {
     /// How many accounts recovery phrase `id` has on each chain: `[EVM, Solana, Bitcoin (the
     /// current network), Zcash (networks)]` (the settings card, 2026-11-10).
     #[must_use]
-    pub fn mnemonic_account_counts(&self, id: RecordId, primary: bool) -> [usize; 4] {
+    pub(crate) fn mnemonic_account_counts(&self, id: RecordId, primary: bool) -> [usize; 4] {
         use yw_core::btc::BtcAccountKey;
         use yw_core::zec::ZecKeySource;
         let Some(meta) = self.meta.as_ref() else {
@@ -333,7 +333,7 @@ impl Wallet {
     }
 
     /// The EVM account rows of the added mnemonics `(pref, label, address (lowercase), path)`.
-    pub fn mnemonic_account_rows(&self) -> Vec<(EvmAccountPref, String, String, String)> {
+    pub(crate) fn mnemonic_account_rows(&self) -> Vec<(EvmAccountPref, String, String, String)> {
         let Some(meta) = self.meta.as_ref() else {
             return Vec::new();
         };
@@ -408,7 +408,7 @@ impl Wallet {
 
     /// Whether "계정 추가" has room in some mnemonic.
     #[must_use]
-    pub fn can_add_account(&self) -> bool {
+    pub(crate) fn can_add_account(&self) -> bool {
         let Some(meta) = self.meta.as_ref() else {
             return false;
         };
@@ -439,14 +439,14 @@ impl Wallet {
 
     /// 2026-11-22 (S4d E0c): `pub(crate)` for the render builder `mn_backup_now`
     /// (`ui::screens_mnemonics`); private before.
-    pub fn unlocked(&self) -> bool {
+    pub(crate) fn unlocked(&self) -> bool {
         matches!(self.mode, AppMode::Unlocked { .. })
     }
 
     /// Whether recovery phrases may be added, made or removed now: unlocked, and not a session
     /// opened with an unverified passphrase ([`text::ALT_PASS`]; like a key import).
     #[must_use]
-    pub fn mn_phrases_editable(&self) -> bool {
+    pub(crate) fn mn_phrases_editable(&self) -> bool {
         self.unlocked() && !self.passphrase_unverified()
     }
 
@@ -469,7 +469,11 @@ impl Wallet {
     /// an EVM key's Bitcoin or Zcash use) the primary one while [`Self::mn_primary_pending`].
     /// For [`Self::mn_receive_banner`] and [`Self::mn_signing_banner`].
     #[must_use]
-    pub fn mn_backup_gate(&self, added: Option<RecordId>, primary_key: bool) -> Option<RecordId> {
+    pub(crate) fn mn_backup_gate(
+        &self,
+        added: Option<RecordId>,
+        primary_key: bool,
+    ) -> Option<RecordId> {
         if added.is_some() || !primary_key {
             return added;
         }
@@ -478,7 +482,7 @@ impl Wallet {
 
     /// [`Self::mn_backup_gate`] of an EVM key source.
     #[must_use]
-    pub fn evm_backup_gate(&self, source: EvmKeySource) -> Option<RecordId> {
+    pub(crate) fn evm_backup_gate(&self, source: EvmKeySource) -> Option<RecordId> {
         match source {
             EvmKeySource::Mnemonic(id, _) => Some(id),
             EvmKeySource::Derived(_) => self.mn_backup_gate(None, true),
@@ -510,7 +514,10 @@ impl Wallet {
     /// [`Self::mn_backup_gate`] of a Solana key source (the primary phrase's for its derived
     /// paths; none for an imported or `YubiKey` key).
     #[must_use]
-    pub fn sol_backup_gate(&self, source: yw_core::slip10::SolKeySource) -> Option<RecordId> {
+    pub(crate) fn sol_backup_gate(
+        &self,
+        source: yw_core::slip10::SolKeySource,
+    ) -> Option<RecordId> {
         use yw_core::slip10::SolKeySource;
         let primary = !matches!(source, SolKeySource::Imported | SolKeySource::Hardware(_));
         self.mn_backup_gate(source.mnemonic(), primary)
@@ -544,7 +551,7 @@ impl Wallet {
     /// [`Self::mn_backup_gate`] of the selected Bitcoin account (an HD account's phrase, the
     /// primary one for an EVM key's use; none for an imported or `YubiKey` key).
     #[must_use]
-    pub fn btc_backup_gate(&self) -> Option<RecordId> {
+    pub(crate) fn btc_backup_gate(&self) -> Option<RecordId> {
         let ctx = self.btc_ctx();
         let account = ctx.btc_meta().map(|meta| *meta.account());
         self.mn_backup_gate(

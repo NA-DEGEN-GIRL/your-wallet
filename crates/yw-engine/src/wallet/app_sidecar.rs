@@ -358,7 +358,7 @@ impl Wallet {
     /// The last journal reset (Unix seconds) and how far into `window` `now` is, while inside it.
     /// A clock set back before the reset counts as its start. 2026-11-22 (S4d E0c): `pub(crate)`
     /// for the render builder `journal_send_items` (`ui::screens_sidecar`); private before.
-    pub fn reset_elapsed(&self, window: u64, now: u64) -> Option<(u64, u64)> {
+    pub(crate) fn reset_elapsed(&self, window: u64, now: u64) -> Option<(u64, u64)> {
         let at = self.meta.as_ref()?.security.journal_reset_at;
         let elapsed = now.saturating_sub(at);
         (at != 0 && elapsed < window).then_some((at, elapsed))

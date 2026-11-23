@@ -60,6 +60,8 @@
 
 (2026-11-24, [15] §11.4 S5-4) 화면이 컨트롤 id 대신 누름으로 컨트롤을 찾게 되면서 복사 표시(`mark_copied`)가 중립 화면 모델로 옮겼고, 그 문구 셋도 함께 옮겼다: `T_COPIED`·`T_COPIED_ADDRESS`·`T_PASTE_CHECK`는 `yw_app::ui::main_window::text`에서 새 엔진 카탈로그 `yw_engine::screen::model::text`로(S5 계획 검토 C6: 엔진의 실제 경로로 등록). 문구와 항목 이름은 그대로이고, `yw_app::ui::main_window::text`에는 Windows 배치의 `QR_TOO_NARROW`만 남는다. 아래 표는 그대로 `print_spec14_tables` 출력이다.
 
+(2026-11-24, [15] §11.4 S5-5) 화면 빌더가 yw-app의 `ui/screens*.rs`·`ui/removed.rs`에서 yw-engine `screen::build`로 옮겨 가면서 그 카탈로그도 함께 옮겨 엔진 목록 `yw_engine::catalogues`에 엔진의 실제 경로로 등록했다(S5 계획 검토 C6). 문구와 항목 이름은 그대로이고 이름만 바뀌었다: `yw_app::ui::screens::text` → `yw_engine::screen::build::core::text`, `yw_app::ui::screens_<묶음>::text` → `yw_engine::screen::build::<묶음>::text`(`book`·`btc`·`evm`·`explorer`·`hypercore`·`keys`·`links`·`llm`·`mnemonics`·`received`·`reset`·`sites`·`sol`·`walletconnect`·`yubikey`·`zec`), `yw_app::ui::removed::text` → `yw_engine::screen::build::removed::text`. 빌더가 그리던 셸 카탈로그도 옮겼다(검토 C7): `rpc.json` 카드의 `yw_app::app_rpc_import::text` → `yw_engine::screen::build::rpc_import::text`, S23의 `yw_app::app_extension::text` → `yw_engine::screen::extension::text`(상태 `ExtensionStatus`와 Chrome 주소 `CHROME_EXTENSIONS_URL`도 함께), 받기 안내 `yw_app::ui::qr::text` → `yw_engine::screen::qr::text`; 셸 카탈로그 `yw_app::app::text`의 `T_PASSWORD_OLD_COPIES`(설정 → 보안)는 `yw_engine::screen::build::core::text`로 갔고 `yw_app::app::text`에는 다섯 개가 남는다. 아래 표는 그대로 `print_spec14_tables` 출력이다.
+
 <!-- 아래 표는 print_spec14_tables 출력이다. -->
 
 <!-- catalogue: yw_core::evm::risk (rules) -->
@@ -1628,6 +1630,1568 @@
 | RPC_OK | RPC 주소가 작동합니다. ({0}, {1}) | The RPC address works. ({0}, {1}) |
 | GENESIS_MATCH | genesis 일치 | genesis matches |
 
+<!-- catalogue: yw_engine::screen::build::book::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| BOOK_SHARED | EVM 주소 하나는 모든 EVM 체인(Ethereum·Arbitrum·Base·BNB·Robinhood·HyperEVM·직접 추가한 체인)에서 함께 씁니다. Solana 주소는 mainnet·devnet에서 같습니다. Bitcoin 주소는 mainnet(bc1…)과 testnet4(tb1…)가 달라 그 주소의 네트워크 보내기 화면에만 나옵니다. | One EVM address is shared by every EVM chain (Ethereum·Arbitrum·Base·BNB·Robinhood·HyperEVM·chains you added). A Solana address is the same on mainnet·devnet. Bitcoin addresses differ between mainnet (bc1…) and testnet4 (tb1…) and appear only on the send screen of their network. |
+| DELETE_SELECTED | 선택한 주소록 항목을 지웁니다. | Deletes the selected address-book entry. |
+| DELETE_SCOPE_EVM |  EVM 항목은 모든 EVM 체인에서 함께 지워집니다. |  An EVM entry is deleted on every EVM chain. |
+| DELETE_SCOPE_SOL |  Solana mainnet·devnet에서 함께 지워집니다. |  It is deleted on Solana mainnet·devnet alike. |
+| DELETE | {0}({1}) 항목을 주소록에서 지웁니다.{2} 블록체인에는 아무것도 보내지 않으며, 같은 주소를 언제든 다시 추가할 수 있습니다. | Deletes the entry {0}({1}) from the address book.{2} Nothing is sent to the blockchain, and you can add the same address again at any time. |
+| TITLE | 주소록 | Address book |
+| ADD_OPEN | ＋ 주소 추가 | ＋ Add address |
+| HEADING_EVM | EVM 주소록 — 모든 EVM 체인 공용 ({0}개) | EVM address book — shared by every EVM chain ({0}) |
+| HEADING_SOL | Solana 주소록 — mainnet·devnet 공용 ({0}개) | Solana address book — shared by mainnet·devnet ({0}) |
+| HEADING_BTC | Bitcoin 주소록 ({0}개) | Bitcoin address book ({0}) |
+| EMPTY | {0} 주소록이 비어 있습니다. | The {0} address book is empty. |
+| VERIFIED_MARK |  ✓ 확인됨 |  ✓ verified |
+| UNFAVORITE | 즐겨찾기 해제 | Remove from favorites |
+| FAVORITE | 즐겨찾기 | Favorite |
+| EDIT | 편집 | Edit |
+| DELETE_ICON | 삭제 | Delete |
+| EDIT_TITLE | {0} 주소 편집 | Edit {0} address |
+| ADD_TITLE | 주소 추가 | Add address |
+| FORM_HELP | 이름을 붙인 주소는 보내기·승인 창에 '주소록: 이름'으로 나오고, 비슷하게 생긴 가짜 주소를 경고합니다. 보낸 뒤 '주소록에 저장'으로도 넣을 수 있습니다. | A named address shows as 'Address book: name' on send and approval windows, and look-alike fake addresses are flagged. You can also add one after sending with 'Save to address book'. |
+| CHAIN | 체인 | Chain |
+| SHARE_EVM | EVM 주소 하나를 모든 EVM 체인에서 같이 씁니다. | One EVM address is used on every EVM chain. |
+| SHARE_SOL | Solana mainnet·devnet에서 같이 씁니다. | Used on Solana mainnet·devnet alike. |
+| SHARE_BTC | Bitcoin 주소는 그 주소의 네트워크(mainnet bc1… · testnet4 tb1…) 보내기 화면에만 나옵니다. | A Bitcoin address appears only on the send screen of its network (mainnet bc1… · testnet4 tb1…). |
+| ADDRESS | 주소 | Address |
+| NAME | 이름 | Name |
+| VERIFIED_CHECK | 다른 경로(전화·대면 등)로 확인한 주소 | Address checked another way (phone, in person, …) |
+| FAVORITE_CHECK | ★ 즐겨찾기 (보내기 화면 맨 위에) | ★ Favorite (top of the send screen) |
+| ACK | 주소 전체를 직접 확인했습니다 | I checked the whole address myself |
+| SAVE | 저장 | Save |
+| ADD | 추가 | Add |
+| CANCEL | 취소 | Cancel |
+| SAVE_THIS | ＋ 이 주소를 주소록에 저장 | ＋ Save this address to the address book |
+| SAVED | 받는 주소를 주소록에 저장했습니다. 다음 보내기부터 '주소록: 이름'으로 표시됩니다. | Saved the recipient to the address book. From the next send it shows as 'Address book: name'. |
+| NOT_IN_BOOK | 받는 주소 {0}는 주소록에 없습니다. | The recipient {0} is not in the address book. |
+| SAVE_HELP | 저장해 두면 다음에 즐겨찾기·주소록에서 바로 고를 수 있고, 비슷하게 생긴 가짜 주소를 경고합니다. | Once saved, you can pick it from favorites or the address book next time, and look-alike fake addresses are flagged. |
+| SAVE_TO_BOOK | 주소록에 저장 | Save to address book |
+| PROMPT_EVM | 모든 EVM 체인에서 같은 이름으로 보입니다. | Shows with the same name on every EVM chain. |
+| PROMPT_SOL | Solana mainnet·devnet에서 같은 이름으로 보입니다. | Shows with the same name on Solana mainnet·devnet. |
+| PROMPT_BTC | Bitcoin {0} 보내기 화면에 나옵니다. | Appears on the Bitcoin {0} send screen. |
+| PICK_NONE | 이 네트워크의 일치하는 주소록 항목이 없습니다. 주소록에 저장하면 여기에서 고를 수 있습니다. | No matching address-book entry for this network. Save one to the address book to pick it here. |
+| PICK | {0}주소록: {1} | {0}Address book: {1} |
+
+<!-- catalogue: yw_engine::screen::build::btc::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| PENDING_LINE | 미확정 입금 {0} (0 확인 — 바뀌거나 취소될 수 있습니다, 아직 쓸 수 없음) | Unconfirmed deposit {0} (0 confirmations — it may change or be cancelled; not spendable yet) |
+| T_BTC_ESPLORA_NOTE | 인덱서(Esplora 서버)는 조회하는 주소와 이 PC의 IP를 봅니다. 기본값은 mempool.space이며 자체 Esplora 서버로 바꿀 수 있습니다. mempool.space에 연결되지 않으면 아래 Esplora URL을 https://blockstream.info/api (testnet4는 https://blockstream.info/testnet4/api)로 바꾸고 테스트하세요. Esplora URL은 평문으로 저장되므로 토큰·API 키가 들어 있는 URL은 넣지 마세요. | The indexer (Esplora server) sees the addresses you look up and this PC's IP. The default is mempool.space; you can switch to your own Esplora server. If mempool.space does not connect, change the Esplora URL below to https://blockstream.info/api (testnet4: https://blockstream.info/testnet4/api) and test it. The Esplora URL is stored in plain text, so do not enter a URL that contains a token or API key. |
+| JOURNAL_DAMAGED | 거래 저널의 Bitcoin 기록이 손상되어 Bitcoin 보내기를 멈췄습니다. (E-VLT-006) | The Bitcoin entries of the transaction journal are damaged, so Bitcoin sending is stopped. (E-VLT-006) |
+| ACCOUNTS_HELP | 주소 형식은 계정마다 고정입니다(BIP44·49·84·86). 다른 지갑에서 복구할 때 같은 형식을 고르세요. | The address format is fixed per account (BIP44·49·84·86). Choose the same format when you restore in another wallet. |
+| ADD_ACCOUNT_HELP | 잘 모르면 네이티브 세그윗을 고르세요. 탭루트 주소로는 일부 거래소가 보내 주지 않습니다. 레거시·호환 세그윗은 오래된 서비스용입니다. | If unsure, choose Native SegWit. Some exchanges do not send to Taproot addresses. Legacy and Nested SegWit are for older services. |
+| WITH_EURO | {0}으로 | {0} |
+| WITH_RO | {0}로 | {0} |
+| MISMATCH_KEEP | 설정을 {0} 되돌리기 | Set the setting back to {0} |
+| MISMATCH_USE | {0} 바꾸기 | Switch to {0} |
+| WAIT_FAST | 약 20분 | about 20 min |
+| WAIT_NORMAL | 약 1시간 | about 1 hour |
+| WAIT_SLOW | 약 4시간 | about 4 hours |
+| NO_ESTIMATE | 추정 없음 | no estimate |
+| KIND_P2PKH | 레거시 (P2PKH) | Legacy (P2PKH) |
+| KIND_P2SH | 호환 세그윗·스크립트 (P2SH) | Nested SegWit · script (P2SH) |
+| KIND_P2WPKH | 네이티브 세그윗 (P2WPKH) | Native SegWit (P2WPKH) |
+| KIND_P2WSH | 스크립트 세그윗 (P2WSH) | Script SegWit (P2WSH) |
+| KIND_P2TR | 탭루트 (P2TR) | Taproot (P2TR) |
+| ACCOUNT_FALLBACK | Bitcoin 계정 | Bitcoin account |
+| STAGE_PRECHECK | 노드 사전 검사(testmempoolaccept) 중… | Node pre-check (testmempoolaccept)… |
+| STAGE_APPLYING | 저널에 기록하는 중… | Writing to the journal… |
+| STAGE_SENDING | 전송 중… | Sending… |
+| RPC_SETUP | RPC 설정하기 | Set up RPC |
+| STATUS_NO_RPC | RPC 주소 없음 (E-KEY-005) | No RPC address (E-KEY-005) |
+| STATUS_BLOCKED | 차단됨 | Blocked |
+| STATUS_CONNECTED | 연결됨 · 블록 높이 {0} (서버 기준) | Connected · block height {0} (server data) |
+| STATUS_UNCHECKED | 확인 전 | Not checked |
+| STATUS_GENESIS_OK | genesis 확인됨 | genesis verified |
+| STATUS_LINE | Core RPC ({0}): {1}   ·   인덱서: {2} ({3}) | Core RPC ({0}): {1}   ·   Indexer: {2} ({3}) |
+| DISCOVERY_PROGRESS | {0} 검사한 주소 {1}개 | {0} Addresses checked: {1} |
+| DISCOVERY_MORE | 주소를 더 찾는 중… | Searching for more addresses… |
+| DISCOVERY_RUNNING | 주소를 찾는 중… | Searching for addresses… |
+| CANCEL | 취소 | Cancel |
+| RETRY | 다시 시도 | Try again |
+| FIND_MORE | 더 찾기 | Find more |
+| MY_ACCOUNTS | 내 Bitcoin 계정 | My Bitcoin accounts |
+| RENAME | 이름 바꾸기 | Rename |
+| HIDE | 숨기기 | Hide |
+| ADD_ACCOUNT | 계정 추가 | Add account |
+| ADDRESS_MODE | 주소 방식 — {0} | Address mode — {0} |
+| MNEMONIC | 복구 단어 | Recovery words |
+| ADDED_MNEMONIC_HELP | 추가한 복구 단어의 표준 경로 m/{44·49·84·86}'/{코인}'/{계정}'에서 만듭니다(계정 0부터). | Created on the standard path m/{44·49·84·86}'/{coin}'/{account}' of the added recovery words (from account 0). |
+| KEY_SOURCE | 키 출처 | Key source |
+| NO_EVM_ACCOUNTS | EVM 계정이 없습니다 | There are no EVM accounts |
+| EVM_PICK_HELP | 주소 형식을 누르면 확인 창이 열립니다. 그 EVM 계정의 키로 주소 하나를 만듭니다. | Pressing an address format opens a confirmation. One address is created with that EVM account's key. |
+| AVAILABLE_NOTE | 사용 가능 (확인 1 이상, 서버 기준) | Available (1+ confirmations, server data) |
+| FROZEN | 동결 {0} | Frozen {0} |
+| PENDING_BALANCE | 확인 대기 {0} (아직 쓸 수 없음) | Awaiting confirmation {0} (not spendable yet) |
+| BALANCE_DASH | 잔액 — | Balance — |
+| BALANCE_UNKNOWN | 잔액 알 수 없음 | Balance unknown |
+| VERIFY_FAILURES | 검증 실패 UTXO {0}개 | UTXOs that failed verification: {0} |
+| SKIPPED_ADDRESSES | UTXO가 너무 많아 목록을 받지 못한 주소 {0}개 — 그 주소의 UTXO는 지난번에 확인한 그대로 두며 이미 쓰였을 수 있습니다 | Addresses whose UTXO list could not be read because it is too long: {0} — their UTXOs stay as last checked and may already be spent |
+| HINT_MISMATCH | 서버 응답 불일치 UTXO {0}개 (검증한 값을 씁니다) | UTXOs where the server answer differs: {0} (the verified values are used) |
+| AUTO_FROZEN | 작은 입금 자동 동결(먼지 공격 방지) {0}개 | Small deposits frozen automatically (dust attack protection): {0} |
+| UTXO_TITLE | UTXO (검증됨) | UTXOs (verified) |
+| UTXO_HELP | UTXO는 받은 돈 한 건 한 건입니다. 작은 입금은 먼지 공격을 막으려고 자동으로 동결합니다. 위 계정 카드의 잔액은 이전 거래로 검증한 UTXO 가운데 확인 수 1 이상(서버 기준)인 것의 합이고, 진행 중 거래가 쓰는 UTXO는 빠집니다. | A UTXO is one single amount you received. Small deposits are frozen automatically to block dust attacks. The balance on the account card above is the sum of the UTXOs verified by their previous transactions with 1+ confirmations (server data); UTXOs used by a pending transaction are left out. |
+| NO_UTXOS | 검증된 UTXO가 없습니다. | No verified UTXOs. |
+| UTXO_FROZEN | 동결 | frozen |
+| UTXO_AUTO_FROZEN | 자동 동결(작은 입금, 먼지 공격 방지) | frozen automatically (small deposit, dust attack protection) |
+| UTXO_IN_FLIGHT | 진행 중 거래가 사용 | used by a pending transaction |
+| UTXO_OWN | 내 잔돈 | my change |
+| UTXO_HINT | 서버 응답 불일치 | server answer differs |
+| UNFREEZE | 해제 | Unfreeze |
+| FREEZE | 동결 | Freeze |
+| UTXO_HIDDEN | UTXO {0}개는 목록에 표시하지 않았습니다(표시 상한 {1}개). | {0} UTXOs are not listed (display limit {1}). |
+| ACTIVITY_TITLE | 보낸 거래 | Sent transactions |
+| NO_ACTIVITY | 아직 보낸 거래가 없습니다. | No sent transactions yet. |
+| TO_BOOK | → 주소록: {0} | → Address book: {0} |
+| TO_OWN | → 내 계정: {0} | → My account: {0} |
+| ROW_AMOUNT_TO | 받는 금액 {0} · 받는 주소{1} | Amount {0} · Recipient{1} |
+| ROW_TO | 받는 주소{0} | Recipient{0} |
+| BUMP_FEE | 수수료 올리기 | Bump fee |
+| REBROADCAST | 같은 바이트 다시 전송 | Resend the same bytes |
+| ABANDON | 포기 | Abandon |
+| ESPLORA_SEND | Esplora로 전송 | Send via Esplora |
+| CONTINUE_SEND | 전송 계속 | Continue sending |
+| DISABLED_HELP_MNEMONIC | 설정 → Bitcoin에서 켜면 네이티브 세그윗(bc1q…) 계정 0의 주소를 찾아 잔액을 보여줍니다. 다른 주소 형식(탭루트·호환 세그윗·레거시)은 켠 뒤 [계정 추가]로 더하고, 다른 지갑의 WIF 개인키는 [개인키 가져오기]로 더합니다. 먼저 네트워크(RPC)에 bitcoin 주소가 있어야 합니다. | Turn it on in Settings → Bitcoin to find the addresses of Native SegWit (bc1q…) account 0 and show the balance. After that, add other address formats (Taproot, Nested SegWit, Legacy) with [Add account] and WIF private keys from other wallets with [Import private key]. A bitcoin address must be set in Network (RPC) first. |
+| DISABLED_HELP_KEYS | 설정 → Bitcoin에서 켜면 가져온 Bitcoin 개인키의 잔액을 보여주고 받기·보내기를 할 수 있습니다. 먼저 네트워크(RPC)에 bitcoin 주소가 있어야 합니다. | Turn it on in Settings → Bitcoin to see the balance of imported Bitcoin private keys and to receive and send. A bitcoin address must be set in Network (RPC) first. |
+| BTC_SETTINGS | Bitcoin 설정 | Bitcoin settings |
+| NETWORK | 네트워크 | Network |
+| TIP_REGRESSED_HELP | 노드 블록 높이가 이 지갑이 전에 본 높이보다 6블록 넘게 낮습니다. 노드(RPC)를 바꿨거나 이전 노드가 잘못된 높이를 알려 준 경우에만 기록을 초기화하세요. | The node block height is more than 6 blocks below the height this wallet saw before. Reset the record only if you changed the node (RPC) or the previous node reported a wrong height. |
+| RESET_TIP | 블록 높이 기록 초기화 | Reset the block height record |
+| SIGNED_PENDING | 서명했지만 보내지 않은 Bitcoin 거래가 {0}건 있습니다. 아래 활동에서 [전송 계속] 또는 [취소]를 고르세요. | Signed Bitcoin transactions not sent: {0}. Choose [Continue sending] or [Cancel] in the activity below. |
+| RECEIVE_HINT | 받을 주소는 '받기'를 누르면 새로 만듭니다. | Press 'Receive' to create a receive address. |
+| SEND | 보내기 | Send |
+| RECEIVE | 받기 | Receive |
+| REFRESH | 새로고침 | Refresh |
+| REFRESHING | 새로고침 중… | Refreshing… |
+| SEND_BLOCKED | 보내기: {0} | Send: {0} |
+| EXPECTED_FEE | 예상 수수료 | Expected fee |
+| FEE_ABOUT | 약 {0} sats ({1} BTC) | about {0} sats ({1} BTC) |
+| FEE_ESTIMATE_HELP | 입력 1개·출력 2개 기준 — UTXO를 여러 개 쓰면 늘어납니다. 검토에서 다시 계산합니다. | For 1 input and 2 outputs — more UTXOs make it higher. Review calculates it again. |
+| FEE_OVER_CAP | 이 수수료율은 상한을 넘어 검토 뒤 수수료(sats)를 직접 입력해야 합니다. | This fee rate is above the cap: after review you must enter the fee (sats) yourself. |
+| FEE | 수수료 | Fee |
+| FEE_LOADING | 수수료 추정을 불러오는 중… | Loading fee estimates… |
+| FEE_CHOICE_HELP | 빠름·보통·느림 = 노드 추정(2·6·24블록). 추정이 없으면(testnet4에서 흔함) 직접 입력만 됩니다. | Fast·Normal·Slow = node estimates (2·6·24 blocks). Without an estimate (common on testnet4) only manual entry works. |
+| FEE_RATE_LABEL | 수수료율 (sat/vB) | Fee rate (sat/vB) |
+| FLOOR_NOTE | 수수료 하한 {0} (노드 기준): 추정이 하한보다 낮으면 하한을 적용합니다(하한 적용). 직접 입력은 하한 이상이어야 합니다. | Fee floor {0} (node data): an estimate below the floor uses the floor (Floor applied). A manual entry must be at or above the floor. |
+| FLOOR_UNKNOWN | 수수료 하한(1 sat/vB와 노드 최소값 중 큰 값)은 검토할 때 노드에서 확인합니다. | The fee floor (the larger of 1 sat/vB and the node minimum) is checked with the node at review. |
+| TYPED_FEE_BANNER | 수수료(sats)를 정확히 입력해 상한 해제 — 계획 수수료 {0} | Enter the exact fee (sats) to lift the cap — planned fee {0} |
+| TYPED_FEE_LABEL | 수수료(sats) | Fee (sats) |
+| SEND_TITLE | 보내기 — {0} | Send — {0} |
+| FROM_ACCOUNT | 보내는 계정 | From account |
+| AVAILABLE_VERIFIED | 사용 가능 {0} (검증됨, 확인 1 이상 서버 기준) | Available {0} (verified, 1+ confirmations, server data) |
+| RECIPIENT_CARD | 받는 사람 | Recipient |
+| RECIPIENT_ADDRESS | 받는 주소 | Recipient address |
+| PICK_FROM_BOOK | 주소록에서 선택 | Pick from address book |
+| ADDRESS_HINT | bc1…·tb1… 등 Bitcoin 주소 | A Bitcoin address such as bc1… or tb1… |
+| ADDRESS_KIND | 주소 종류: {0} | Address type: {0} |
+| CHECK_WHOLE | 강조된 앞뒤 4자만 보지 말고 가운데까지 주소 전체를 확인하세요. | Check the whole address, the middle too, not only the highlighted first and last 4 characters. |
+| BOOK_ENTRY | 주소록: {0}{1} | Address book: {0}{1} |
+| VERIFIED | ✓ 확인됨 | ✓ verified |
+| ADDR_ACK | 주소 전체를 직접 확인했습니다 | I checked the whole address myself |
+| AMOUNT_CARD | 금액과 수수료 | Amount and fee |
+| AVAILABLE_UNREAD | 사용 가능: 잔액을 아직 읽지 못했습니다 | Available: the balance has not been read yet |
+| AVAILABLE | 사용 가능 {0} | Available {0} |
+| AMOUNT | 금액 | Amount |
+| MAX | 최대 | Max |
+| MAX_HELP | 최대: 동결되지 않은 확인된 UTXO(최대 100개)의 합에서 수수료를 뺀 금액을 보냅니다(승인 창에서 확인). | Max: sends the sum of the unfrozen confirmed UTXOs (up to 100) minus the fee (shown in the approval window). |
+| AMOUNT_HINT | BTC는 소수 8자리까지(예 0.0012) · sats는 정수(예 120000) | BTC with up to 8 decimals (e.g. 0.0012) · sats as a whole number (e.g. 120000) |
+| REVIEW | 검토 | Review |
+| BUMP_TITLE | 수수료 올리기 — {0} | Bump fee — {0} |
+| REPLACED_TX | 교체 대상 거래 | Transaction to replace |
+| STATUS | 상태: {0} | Status: {0} |
+| CURRENT_FEE | 현재 수수료 {0} · {1} | Current fee {0} · {1} |
+| BUMP_AMOUNT | 받는 금액 {0}{1} · 받는 주소: | Amount {0}{1} · Recipient: |
+| BUMP_SEND_MAX_NOTE | (보내기 최대: 수수료가 오른 만큼 받는 금액이 줄어듭니다) | (send max: the recipient gets less by the fee increase) |
+| BUMP_HELP | 새 수수료는 이전 수수료 + 노드 최소 증분 이상이고 수수료율이 더 높아야 합니다. 받는 주소·금액은 그대로이고(보내기 최대 거래는 받는 금액이 줄어듭니다) 매번 새로 승인합니다. | The new fee must be at least the old fee plus the node's minimum increment, at a higher fee rate. Recipient and amount stay the same (a send-max transaction's amount goes down), and every bump is approved anew. |
+| RESULT_BUMP | 수수료 올리기 결과 | Fee bump result |
+| RESULT_SEND | 보내기 결과 | Send result |
+| NO_RESULT | 표시할 결과가 없습니다. | No result to show. |
+| BACK_MAIN | 메인으로 | Back to main |
+| SIGNED_BANNER | 서명하고 저널에 기록했습니다. 아래 해시는 이 지갑이 계산한 값입니다. | Signed and written to the journal. The hash below is the value this wallet computed. |
+| FINISHED_SEE_ACTIVITY | 종결 (활동 참고) | Finished (see activity) |
+| RESULT_STATUS | 상태: {0} ({1}) | Status: {0} ({1}) |
+| COPY_HASH | 해시 복사 | Copy hash |
+| NOT_SENT_KEPT | 전송하지 않았습니다. 입력은 보내기 화면에 남아 있으니 수수료를 바꿔 다시 검토하세요. | Not sent. Your input is still on the send screen: change the fee and review again. |
+| TO_SEND_SCREEN | 보내기 화면으로 | Back to send |
+| RECEIVE_TITLE | 받기 — {0} | Receive — {0} |
+| PREPARING_ADDRESS | 주소를 준비하는 중… | Preparing the address… |
+| FIXED_ADDRESS | {0} · 고정 주소 | {0} · fixed address |
+| RECEIVE_INDEX | {0} · 받기 주소 {1}번 | {0} · receive address #{1} |
+| ADDRESS_FORMAT | 주소 형식: {0} | Address format: {0} |
+| NEW_ADDRESS | 새 주소 | New address |
+| SETTINGS_CARD | Bitcoin 사용과 네트워크 | Bitcoin use and network |
+| ENABLE | Bitcoin 사용 | Use Bitcoin |
+| TESTNET4_RADIO | testnet4 (테스트, 가치 없음) | testnet4 (test, no value) |
+| ENABLE_HELP | 켤 때 고른 네트워크의 BIP84 주소를 찾습니다. 켠 뒤 네트워크를 바꾸면(진행 중 거래가 없을 때만) 주소 인덱스·UTXO 캐시·동결·보낸 주소 기록을 새로 시작하고 다시 찾습니다. 끄면 데이터는 남습니다. | Turning it on searches the BIP84 addresses of the chosen network. Changing the network after that (only without a pending transaction) starts the address indexes, UTXO cache, freezes and sent-address record over and searches again. Turning it off keeps the data. |
+| RPC_SET | 설정됨 | set |
+| RPC_NONE | 없음 — {0} | none — {0} |
+| RPC_LINE | Core RPC 주소 {0}: {1} | Core RPC address {0}: {1} |
+| GO_NETWORK | 네트워크(RPC) 설정으로 | Network (RPC) settings |
+| INDEXER_CARD | 주소 조회 서버(인덱서) | Address lookup server (indexer) |
+| INDEXER | 인덱서 | Indexer |
+| INDEXER_HELP | Esplora: 무료·키 없음(기본 mempool.space). bb-rpc: Core URL의 bb_* (QuickNode BTC Blockbook 유료 애드온). bb-rest: Core URL의 /api/v2/ (알케미 UTXO API). | Esplora: free, no key (default mempool.space). bb-rpc: bb_* on the Core URL (QuickNode BTC Blockbook paid add-on). bb-rest: /api/v2/ on the Core URL (Alchemy UTXO API). |
+| SAVE | 저장 | Save |
+| DEFAULT | 기본값으로 | Default |
+| TEST | 테스트 | Test |
+| ESPLORA_TEST_HELP | `테스트`는 입력 칸의 값(비어 있으면 저장된 값)으로 GET /block-height/0을 한 번 보냅니다. 주소를 보내지 않으므로 잠긴 상태에서도 됩니다. `저장`은 테스트를 요구하지 않으며 쓰기 전에 연결 검사가 다시 확인합니다. | `Test` sends one GET /block-height/0 with the value in the field (the saved value if empty). It sends no address, so it also works while locked. `Save` does not require a test; the connection check verifies again before use. |
+
+<!-- catalogue: yw_engine::screen::build::core::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| BACK_MAIN | ← 메인으로 | ← Back to main |
+| BACK_MAIN_TIP | 메인으로 (Esc) | Back to main (Esc) |
+| T_REFRESH_TIP | 새로고침 (F5) | Refresh (F5) |
+| LANGUAGE_HELP | 앱 화면과 승인 창의 언어입니다. 바꾸면 바로 적용되고, 이미 열린 승인 창은 처음 언어로 남습니다. | The language of the app screens and approval windows. A change applies at once; an approval window that is already open keeps its language. |
+| T_DONE_QUICKNODE | QuickNode 대시보드의 엔드포인트 주소(https://….quiknode.pro/…/)를 통째로 붙여넣으세요. 쓸 체인(Ethereum·Arbitrum·Base·Solana·Bitcoin 등)은 대시보드에서 그 엔드포인트에 켜 두어야 합니다. 입력은 가려지고, 이 Windows 사용자만 풀 수 있게 암호화해 저장합니다. | Paste the whole endpoint address from the QuickNode dashboard (https://….quiknode.pro/…/). The chains you use (Ethereum, Arbitrum, Base, Solana, Bitcoin …) must be enabled for that endpoint in the dashboard. The input is hidden and stored encrypted so that only this Windows user can decrypt it. |
+| T_QUICKNODE_CHAINS | QuickNode는 대시보드에서 쓸 체인(Ethereum·Arbitrum·Base·Solana·Bitcoin 등)을 엔드포인트에 하나씩 켜야 그 네트워크가 작동합니다. | With QuickNode, a network works only after its chain (Ethereum, Arbitrum, Base, Solana, Bitcoin …) is enabled for the endpoint in the dashboard. |
+| T_FIRST_1 | Your Wallet은 이 PC에서만 쓰는 개인용 암호화폐 지갑입니다. | Your Wallet is a personal crypto wallet used only on this PC. |
+| T_FIRST_2 | 돈을 보내거나 사이트에 서명할 때는 언제나 이 앱의 확인 창에서 내용을 보고 직접 승인합니다. | Whenever you send money or sign for a site, you check the details in this app's approval window and approve them yourself. |
+| T_FIRST_3 | 지갑을 만들 때 받는 복구 단어 24개가 유일한 백업입니다. 종이에 적어 안전한 곳에 보관하세요. | The 24 recovery words you get when creating the wallet are its only backup. Write them on paper and keep it in a safe place. |
+| NO_ENDPOINT | 이 네트워크({0})의 RPC 주소가 아직 없어 잔액을 읽을 수 없습니다. | This network ({0}) has no RPC address yet, so the balance cannot be read. |
+| T_BALANCE_FAILED | 잔액을 읽지 못했습니다. | The balance could not be read. |
+| T_BALANCE_LOADING | 잔액을 불러오는 중… | Loading the balance… |
+| UPDATED_AT | {0} 갱신 | updated {0} |
+| AT_BLOCK_WHEN | 블록 {0} 기준 · {1} | at block {0} · {1} |
+| AT_BLOCK | 블록 {0} 기준 | at block {0} |
+| UPDATE_FAILED | 갱신 실패 | update failed |
+| UPDATE_FAILED_SINCE | {0} 이후 갱신 실패 | update failed since {0} |
+| BALANCE_FAILURE | RPC {0} ({1}) — 잔액을 갱신하지 못했습니다. 'RPC 테스트'로 원인을 확인하세요. | RPC {0} ({1}) — the balance could not be updated. Use 'Test RPC' to find the cause. |
+| T_ACTIVITY_RECEIVED | 받은 입금은 이 목록(보낸 거래)에 나오지 않습니다. 아래 '받은 내역도 보기'를 켜면 최근 받은 내역을 따로 보여 줍니다(기본 꺼짐). | Received deposits do not appear in this list (sent transactions). Turn on 'Also show received' below to see recent deposits separately (off by default). |
+| T_ALT_PASS | passphrase 확인값과 맞지 않는 passphrase로 연 지갑입니다. 오타라면 이 지갑은 원래 지갑이 아닌 다른(빈) 지갑이고, 여기로 받은 자산은 지금 입력한 passphrase와 대소문자·공백까지 정확히 같은 값을 다시 넣어야만 꺼낼 수 있습니다. 그래서 받기와 사이트 연결·서명을 막았습니다. 추가한 계정·계정 이름·주소록·연결 기록도 저장되지 않습니다. 잘못 입력했다면 잠그고 다시 여세요. | This wallet was opened with a passphrase that does not match the passphrase check. If it was a typo, this is a different (empty) wallet, not your original one, and assets received here can only be taken out by entering exactly this passphrase again, including case and spaces. So receiving, site connections and signing are blocked. Added accounts, account names, address book entries and connection records are not saved either. If you mistyped, lock and open the wallet again. |
+| T_MAINNET | 메인넷 — 실제 자산 | Mainnet — real assets |
+| T_ACCOUNTS_BACKUP | '가져온 개인키' 계정은 복구 단어로 복구되지 않습니다 — 그 개인키를 따로 백업하세요. | 'Imported private key' accounts are not restored from the recovery words — back up those private keys separately. |
+| T_ACCOUNTS_KEY_ONLY | 이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다. | This wallet started from a private key and has no recovery words. Every account is an 'imported key', and each original private key is its only backup. |
+| T_ACCOUNTS_YUBIKEY | 이 지갑은 복구 단어를 저장하지 않습니다. [YubiKey] 계정의 키는 카드 안에만 있고, 백업은 등록할 때 적은 복구 단어입니다(복구 단어 없이 연결한 키는 그 카드와 같은 키를 가진 백업 카드). | This wallet stores no recovery words. The keys of [YubiKey] accounts exist only on the card, and their backup is the recovery words written down at enrolment (for a key connected without recovery words, a backup card holding the same key). |
+| T_ACCOUNTS_IMPORTED | [가져온 키]는 원래 개인키가 백업입니다. | For [imported key] accounts, the original private key is the backup. |
+| T_ACCOUNTS_YUBIKEY_WORDS | [YubiKey] 계정은 YubiKey를 등록할 때 쓴 복구 단어로 복구됩니다(이 지갑의 복구 단어와 다를 수 있음). | [YubiKey] accounts are restored from the recovery words used when the YubiKey was enrolled (they may differ from this wallet's recovery words). |
+| T_REMOVE_KEY | 선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 설정 → 보안 → '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요. | Removes the selected imported private-key account from this wallet. Imported private keys are not restored from the recovery words, so once removed, the assets of this account cannot be reached again without the original private key. Before removing, make sure you exported the private key with Settings → Security → 'Show private key' and stored it safely. Enter your password to continue. |
+| T_DISCARD | 폐기는 이 앱에서 추적만 멈추고 '폐기됨'으로 표시합니다. 네트워크에서 거래를 취소하지는 않습니다. 이미 전파된 거래라면 나중에 처리될 수 있고, 그 사이 같은 송금을 다시 보내면 두 거래가 모두 처리되어 두 번 지불될 수 있습니다. 확실히 막으려면 폐기 대신 '취소'(같은 nonce의 취소 거래)를 쓰고, 다시 보내기 전에 탐색기에서 이 거래가 사라졌는지 확인하세요. | Discarding only stops tracking in this app and marks the transaction 'discarded'. It does not cancel the transaction on the network. A transaction already broadcast may still be processed later, and if you send the same transfer again in the meantime, both may be processed and you pay twice. To be sure, use 'Cancel' (a cancel transaction with the same nonce) instead of discarding, and check in the explorer that this transaction is gone before sending again. |
+| T_TOKEN_DELETE | 이 토큰을 이 네트워크의 토큰 목록에서 지웁니다. 토큰이나 잔액은 그대로이며 블록체인에는 아무것도 보내지 않습니다. 같은 컨트랙트 주소로 언제든 다시 추가할 수 있습니다. 지운 뒤 이 토큰의 활동 기록은 원시 단위로 보입니다. | Removes this token from this network's token list. The token and its balance stay as they are, and nothing is sent to the blockchain. You can add it again at any time with the same contract address. After removal, this token's activity is shown in raw units. |
+| VAULT_FILE | 지갑 파일(vault.ywv): 저장 횟수(세대) {0} · 마지막 저장 {1}. 기억하는 것보다 작거나 이전 시각이면 파일이 예전 사본으로 바뀌었을 수 있습니다. | Wallet file (vault.ywv): save count (generation) {0} · last saved {1}. If it is lower or earlier than you remember, the file may have been replaced by an older copy. |
+| SETTINGS_TAMPERED_BANNER | {0}. 지금은 앱에 저장된 값을 씁니다. 직접 바꾼 것이 아니라면 '앱에 저장된 값으로 되돌리기'를 누르세요. | {0}. The values saved in the app are used for now. If you did not change it yourself, press 'Restore the app's saved values'. |
+| SETTINGS_RESTORE | 앱에 저장된 값으로 되돌리기 | Restore the app's saved values |
+| SETTINGS_ACCEPT_FILE | 파일 값 사용… | Use the file's values… |
+| DISMISS_BANNERS | 알림 닫기 | Dismiss notices |
+| DEFAULT_VALUE | 기본값 | default |
+| DIFF_AUTO_LOCK | 자동 잠금: 지금 {0}분 → 파일 {1}분 (autoLockMinutes) | Auto-lock: now {0} min → file {1} min (autoLockMinutes) |
+| DIFF_FEE_CAPS | EVM 수수료 상한 — {0}: maxFee {1} → {2} gwei · 우선 수수료 {3} → {4} gwei · 총 {5} → {6} (feeCaps) | EVM fee caps — {0}: maxFee {1} → {2} gwei · priority fee {3} → {4} gwei · total {5} → {6} (feeCaps) |
+| DIFF_INDEXER | Bitcoin 주소 조회 서버: 지금 {0} → 파일 {1} (bitcoin.indexer/esploraBaseUrl) — 파일 값을 쓰면 주소 조회가 그 서버로 갑니다 | Bitcoin address lookup server: now {0} → file {1} (bitcoin.indexer/esploraBaseUrl) — with the file's value, address lookups go to that server |
+| DIFF_NEW_CHAIN | 새 사용자 체인: {0} (chainId {1}) — 앱이 제네시스를 고정한 적 없음 (evmChains) | New user chain: {0} (chainId {1}) — the app never pinned its genesis (evmChains) |
+| BACKUP_CARD_HELP | 복구 단어(니모닉)는 지갑 전체의 백업입니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다. | The recovery words (mnemonic) are the backup of the whole wallet. Your password is asked again before they are shown, in a window excluded from screen capture. |
+| BACKUP_STATUS_TITLE | 백업 현황 — 이 지갑을 다시 열려면 | Backup status — to open this wallet again |
+| BACKUP_STATUS_HELP | 이 PC의 비밀번호는 백업이 아닙니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다. | The password on this PC is not a backup. Your password is asked again before anything is shown, in a window excluded from screen capture. |
+| REVEAL_FIRST_MNEMONIC | 첫 복구 단어 보기 | Show first recovery words |
+| REVEAL_MNEMONIC | 복구 단어 보기 | Show recovery words |
+| REVEAL_KEY | 개인키 보기 | Show private key |
+| MANAGE_MNEMONICS | 복구 단어 관리 ▸ | Manage recovery words ▸ |
+| BACKUP_STATUS_PHRASE | · {0} · {1}단어{2}{3} · {4} | · {0} · {1} words{2}{3} · {4} |
+| BACKUP_STATUS_FIRST |  (첫 복구 단어) |  (first recovery words) |
+| BACKUP_CONFIRMED | 백업 확인됨 ✓ | backup checked ✓ |
+| BACKUP_NOT_CONFIRMED | 백업 확인 전 ⚠ — 설정 → 복구 단어에서 '백업 확인' | backup not checked ⚠ — Settings → Recovery words → 'Check backup' |
+| BACKUP_STATUS_IMPORTED | · 가져온 개인키 {0}개 — 복구 단어로 되찾을 수 없고, 각각 원래 개인키가 백업입니다 | · {0} imported private keys — not recoverable from recovery words; each original private key is its backup |
+| BACKUP_STATUS_CARD_ON | · {0} — 복구 단어 없음, {1}에 있음 | · {0} — no recovery words, on {1} |
+| BACKUP_STATUS_CARD_ONLY | · {0} — 복구 단어 없음, {1}에만 있음 ⚠ | · {0} — no recovery words, only on {1} ⚠ |
+| BACKUP_STATUS_CARD_WORDS | · {0} — YubiKey {1} · 복구 단어로 다시 만들 수 있음 | · {0} — YubiKey {1} · can be recreated from recovery words |
+| ELSEWHERE_SECURITY | 복구 단어별 보기·백업 확인은 '복구 단어' 탭에 있습니다. | Viewing each set of recovery words and checking backups is on the 'Recovery words' tab. |
+| ELSEWHERE_CHAINS | 토큰 추가는 메인 화면의 '토큰' 카드에 있습니다. | Adding tokens is on the main screen's 'Tokens' card. |
+| ELSEWHERE_BITCOIN | Bitcoin 계정과 주소 방식은 메인 화면의 Bitcoin 탭에 있습니다. | Bitcoin accounts and address types are on the main screen's Bitcoin tab. |
+| ELSEWHERE_YUBIKEY | 서명할 때는 승인 뒤 PIN 창이 저절로 열립니다. | When signing, the PIN window opens by itself after approval. |
+| ELSEWHERE_OTHER | Zcash는 메인 화면의 Zcash 탭에서 켭니다. | Zcash is turned on in the main screen's Zcash tab. |
+| ADDRESS_BOOK | 주소록 | Address book |
+| SITES_WC | 사이트·WalletConnect | Sites · WalletConnect |
+| SETTINGS | 설정 | Settings |
+| SETTINGS_TIP | 설정 (Ctrl+,) | Settings (Ctrl+,) |
+| LOCK | 잠금 | Lock |
+| LOCK_TIP | 잠금 (Ctrl+L) | Lock (Ctrl+L) |
+| STARTING | 지갑을 불러오는 중… | Loading the wallet… |
+| PLEASE_WAIT | 잠시만 기다려 주세요 | Please wait |
+| LEFTOVER | 이전 지갑의 파일이 데이터 폴더에 남아 있습니다. 앱을 종료하고 파일을 다른 곳으로 옮긴 뒤 다시 실행하세요. | Files of an earlier wallet are left in the data folder. Quit the app, move the files elsewhere and start it again. |
+| OPEN_FOLDER | 폴더 열기 | Open folder |
+| LEFTOVER_MOVE | 남은 파일을 reset- 폴더로 옮기기… | Move the leftover files to a reset- folder… |
+| FIRST_NEW_TITLE | 새로 시작합니다 | Start fresh |
+| FIRST_NEW_TEXT | 새 지갑을 만들고 복구 단어 24개를 종이에 적습니다. 5분쯤 걸립니다. | Create a new wallet and write its 24 recovery words on paper. It takes about 5 minutes. |
+| CREATE_WALLET | 새 지갑 만들기 | Create a new wallet |
+| FIRST_YK_WALLET | YubiKey에 보관하는 새 지갑 | New wallet kept on a YubiKey |
+| FIRST_YK_WALLET_HELP | YubiKey에 보관하는 새 지갑: {0} YubiKey 5(펌웨어 5.2.3 이상, Solana 계정은 5.7.4 이상)가 필요합니다. | New wallet kept on a YubiKey: {0} Requires a YubiKey 5 (firmware 5.2.3 or later; 5.7.4 or later for Solana accounts). |
+| FIRST_EXISTING_TITLE | 이미 쓰던 지갑이 있습니다 | I already have a wallet |
+| FIRST_IMPORT | 복구 단어로 가져오기 | Import with recovery words |
+| FIRST_KEY | 개인키로 시작하기 | Start with a private key |
+| FIRST_YK_CONNECT | YubiKey 연결하기 (복구 단어 없이) | Connect a YubiKey (no recovery words) |
+| FIRST_IMPORT_HELP | · 복구 단어로 가져오기: 다른 지갑에서 쓰던 영어 복구 단어(니모닉) 12·15·18·21·24개로 그 지갑을 그대로 가져옵니다. | · Import with recovery words: brings in a wallet you used elsewhere, as it is, from its 12, 15, 18, 21 or 24 English recovery words (mnemonic). |
+| FIRST_KEY_HELP | · 개인키로 시작하기: {0} | · Start with a private key: {0} |
+| FIRST_YK_CONNECT_HELP | · YubiKey 연결하기: 이미 키가 들어 있는 YubiKey(새 PC, 다시 설치)를 복구 단어 없이 연결합니다. 카드의 공개키만 읽고 아무것도 쓰지 않습니다. | · Connect a YubiKey: connects a YubiKey that already holds keys (new PC, reinstall) without recovery words. Only the card's public keys are read; nothing is written. |
+| BEFORE_START | 시작하기 전에 | Before you start |
+| CREATE_INTRO_1 | · 종이와 펜을 준비하세요. 다음 화면들에서 복구 단어 24개와 첫 주소를 적습니다. | · Have paper and a pen ready. On the next screens you write down 24 recovery words and the first address. |
+| CREATE_INTRO_2 | · 복구 단어는 종이(또는 금속)에만 적고 사진·클라우드·메신저에 남기지 마세요. | · Write the recovery words only on paper (or metal); never keep them in photos, the cloud or messengers. |
+| CREATE_INTRO_3 | · 화면 공유·녹화를 끄고 주변에 사람이나 카메라가 없는지 확인하세요. | · Turn off screen sharing and recording, and make sure no people or cameras are around. |
+| CREATE_INTRO_HELP | 복구 단어를 아는 사람은 누구든 지갑의 자산을 옮길 수 있습니다. 이 앱도 복구 단어를 대신 보관하거나 되찾아 주지 못합니다. | Anyone who knows the recovery words can move the wallet's assets. This app cannot keep the recovery words for you or recover them. |
+| START | 시작하기 | Start |
+| CANCEL | 취소 | Cancel |
+| BACKUP_PENDING_TITLE | 백업 확인이 필요합니다 | Backup check needed |
+| BACKUP_PENDING_BANNER | 백업 확인이 끝나지 않았습니다. 확인 전에는 보내기·서명·dApp 승인을 쓸 수 없습니다. | The backup check is not finished. Until it is, sending, signing and dApp approvals are not available. |
+| BACKUP_PENDING_TEXT | 복구 단어를 다시 보고, 그중 단어 4개를 입력해 종이에 바르게 적었는지 확인합니다. | View the recovery words again and enter 4 of them to check that they are written correctly on paper. |
+| BACKUP_CHECK | 복구 단어 보고 백업 확인 | View recovery words and check backup |
+| RECEIVE | 받기 | Receive |
+| BACKUP_PENDING_RESET | 복구 단어를 적지 못했거나 잃어버렸다면, 이 지갑에 자산을 받기 전에 초기화하고 새로 만드세요. | If you could not write down the recovery words or lost them, reset and create a new wallet before receiving any assets into this one. |
+| IMPORT_WALLET | 기존 지갑 가져오기 | Import an existing wallet |
+| IMPORT_NEED_TITLE | 준비할 것 | What you need |
+| IMPORT_NEED_WORDS | · 다른 지갑에서 쓰던 영어 복구 단어(BIP39 니모닉) 12·15·18·21·24개 | · The 12, 15, 18, 21 or 24 English recovery words (BIP39 mnemonic) you used in another wallet |
+| IMPORT_NEED_PASSPHRASE | · 그 지갑에서 BIP39 passphrase(25번째 단어)를 썼다면 그 passphrase | · If that wallet used a BIP39 passphrase (25th word), that passphrase |
+| IMPORT_KEY_HINT | 복구 단어 없이 개인키(EVM·Solana·Bitcoin)만 있다면 첫 화면의 '개인키로 시작하기'를 쓰세요. 이미 지갑이 있다면 메인 화면의 '개인키 가져오기'로 더할 수 있습니다. | If you only have a private key (EVM, Solana, Bitcoin) and no recovery words, use 'Start with a private key' on the first screen. If you already have a wallet, add it with 'Import private key' on the main screen. |
+| IMPORT_ADDRESS_TEXT | 가져온 지갑의 첫 주소입니다. 이전 지갑에서 쓰던 주소와 전체가 같은지 확인하세요. | This is the first address of the imported wallet. Check that it is exactly the address you used in your earlier wallet. |
+| IMPORT_CORRECT | 맞습니다 | It matches |
+| IMPORT_WRONG | 다릅니다 | It differs |
+| IMPORT_ADDRESS_HELP | 다르면 복구 단어의 순서·철자나 passphrase를 확인하세요. '다릅니다'를 누르면 복구 단어를 다시 입력합니다. | If it differs, check the order and spelling of the recovery words or the passphrase. 'It differs' lets you enter the recovery words again. |
+| LOCKED_TITLE | 지갑이 잠겨 있습니다 | The wallet is locked |
+| LOCKED_TEXT | 계정과 잔액을 보려면 비밀번호로 잠금을 해제하세요. | Unlock with your password to see accounts and balances. |
+| UNLOCK | 잠금 해제 | Unlock |
+| LOCKED_AUTO_LOCK | {0}분 동안 쓰지 않거나, Windows를 잠그거나 절전에 들어가면 지갑이 자동으로 잠깁니다. | The wallet locks itself after {0} minutes without use, or when Windows locks or goes to sleep. |
+| LOCKED_DAMAGED | 비밀번호가 맞는데도 계속 열리지 않으면 지갑 파일이 손상되었을 수 있습니다. 같은 비밀번호로 이전 사본(.prev) 복구를 시도할 수 있습니다. 지갑 파일이 정상이면 복구하지 않고 그대로 엽니다. | If the wallet keeps failing to open although the password is right, the wallet file may be damaged. You can try restoring the previous copy (.prev) with the same password. If the wallet file is fine, it simply opens without restoring. |
+| RECOVER_PREV | 이전 사본(.prev)으로 복구 | Restore the previous copy (.prev) |
+| FORGOT_PASSWORD | 비밀번호를 잊었나요? | Forgot your password? |
+| RESET_WALLET | 지갑 초기화… | Reset wallet… |
+| MISMATCH_TITLE | passphrase 확인 | Check the passphrase |
+| MISMATCH_BANNER | passphrase가 다를 수 있습니다. 다른 passphrase는 다른(빈) 지갑을 엽니다. | The passphrase may be different. A different passphrase opens a different (empty) wallet. |
+| MISMATCH_CHECK | 다른 passphrase는 다른(빈) 지갑을 엽니다 | A different passphrase opens a different (empty) wallet |
+| MISMATCH_RETRY | 다시 입력 | Enter again |
+| MISMATCH_CONTINUE | 이 passphrase로 계속 | Continue with this passphrase |
+| DONE_TITLE | 준비되었습니다 | All set |
+| DONE_YK_CREATED | YubiKey 지갑을 만들었습니다 (YubiKey {0}). | The YubiKey wallet was created (YubiKey {0}). |
+| DONE_YK_CREATED_BACKUP | 이 지갑의 백업은 방금 적은 복구 단어 24개입니다. 이 PC에는 저장하지 않았으니 종이를 안전하게 보관하세요. | This wallet's backup is the 24 recovery words you just wrote down. They are not stored on this PC, so keep the paper safe. |
+| DONE_YK_CONNECTED | YubiKey를 연결했습니다 (YubiKey {0}). | The YubiKey was connected (YubiKey {0}). |
+| DONE_YK_CONNECTED_BACKUP | 복구 단어 없이 카드의 공개키로 연결했습니다. 이 PC에는 개인키도 복구 단어도 없어 카드가 그 키의 유일한 사본일 수 있습니다 — 카드를 잃었을 때를 대비해 원래 백업(복구 단어 등)이 있는지 확인하세요. | Connected with the card's public keys, without recovery words. This PC has neither private keys nor recovery words, so the card may be the only copy of those keys — make sure the original backup (recovery words etc.) exists in case the card is lost. |
+| DONE_IMPORTED | 지갑을 가져왔습니다. 이제 지갑을 쓸 수 있습니다. | The wallet was imported. You can use it now. |
+| DONE_IMPORTED_BACKUP | 이 지갑의 백업은 방금 입력한 복구 단어(와 passphrase)입니다. 그 종이 백업을 계속 안전하게 보관하세요. | This wallet's backup is the recovery words (and passphrase) you just entered. Keep that paper backup safe. |
+| DONE_BACKUP_OK | 백업을 확인했습니다. 이제 지갑을 쓸 수 있습니다. | The backup was checked. You can use the wallet now. |
+| DONE_SETUP | 처음 설정 | First setup |
+| DONE_OPEN_WALLET | 지갑 열기 | Open wallet |
+| DONE_RPC_TITLE | ① 블록체인 연결(RPC) | ① Blockchain connection (RPC) |
+| DONE_RPC_SUMMARY | RPC 주소 {0}개 · 이번 실행 테스트: 작동 {1} · 실패 {2} | {0} RPC addresses · tests this run: {1} working · {2} failed |
+| OPEN_RPC_SETTINGS | RPC 설정 열기 | Open RPC settings |
+| DONE_RPC_NEED | 잔액을 보고 돈을 보내려면 블록체인 노드에 연결할 RPC 주소가 필요합니다. | To see balances and send money, you need an RPC address that connects to a blockchain node. |
+| QUICKNODE_ADDRESS | QuickNode 주소 | QuickNode address |
+| DONE_CONNECT | 연결하기 | Connect |
+| DONE_OTHER_PROVIDERS | 알케미·직접 입력은 설정에서 ▸ | Alchemy or manual entry in settings ▸ |
+| DONE_PROVIDER_HELP | 선택한 RPC 공급자의 자격 정보나 주소는 설정 → 네트워크(RPC)에서 넣습니다. | Enter the selected RPC provider's credentials or addresses in Settings → Network (RPC). |
+| DONE_SET_RPC | RPC 설정하기 | Set up RPC |
+| DONE_RPC_JSON | rpc.json이 있습니다 — 설정에서 가져오기 ▸ | rpc.json found — import it in settings ▸ |
+| OPEN_ROW | {0} 행 열기 ▸ | Open the {0} row ▸ |
+| TESTING_NAME | … {0} 테스트 중 | … testing {0} |
+| WORKS_OF | {0}개 중 {1}개 작동 | {1} of {0} working |
+| WORKS_OF_TESTING | {0}개 중 {1}개 작동 · {2}개 테스트 중 | {1} of {0} working · {2} being tested |
+| DONE_FAILED_HELP | QuickNode 대시보드에서 그 체인을 켰는지 확인한 뒤 설정 → 네트워크(RPC)의 “모두 테스트”로 다시 확인하세요. 나머지는 지금 쓸 수 있습니다. | Check that the chain is enabled in the QuickNode dashboard, then test again with “Test all” in Settings → Network (RPC). The others can be used now. |
+| DONE_DAPP_TITLE | ② dApp 연결 (선택, 둘 중 하나) | ② dApp connection (optional, either one) |
+| CHROME_EXTENSION_STATUS | Chrome 확장: {0} | Chrome extension: {0} |
+| HOW_TO_INSTALL | 설치 방법 | How to install |
+| NO_PROJECT_ID | Project ID 없음 | no Project ID |
+| CONFIGURED | 설정됨 | configured |
+| DONE_DEPOSIT_TITLE | ③ 첫 입금 시험 | ③ First deposit test |
+| DONE_DEPOSIT_TEXT | 실제 자산은 소액으로 받기 → 보내기를 한 번 해 보세요. | With real assets, try receive → send once with a small amount. |
+| DONE_DEPOSIT_SEPOLIA |  EVM 탭은 Sepolia 테스트넷으로 시작합니다. |  The EVM tab starts on the Sepolia testnet. |
+| DONE_DEPOSIT_NETWORK |  지금 EVM 네트워크: {0}. |  Current EVM network: {0}. |
+| DONE_BALANCE_SEPOLIA | · EVM 탭은 Sepolia 테스트넷으로 시작합니다 — 쓰던 네트워크를 고르세요 | · The EVM tab starts on the Sepolia testnet — choose the network you used |
+| DONE_SHOW_MAINNET | Ethereum 메인넷으로 보기 | Show Ethereum mainnet |
+| DONE_BALANCE_NETWORK | · EVM 탭은 지금 {0}입니다 — 다른 네트워크는 메인 화면의 네트워크 칩에서 고르세요 | · The EVM tab is on {0} — choose other networks with the network chip on the main screen |
+| DONE_BALANCE_ACCOUNTS | · 계정은 자동으로 찾지 않습니다. 이전 지갑에서 계정을 여러 개 썼다면 “내 EVM 계정 → 계정 추가”를 차례로 누르세요. Solana의 다른 경로는 Solana 탭 “다른 경로 스캔”. | · Accounts are not searched automatically. If you used several accounts in your earlier wallet, press “My EVM accounts → Add account” for each. For other Solana paths, use “Scan other paths” on the Solana tab. |
+| DONE_OFF_BOTH | · Bitcoin·Zcash는 꺼져 있습니다 — 설정 → Bitcoin, Zcash 탭에서 켜면 보입니다(Bitcoin은 네이티브 세그윗 계정 0부터). | · Bitcoin and Zcash are off — turn them on in Settings → Bitcoin and on the Zcash tab to see them (Bitcoin from native SegWit account 0). |
+| DONE_OFF_BITCOIN | · Bitcoin은 꺼져 있습니다 — 설정 → Bitcoin에서 켜면 보입니다(네이티브 세그윗 계정 0부터). | · Bitcoin is off — turn it on in Settings → Bitcoin to see it (from native SegWit account 0). |
+| DONE_OFF_ZCASH | · Zcash는 꺼져 있습니다 — Zcash 탭에서 켜면 보입니다. | · Zcash is off — turn it on in the Zcash tab to see it. |
+| DONE_NO_BALANCE | 잔액이 안 보이면 | If no balance shows |
+| RECOVERY_TITLE | 지갑 파일 복구 | Wallet file recovery |
+| RECOVERY_MISSING | 지갑 파일이 없고 이전 사본(.prev)이 있습니다. | The wallet file is missing and a previous copy (.prev) exists. |
+| RECOVERY_PREV_HELP | 이전 사본으로 복구하면 마지막 변경(예: 가져온 개인키)이 사라질 수 있습니다. 지금 파일은 지우지 않고 데이터 폴더에 vault.ywv.corrupt-<시각> 이름으로 옮겨 두며, 복구 뒤 그 이름을 알려 드립니다(직접 되돌리는 방법: 복구 안내). | Restoring the previous copy may lose the last change (for example an imported private key). The current file is not deleted: it is moved in the data folder to the name vault.ywv.corrupt-<time>, which is shown after the restore (to undo it yourself: recovery guide). |
+| DATA_FOLDER | 데이터 폴더 | Data folder |
+| RECOVERY_RESTORE | 이전 사본으로 복구 | Restore previous copy |
+| EXIT | 종료 | Quit |
+| RECOVERY_NEVER_DELETES | 앱은 지갑 파일을 지우거나 덮어쓰지 않습니다. 복구 단어가 있으면 언제든 새로 가져올 수 있습니다. | The app never deletes or overwrites wallet files. With the recovery words you can always import the wallet again. |
+| RECOVERY_RESET | 복구할 수 없다면: 지갑 파일을 데이터 폴더 안의 reset- 폴더로 옮겨 두고 처음부터 시작합니다. | If it cannot be restored: the wallet files are moved to a reset- folder inside the data folder and you start over. |
+| AT_BLOCK_FAILED | 블록 {0} 기준 · 갱신 실패 {1} | at block {0} · update failed {1} |
+| BALANCE_NONE | 잔액 — | Balance — |
+| BALANCE_NOT_YET | 잔액을 아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요. | The balance has not been read yet. Check the RPC connection and refresh. |
+| TOKENS_LINE | 토큰: {0} | Tokens: {0} |
+| SEND | 보내기 | Send |
+| REFRESH | 새로고침 | Refresh |
+| NETWORK | 네트워크 | Network |
+| TESTNET_PILL | 테스트넷 — 실제 자산이 아닙니다 | Testnet — not real assets |
+| MY_ACCOUNTS | 내 EVM 계정 | My EVM accounts |
+| SAVE | 저장 | Save |
+| RENAME | 이름 바꾸기 | Rename |
+| HIDE | 숨기기 | Hide |
+| DELETE | 삭제 | Delete |
+| ADD_ACCOUNT | 계정 추가 | Add account |
+| IMPORT_KEY | 개인키 가져오기 | Import private key |
+| ADD_MANAGE_MNEMONICS | 복구 단어 추가·관리 | Add or manage recovery words |
+| BACK_DONE | ← 처음 설정으로 | ← Back to first setup |
+| TAB_SECURITY | 보안 | Security |
+| TAB_MNEMONICS | 복구 단어 | Recovery |
+| TAB_NETWORK | 네트워크(RPC) | Network (RPC) |
+| TAB_CHAINS | EVM 체인 | EVM chains |
+| TAB_AI | AI 설명 | AI |
+| TAB_OTHER | 브라우저·정보 | Browser · info |
+| ADVANCED_HIDE | 고급 설정 숨기기 ▾ | Hide advanced settings ▾ |
+| ADVANCED_SHOW | 고급 설정 보기 ▸ | Show advanced settings ▸ |
+| AUTO_LOCK_TITLE | 자동 잠금 | Auto-lock |
+| AUTO_LOCK_HELP | 정한 시간 동안 쓰지 않으면 지갑을 잠급니다. Windows를 잠그거나 절전에 들어갈 때도 잠깁니다. | Locks the wallet when it is not used for the set time. It also locks when Windows locks or goes to sleep. |
+| AUTO_LOCK_LABEL | 잠그기까지(분, 1–60) | Lock after (min, 1–60) |
+| SECRETS_TITLE | 복구 단어·개인키 | Recovery words · private keys |
+| SECRETS_KEY_ONLY | 이 지갑은 개인키로 시작해 복구 단어가 없습니다. 각 계정의 백업은 그 원래 개인키이며, 보기 전에 비밀번호를 다시 묻고 화면 캡처에서 제외된 창에 보여줍니다. | This wallet started from a private key and has no recovery words. Each account's backup is its original private key; your password is asked again before it is shown, in a window excluded from screen capture. |
+| SECRETS_KEY_NOTE | 개인키 보기는 메인 화면에서 선택한 EVM 계정의 키를 보여줍니다. Solana·Bitcoin의 가져온 개인키는 각 탭의 계정에서 '개인키 보기'를 누르세요. | 'Show private key' shows the key of the EVM account selected on the main screen. For imported Solana and Bitcoin keys, press 'Show private key' at the account on each tab. |
+| ALLOW_COPY | 복구 단어·개인키 복사 허용 | Allow copying recovery words and private keys |
+| ALLOW_COPY_HELP | 기본은 꺼짐입니다. 켜면 복사한 값은 클립보드 기록에 남지 않고 30초 뒤 지워집니다. | Off by default. When on, a copied value is kept out of the clipboard history and cleared after 30 seconds. |
+| PASSWORD_TITLE | 비밀번호 | Password |
+| PASSWORD_HELP | 이 PC에서 지갑을 열 때 쓰는 비밀번호입니다. 바꿔도 복구 단어와 주소는 그대로입니다. | The password that opens the wallet on this PC. Changing it keeps the recovery words and addresses. |
+| T_PASSWORD_OLD_COPIES | 비밀번호를 바꾸면 지갑의 암호화 키도 새로 만듭니다. 그래서 바꾼 뒤에 더하거나 고친 내용(새 복구 단어·가져온 키, 계정 이름·주소록·기록)은 예전 사본과 예전 비밀번호로 열 수 없습니다. 2026-11-13 이전 버전에서 바꾼 비밀번호는 키를 그대로 두었으니, 그때 바꿨다면 지금 한 번 더 바꾸세요. 하지만 바꾸기 전에 만든 지갑 파일 사본(백업해 둔 vault.ywv, vault.ywv.corrupt-… 등)은 예전 비밀번호로 계속 열리고, 그 안에 이미 있던 복구 단어·개인키는 그대로 드러납니다. 예전 비밀번호가 약했다면 그런 사본은 나중에라도 오프라인으로 풀릴 수 있습니다. 예전 비밀번호와 사본이 함께 샜을 수 있다면 사본을 지우고, 새 복구 단어로 따로 만든 새 지갑으로 자산을 옮기세요. | Changing the password also renews the wallet's encryption key. So what you add or change afterwards (new recovery words, imported keys, account names, address book, records) cannot be opened with old copies and the old password. Versions before 2026-11-13 kept the key on a password change, so if you changed it then, change it once more now. Wallet file copies made before the change (a backed-up vault.ywv, vault.ywv.corrupt-… etc.) still open with the old password and reveal the recovery words and private keys they already hold. If the old password was weak, such copies may be cracked offline even later. If the old password and a copy may have leaked together, delete the copy and move your assets to a new wallet created separately with new recovery words. |
+| CHANGE_PASSWORD | 비밀번호 변경 | Change password |
+| FILE_PROTECTION_TITLE | 지갑 파일과 보호 상태 | Wallet file and protection |
+| WER_PROTECTED | Windows 오류 보고(WER)에서 이 앱을 제외했습니다: 비정상 종료 때 메모리 덤프를 남기지 않습니다. | This app is excluded from Windows Error Reporting (WER): no memory dump is left after a crash. |
+| RESET_TITLE | 지갑 초기화 | Reset wallet |
+| RESET_CARD_HELP | 이 PC의 지갑 파일을 데이터 폴더 안의 reset- 폴더로 옮기고(지우지 않음) 처음 화면으로 돌아갑니다. 다시 쓰려면 복구 단어·원래 개인키, 또는 YubiKey(“YubiKey 연결하기 (복구 단어 없이)”)가 필요합니다. | Moves this PC's wallet files to a reset- folder inside the data folder (nothing is deleted) and returns to the first screen. To use the wallet again you need the recovery words, the original private keys, or a YubiKey (“Connect a YubiKey (no recovery words)”). |
+| RPC_PROVIDER_TITLE | RPC 공급자 | RPC provider |
+| RPC_JSON_FOUND | rpc.json이 있습니다 — 맨 아래 “rpc.json에서 가져오기”로 한 번에 넣을 수 있습니다. | rpc.json found — “Import from rpc.json” at the bottom adds it all at once. |
+| RPC_PROVIDER_HELP | RPC는 지갑이 블록체인에서 잔액을 읽고 거래를 보낼 때 쓰는 연결 주소입니다. QuickNode나 알케미 계정 정보를 한 번 넣으면 아래 모든 네트워크의 주소를 자동으로 만들 수 있습니다. | RPC is the connection address the wallet uses to read balances from the blockchain and send transactions. Enter your QuickNode or Alchemy account details once to create the addresses of all networks below automatically. |
+| TPL_QUICKNODE | QuickNode 멀티체인 | QuickNode multichain |
+| ALCHEMY | 알케미 | Alchemy |
+| TPL_MANUAL | 직접 입력 | Manual entry |
+| NONE | 없음 | none |
+| QN_STORED | 저장된 QuickNode 자격 정보: {0} (저장된 값은 다시 보이지 않습니다) | Stored QuickNode credentials: {0} (stored values are never shown again) |
+| QN_NAME | 엔드포인트 이름 | Endpoint name |
+| QN_NAME_HELP | QuickNode 엔드포인트 주소 https://<이름>.quiknode.pro/… 의 <이름> 부분입니다. 대시보드의 주소 전체를 이 칸이나 토큰 칸에 붙여넣어도 됩니다(이름과 토큰을 알아서 나눕니다). | The <name> part of the QuickNode endpoint address https://<name>.quiknode.pro/…. You may also paste the whole address from the dashboard into this field or the token field (name and token are split for you). |
+| QN_TOKEN | 토큰 | Token |
+| QN_TOKEN_HELP | 주소 끝의 긴 문자열입니다. 입력한 값은 가려지고, 저장하면 Windows가 이 사용자 계정에서만 풀 수 있게 암호화합니다. | The long string at the end of the address. The input is hidden, and when saved Windows encrypts it so that only this user account can decrypt it. |
+| ALCHEMY_STORED | 저장된 알케미 키: {0} (저장된 값은 다시 보이지 않습니다) | Stored Alchemy key: {0} (stored values are never shown again) |
+| API_KEY | API 키 | API key |
+| ALCHEMY_KEY_HELP | 알케미 대시보드의 API Key입니다. 입력한 값은 가려집니다. | The API Key from the Alchemy dashboard. The input is hidden. |
+| MANUAL_HELP | 직접 입력: 아래 '네트워크별 RPC 주소'에서 네트워크마다 '입력'으로 https:// 주소를 넣으세요. | Manual entry: in 'RPC addresses by network' below, use 'Enter' on each network to add its https:// address. |
+| GENERATE | 저장하고 RPC 주소 만들기 | Save and create RPC addresses |
+| TPL_SAVE | 자격 정보만 저장 | Save credentials only |
+| TPL_DELETE | 자격 정보 삭제 | Delete credentials |
+| TPL_DELETED | 자격 정보를 지웠습니다. 이미 만든 네트워크별 RPC 주소는 그대로입니다. | The credentials were deleted. RPC addresses already created for each network stay as they are. |
+| GENERATE_HELP | '저장하고 RPC 주소 만들기'는 위 칸의 자격 정보를 저장하고 아래 목록의 주소를 한 번에 만든 뒤 하나씩 테스트합니다. 이미 있는 주소는 덮어쓸지 따로 묻습니다. | 'Save and create RPC addresses' saves the credentials above, creates the addresses in the list below at once and tests them one by one. You are asked separately before existing addresses are overwritten. |
+| RPC_LIST_TITLE | 네트워크별 RPC 주소 | RPC addresses by network |
+| RPC_LIST_HELP | '테스트'는 그 주소가 올바른 네트워크를 가리키는지 한 번 확인합니다. 주소에는 토큰이 들어 있어 '교체'를 누르면 가린 형태로만 보입니다. | 'Test' checks once that the address points to the right network. Addresses contain tokens, so 'Replace' shows them masked only. |
+| REPLACE | 교체 | Replace |
+| ENTER | 입력 | Enter |
+| TEST | 테스트 | Test |
+| WORKS | 작동 | Working |
+| FAILED | 실패 | Failed |
+| TESTING | 테스트 중 | Testing |
+| ROW_NO_ADDRESS | {0} · 주소 없음 | {0} · no address |
+| ROW_ADDRESS | {0} · 지금 주소 {1} | {0} · current address {1} |
+| ROW_TEMPLATE_STORED | {0} 자격 정보가 저장되어 있습니다 — 위 “저장하고 RPC 주소 만들기”로 비어 있는 주소를 한 번에 만들 수 있습니다. | {0} credentials are stored — “Save and create RPC addresses” above creates the empty addresses at once. |
+| ROW_PASTE_HELP | https:// 로 시작하는 전체 주소를 붙여넣으세요. 저장 전에 형식을 검사하고, 저장하면 바로 테스트합니다. | Paste the whole address starting with https://. Its format is checked before saving, and it is tested right after saving. |
+| RPC_URL_DELETED | RPC 주소를 지웠습니다. | The RPC address was deleted. |
+| DORMANT_TITLE | 보관 중인 항목 | Kept entries |
+| DORMANT_HELP | 이 버전에서 쓰지 않는 RPC 항목 {0}개를 지우지 않고 보관하고 있습니다(등록되지 않은 체인의 주소나 다른 버전의 앱이 쓴 항목). 체인을 다시 추가하거나 다른 버전으로 돌아가면 다시 쓰입니다. | {0} RPC entries not used by this version are kept, not deleted (addresses of unregistered chains, or entries written by another app version). They are used again when you add the chain back or return to that version. |
+| DORMANT_DELETE | 보관 항목 삭제 | Delete kept entries |
+| RPC_LIST_SUMMARY | RPC 주소 {0}/{1}개 설정 · 이번 실행 테스트: 작동 {2} · 실패 {3} · 안 함 {4} | RPC addresses {0}/{1} set · tests this run: {2} working · {3} failed · {4} not run |
+| FAILED_NETWORKS | 실패한 네트워크 | Failed networks |
+| TESTING_PROGRESS | 테스트 중 {0}/{1} | Testing {0}/{1} |
+| TEST_ALL | 모두 테스트 | Test all |
+| EXTENSION_TITLE | 브라우저 확장 | Browser extension |
+| EXTENSION_OPEN | Chrome 확장 설치 방법·폴더 | Chrome extension setup · folder |
+| WC_HELP | 확장 없이 dApp의 WalletConnect QR·링크로 연결합니다(EVM). 처음 한 번 Reown Project ID가 필요하고, 연결·세션 관리는 '연결된 사이트 · WalletConnect' 화면에서 합니다. | Connects through a dApp's WalletConnect QR code or link, without the extension (EVM). It needs a Reown Project ID once; connections and sessions are managed on the 'Connected sites · WalletConnect' screen. |
+| STATUS | 상태 | Status |
+| WC_OFF | Project ID 없음 — 꺼져 있음 | No Project ID — off |
+| WC_ON | Project ID 설정됨 · 세션 {0}개 | Project ID set · {0} sessions |
+| WC_OPEN_SITES | 연결된 사이트 · WalletConnect 열기 | Open connected sites · WalletConnect |
+| BROWSER_LINK_TITLE | 브라우저 연결 | Browser connection |
+| BROWSER_LINK_HELP | Chrome 확장과 이 앱을 잇는 설정입니다. 사이트의 연결·서명 요청은 언제나 이 앱의 승인 창에서 확인합니다. | Settings that link the Chrome extension and this app. Site connection and signing requests are always checked in this app's approval window. |
+| AUTOLAUNCH | dApp 요청 시 앱 자동 실행 | Start the app on a dApp request |
+| AUTOLAUNCH_HELP | 끄면 앱이 꺼져 있을 때 사이트의 지갑 요청은 실패합니다. | When off, a site's wallet requests fail while the app is not running. |
+| LOCALHOST | localhost dApp 허용 (개발용) | Allow localhost dApps (development) |
+| LOCALHOST_HELP | dApp을 직접 개발할 때만 켜세요. http://localhost·127.0.0.1 페이지가 연결을 요청할 수 있게 됩니다. | Turn on only when you develop a dApp yourself. Pages on http://localhost and 127.0.0.1 can then request a connection. |
+| DIAGNOSTICS_TITLE | 진단 | Diagnostics |
+| DIAGNOSTICS_HELP | 로그에는 비밀번호·니모닉·개인키·API 키·RPC 엔드포인트 URL이 없습니다. 주소와 거래 해시는 있을 수 있습니다. | Logs contain no passwords, mnemonics, private keys, API keys or RPC endpoint URLs. They may contain addresses and transaction hashes. |
+| OPEN_LOG_FOLDER | 로그 폴더 열기 | Open log folder |
+| LOG_LEVEL | 로그 수준 | Log level |
+| LOG_LEVEL_HELP | 문제를 조사할 때만 debug로 바꾸세요. 기본값은 info입니다. | Switch to debug only while investigating a problem. The default is info. |
+| ABOUT_TITLE | 정보 | About |
+| VERSION | 버전 | Version |
+| SHORTCUTS | 단축키 | Shortcuts |
+| SHORTCUTS_TEXT | Ctrl+L 잠금 · Ctrl+1 / 2 / 3 / 4 체인 탭(EVM·Solana·Bitcoin·Zcash) · F5 새로고침 · Ctrl+, 설정 · Esc 뒤로·취소 · Tab 다음 칸 · PgUp / PgDn 한 쪽 스크롤 · Ctrl+Home / End 맨 위·맨 아래 | Ctrl+L lock · Ctrl+1 / 2 / 3 / 4 chain tabs (EVM, Solana, Bitcoin, Zcash) · F5 refresh · Ctrl+, settings · Esc back/cancel · Tab next field · PgUp / PgDn scroll a page · Ctrl+Home / End top/bottom |
+| OK | 확인 | OK |
+| C_COPY_TITLE | 복사 허용 | Allow copying |
+| C_COPY_TEXT | 복사를 허용하면 복구 단어(니모닉)·개인키를 클립보드에 넣을 수 있습니다. 클립보드 기록·클라우드 동기화에서는 제외하고 30초 뒤 지우지만, 그 사이에는 다른 프로그램이 읽을 수 있습니다. 그 전에 앱이 비정상 종료되면 다음에 앱을 열 때 지우며, 그때까지는 클립보드에 남습니다. | Allowing copying lets recovery words (mnemonic) and private keys go to the clipboard. They are kept out of the clipboard history and cloud sync and cleared after 30 seconds, but other programs can read them in the meantime. If the app crashes before that, they are cleared the next time the app opens and stay on the clipboard until then. |
+| C_ALLOW | 허용 | Allow |
+| C_LOCALHOST_TITLE | localhost dApp 허용 | Allow localhost dApps |
+| C_LOCALHOST_TEXT | 개발용 설정입니다. 켜면 http://localhost 와 http://127.0.0.1 페이지가 지갑 연결을 요청할 수 있습니다. | A development setting. When on, pages on http://localhost and http://127.0.0.1 can request a wallet connection. |
+| C_TURN_ON | 켜기 | Turn on |
+| C_REVEAL_TEXT | 화면 근처의 사람이나 카메라가 볼 수 있습니다. 계속하려면 비밀번호를 입력하세요. | People or cameras near the screen can see it. Enter your password to continue. |
+| C_CONTINUE | 계속 | Continue |
+| C_GENERATE_TITLE | RPC 주소 만들기 | Create RPC addresses |
+| C_CREATE | 만들기 | Create |
+| C_RPC_DELETE_TITLE | RPC 주소 지우기 | Delete RPC address |
+| C_REMOVE | 지우기 | Delete |
+| C_TPL_DELETE_TITLE | 자격 정보 지우기 | Delete credentials |
+| C_LLM_KEY_TITLE | AI API 키 지우기 | Delete AI API key |
+| C_LLM_KEY_TEXT | 저장된 AI 설명용 API 키를 지웁니다. 저장된 키는 다시 볼 수 없어, AI 설명을 다시 쓰려면 키를 다시 넣어야 합니다. | Deletes the stored API key for AI explanations. A stored key cannot be shown again, so to use AI explanations again you must enter the key again. |
+| C_YK_ABANDON_TITLE | YubiKey 지갑 만들기를 그만둘까요? | Stop creating the YubiKey wallet? |
+| C_YK_ABANDON_YES | 그만두기 | Stop |
+| C_PIN_LATER_TITLE | PIN을 나중에 설정할까요? | Set the PIN later? |
+| C_PIN_LATER_TEXT | PIN을 설정하기 전에는 이 YubiKey로 서명하지 않습니다. 나중에 설정 → YubiKey에서 바꿀 수 있습니다. | This YubiKey is not used for signing until its PIN is set. You can change it later in Settings → YubiKey. |
+| C_PIN_LATER_YES | 나중에 | Later |
+| C_REMOVE_KEY_TITLE | 가져온 개인키 삭제 | Delete imported private key |
+| C_REMOVE_YK_TITLE | YubiKey 기록 삭제 | Delete YubiKey record |
+| C_CHAIN_PIN_TITLE | 체인 추가 — 제네시스 고정 | Add chain — pin genesis |
+| C_CHAIN_PIN_YES | 고정하고 저장 | Pin and save |
+| C_REPIN | 다시 고정 | Pin again |
+| C_CHAIN_DELETE_TITLE | 체인 삭제 | Delete chain |
+| C_CHAIN_DELETE_TEXT | 체인 정의, RPC 주소, 수수료 상한을 지웁니다. 이 체인의 토큰·활동 기록은 남고, 같은 chainId를 다시 추가하면 다시 보입니다. | Deletes the chain definition, its RPC address and fee caps. The chain's tokens and activity stay and show again when the same chainId is added back. |
+| C_BOOK_DELETE_TITLE | 주소록 항목 삭제 | Delete address book entry |
+| C_TOKEN_DELETE_TITLE | 토큰 삭제 | Delete token |
+| C_DISCONNECT_TITLE | 모든 사이트 연결 해제 | Disconnect all sites |
+| C_DISCONNECT_TEXT | 연결된 모든 사이트의 연결을 해제합니다. 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다. | Disconnects all connected sites. A site has to request a connection again to see your accounts. |
+| C_DISCONNECT_WC_TEXT | 연결된 모든 사이트의 연결을 해제하고 WalletConnect 세션 {0}개도 끊습니다(dApp 쪽 연결도 끊깁니다). 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다. | Disconnects all connected sites and also ends {0} WalletConnect sessions (the dApp side is disconnected too). A site has to request a connection again to see your accounts. |
+| C_DISCONNECT_YES | 모두 해제 | Disconnect all |
+| C_SETTINGS_FILE_TITLE | 설정 파일 값 사용 | Use the settings file's values |
+| C_SETTINGS_FILE_TEXT | settings.json의 아래 값을 그대로 씁니다. 이 PC에서 직접 바꾼 경우에만 고르세요. 모르는 변경이면 '취소'를 누른 뒤 '앱에 저장된 값으로 되돌리기'를 누르세요. | Uses the values below from settings.json as they are. Choose this only if you changed them yourself on this PC. For a change you do not recognise, press 'Cancel' and then 'Restore the app's saved values'. |
+| C_SETTINGS_FILE_YES | 파일 값 사용 | Use the file's values |
+| C_WC_DISCONNECT_TITLE | 모든 WalletConnect 세션 끊기 | End all WalletConnect sessions |
+| C_WC_DISCONNECT_TEXT | WalletConnect 세션 {0}개를 모두 끊을까요? 다시 쓰려면 dApp마다 QR이나 링크로 새로 연결해야 합니다. | End all {0} WalletConnect sessions? To use them again, connect each dApp anew with its QR code or link. |
+| C_WC_DISCONNECT_YES | 모두 끊기 | End all |
+| C_DISCARD_TITLE | 거래 폐기 | Discard transaction |
+| C_DISCARD_YES | 폐기 | Discard |
+| C_LLM_ON_TITLE | AI 설명 켜기 | Turn on AI explanations |
+| C_PRUNE_TEXT | 이 버전에서 쓰지 않는 항목 {0}개({1})를 apikeys.dpapi에서 지웁니다. 나중에 그 체인을 다시 추가하거나 다른 버전의 앱을 쓰면 주소·자격 정보를 다시 입력해야 합니다. | Deletes {0} entries not used by this version ({1}) from apikeys.dpapi. If you later add the chain back or use another app version, you must enter the addresses and credentials again. |
+| C_REMOVED_ACCOUNT | 지워지는 계정 | Account to be removed |
+| C_TOKEN | 토큰 | Token |
+| C_CONTRACT_ADDRESS | 컨트랙트 주소 | Contract address |
+| C_ACCOUNT | 계정 | Account |
+| C_OVERWRITE | 기존 주소 덮어쓰기 | Overwrite existing addresses |
+| C_UNDERSTOOD | 이해했습니다 | I understand |
+| C_REPIN_CHECK | 새 제네시스 해시를 공식 자료로 확인했습니다 | I checked the new genesis hash against official sources |
+| C_KEEP_CREATING | 계속 만들기 | Keep creating |
+| C_PIN_NOW | 지금 PIN 설정 | Set PIN now |
+| C_RPC_AGAIN_MANUAL | “입력”으로 다시 넣어야 합니다 | enter it again with “Enter” |
+| C_RPC_AGAIN_TEMPLATE | “저장하고 RPC 주소 만들기”({0} 자격 정보: {1}) 또는 “입력”으로 다시 넣어야 합니다 | add it again with “Save and create RPC addresses” ({0} credentials: {1}) or “Enter” |
+| C_RPC_REFILL |  공급자 템플릿의 자격 정보가 저장돼 있어 다음 실행 때 템플릿 주소로 다시 채워집니다. 다른 주소를 쓰려면 지우지 말고 “교체”하세요. |  The provider template's credentials are stored, so the template address fills it again at the next start. To use another address, use “Replace” instead of deleting. |
+| C_RPC_DELETE_TEXT | {0} ({1})의 RPC 주소를 지웁니다. 저장된 주소는 다시 볼 수 없어, 다시 쓰려면 {2}.{3} 이 네트워크에 확정 전 거래가 있으면 주소를 다시 넣을 때까지 상태 확인이 멈춥니다. | Deletes the RPC address of {0} ({1}). A stored address cannot be shown again; to use one again, {2}.{3} If this network has unconfirmed transactions, their status checks stop until an address is added again. |
+| C_TPL_DELETE_ALCHEMY | 저장된 알케미 API 키를 지웁니다. 저장된 값은 다시 볼 수 없습니다. 이미 만든 네트워크별 RPC 주소는 그대로이고, 새 체인 주소를 만들 때 다시 넣어야 합니다. | Deletes the stored Alchemy API key. Stored values cannot be shown again. RPC addresses already created stay as they are; enter the key again to create addresses for new chains. |
+| C_TPL_DELETE_QUICKNODE | 저장된 QuickNode 자격 정보(엔드포인트 이름·토큰)를 지웁니다. 저장된 값은 다시 볼 수 없습니다. 이미 만든 네트워크별 RPC 주소는 그대로이고, 새 체인 주소를 만들 때 다시 넣어야 합니다. | Deletes the stored QuickNode credentials (endpoint name and token). Stored values cannot be shown again. RPC addresses already created stay as they are; enter them again to create addresses for new chains. |
+| C_GENERATE_TEXT | 선택한 템플릿으로 아래 네트워크의 RPC 주소를 만듭니다. 이미 주소가 있는 네트워크는 '기존 주소 덮어쓰기'를 켰을 때만 바꿉니다. | Creates RPC addresses for the networks below with the selected template. Networks that already have an address change only with 'Overwrite existing addresses' on. |
+| C_GENERATE_EXISTING |  — 기존 주소 있음 |  — has an address |
+| C_GENERATE_SKIPPED | \n건너뜀(템플릿 항목 없음): | \nSkipped (no template entry): |
+
+<!-- catalogue: yw_engine::screen::build::evm::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| CHAIN_ADD_HELP | 다른 EVM 체인(L1·L2)은 여기서 추가합니다 — chainId·RPC 주소를 넣으면 chainId와 블록 0을 확인해 등록합니다. | Add other EVM chains (L1·L2) here — enter the chainId and RPC address, and the chainId and block 0 are checked before the chain is registered. |
+| CHAIN_ADD | EVM 체인 추가 | Add EVM chain |
+| CHAIN_EDIT_TITLE | EVM 체인 편집 | Edit EVM chain |
+| RECIPIENT | 받는 주소{0} | Recipient{0} |
+| TO_BOOK |  → 주소록: {0} |  → Address book: {0} |
+| TO_MINE |  → 내 계정: {0} |  → My account: {0} |
+| SENT_TITLE | 보낸 거래 | Sent transactions |
+| SENT_NONE | 아직 보낸 거래가 없습니다. | No transactions sent yet. |
+| SPEED_UP | 수수료 올리기 | Speed up |
+| CANCEL_TX | 취소 | Cancel |
+| RESEND | 재전송 | Rebroadcast |
+| DISCARD | 폐기 | Discard |
+| ACTIVITY_FOLD | 이전 활동 접기 ▾ | Hide earlier activity ▾ |
+| ACTIVITY_MORE | 이전 활동 {0}건 더 보기 ▸ | Show {0} earlier ▸ |
+| RPC_NO_ADDRESS | RPC 주소 없음 (E-KEY-005) | No RPC address (E-KEY-005) |
+| RPC_BLOCKED | RPC: 차단 {0}   ·   {1} | RPC: blocked {0}   ·   {1} |
+| CONNECTED | 연결됨 | Connected |
+| UNCHECKED | 확인 전 | Not checked |
+| BLOCKED_CODE | 차단 {0} | Blocked {0} |
+| MAINNET_WORD | 메인넷 | Mainnet |
+| MAINNET_SUFFIX | {0} (메인넷) | {0} (Mainnet) |
+| REPIN_IN_SETTINGS | 설정에서 다시 고정 | Re-pin in settings |
+| RPC_TEST | RPC 테스트 | Test RPC |
+| RPC_SETTINGS | RPC 설정 | RPC settings |
+| IMPORTED_KEY | 가져온 개인키 | Imported private key |
+| BALANCE_AT_BLOCK | 잔액 {0} (블록 {1}) | Balance {0} (block {1}) |
+| REFRESH_FAILED |  — 갱신 실패 {0} |  — refresh failed {0} |
+| TOKENS_TITLE | 토큰 | Tokens |
+| TOKENS_NONE | 표시할 토큰이 없습니다. '토큰 추가'로 컨트랙트 주소를 넣으면 잔액을 함께 봅니다. | No tokens to show. Add a contract address with 'Add token' to see its balance here. |
+| TOKENS_NONE_SHOWN | 보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다. | No visible tokens. Hidden tokens can be shown again below. |
+| TOKEN_ADD | 토큰 추가 | Add token |
+| HIDE_ZERO_COUNT | 잔액 0 숨기기 ({0}개) | Hide zero balances ({0}) |
+| HIDE_ZERO | 잔액 0 숨기기 | Hide zero balances |
+| HIDDEN_FOLD_COUNT | 숨긴 토큰 {0}개 접기 ▾ | Hide {0} hidden tokens ▾ |
+| HIDDEN_SHOW_COUNT | 숨긴 토큰 {0}개 보기 ▸ | Show {0} hidden tokens ▸ |
+| TOKEN_HIDDEN_NOTE | 숨긴 토큰은 이 목록과 보내기 화면의 자산 선택에서만 빠집니다. 자산은 그대로입니다. | Hidden tokens are only left out of this list and the send screen's asset choice. The assets stay as they are. |
+| BALANCE_UNKNOWN | 잔액 알 수 없음 | Balance unknown |
+| HIDDEN | 숨김 | Hidden |
+| NAME_HIDDEN | {0} · 숨김 | {0} · hidden |
+| SEND | 보내기 | Send |
+| UNHIDE | 다시 보이기 | Show |
+| HIDE | 숨기기 | Hide |
+| DELETE | 삭제 | Delete |
+| USER_TOKEN | {0} (사용자 추가) | {0} (added by you) |
+| NAME_BALANCE_UNKNOWN | {0} · 잔액 모름 | {0} · balance unknown |
+| SEND_TITLE | 보내기 — {0} | Send — {0} |
+| TESTNET_BAND | 테스트넷 — 실제 자산이 아닙니다 | Testnet — not real assets |
+| IN_FLIGHT | 이 계정의 이전 거래가 아직 확정되지 않았습니다. 확정된 뒤 보낼 수 있습니다. | This account's previous transaction is not final yet. You can send once it is. |
+| FROM_ACCOUNT | 보내는 계정 | From account |
+| BALANCE_SUFFIX |  · 잔액 {0} |  · balance {0} |
+| SWITCH_ACCOUNT | 다른 계정으로 바꾸기 (메인) | Switch account (main) |
+| RECIPIENT_CARD | 받는 사람 | Recipient |
+| RECIPIENT_FIELD | 받는 주소 | To address |
+| PICK_FROM_BOOK | 주소록에서 선택 | Pick from address book |
+| ADDRESS_FORMAT | 0x로 시작하는 42자 주소 | A 42-character address starting with 0x |
+| CHECK_WHOLE | 앞뒤만이 아니라 주소 전체를 확인하세요. | Check the whole address, not only its start and end. |
+| ACK_WHOLE | 주소 전체를 직접 확인했습니다 | I checked the whole address myself |
+| ASSET_CARD | 보낼 자산과 금액 | Asset and amount |
+| ASSET | 자산 | Asset |
+| HIDDEN_FOLD | 숨긴 토큰 접기 ▾ | Hide hidden tokens ▾ |
+| HIDDEN_TOKENS | 숨긴 토큰 | Hidden tokens |
+| AT_BLOCK |  (블록 {0} 기준) |  (as of block {0}) |
+| HELD_UNREAD | 보유 {0}: 잔액을 아직 읽지 못했습니다 | Holding {0}: balance not read yet |
+| HELD | 보유 {0}{1} | Holding {0}{1} |
+| TOKEN_CONTRACT | 토큰 컨트랙트 {0} | Token contract {0} |
+| AMOUNT_FIELD | 금액 ({0}) | Amount ({0}) |
+| MAX | 최대 | Max |
+| AMOUNT_HINT_NATIVE | 예: 0.01 · '최대'는 수수료를 뺀 잔액 전부입니다. | e.g. 0.01 · 'Max' is the whole balance minus the fee. |
+| AMOUNT_HINT_TOKEN | 예: 0.01 · '최대'는 이 토큰 잔액 전부입니다. 수수료는 {0}로 따로 냅니다. | e.g. 0.01 · 'Max' is the whole token balance. The fee is paid separately in {0}. |
+| NO_FEE_ASSET | 수수료를 낼 {0}이(가) 부족합니다 — 이 계정에 {0}을(를) 먼저 받으세요. | Not enough {0} to pay the fee — receive {0} on this account first. |
+| FEE_HELD | {0} (보유 {1}) | {0} (holding {1}) |
+| BALANCE_UNKNOWN_SHORT | 잔액 모름 | balance unknown |
+| FEE_DETAIL | 계산: {0} | Calculation: {0} |
+| FEE_DETAIL_HIDE | 수수료 계산 숨기기 ▾ | Hide fee calculation ▾ |
+| FEE_DETAIL_SHOW | 수수료 계산 보기 (가스 한도·gwei) ▸ | Show fee calculation (gas limit·gwei) ▸ |
+| ESTIMATE_FAILED | 가스 추정 실패 — 거래가 실패할 수 있습니다 (승인 창에서 확인) | Gas estimation failed — the transaction may fail (check in the approval window) |
+| REVIEW | 검토 | Review |
+| CANCEL | 취소 | Cancel |
+| PICK_MINE | 내 계정: {0} | My account: {0} |
+| PICK_FAVORITE | ★ 주소록: {0} | ★ Address book: {0} |
+| PICK_BOOK | 주소록: {0} | Address book: {0} |
+| PICK_NONE | 일치하는 주소록 항목이 없습니다. 주소록에 저장하면 여기에서 고를 수 있습니다. | No matching address-book entry. Save one to the address book to pick it here. |
+| RESULT_TITLE | 보내기 결과 | Send result |
+| RESULT_SENT | 전송했습니다. 블록에 포함되면(확인 1) 활동에 '확정'으로 표시됩니다. | Sent. Once it is in a block (1 confirmation), Activity shows it as 'Final'. |
+| STATE | 상태 | Status |
+| TX_HASH | 거래 해시 | Transaction hash |
+| BACK_MAIN | 메인으로 | Back to main |
+| RECEIVE_TITLE | 받기 — {0} | Receive — {0} |
+| BACKUP_PENDING | 백업 확인 전입니다. 확인을 마치기 전에는 큰 금액을 받지 마세요. | The backup is not confirmed yet. Do not receive large amounts until it is. |
+| TESTNET_ADDRESS | 테스트넷 주소입니다. | This is a testnet address. |
+| RECEIVE_ONLY | {0} 네트워크의 자산만 이 주소로 받으세요. | Receive only assets of the {0} network at this address. |
+| PLAIN_QR | 주소만 담은 QR에는 네트워크 정보가 없습니다. 보내는 쪽(거래소 출금 화면 등)에서 네트워크를 {0}(으)로 직접 고르세요. | A QR code with only the address carries no network. The sender (an exchange withdrawal screen, …) must pick {0} as the network themselves. |
+| TOKEN_TITLE | 토큰 추가 — {0} | Add token — {0} |
+| CONTRACT_ADDRESS | 컨트랙트 주소 | Contract address |
+| LOOKUP | 조회 | Look up |
+| TOKEN_HELP | 토큰의 컨트랙트 주소를 넣고 '조회'를 누르면 체인에서 소수 자릿수와 기호를 읽습니다. 공식 사이트나 탐색기에서 확인한 주소만 쓰세요. | Enter the token's contract address and press 'Look up' to read its decimals and symbol from the chain. Use only an address you checked on the official site or an explorer. |
+| UNREADABLE | 읽을 수 없음 | unreadable |
+| SYMBOL_UNSHOWABLE | (표시할 수 없는 기호) | (symbol cannot be shown) |
+| TOKEN_META | decimals: {0}, 체인에서 읽은 기호: {1} | decimals: {0}, symbol read from the chain: {1} |
+| LABEL | 라벨 | Label |
+| LABEL_HELP | 목록과 승인 창에 보일 이름입니다. 컨트랙트 주소와 함께 표시됩니다. | The name shown in the list and approval windows, together with the contract address. |
+| SAVE | 저장 | Save |
+| CHAINS_TITLE | EVM 체인 | EVM chains |
+| CHAINS_HELP | 기본 체인 7개(Ethereum·Sepolia·HyperEVM·Arbitrum One·Base·BNB Smart Chain·Robinhood Chain)와 직접 추가한 체인입니다. 체인마다 RPC 주소가 있어야 쓸 수 있고, 연결할 때마다 chainId와 첫 블록(제네시스)을 다시 확인합니다. | The 7 built-in chains (Ethereum·Sepolia·HyperEVM·Arbitrum One·Base·BNB Smart Chain·Robinhood Chain) and chains you added. Each chain needs an RPC address, and every connection checks the chainId and the first block (genesis) again. |
+| CHAIN_LINE | {0}, 소수 {1} · 시뮬레이션 {2} · {3} · RPC 주소: {4} | {0}, decimals {1} · simulation {2} · {3} · RPC address: {4} |
+| QUICKNODE_ENTRY | QuickNode 서브도메인 {0} | QuickNode subdomain {0} |
+| ALCHEMY_ENTRY | 알케미 라벨 {0} | Alchemy label {0} |
+| EXPLORER_ENTRY | 탐색기 {0} | Explorer {0} |
+| PIN_ON_FIRST | 첫 연결 때 고정 | pinned on first connection |
+| EDIT | 편집 | Edit |
+| REPIN | 다시 고정 | Re-pin |
+| CAPS_TITLE | EVM 수수료 상한 (고급) | EVM fee caps (advanced) |
+| CAPS_HELP | 지갑이 계산한 수수료가 이 값을 넘으면 보내기를 막습니다(잘못된 RPC가 수수료를 부풀리는 것을 막는 안전장치). 보통은 바꿀 필요가 없습니다. | Sending is blocked when the fee the wallet computes exceeds these values (a safeguard against a bad RPC inflating the fee). Usually there is no need to change them. |
+| CHAIN | 체인 | Chain |
+| CAPS_PICK | 상한을 바꿀 체인을 고르세요. | Pick the chain whose caps to change. |
+| CAPS_FEE | maxFee 상한 (gwei) | maxFee cap (gwei) |
+| CAPS_TIP | tip 상한 (gwei) | tip cap (gwei) |
+| CAPS_TOTAL | 총 최대 수수료 ({0}) | Total max fee ({0}) |
+| DEFAULTS | 기본값으로 | Reset |
+| CAPS_RANGE | 범위: maxFee 1–10,000 gwei, tip 0.01–10,000 gwei(maxFee 상한 이하), 총 0.0001–10. 다음 준비부터 적용됩니다. | Ranges: maxFee 1–10,000 gwei, tip 0.01–10,000 gwei (at most the maxFee cap), total 0.0001–10. Applies from the next preparation. |
+| CHAIN_ID_HELP | 체인 고유 번호입니다(10진수). 체인 공식 문서나 chainlist에서 확인하세요. | The chain's unique number (decimal). Check it in the chain's official docs or on chainlist. |
+| NAME | 이름 | Name |
+| NATIVE_HELP | 수수료를 내는 기본 자산의 기호와 소수 자릿수입니다(대부분 18). | The symbol and decimals of the native asset that pays fees (mostly 18). |
+| CREDENTIAL_SET | 설정됨 | set |
+| CREDENTIAL_NONE | 없음 | none |
+| RPC_HINT_QUICKNODE | https:// 주소 또는 QuickNode 서브도메인(예 base-sepolia). 자격 정보: {0} | An https:// address or a QuickNode subdomain (e.g. base-sepolia). Credential: {0} |
+| RPC_HINT_ALCHEMY | https:// 주소 또는 알케미 라벨(예 base-sepolia). 자격 정보: {0} | An https:// address or an Alchemy label (e.g. base-sepolia). Credential: {0} |
+| RPC_HINT_MANUAL | https:// 주소 (직접 입력 템플릿) | An https:// address (manual template) |
+| RPC_ADDRESS | RPC 주소 | RPC address |
+| RPC_KEEP | {0} · 비워 두면 기존 주소를 유지합니다. | {0} · Leave empty to keep the current address. |
+| EXPLORER_OPTIONAL | 탐색기 URL(선택) | Explorer URL (optional) |
+| SIMULATION | 시뮬레이션 | Simulation |
+| SIM_AUTO | auto (항상 시도) | auto (always try) |
+| SIM_UNSUPPORTED | unsupported (호출하지 않음) | unsupported (never called) |
+| SIM_HELP | 승인 전에 거래 결과를 미리 실행해 보는 기능입니다. RPC가 지원하지 않으면 unsupported를 고르세요. 그 체인의 승인은 언제나 고위험 경고와 함께 표시됩니다. | Runs the transaction ahead of the approval to preview its result. Pick unsupported if the RPC does not support it; approvals on that chain then always show a high-risk warning. |
+| CHAIN_PIN | 이 체인의 제네시스 해시를 지금 받은 값으로 고정합니다. 이후 연결할 때마다 chainId와 이 값을 비교하고, 다르면 이 체인을 쓰지 않습니다. 해시가 공식 자료(체인 문서·탐색기)의 값과 같은지 확인하세요.\nchainId {0}\n이름 {1}\nRPC {2}\n제네시스 {3} | Pins this chain's genesis hash to the value just received. Every later connection compares the chainId and this value, and the chain is not used if they differ. Check that the hash matches the official sources (chain docs, explorer).\nchainId {0}\nName {1}\nRPC {2}\nGenesis {3} |
+| CHAIN_REPIN | 고정된 제네시스 해시와 RPC가 알려준 값이 다릅니다. RPC가 다른 체인을 가리키거나 체인이 새로 시작되었을 수 있습니다. 새 값을 공식 자료로 확인한 경우에만 다시 고정하세요.\n고정된 값 {0}\n새 값     {1} | The pinned genesis hash differs from the value the RPC reported. The RPC may point to another chain, or the chain may have restarted. Re-pin only if you checked the new value against official sources.\nPinned {0}\nNew    {1} |
+
+<!-- catalogue: yw_engine::screen::build::explorer::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| EXPLORER_CARD | 활동·보내기 결과의 '탐색기에서 열기'와 계정 카드의 '탐색기에서 주소 보기'가 기본 브라우저로 여는 주소입니다. 거래 해시와 주소는 공개 정보지만, 여는 순간 그 사이트는 내 IP와 함께 그 거래·주소를 봅니다. 앱은 탐색기 페이지를 읽지 않습니다. | The addresses that 'Open in explorer' (activity, send result) and 'View address in explorer' (account cards) open in your default browser. Transaction hashes and addresses are public, but the moment you open one, that site sees the transaction or address together with your IP. The app never reads explorer pages. |
+| EXPLORER_RULES | https:// 로 시작하고 거래 페이지에는 {hash}, 주소 페이지에는 {address}를 한 번씩 넣으세요(예: https://etherscan.io/tx/{hash}). 비워 두면 기본값을 씁니다. 256자 이하, 영문·숫자와 - . _ ~ : / ? & = + 만 쓸 수 있습니다(사용자 정보 …@·# 뒤 부분 없음). | Start with https:// and put {hash} once in the transaction page and {address} once in the address page (e.g. https://etherscan.io/tx/{hash}). Leave empty to use the default. Up to 256 characters; only letters, digits and - . _ ~ : / ? & = + (no user info …@, nothing after #). |
+| OPEN | 탐색기에서 열기 | Open in explorer |
+| COPY_LINK | 탐색기 링크 복사 | Copy explorer link |
+| VIEW_ADDRESS | 탐색기에서 주소 보기 | View address in explorer |
+| LINE_NONE | {0}: 없음 | {0}: none |
+| LINE_CUSTOM | {0}: {1} · 사용자 지정 | {0}: {1} · custom |
+| LINE_CHAIN_DEFAULT | {0}: {1} · 기본(체인 등록 값) | {0}: {1} · default (from the chain entry) |
+| LINE_DEFAULT | {0}: {1} · 기본 | {0}: {1} · default |
+| CARD_TITLE | 블록 탐색기 | Block explorer |
+| CHANGE | 변경 | Change |
+| RESET | 기본값으로 | Reset |
+| SAVE | 저장 | Save |
+| CANCEL | 취소 | Cancel |
+
+<!-- catalogue: yw_engine::screen::build::hypercore::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| MAINNET | 메인넷 | Mainnet |
+| TESTNET | 테스트넷 | Testnet |
+| HC_MAINNET | HyperCore 메인넷: 실제 자산 | HyperCore mainnet: real assets |
+| TESTNET_BAND | 테스트넷 — 실제 자산이 아닙니다 | Testnet — not real assets |
+| FOLDED_STATE | 계정 가치 {0} USDC · 현물 {1}종 | Account value {0} USDC · {1} spot tokens |
+| LOADING | 불러오는 중… | Loading… |
+| LOAD_FAILED | 잔액을 불러오지 못했습니다 | Could not load the balances |
+| NOT_LOADED | 잔액을 아직 불러오지 않았습니다 | The balances are not loaded yet |
+| NOT_LOADED_DOT | 잔액을 아직 불러오지 않았습니다. | The balances are not loaded yet. |
+| EXPAND | 펼치기 ▸ | Expand ▸ |
+| COLLAPSE | 접기 ▴ | Collapse ▴ |
+| CARD_HELP | 같은 EVM 주소의 HyperCore(Hyperliquid L1) 잔액입니다. 이 지갑은 전송만 하고 거래(주문)는 하지 않습니다. | HyperCore (Hyperliquid L1) balances of the same EVM address. This wallet only transfers; it does not trade (place orders). |
+| PERP_USDC | 선물(perp) USDC | Perp USDC |
+| PERP_STATE | 계정 가치 {0} · 출금 가능 {1} | Account value {0} · withdrawable {1} |
+| OPEN_POSITIONS |  · 열린 포지션 {0}개 |  · {0} open positions |
+| SPOT | 현물(spot) | Spot |
+| NONE | 없음 | None |
+| SPOT_COIN | 현물 {0} | Spot {0} |
+| ON_HOLD | {0} (주문 보류 {1}) | {0} (on hold for orders {1}) |
+| SEND_CORE | 보내기(Core) | Send (Core) |
+| CLASS | 현물↔선물 이동 | Spot↔perp |
+| WITHDRAW | Arbitrum으로 출금 | Withdraw to Arbitrum |
+| TO_EVM | HyperEVM으로 이동 | Move to HyperEVM |
+| FROM_EVM | HyperEVM에서 Core로 이동 | Move from HyperEVM to Core |
+| REFRESH | 새로고침 | Refresh |
+| ACTIVITY | HyperCore 활동 (이번 실행) | HyperCore activity (this run) |
+| ACTIVITY_HELP | Hyperliquid는 전송에 거래 해시를 돌려주지 않아 활동 줄에는 탐색기 링크가 없습니다. 위 '탐색기에서 주소 보기'에서 이 계정의 기록을 확인하세요. | Hyperliquid returns no transaction hash for transfers, so the activity rows have no explorer link. Check this account's history with 'View address in explorer' above. |
+| STATUS_LINE | 상태: {0} · nonce {1} | Status: {0} · nonce {1} |
+| TITLE_SEND | 보내기 (HyperCore) | Send (HyperCore) |
+| TITLE_CLASS | 현물↔선물 USDC 이동 | Move USDC spot↔perp |
+| TITLE_WITHDRAW | Arbitrum으로 USDC 출금 | Withdraw USDC to Arbitrum |
+| TITLE_TO_EVM | HyperEVM으로 이동 | Move to HyperEVM |
+| SIGNING_ACCOUNT | 서명 계정 | Signing account |
+| CONTENT | 내용 | Details |
+| ASSET_PERP | USDC — 선물(perp) 잔액 (출금 가능 {0}) | USDC — perp balance (withdrawable {0}) |
+| ASSET_SPOT | 현물 {0} — {1} | Spot {0} — {1} |
+| RECIPIENT_CORE | 받는 주소 (HyperCore) | Recipient (HyperCore) |
+| SPOT_TO_PERP | 현물(spot) → 선물(perp) | Spot → perp |
+| PERP_TO_SPOT | 선물(perp) → 현물(spot) | Perp → spot |
+| CLASS_HELP | 같은 계정 안에서 USDC를 옮깁니다. 받는 주소는 없습니다. | Moves USDC within the same account. There is no recipient. |
+| RECIPIENT_ARBITRUM | 받는 주소 (Arbitrum One) | Recipient (Arbitrum One) |
+| WITHDRAW_BANNER | 고정 출금 수수료 {0} USDC는 입력한 금액에서 빠집니다(받는 금액 = 입력 금액 − {0}). 출금 가능액 전체를 출금할 수 있습니다. Arbitrum One에 USDC로 도착하며 약 5분 걸립니다. | The fixed withdrawal fee of {0} USDC comes out of the amount entered (received = amount − {0}). The whole withdrawable balance can be withdrawn. It arrives as USDC on Arbitrum One in about 5 minutes. |
+| NO_EVM_TOKENS | HyperEVM에 연결된 현물 토큰 잔액이 없습니다. | No balance of a spot token linked to HyperEVM. |
+| EVM_TOKEN | {0} (시스템 주소 {1}) | {0} (system address {1}) |
+| TO_EVM_HELP | 토큰의 시스템 주소로 보내면 HyperEVM의 같은 주소(이 계정)로 들어갑니다. HyperCore에서 HYPE로 가스(200k gas)를 냅니다. | Sending to the token's system address delivers it to the same address (this account) on HyperEVM. Gas (200k gas) is paid in HYPE on HyperCore. |
+| AMOUNT | 금액 | Amount |
+| MAX | 최대 | Max |
+| AVAILABLE_TO_EVM | 옮길 수 있는 양: {0} {1} (HyperEVM 자릿수를 넘는 끝수는 HyperCore에 남깁니다) | Movable: {0} {1} (digits beyond HyperEVM's decimals stay on HyperCore) |
+| AVAILABLE_WITHDRAW | 출금 가능: {0} {1} (수수료는 이 금액에서 빠집니다) | Withdrawable: {0} {1} (the fee comes out of this amount) |
+| AVAILABLE | 사용 가능: {0} {1} | Available: {0} {1} |
+| AVAILABLE_LATER | 사용 가능한 양은 잔액을 불러온 뒤 보입니다. | The available amount shows once the balances are loaded. |
+| REVIEW | 검토 | Review |
+| CANCEL | 취소 | Cancel |
+| ACK | 주소 전체를 직접 확인했습니다 | I checked the whole address myself |
+| SETTINGS_SHOW | EVM 탭에 HyperCore 카드 보이기 (잔액·전송, 거래 없음) | Show the HyperCore card on the EVM tab (balances and transfers, no trading) |
+| MAINNET_API | 메인넷 API | Mainnet API |
+| FIXED | {0} (고정) | {0} (fixed) |
+| TESTNET_API | 테스트넷 API | Testnet API |
+| SAVE | 저장 | Save |
+| OFFICIAL | 공식 주소로 | Use official |
+| API_HELP | HTTPS만 됩니다. /info와 /exchange가 이 주소 뒤에 붙습니다. | HTTPS only. /info and /exchange are appended to this address. |
+
+<!-- catalogue: yw_engine::screen::build::keys::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| KEY_START_CARD | MetaMask·Phantom·Electrum 등에서 내보낸 개인키 하나로 지갑을 만듭니다. 복구 단어(24단어)는 만들지 않습니다. | Makes a wallet from one private key exported from MetaMask, Phantom, Electrum and others. No recovery words (24 words) are created. |
+| KEY_START_BACKUP | 복구 단어 없이 개인키로 지갑을 만듭니다. 이 지갑의 백업은 지금 입력할 원래 개인키뿐입니다. 이 PC나 지갑 파일을 잃으면 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 종이 등 안전한 곳에 따로 보관하세요. | This makes a wallet from a private key, without recovery words. Its only backup is the original private key you are about to enter. If you lose this PC or the wallet file, only the original private key can restore it, so keep the original private key separately in a safe place, such as on paper. |
+| KEY_START_OK | 개인키로 지갑을 만들었습니다. 이제 지갑을 쓸 수 있습니다. | The wallet was created from the private key. You can use the wallet now. |
+| BTC_SCRIPT | 이전 지갑에서 이 키로 쓰던 주소와 같은 형식을 고르세요. 다음 화면에서 주소를 보고 확인합니다. 5·9로 시작하는 압축되지 않은 WIF는 P2PKH(레거시)만 쓸 수 있습니다. | Choose the same address type you used with this key in your previous wallet. The next screen shows the address so you can check it. An uncompressed WIF starting with 5 or 9 can only use P2PKH (legacy). |
+| BTC_IMPORTED | 가져온 개인키는 Bitcoin 계정 목록에 "[가져온 키]"로 보입니다. 주소 하나만 쓰고(잔돈도 같은 주소로 돌아옴) 복구 단어로 복구되지 않습니다. 잔액·받기·보내기는 다른 계정과 같습니다. | An imported private key appears in the Bitcoin account list as "[imported key]". It uses a single address (change comes back to the same address) and cannot be restored from recovery words. Balance, receive and send work like other accounts. |
+| BTC_IMPORT_HINT | 다른 지갑에서 쓰던 Bitcoin 개인키(WIF)도 이 목록에 더할 수 있습니다. 누르면 주소 형식을 고릅니다. | You can also add a Bitcoin private key (WIF) from another wallet to this list. Press the button to choose the address type. |
+| REMOVE_IMPORTED | 선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 이 계정의 '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요. | Deletes the selected imported private-key account from this wallet. Imported private keys cannot be restored from recovery words, so once deleted, this account's assets cannot be reached again without the original private key. Before deleting, make sure you exported the private key with this account's 'Show private key' and stored it safely. Enter your password to continue. |
+| NO_ACCOUNTS | 이 지갑에는 {0} 계정이 없습니다. | This wallet has no {0} account. |
+| HELP_EVM | 16진수 64자리 개인키(0x 선택) — MetaMask·Rabby의 '개인키 내보내기' 값입니다. 모든 EVM 체인(기본 7개와 직접 추가한 체인)에서 같은 주소로 쓰입니다. | A private key of 64 hexadecimal characters (0x optional) — the value of 'Export private key' in MetaMask or Rabby. It has the same address on every EVM chain (the 7 built-in ones and chains you added). |
+| HELP_SOL | Phantom·Solflare의 '개인키 내보내기'(base58) 또는 solana-keygen JSON 파일의 내용입니다. | The 'Export private key' value (base58) from Phantom or Solflare, or the contents of a solana-keygen JSON file. |
+| HELP_BTC | WIF 형식(5·K·L로 시작하면 mainnet, 9·c로 시작하면 testnet4) — Electrum 'Export private key', Bitcoin Core dumpprivkey 값입니다. | WIF format (starting with 5, K or L: mainnet; 9 or c: testnet4) — the value of Electrum's 'Export private key' or Bitcoin Core's dumpprivkey. |
+| HELP_ZEC | 압축 WIF(K·L로 시작하면 mainnet, c로 시작하면 testnet) 또는 16진수 64자리 — zcashd dumpprivkey 값입니다. 일반(transparent) 주소 하나로 씁니다. | A compressed WIF (starting with K or L: mainnet; c: testnet) or 64 hexadecimal characters — the value of zcashd dumpprivkey. It is used as one regular (transparent) address. |
+| ADDRESS_TYPE | 주소 형식 | Address type |
+| TITLE | 개인키로 시작하기 | Start with a private key |
+| WHICH_CHAIN | 어떤 체인의 개인키입니까? | Which chain is the private key for? |
+| CHAIN | 체인 | Chain |
+| EVM_RADIO | EVM (이더리움 등) | EVM (Ethereum and others) |
+| BACKUP_TITLE | 이 지갑의 백업 | This wallet's backup |
+| NO_ADD_ACCOUNT | 복구 단어가 없어 “계정 추가”는 없습니다 — 나중에 설정 → 복구 단어에서 더하면 생깁니다. 메인 화면의 '개인키 가져오기'로 다른 개인키를 더할 수 있습니다(체인마다 최대 15개). | Without recovery words there is no “Add account” — it appears if you add recovery words later in Settings → Recovery words. You can add other private keys with 'Import private key' on the main screen (up to 15 per chain). |
+| START | 시작하기 | Start |
+| CANCEL | 취소 | Cancel |
+| ADDRESS_TITLE | 주소 확인 | Check the address |
+| ADDRESS_LEAD | 입력한 개인키의 {0} 주소입니다. 이전 지갑에서 쓰던 주소와 전체가 같은지 확인하세요. | This is the {0} address of the private key you entered. Check that all of it matches the address from your previous wallet. |
+| NETWORK | 네트워크 | Network |
+| CORRECT | 맞습니다 | It matches |
+| WRONG | 다릅니다 | It differs |
+| WRONG_HELP | 다르면 '다릅니다'를 눌러 개인키를 다시 입력하세요. Bitcoin은 주소 형식이 다르면 주소도 다릅니다 — 앞 화면에서 형식을 바꿀 수 있습니다. | If it differs, press 'It differs' and enter the private key again. For Bitcoin, a different address type gives a different address — you can change the type on the previous screen. |
+| KEY_ONLY_NOTE | 이 지갑은 개인키로 시작해 복구 단어가 없습니다. 이 체인을 쓰려면 그 체인의 개인키를 가져오세요. | This wallet was started from a private key and has no recovery words. To use this chain, import a private key for it. |
+| YUBIKEY_NOTE | 이 YubiKey 지갑에는 복구 단어가 저장되어 있지 않습니다. 이 체인을 쓰려면 같은 복구 단어로 YubiKey에 이 체인의 키를 등록하거나(설정 → YubiKey), 그 체인의 개인키를 가져오세요. | This YubiKey wallet stores no recovery words. To use this chain, enrol this chain's key on a YubiKey with the same recovery words (Settings → YubiKey), or import a private key for that chain. |
+| IMPORT_KEY | 개인키 가져오기 | Import private key |
+| ENROL_YUBIKEY | YubiKey 등록 | Enrol YubiKey |
+| CONNECT_YUBIKEY | YubiKey 연결하기 (복구 단어 없이) | Connect YubiKey (no recovery words) |
+| SHOW_KEY | 개인키 보기 | Show private key |
+| DELETE | 삭제 | Delete |
+| NEXT_KEY | 다음 (개인키 입력) | Next (enter private key) |
+
+<!-- catalogue: yw_engine::screen::build::links::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| T_HASH_COPY | 해시 복사 | Copy hash |
+| T_ADDRESS_COPY | 주소 복사 | Copy address |
+| T_EXPLORER_OPEN | 탐색기에서 열기 | Open in explorer |
+| T_EXPLORER_COPY | 탐색기 링크 복사 | Copy explorer link |
+| T_SAVE_ADDRESS | 이 주소 저장 | Save this address |
+| PICK_ACCOUNT | 계정을 고르세요 | Choose an account |
+| ACCOUNT | 계정 | Account |
+
+<!-- catalogue: yw_engine::screen::build::llm::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| PRESET_OPENAI | OpenAI | OpenAI |
+| PRESET_CLAUDE | Claude | Claude |
+| PRESET_OPENROUTER | OpenRouter | OpenRouter |
+| PRESET_OLLAMA | Ollama (로컬) | Ollama (local) |
+| PRESET_LM_STUDIO | LM Studio (로컬) | LM Studio (local) |
+| CARD | AI 설명 (선택 기능) | AI explanation (optional) |
+| INTRO | 승인 창에 dApp 요청(거래·서명)을 AI가 한국어로 풀어 쓴 참고 설명을 따로 덧붙입니다. 기본은 꺼짐입니다. AI 설명은 틀릴 수 있고, 승인 버튼·위험 표시·경고에는 전혀 쓰이지 않습니다. | Adds a separate reference explanation of dApp requests (transactions, signatures), written by an AI in English, to the approval window. Off by default. AI explanations can be wrong and are never used for the approve button, the risk display or the warnings. |
+| STATUS_ON | 상태: 켜짐 — dApp 요청마다 {0}(으)로 요청 내용을 보냅니다 | Status: on — the request content is sent to {0} for every dApp request |
+| STATUS_UNUSABLE | 상태: 켜짐으로 저장됐지만 엔드포인트·모델이 없어 쓰지 않습니다 | Status: saved as on, but not used because the endpoint or the model is missing |
+| STATUS_OFF | 상태: 꺼짐 — 외부로 아무것도 보내지 않습니다 | Status: off — nothing is sent out |
+| ENABLE | AI 설명 사용 | Use AI explanations |
+| ENABLE_HELP | 켤 때 어떤 정보가 어디로 전송되는지 먼저 보여주고 동의를 받습니다. 지갑에서 직접 만든 보내기(EVM·Solana·Bitcoin)는 설명하지 않습니다. | Turning it on first shows what is sent where and asks for your consent. Sends made in the wallet itself (EVM, Solana, Bitcoin) are not explained. |
+| PROVIDER_CARD | AI 공급자 (OpenAI 호환) | AI provider (OpenAI-compatible) |
+| PROVIDER_HELP | OpenAI 호환 채팅 API의 전체 주소입니다(…/chat/completions). https:// 주소, 또는 이 PC에서 돌리는 로컬 모델(http://127.0.0.1 · localhost · [::1])만 허용합니다. 주소를 바꾸면 AI 설명이 꺼지고 다시 동의해야 합니다. | The full address of an OpenAI-compatible chat API (…/chat/completions). Only https:// addresses or a local model on this PC (http://127.0.0.1 · localhost · [::1]) are allowed. Changing the address turns AI explanations off and needs your consent again. |
+| QUICK_FILL | 빠른 입력 | Quick fill |
+| QUICK_HELP | 버튼은 엔드포인트 칸만 채웁니다. '저장'해야 바뀝니다. 모델 이름은 공급자 문서에서 확인하세요(OpenRouter는 openai/gpt-… · anthropic/claude-… 형식). Ollama·LM Studio는 이 PC에서 서버를 켜 두어야 합니다. | The buttons only fill the endpoint field; 'Save' applies it. Look up the model name in the provider's documentation (OpenRouter uses openai/gpt-… · anthropic/claude-…). Ollama and LM Studio need their server running on this PC. |
+| ENDPOINT | 엔드포인트 | Endpoint |
+| PATH_HINT | 주소가 /chat/completions로 끝나지 않습니다. OpenAI 호환 채팅 API의 전체 주소를 넣으세요(…/v1/responses 같은 다른 API 주소는 HTTP 404가 납니다). | The address does not end in /chat/completions. Enter the full address of an OpenAI-compatible chat API (another API address such as …/v1/responses answers HTTP 404). |
+| ANTHROPIC_NOTE | Claude(api.anthropic.com의 OpenAI 호환 층): 응답 형식은 json_schema만 받습니다(json_object는 HTTP 400). 추론 강도(reasoning_effort)는 무시합니다. Claude 5 모델은 기본으로 생각(추론)을 하므로 10초 기한에는 빠른 모델(예: claude-haiku-4-5-20251001)이 맞습니다. | Claude (the OpenAI-compatible layer of api.anthropic.com): only the json_schema response format is accepted (json_object answers HTTP 400). The reasoning effort (reasoning_effort) is ignored. Claude 5 models think (reason) by default, so a fast model (e.g. claude-haiku-4-5-20251001) suits the 10-second deadline. |
+| MODEL | 모델 | Model |
+| FORMAT | 응답 형식 | Response format |
+| FORMAT_SCHEMA | json_schema (기본) | json_schema (default) |
+| OPENAI_NOTE | api.openai.com에는 max_tokens를 보내지 않습니다(최신 추론 모델이 HTTP 400으로 거부합니다). 다른 주소로 바꾸면 이 값을 다시 씁니다. | max_tokens is not sent to api.openai.com (recent reasoning models refuse it with HTTP 400). It is used again with another address. |
+| EFFORT | 추론 강도 | Reasoning effort |
+| EFFORT_NONE | 보내지 않음 (기본) | Not sent (default) |
+| OPTIONS_HELP | 공급자가 json_schema를 거부하면(HTTP 400) json_object로 바꾸세요. max_tokens는 0이면 보내지 않고, 1–4096이면 그 값을 보냅니다. 추론 강도는 추론 모델이 답하기 전에 생각하는 양(reasoning_effort)입니다. 높을수록 느려져 10초 기한을 넘기 쉽고, 추론 모델이 아니면 HTTP 400으로 거부할 수 있습니다 — 그러면 '보내지 않음'으로 두세요. | If the provider refuses json_schema (HTTP 400), switch to json_object. max_tokens 0 is not sent; 1–4096 is sent as is. The reasoning effort is how much a reasoning model thinks before answering (reasoning_effort). Higher is slower and easily misses the 10-second deadline, and a model that does not reason may refuse it with HTTP 400 — then leave it at 'Not sent'. |
+| SAVE | 저장 | Save |
+| TEST | 연결 테스트 | Test connection |
+| TEST_HELP | 연결 테스트는 지어낸 표본 요청(주소 0x…dEaD, 0.01 SepoliaETH)으로 저장된 설정을 한 번 호출해 응답 형식만 확인합니다. 내 주소·거래는 보내지 않고, 켜기 전에도 할 수 있습니다. | The connection test calls the saved settings once with a made-up sample request (address 0x…dEaD, 0.01 SepoliaETH) and checks only the answer format. Your addresses and transactions are not sent, and it works before turning the feature on. |
+| TESTING | 연결 테스트 중… (최대 10초) | Testing the connection… (up to 10 s) |
+| KEY_CARD | AI API 키 | AI API key |
+| KEY_STATE | 저장된 API 키: {0} (저장된 값은 다시 보이지 않습니다) | Saved API key: {0} (a saved value is never shown again) |
+| KEY_NONE | 없음 | none |
+| KEY_WITHHELD | 다른 엔드포인트 주소용이라 보내지 않음 — API 키를 다시 입력하세요 | for another endpoint address, so not sent — enter the API key again |
+| KEY_SET | 설정됨 | set |
+| KEY | API 키 | API key |
+| KEY_SAVE | 키 저장 | Save key |
+| KEY_DELETE | 키 삭제 | Delete key |
+| KEY_DELETED | API 키를 지웠습니다. | API key deleted. |
+| KEY_HELP | 로컬 모델처럼 키가 필요 없으면 비워 두세요. 키는 Windows가 이 사용자 계정에서만 풀 수 있게 암호화해 저장하고, 로그에 남기지 않습니다. | Leave it empty when no key is needed, as with a local model. The key is stored encrypted so that only this Windows user account can decrypt it, and it is never logged. |
+
+<!-- catalogue: yw_engine::screen::build::mnemonics::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| NO_PHRASES | 이 지갑에는 아직 복구 단어가 없습니다(개인키·YubiKey로 시작한 지갑). 복구 단어를 더하면 그 계정이 계정 목록에 생깁니다. | This wallet has no recovery phrase yet (it was started from a private key or a YubiKey). When you add one, its accounts appear in the account list. |
+| WORDS | {0}단어 | {0} words |
+| PASSPHRASE_USED | passphrase 사용 | passphrase used |
+| ACCOUNTS | 계정: EVM {0} · Solana {1} · Bitcoin {2} · Zcash {3} | Accounts: EVM {0} · Solana {1} · Bitcoin {2} · Zcash {3} |
+| PRIMARY | 처음 만든(가져온) 복구 단어 · 지울 수 없음 | first created (imported) recovery phrase · cannot be deleted |
+| BACKUP_CONFIRMED | 백업 확인됨 | backup confirmed |
+| BACKUP_PENDING | 백업 확인 전 | backup not confirmed |
+| FIRST_ADDRESS | 첫 주소(종이에 함께 적은 주소): | First address (written on the paper with the words): |
+| SAVE | 저장 | Save |
+| CANCEL | 취소 | Cancel |
+| RENAME | 이름 바꾸기 | Rename |
+| SHOW_WORDS | 단어 보기 | Show words |
+| BACKUP_CHECK | 백업 확인 | Backup check |
+| DELETE | 지우기 | Delete |
+| IMPORT_MORE | 복구 단어 추가 가져오기 | Import another recovery phrase |
+| CREATE_MORE | 새 복구 단어 만들기 (추가) | Create another recovery phrase |
+| ADDED_HELP | 추가한 복구 단어에서도 EVM·Solana·Bitcoin·Zcash 계정을 만들 수 있습니다(각 탭의 '계정 추가'에서 복구 단어를 고릅니다). 비밀번호를 다시 입력해야 합니다. | Added recovery phrases can make EVM, Solana, Bitcoin and Zcash accounts too (choose the recovery phrase under 'Add account' on each tab). You need to enter the password again. |
+| REMOVED_ACCOUNTS | 지워지는 계정 | Accounts that will be removed |
+| REVEAL_STEP | 1. 단어 보기 (끝까지 보고 적어 두기) | 1. Show words (see them to the end and write them down) |
+| REVEALED | 단어를 끝까지 보았습니다. | You saw the words to the end. |
+| NOT_REVEALED | 아직 단어를 보지 않았습니다. | You have not seen the words yet. |
+| TYPE_STEP | 2. 확인: '{0}' 입력 | 2. Confirm: type '{0}' |
+| DELETE_THIS | 이 복구 단어 지우기 | Delete this recovery phrase |
+| ZEC_ACCOUNT | Zcash 계정 ({0}) | Zcash account ({0}) |
+| PREVIEW_TITLE | 가져올 복구 단어 | Recovery phrase to import |
+| PREVIEW_HELP | 이 복구 단어의 첫 계정(m/44'/60'/0'/0/0) 주소입니다. 다른 지갑에서 보던 주소와 같은지 확인하세요. 다르면 단어나 passphrase가 틀렸습니다. | This is the address of this recovery phrase's first account (m/44'/60'/0'/0/0). Check that it matches the address you saw in your other wallet. If it differs, the words or the passphrase are wrong. |
+| YK_SAME | 이 복구 단어는 이 지갑에 등록된 YubiKey {0}의 키를 만든 단어입니다. 가져오면 그 단어가 이 PC의 vault에 저장됩니다. | These words made the keys of YubiKey {0} enrolled in this wallet. Importing them stores the words in this PC's vault. |
+| YK_SAME_ACK | 이해했습니다: 이 단어를 이 PC에 저장하면 YubiKey의 보안 이득이 없어집니다 | I understand: storing these words on this PC removes the YubiKey's security benefit |
+| IMPORT | 가져오기 | Import |
+| PICK_EVM | 어느 복구 단어에서 계정을 만들까요? | Which recovery phrase should the account come from? |
+| PICK_SOL | 어느 복구 단어에서 Solana 계정을 만들까요? (m/44'/501'/i'/0') | Which recovery phrase should the Solana account come from? (m/44'/501'/i'/0') |
+
+<!-- catalogue: yw_engine::screen::build::received::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| RECEIVED_TOGGLE | 받은 내역도 보기 | Also show received |
+| RECEIVED_TOGGLE_HC | 받은 내역도 보기 (위 HyperCore 카드 포함) | Also show received (including the HyperCore card above) |
+| RECEIVED_HELP | 받은 내역은 참고용입니다. 여기의 주소를 복사해 보내지 마세요 — 보낼 주소는 주소록이나 상대에게 직접 받은 값을 쓰세요. | The received history is for reference. Do not copy an address from here to send to — use your address book or an address you got directly from the other person. |
+| EVM_NATIVE | 네이티브 코인 입금은 표시하지 않습니다 — 계정 카드의 '탐색기에서 주소 보기'로 확인하세요. | Native coin deposits are not shown — check them with 'View address in explorer' on the account card. |
+| DUST | 먼지 금액·0원 입금 {0}건은 숨겼습니다(주소 오염 대비). | {0} dust or zero-value deposits hidden (address poisoning). |
+| PENDING_STATUS | 상태: 미확정 (0 확인) — 바뀌거나 취소될 수 있습니다 | Status: unconfirmed (0 confirmations) — it may change or be cancelled |
+| PENDING_SENDER | 보낸 주소: 확인된 뒤 표시합니다 | Sender: shown once confirmed |
+| PENDING_HELP | 미확정 입금은 참고용입니다 — 확인(블록 1개) 전에는 잔액에 넣지 않고 보낼 때도 쓰지 않습니다. | Unconfirmed deposits are for reference — until confirmed (1 block) they are not in the balance and are not spent. |
+| GONE | 확인되기 전에 사라진 미확정 입금 {0}건 — 다른 거래로 바뀌었거나 취소되었을 수 있습니다. | {0} unconfirmed deposits disappeared before confirming — they may have been replaced or cancelled. |
+| DROPPED | 상태를 확인할 수 없어 목록에서 뺀 미확정 입금 {0}건 — 탐색기에서 확인하세요. | {0} unconfirmed deposits removed from the list because their status cannot be checked — check the explorer. |
+| NAME_MINE |  → 내 계정: {0} |  → my account: {0} |
+| NAME_BOOK |  → 주소록: {0} |  → address book: {0} |
+| LOOK_ALIKE | 주소 오염 의심 — {0}과 앞뒤가 같은 다른 주소 | Possible address poisoning — a different address with the same start and end as {0} |
+| WHOM_SENT | 보낸 내역의 주소 | an address from your sent history |
+| WHOM_MINE | 내 계정 '{0}' | my account '{0}' |
+| WHOM_BOOK | 주소록 '{0}' | address book '{0}' |
+| WHOM_QUOTED | '{0}' | '{0}' |
+| WHEN_PENDING | 미확정 | Unconfirmed |
+| WHEN_BLOCK | 블록 {0} | Block {0} |
+| WHEN_UNKNOWN | 시각 모름 | Time unknown |
+| ROW | {0} · 받음 {1} {2} | {0} · Received {1} {2} |
+| CONFIRMED_AT | 상태: 확인됨 (블록 {0}) | Status: confirmed (block {0}) |
+| CONFIRMED | 상태: 확인됨 | Status: confirmed |
+| SENDER | 보낸 주소{0} | Sender{0} |
+| NO_SENDER | 보낸 주소 - | Sender - |
+| TITLE | 받은 내역 | Received |
+| NOT_LOADED | 받은 내역을 아직 불러오지 않았습니다. | The received history is not loaded yet. |
+| LOAD_FAILED | 받은 내역을 불러오지 못했습니다: {0} | Could not load the received history: {0} |
+| LOADING | 받은 내역을 불러오는 중… | Loading the received history… |
+| EMPTY | 최근 받은 입금이 없습니다. | No recent deposits. |
+| FOLD | 받은 내역 접기 ▾ | Hide received ▾ |
+| MORE | 받은 내역 {0}건 더 보기 ▸ | Show {0} more received ▸ |
+
+<!-- catalogue: yw_engine::screen::build::removed::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| T_BALANCE_UNKNOWN | 잔액을 확인하지 못했습니다(이 네트워크를 연 적 없음). | The balance could not be checked (this network was never opened). |
+| T_BALANCE_SCOPE | 위 잔액은 지금 네트워크의 기본 자산만 마지막으로 읽은 값입니다 — 다른 네트워크와 토큰 잔액은 확인하지 않았습니다. | The balances above are only the last-read native asset of the current network — other networks and token balances were not checked. |
+| BALANCE_POSITIVE | 이 계정에 잔액이 있습니다: {0} ({1}). 지우기 전에 다른 계정으로 옮기세요. | This account has a balance: {0} ({1}). Move it to another account before removing. |
+| LAST_READ | 마지막으로 읽은 잔액: {0} ({1}) | Last read balance: {0} ({1}) |
+| CANNOT_SIGN | 이 지갑에서 서명 불가 | Cannot sign in this wallet |
+| STILL_SIGNS | YubiKey {0}{1} 계속 서명 | YubiKey {0} keeps signing |
+
+<!-- catalogue: yw_engine::screen::build::reset::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| T_WAIT_STALLED | 30초가 지나도 불러오기가 끝나지 않았습니다. '다시 불러오기'를 누르거나, '잠금'을 누른 뒤 다시 잠금 해제해 보세요. 그래도 안 되면 앱을 종료했다가 다시 실행하세요. 계속되면 로그 폴더의 yw-app.log를 확인하세요. 처음부터 다시 쓰려면 복구 단어·원래 개인키, 또는 YubiKey(“YubiKey 연결하기 (복구 단어 없이)”)가 필요합니다 — 있다면 잠금 화면의 '지갑 초기화…'로 시작할 수 있습니다. | Loading has not finished after 30 seconds. Press 'Reload', or press 'Lock' and unlock again. If that does not help, quit the app and start it again. If it keeps happening, check yw-app.log in the log folder. To start over you need your recovery words or original private keys, or a YubiKey (“Connect a YubiKey (no recovery words)”) — if you have them, you can start with 'Reset wallet…' on the lock screen. |
+| T_META_FAILED | 계정 이름·주소록·연결한 사이트·보안 설정 기록이 담긴 meta 파일(meta.ywm)을 불러오지 못했습니다. 파일은 그대로 두었고, 불러오기에 성공할 때까지 이 파일에 아무것도 쓰지 않습니다. '다시 불러오기'를 누르거나, '잠금'을 누른 뒤 다시 잠금 해제해 보세요. 계속 실패하면 디스크 공간과 백신의 파일 차단을 확인하고 로그 폴더의 yw-app.log를 보세요. 그래도 안 되면 앱을 종료하고 데이터 폴더를 통째로 백업한 뒤 복구 안내(recovery-guide)를 따르세요. | The meta file (meta.ywm), which holds account names, the address book, connected sites and the security settings record, could not be loaded. The file was left as it is, and nothing is written to it until a load succeeds. Press 'Reload', or press 'Lock' and unlock again. If it keeps failing, check the disk space and whether antivirus software blocks the file, and look at yw-app.log in the log folder. If that does not help, quit the app, back up the whole data folder and follow the recovery guide (recovery-guide). |
+| T_RESET_INTRO | 이 PC의 지갑 파일을 옮겨 두고 처음 화면으로 돌아갑니다. 자산은 블록체인에 그대로 있지만, 이 지갑을 다시 쓰려면 복구 단어(니모닉) — 여러 개면 각각 — 또는 원래 개인키가 있어야 합니다. YubiKey의 키는 카드에 남아 'YubiKey 연결하기 (복구 단어 없이)'로 다시 연결할 수 있습니다. | Moves this PC's wallet files aside and returns to the first screen. Your assets stay on the blockchain, but to use this wallet again you need its recovery words (mnemonic) — each of them if there are several — or the original private keys. YubiKey keys stay on the card and can be connected again with 'Connect a YubiKey (no recovery words)'. |
+| T_RESET_NOUNLOCK | 비밀번호를 잊었어도 진행할 수 있습니다. 잠금 해제 없이 파일만 옮깁니다. | You can go ahead even if you forgot the password. Only the files are moved, without unlocking. |
+| T_RESET_MOVE | 지갑 파일(vault.ywv와 이전 사본 .prev, meta.ywm, journal.ywj, 격리된 손상 파일)을 지우지 않고 데이터 폴더 안의 새 폴더로 옮깁니다. 옮긴 파일은 예전 비밀번호로 계속 열리며, 되돌리는 방법은 복구 안내(recovery-guide)와 새 폴더의 README-reset.txt에 있습니다. | The wallet files (vault.ywv and its earlier copy .prev, meta.ywm, journal.ywj, quarantined damaged files) are moved, not deleted, to a new folder inside the data folder. The moved files still open with the old password; how to undo is in the recovery guide (recovery-guide) and in README-reset.txt in the new folder. |
+| T_RESET_YUBIKEY | YubiKey를 쓰는 지갑이었다면 YubiKey 안의 키는 그대로 남습니다. 초기화는 YubiKey를 지우거나 바꾸지 않습니다. 다시 쓰려면 복구 단어로 지갑을 가져온 뒤 YubiKey를 다시 등록하거나, 복구 단어 없이 첫 화면의 'YubiKey 연결하기 (복구 단어 없이)'로 카드의 키를 다시 연결하세요. | If the wallet used a YubiKey, the keys on the YubiKey stay as they are. A reset does not erase or change the YubiKey. To use it again, import the wallet from the recovery words and enrol the YubiKey again, or connect the card's keys again without recovery words with 'Connect a YubiKey (no recovery words)' on the first screen. |
+| T_RESET_SETTINGS | 설정(settings.json)과 저장한 API 키·RPC 주소(apikeys.dpapi)는 기본으로 그대로 둡니다. 새 지갑에서도 같은 RPC 설정을 씁니다. | The settings (settings.json) and the saved API keys and RPC addresses (apikeys.dpapi) stay by default. A new wallet uses the same RPC settings. |
+| T_RESET_IN_FLIGHT | 보내는 중인 거래가 있습니다. 초기화해도 이미 보낸 거래는 블록체인에서 계속 처리되지만, 이 앱에서는 결과를 더 볼 수 없습니다. 끝난 뒤에 초기화하는 것을 권합니다. | A transaction is being sent. Transactions already sent are still processed on the blockchain after a reset, but this app can no longer show their results. Resetting after they finish is recommended. |
+| T_EXT_COMPAT | dApp의 지갑 목록에 Your Wallet이 없으면: Chrome 툴바의 Your Wallet 아이콘 → 'MetaMask처럼 보이기'(Solana는 'Phantom처럼 보이기', Bitcoin은 'UniSat처럼'·'Xverse처럼 보이기')를 고르고 dApp 탭을 새로고침하세요. 그때는 실제 MetaMask 등 같은 종류의 확장을 꺼 두세요. | If Your Wallet is not in a dApp's wallet list: choose the Your Wallet icon in the Chrome toolbar → 'Appear as MetaMask' (Solana: 'Appear as Phantom', Bitcoin: 'Appear as UniSat' or 'Appear as Xverse') and refresh the dApp tab. Turn off the real MetaMask or other extensions of the same kind while doing so. |
+| T_EXT_COMPAT_SHORT | 지갑 목록에 Your Wallet이 없는 dApp은 Chrome의 Your Wallet 아이콘에서 'MetaMask처럼 보이기'(Solana는 'Phantom처럼', Bitcoin은 'UniSat'·'Xverse처럼')를 고른 뒤 탭을 새로고침하세요. | For a dApp whose wallet list lacks Your Wallet, choose 'Appear as MetaMask' (Solana: 'as Phantom', Bitcoin: 'as UniSat' or 'as Xverse') from the Your Wallet icon in Chrome, then refresh the tab. |
+| T_EXT_STEP_5 | 5. dApp 사이트를 열고(설치 전에 열어 둔 탭은 새로고침) “지갑 연결”에서 Your Wallet을 고르세요. 이 앱에 연결 창이 뜨면 설치가 끝난 것입니다 — 그 뒤로는 툴바의 Your Wallet 아이콘과 위 “연결 상태”에 연결됨이 보입니다. 그 전에는 아이콘이 “확인 불가”로 보이는 것이 정상입니다. | 5. Open a dApp site (refresh tabs opened before the install) and choose Your Wallet under “Connect wallet”. When the connect window appears in this app, the install is done — from then on the Your Wallet toolbar icon and “Connection status” above show connected. Before that, the icon showing “unknown” is normal. |
+| ACCOUNTS_FAILED | 계정 목록을 불러오지 못했습니다. 위 안내를 보세요. | The account list could not be loaded. See the notice above. |
+| ACCOUNTS_LOADING | 계정을 불러오는 중… | Loading accounts… |
+| RELOAD | 다시 불러오기 | Reload |
+| LOCK | 잠금 | Lock |
+| OPEN_LOG_FOLDER | 로그 폴더 열기 | Open log folder |
+| RESET_LINK | 지갑 초기화… | Reset wallet… |
+| RESET_TITLE | 지갑 초기화 | Reset wallet |
+| BACKUP_STATUS | 백업 현황 — 이 지갑을 다시 열려면 | Backup status — to open this wallet again |
+| WHAT_IT_DOES | 무엇을 하나요 | What it does |
+| MOVE_TO | 옮길 곳 | Moves to |
+| STAMP_PLACEHOLDER | <날짜시각(UTC)> | <date-time (UTC)> |
+| FILES_TO_MOVE | 옮길 파일 | Files to move |
+| NO_FILES | (옮길 지갑 파일이 없습니다) | (no wallet files to move) |
+| YUBIKEY_ENROLLED | 이 지갑에는 YubiKey가 등록되어 있습니다. YubiKey와 그 PIN은 그대로 두세요. | A YubiKey is enrolled in this wallet. Leave the YubiKey and its PIN as they are. |
+| MOVE_SETTINGS | 설정과 API 키도 함께 옮기기 (앱 설정을 처음 상태로) | Also move the settings and API keys (app settings back to defaults) |
+| CONFIRM | 확인 | Confirm |
+| TYPE_PHRASE | 계속하려면 아래 칸에 '{0}'를 입력한 뒤, 빨간 버튼을 2초 동안 누르고 있으세요. | To continue, type '{0}' in the box below, then hold the red button for 2 seconds. |
+| PHRASE_LABEL | 확인 문구 | Confirmation |
+| HOLD_NEEDS_PHRASE | '{0}'를 입력하면 누를 수 있습니다 | Type '{0}' to enable |
+| HOLD_KEEP | 계속 누르고 있으세요… | Keep holding… |
+| HOLD_TO_RESET | 2초 동안 눌러 초기화 | Hold 2 seconds to reset |
+| CANCEL | 취소 | Cancel |
+| BACK | ← 돌아가기 | ← Back |
+| EXT_TITLE | Chrome 확장 설치 | Install the Chrome extension |
+| EXT_INTRO | dApp 사이트가 이 지갑을 쓰려면 Chrome에 Your Wallet 확장을 한 번 설치해야 합니다. 확장은 요청을 이 앱에 전달할 뿐이고, 승인은 언제나 이 앱의 창에서 합니다. | For dApp sites to use this wallet, install the Your Wallet extension in Chrome once. The extension only passes requests to this app; approvals always happen in this app's windows. |
+| EXT_STATUS | 연결 상태 | Connection status |
+| EXT_HOW | 설치 방법 | How to install |
+| EXT_STEP_1 | 1. Chrome 주소창에 chrome://extensions 를 입력합니다 (아래 'chrome://extensions 주소 복사' 후 붙여넣기). | 1. Enter chrome://extensions in the Chrome address bar (use 'Copy chrome://extensions' below, then paste). |
+| EXT_STEP_2 | 2. 오른쪽 위 '개발자 모드'를 켭니다. | 2. Turn on 'Developer mode' at the top right. |
+| EXT_ID_UNKNOWN | (확인할 수 없음) | (cannot be checked) |
+| EXT_STEP_3 | 3. '압축해제된 확장 프로그램을 로드합니다'를 누르고 아래 확장 폴더를 선택합니다. 카드에 보이는 ID가 {0}인지 확인하세요(다르면 그 카드를 삭제하세요 — 앱이 연결을 받지 않습니다). | 3. Press 'Load unpacked' and select the extension folder below. Check that the ID on the card is {0} (if it differs, remove that card — the app does not accept its connection). |
+| EXT_STEP_4 | 4. 퍼즐 모양 아이콘에서 Your Wallet을 고정해 두면 편합니다. | 4. Pinning Your Wallet from the puzzle-piece icon is convenient. |
+| EXT_UPDATE | 앱을 업데이트한 뒤에는 chrome://extensions의 Your Wallet 카드에서 '새로고침'(↻)을 누르세요. | After updating the app, press 'Reload' (↻) on the Your Wallet card in chrome://extensions. |
+| EXT_FOLDER | 확장 폴더 | Extension folder |
+| EXT_EXPECTED | 있어야 할 곳 | Expected at |
+| EXT_COPY_PATH | 확장 폴더 경로 복사 | Copy extension folder path |
+| EXT_COPY_URL | {0} 주소 복사 | Copy {0} |
+| EXT_OPEN_FOLDER | 탐색기에서 폴더 열기 | Open folder in Explorer |
+| EXT_CHROME_BLOCKS | Chrome은 다른 프로그램이 chrome:// 주소를 여는 것을 막습니다. 주소를 복사한 뒤 Chrome 주소창에 붙여넣으세요. | Chrome blocks other programs from opening chrome:// addresses. Copy the address and paste it into the Chrome address bar. |
+| EXT_LINK | 브라우저에서 쓰려면: Chrome 확장 설치 방법 | To use it in the browser: how to install the Chrome extension |
+
+<!-- catalogue: yw_engine::screen::build::rpc_import::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| JSON_PLAINTEXT | 이 파일에는 RPC 주소와 그 토큰이 암호화되지 않은 채 들어 있어, 이 Windows 사용자로 도는 다른 프로그램도 읽을 수 있습니다. 가져온 뒤 개발 스크립트에 더 쓰지 않으면 지우세요. | This file holds RPC addresses and their tokens unencrypted, so other programs running as this Windows user can read it. After importing, delete it unless development scripts still need it. |
+| JSON_LEFT | 가져오기를 마쳤습니다. 앱에는 암호화해 저장했지만 rpc.json에는 같은 주소·토큰이 암호화되지 않은 채 남아 있습니다. 개발 스크립트(probe-rpc 등)에 더 쓰지 않으면 지우세요. | Import finished. The app saved them encrypted, but rpc.json still holds the same addresses and tokens unencrypted. Delete it unless development scripts (probe-rpc and others) still need it. |
+| JSON_DELETE_CONFIRM | rpc.json을 지웁니다. 휴지통으로 가지 않아 되돌릴 수 없습니다. 앱에 저장한 RPC 주소는 그대로이고, 개발 스크립트가 이 파일을 쓴다면 scripts\\dev-rpc-setup.ps1로 다시 만들어야 합니다. | rpc.json will be deleted. It does not go to the Recycle Bin, so this cannot be undone. The RPC addresses saved in the app stay; if development scripts use this file, recreate it with scripts\\dev-rpc-setup.ps1. |
+| CARD_TITLE | rpc.json에서 가져오기 | Import from rpc.json |
+| CARD_HELP | 개발용 설정 파일(%USERPROFILE%\\.yw-dev\\rpc.json)에 있는 RPC 주소를 읽어 위 '네트워크별 RPC 주소' 목록에 넣습니다. 저장하기 전에 가린 목록으로 한 번 더 확인합니다. | Reads the RPC addresses in the development settings file (%USERPROFILE%\\.yw-dev\\rpc.json) into the 'RPC address per network' list above. A masked list is shown for one more check before saving. |
+| DELETE | 지우기 | Delete |
+| CANCEL | 취소 | Cancel |
+| IMPORT_BUTTON | rpc.json에서 가져오기 | Import from rpc.json |
+| DELETE_FILE | rpc.json 지우기… | Delete rpc.json… |
+| CONFIRM_TITLE | rpc.json에서 가져오기 — 확인 | Import from rpc.json — confirm |
+| CONFIRM_LEAD | 다음 RPC 주소를 가져옵니다(주소에는 토큰이 있어 가린 형태로만 보입니다): | These RPC addresses will be imported (they contain tokens, so they are shown masked only): |
+| HAS_ADDRESS |  — 기존 주소 있음 |  — has an address already |
+| OFF_TEMPLATE |  — 템플릿과 다른 주소(이 네트워크에 그대로 저장) |  — differs from the template (saved as is for this network) |
+| SAME_ENDPOINT | 모든 주소가 같은 QuickNode 엔드포인트(이름·토큰)입니다. RPC 공급자를 'QuickNode 멀티체인'으로 바꾸고 이름·토큰을 템플릿 자격 정보로 함께 저장합니다. | All addresses use the same QuickNode endpoint (name and token). The RPC provider is changed to 'QuickNode multichain' and the name and token are saved as the template credentials too. |
+| EXISTING | 이미 주소가 있는 네트워크가 {0}개 있습니다. 덮어쓰거나, 비어 있는 네트워크에만 넣을 수 있습니다. | {0} networks already have an address. You can overwrite them or fill only the empty networks. |
+| OVERWRITE | 덮어쓰기 | Overwrite |
+| FILL_EMPTY | 비어 있는 네트워크만 | Empty networks only |
+| IMPORT | 가져오기 | Import |
+| SAVE_NOTE | 저장은 '교체'와 같습니다: Windows가 이 사용자 계정에서만 풀 수 있게 암호화해 apikeys.dpapi에 둡니다. | Saving works like 'Replace': Windows encrypts it so only this user account can open it, in apikeys.dpapi. |
+
+<!-- catalogue: yw_engine::screen::build::sites::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| DISCONNECT | 연결 해제 | Disconnect |
+| PAGE_LINE | {0} / {1}쪽 (연결 {2}곳, 한 쪽에 {3}곳) | Page {0} / {1} ({2} connections, {3} per page) |
+| PREV_PAGE | 이전 쪽 | Previous page |
+| NEXT_PAGE | 다음 쪽 | Next page |
+| PROOF_ONLY | 메시지 서명·소유 증명만 | Message signing and proof of ownership only |
+| SOL_RIGHTS | 연결·메시지 서명·거래 서명(매번 승인) | Connect, message signing, transaction signing (approved each time) |
+| SITE_DEFAULT | 사이트가 기본으로 쓰는 계정 | Account the site uses by default |
+| SITE_DEFAULT_LABEL | {0} · 사이트가 기본으로 쓰는 계정 | {0} · account the site uses by default |
+| SUMMARY_PART | {0} {1}곳 | {0} {1} |
+| SUMMARY | 연결 {0} | Connected: {0} |
+| TITLE | 연결된 사이트 · WalletConnect | Connected sites · WalletConnect |
+| HELP | 연결된 사이트는 아래 계정의 주소를 볼 수 있고, EVM 사이트는 잔액과 거래 기록도 읽을 수 있습니다. 서명과 전송은 매번 이 앱의 확인 창에서 따로 승인합니다. | Connected sites can see the addresses of the accounts below, and EVM sites can also read balances and transaction history. Every signature and transfer is approved separately in this app's confirmation window. |
+| NONE | 연결된 사이트가 없습니다 | No connected sites |
+| NONE_HELP | dApp 사이트에서 '지갑 연결'을 누르고 이 앱의 연결 창에서 승인하면 여기에 표시됩니다. | Press 'Connect wallet' on a dApp site and approve it in this app's connect window; the site then appears here. |
+| LOCAL_HTTP | 로컬 개발 사이트(http) | Local development site (http) |
+| NETWORK | 네트워크 | Network |
+| CONNECTED_AT | 연결 시각 | Connected at |
+| RIGHTS | 권한 | Permissions |
+| DISCONNECT_ALL | 모든 사이트 연결 해제 | Disconnect all sites |
+| PENDING_MORE |  외 {0}건 |  and {0} more |
+| PENDING | 잠금 해제를 기다리는 요청 {0}건: {1} | Requests waiting for unlock ({0}): {1} |
+
+<!-- catalogue: yw_engine::screen::build::sol::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| RAW_FINALIZED | {0} 원시 단위 · decimals {1} · RPC finalized 기준(참고) | {0} raw units · decimals {1} · RPC finalized (reference) |
+| BALANCE_UNKNOWN | 잔액 알 수 없음 | Balance unknown |
+| NOT_READ | 아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요. | Not read yet. Check the RPC connection and refresh. |
+| NO_ATA | 이 계정에는 아직 {0} 토큰 계정(ATA)이 없습니다. 받으면 보내는 쪽이 만듭니다. | This account has no {0} token account (ATA) yet. The sender creates it when you receive. |
+| FROZEN | {0} — 토큰 발행자가 이 토큰 계정을 동결해 보내거나 받을 수 없습니다. | {0} — the token issuer froze this token account, so it cannot send or receive. |
+| CANNOT_CHECK | 확인할 수 없음 | Cannot check |
+| INVALID_ACCOUNT | RPC가 돌려준 계정이 이 토큰의 토큰 계정 형식과 달라 잔액을 표시하지 않습니다. | The account the RPC returned is not in this token's token account format, so no balance is shown. |
+| STATUS_SUCCEEDED | 성공 | Succeeded |
+| STATUS_FAILED | 실패 | Failed |
+| STATUS_EXPIRED | 만료 (전송되지 않음) | Expired (not sent) |
+| STATUS_ENDED | 종결 | Ended |
+| TAB_EVM | EVM (이더리움 등) | EVM (Ethereum etc.) |
+| DEVNET_PILL | 테스트넷 — 실제 자산이 아닙니다 | Testnet — not real assets |
+| DEVNET_BANNER | Solana devnet (테스트) — 실제 자산이 아닙니다 | Solana devnet (test) — not real assets |
+| NETWORK | 네트워크 | Network |
+| JOURNAL_DAMAGED | 거래 저널의 Solana 기록이 손상되어 Solana 보내기를 멈췄습니다. (E-VLT-006) | The Solana records of the transaction journal are damaged, so Solana sending is stopped. (E-VLT-006) |
+| RPC_NONE | RPC 주소 없음 (E-KEY-005) | No RPC address (E-KEY-005) |
+| RPC_CONNECTED | 연결됨 (genesis 확인) | Connected (genesis verified) |
+| RPC_UNCHECKED | 확인 전 | Not checked yet |
+| LAMPORTS_FINALIZED | {0} lamports · RPC finalized 기준(참고) | {0} lamports · RPC finalized (reference) |
+| LAMPORTS_FINALIZED_READ | {0} lamports · RPC finalized 기준(참고) · {1} | {0} lamports · RPC finalized (reference) · {1} |
+| BALANCE_DASH | 잔액 — | Balance — |
+| TOKEN_UNCHECKED | {0} 확인할 수 없음 | {0} cannot be checked |
+| TOKENS | 토큰: {0} | Tokens: {0} |
+| SEND | 보내기 | Send |
+| RECEIVE | 받기 | Receive |
+| RPC_SETUP | RPC 설정하기 | Set up RPC |
+| REFRESH | 새로고침 | Refresh |
+| MY_ACCOUNTS | 내 Solana 계정 | My Solana accounts |
+| CREATING | Solana 계정을 만드는 중… | Creating a Solana account… |
+| NO_ACCOUNTS | Solana 계정이 없습니다. | There is no Solana account. |
+| SAVE | 저장 | Save |
+| CANCEL | 취소 | Cancel |
+| RENAME | 이름 바꾸기 | Rename |
+| HIDE | 숨기기 | Hide |
+| REVEAL_KEY | 개인키 보기 | Show private key |
+| DELETE | 삭제 | Delete |
+| IMPORT_KEY | 개인키 가져오기 | Import private key |
+| ADD_ACCOUNT | 계정 추가 | Add account |
+| SCAN | 다른 경로 스캔 | Scan other paths |
+| SCAN_HINT | 안 보이는 계정은 '다른 경로 스캔'으로 찾습니다. | Find accounts that are not shown with 'Scan other paths'. |
+| SENT_TXS | 보낸 거래 | Sent transactions |
+| TO_RAW | 받는 주소 {0} | Recipient {0} |
+| NO_SENT | 아직 보낸 거래가 없습니다. | No sent transactions yet. |
+| TO_LINE | 받는 주소 | Recipient |
+| TO_LINE_BOOK | 받는 주소 → 주소록: {0} | Recipient → address book: {0} |
+| TO_LINE_OWN | 받는 주소 → 내 계정: {0} | Recipient → my account: {0} |
+| TOKENS_TITLE | 토큰 | Tokens |
+| ALLOWLIST_ONLY | 허용 목록 토큰만 표시합니다 ({0}). 다른 토큰·NFT는 보이지 않고 보낼 수 없습니다. | Only allowlisted tokens are shown ({0}). Other tokens·NFTs are not shown and cannot be sent. |
+| NO_VISIBLE_TOKENS | 보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다. | No visible tokens. Hidden tokens can be shown again below. |
+| HIDDEN_COLLAPSE | 숨긴 토큰 {0}개 접기 ▾ | Collapse hidden tokens ({0}) ▾ |
+| HIDDEN_SHOW | 숨긴 토큰 {0}개 보기 ▸ | Show hidden tokens ({0}) ▸ |
+| HIDE_NOTE | 숨기기는 이 카드에서만 감춥니다. 보내기 화면의 자산 선택, 승인 창의 확인, 활동 기록은 그대로입니다. | Hiding applies to this card only. The asset choice on the send screen, the checks in the approval window and the activity stay the same. |
+| HIDDEN | 숨김 | Hidden |
+| UNHIDE | 다시 보이기 | Show again |
+| SEND_TITLE | 보내기 — {0} | Send — {0} |
+| PENDING_SEND | 이 계정의 이전 전송을 확인 중입니다. 확정된 뒤 보낼 수 있습니다. | A previous send from this account is being confirmed. You can send once it is final. |
+| FROM_ACCOUNT | 보내는 계정 | From account |
+| PATH_BALANCE | {0} · 잔액 {1} (RPC 참고) | {0} · balance {1} (RPC, reference) |
+| RECIPIENT_CARD | 받는 사람 | Recipient |
+| MOVE_NOTE | 비표준 경로 계정의 자금을 내 표준 계정으로 옮깁니다. 받는 주소와 '보내기 최대'는 바꿀 수 없습니다. | Moves the funds of a non-standard path account to your standard account. The recipient and 'Send max' cannot be changed. |
+| PICK_BOOK | 주소록에서 선택 | Choose from address book |
+| ADDRESS_HINT | Solana 주소 (base58) | Solana address (base58) |
+| TOKEN_ADDRESS_HINT | {0}을(를) 받을 사람의 지갑 주소를 넣으세요 ({0} 토큰 계정(ATA) 주소가 아닙니다). | Enter the wallet address of the person receiving {0} (not a {0} token account (ATA) address). |
+| CHECK_WHOLE | 강조된 앞뒤 4자만 보지 말고 가운데까지 주소 전체를 확인하세요. | Do not check only the highlighted first and last 4 characters — check the whole address, the middle too. |
+| LOOKALIKE_BOOK | 주소록 '{0}' | address book '{0}' |
+| LOOKALIKE_OWN | 내 계정 '{0}' | my account '{0}' |
+| LOOKALIKE_SENT | 보낸 내역의 주소 | an address in your send history |
+| LOOKALIKE | {0}와(과) 앞 3자 또는 뒤 3자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다. (승인 창 고위험 L03) | Same first 3 or last 3 characters as {0}, but a different address. This may be an address poisoning attack. (approval window high risk L03) |
+| OFF_CURVE | 일반 지갑이 아님: 프로그램 소유 주소(PDA)나 토큰 계정일 수 있음 (승인 창 고위험 L02) | Not a regular wallet: may be a program-owned address (PDA) or a token account (approval window high risk L02) |
+| REVIEW | 검토 | Review |
+| ASSET_CARD | 보낼 자산과 금액 | Asset and amount to send |
+| ASSET | 자산 | Asset |
+| SOL_HOLDING_UNREAD | SOL · 보유: 잔액을 아직 읽지 못했습니다 | SOL · held: balance not read yet |
+| SOL_HOLDING | SOL · 보유 {0} (RPC 참고) | SOL · held {0} (RPC, reference) |
+| SPL_HOLDING | {0} · SPL Token · 보유 {1} | {0} · SPL Token · held {1} |
+| MINT_PINNED | mint (허용 목록 고정) | mint (pinned in the allowlist) |
+| MAX | 최대 | Max |
+| AMOUNT | 금액 ({0}) | Amount ({0}) |
+| MAX_SOL | 최대: 잔액 − 최대 수수료를 보내고 SOL 잔액은 0이 됩니다(승인 창에서 확인). | Max: sends the balance − the max fee, and the SOL balance becomes 0 (confirmed in the approval window). |
+| MAX_SPL | 최대: {0} 전부를 보냅니다. 수수료(와 필요하면 받는 토큰 계정 생성비)는 SOL로 냅니다. | Max: sends all {0}. The fee (and the receiving token account's creation cost when needed) is paid in SOL. |
+| FEE_ESTIMATE | 예상 수수료 약 {0} (최대 {1}) — 최종 수수료는 승인 창에서 확인합니다. | Expected fee about {0} (max {1}) — the final fee is shown in the approval window. |
+| FEE_CALC | 계산: 기본 5,000 lamports + 우선 수수료(CU 한도 {0}), 상한 {1} lamports. | Calculation: base 5,000 lamports + priority fee (CU limit {0}), cap {1} lamports. |
+| FEE_HIDE | 수수료 계산 숨기기 ▾ | Hide fee calculation ▾ |
+| FEE_SHOW | 수수료 계산 보기 (lamports·CU) ▸ | Show fee calculation (lamports·CU) ▸ |
+| ATA_NOTE | 받는 사람에게 {0} 토큰 계정이 없으면 이 거래가 만들고, 생성 비용(rent)을 보내는 계정의 SOL로 냅니다. 금액은 승인 창에서 확인하세요. 보낸 뒤에도 SOL이 조금 남아야 합니다. | If the recipient has no {0} token account, this transaction creates it and the sending account pays its creation cost (rent) in SOL. Check the amount in the approval window. Some SOL must remain after sending. |
+| NO_MATCH | 일치하는 주소록·내 계정이 없습니다. | No matching address book entry·own account. |
+| RESULT_TITLE | 보내기 결과 | Send result |
+| RESULT_SENT | 서명하고 저널에 기록한 뒤 전송했습니다. | Signed, recorded in the journal, then sent. |
+| RESULT_ENDED | 종결 (활동 참고) | Ended (see activity) |
+| STATUS | 상태 | Status |
+| SIGNATURE | 서명(거래 ID) | Signature (transaction ID) |
+| COPY_HASH | 해시 복사 | Copy hash |
+| BACK_MAIN | 메인으로 | Back to main |
+| SCAN_BACK | 스캔 결과로 | Back to scan results |
+| SEND_AGAIN | 다시 보내기 | Send again |
+| SEND_AGAIN_NOTE | 같은 받는 주소·금액으로 보내기 화면을 다시 엽니다. 새로 검토하고 새로 승인해야 합니다(이전 승인은 쓰지 않음). | Opens the send screen again with the same recipient·amount. You review and approve again (the earlier approval is not used). |
+| SEND_NOW | 지금 다시 전송 | Resend now |
+| SEND_NOW_NOTE | 서명한 같은 거래를 바로 다시 보냅니다. 서명이 같아 한 번만 처리됩니다. 블록해시가 만료된 것이 RPC로 확인되면 새로 서명해 다시 보낼 수 있습니다. | Sends the same signed transaction again right away. The signature is the same, so it is processed only once. Once the RPC shows the blockhash expired, you can sign again and resend. |
+| RECEIVE_TITLE | 받기 — {0} | Receive — {0} |
+| BACKUP_PENDING | 백업 확인 전입니다. 확인을 마치기 전에는 큰 금액을 받지 마세요. | The backup is not confirmed yet. Do not receive large amounts until it is. |
+| DEVNET_ADDRESS | devnet(테스트) 주소입니다. 주소 자체는 mainnet과 같습니다. | This is a devnet (test) address. The address itself is the same as on mainnet. |
+| RECEIVE_ONLY | SOL과 허용 목록 토큰({0})만 받으세요. 다른 토큰은 이 지갑에 보이지 않고 보낼 수 없습니다. | Receive only SOL and allowlisted tokens ({0}). Other tokens are not shown in this wallet and cannot be sent. |
+| TOKEN_RECEIVE_NOTE | 토큰을 보내는 쪽에도 이 지갑 주소를 알려주면 됩니다(토큰 계정 주소는 상대 지갑이 계산합니다). | For tokens, give the sender this wallet address too (the sender's wallet computes the token account address). |
+| SETTINGS_TITLE | Solana 네트워크 | Solana network |
+| SETTINGS_HELP | 메인 화면 Solana 탭에서 쓸 네트워크입니다. devnet은 시험용이며 실제 자산이 아닙니다. | The network of the Solana tab on the main screen. devnet is for testing and holds no real assets. |
+| CLUSTER | 클러스터 | Cluster |
+| DEVNET_RADIO | devnet (테스트) | devnet (test) |
+| RPC_ROWS | RPC 주소는 '네트워크(RPC)' 구역의 solana:mainnet·solana:devnet 행에 있습니다. | The RPC addresses are in the solana:mainnet·solana:devnet rows of the 'Networks (RPC)' section. |
+| SCAN_SETTINGS_HELP | 다른 지갑(Ledger Live, solana-keygen 등)에서 쓰던 경로의 계정을 찾습니다. | Finds accounts on the paths other wallets use (Ledger Live, solana-keygen etc.). |
+| FEE_CAP_TITLE | Solana 수수료 상한 (고급) | Solana fee cap (advanced) |
+| FEE_CAP_HELP | 지갑이 계산한 수수료가 이 값을 넘으면 보내기를 막습니다. 보통은 바꿀 필요가 없습니다. | Sending is blocked when the fee the wallet computes exceeds this value. Usually there is no need to change it. |
+| FEE_CAP_LABEL | 수수료 상한 (lamports) | Fee cap (lamports) |
+| CU_CAP_LABEL | CU 가격 상한 (micro-lamports/CU) | CU price cap (micro-lamports/CU) |
+| DEFAULTS | 기본값으로 | Defaults |
+| FEE_RANGE_HELP | 수수료 상한 10,000–10,000,000, CU 가격 상한 0–100,000,000. 우선 수수료 가격은 최근 값의 p75와 두 상한 중 작은 값입니다. | Fee cap 10,000–10,000,000, CU price cap 0–100,000,000. The priority fee price is the smaller of the recent p75 and the two caps. |
+| SCAN_TITLE | 다른 경로 스캔 — {0} | Scan other paths — {0} |
+| SCAN_NOTICE | 다른 지갑(Ledger Live, solana-keygen 등)의 경로 m/44'/501'/i', m/44'/501', BIP39 seed[0..32]와 표준 경로 m/44'/501'/i'/0'의 계정 0–49를 조회합니다(연속 5개가 비면 중단). 읽기 전용이며 서명하지 않습니다. | Looks up accounts 0–49 on the paths of other wallets (Ledger Live, solana-keygen etc.) m/44'/501'/i', m/44'/501', BIP39 seed[0..32] and the standard path m/44'/501'/i'/0' (stops after 5 empty in a row). Read only; nothing is signed. |
+| SCAN_PRIVACY | 조회하는 모든 주소가 RPC 공급자(설정한 {0} 엔드포인트의 운영자)에 전달되어 서로 연결될 수 있습니다. | Every address looked up goes to the RPC provider (the operator of the {0} endpoint you set) and can be linked together. |
+| SCAN_START | 알겠습니다 — 스캔 시작 | Understood — start scan |
+| SCANNING | 조회하는 중… | Looking up… |
+| SCAN_EMPTY | 잔액이 있는 다른 경로 계정이나 추가할 표준 계정이 없습니다. | There is no other-path account with a balance and no standard account to add. |
+| MOVE_TARGET_LABEL | 옮겨 받을 계정 | Receiving account |
+| RPC_REFERENCE | (RPC 참고) | (RPC, reference) |
+| MOVE_TO_STANDARD | 표준 계정으로 이동 | Move to standard account |
+| SCAN_MOVE_NOTE | 비표준 경로 자금은 주 복구 단어의 표준 계정으로 '보내기 최대'만 할 수 있습니다(승인 창 L07). 자산마다 한 번씩 옮기며, 이 결과는 클러스터를 바꾸거나 잠글 때까지 남습니다. 다른 표준 계정으로 받으려면 Solana 탭에서 그 계정을 고르세요. | Non-standard path funds can only go to a standard account of the primary recovery phrase with 'Send max' (approval window L07). Each asset moves once, and these results stay until you change the cluster or lock. To receive on another standard account, choose it in the Solana tab. |
+| SCAN_AGAIN | 다시 스캔 | Scan again |
+
+<!-- catalogue: yw_engine::screen::build::walletconnect::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| WC_SETUP_INTRO | 확장 프로그램 없이 dApp에 연결하려면(EVM) Reown Project ID를 한 번 저장하세요. dashboard.reown.com에서 무료 프로젝트를 만들면 받는 32자리 값이고 비밀값이 아닙니다. 프로젝트의 허용 출처(allowlist)는 비워 둡니다. | To connect to dApps without the extension (EVM), save a Reown Project ID once. It is the 32-character value you get by creating a free project at dashboard.reown.com, and it is not a secret. Leave the project's allowed origins (allowlist) empty. |
+| WC_INTRO | 확장 프로그램 대신 WalletConnect로 dApp에 연결합니다(EVM). 연결과 서명은 확장과 같은 이 앱의 승인 창에서 확인합니다. | Connects to dApps with WalletConnect instead of the extension (EVM). Connections and signatures are checked in this app's approval window, as with the extension. |
+| WC_STEP_1 | 1. dApp의 WalletConnect 창에서 '링크 복사'를 누르거나, QR을 Win+Shift+S로 캡처합니다. | 1. Press 'Copy link' in the dApp's WalletConnect window, or capture the QR code with Win+Shift+S. |
+| WC_STEP_2 | 2. '클립보드에서 연결'을 누릅니다. 클립보드는 이 버튼을 누를 때만 읽습니다. | 2. Press 'Connect from clipboard'. The clipboard is read only when you press this button. |
+| CARD_CONNECT | WalletConnect 연결 | WalletConnect connection |
+| CLIPBOARD_CONNECT | 클립보드에서 연결 | Connect from clipboard |
+| URI_LABEL | 또는 연결 주소 (wc:…) | Or link (wc:…) |
+| PAIR | 연결 | Connect |
+| FILE_FOLD | 다른 방법 (이미지 파일) 접기 ▾ | Other way (image file): hide ▾ |
+| FILE_OPEN | 다른 방법 (이미지 파일) ▸ | Other way (image file) ▸ |
+| FILE_LABEL | 이미지 파일 경로 | Image file path |
+| FILE_QR | 이미지 파일에서 QR 읽기 | Read QR from image file |
+| RELAY | 릴레이 | Relay |
+| PROJECT_FOLD | Project ID 바꾸기 접기 ▾ | Change Project ID: hide ▾ |
+| PROJECT_OPEN | Project ID 바꾸기 ▸ | Change Project ID ▸ |
+| CARD_SETUP | WalletConnect (선택) — 꺼져 있음 | WalletConnect (optional) — off |
+| SAVE | 저장 | Save |
+| REOWN_COPY | dashboard.reown.com 주소 복사 | Copy dashboard.reown.com address |
+| PROJECT_HELP | dashboard.reown.com에서 무료 프로젝트를 만들고 그 Project ID(32자리)를 넣습니다. 비밀값이 아닙니다. 프로젝트의 허용 출처(allowlist)는 비워 두세요. 비우고 저장하면 WalletConnect가 꺼집니다. | Create a free project at dashboard.reown.com and enter its Project ID (32 characters). It is not a secret. Leave the project's allowed origins (allowlist) empty. Saving it empty turns WalletConnect off. |
+| SESSION_TITLE | {0}  ·  WalletConnect 세션 | {0}  ·  WalletConnect session |
+| SITE_URL | 사이트 주소 | Site address |
+| STATUS | 상태 | Status |
+| UNACKNOWLEDGED | 연결 확인 중 — dApp의 확인을 기다리는 중입니다. 몇 분 안에 확인되지 않으면 자동으로 끊습니다. | Confirming the connection — waiting for the dApp to confirm. It is disconnected automatically if not confirmed within a few minutes. |
+| NETWORK | 네트워크 | Network |
+| CREATED | 연결 시각 | Connected at |
+| EXPIRY | 만료 | Expires |
+| DISCONNECT | 연결 해제 | Disconnect |
+| DISCONNECT_ALL | 모든 WalletConnect 세션 끊기 | Disconnect all WalletConnect sessions |
+
+<!-- catalogue: yw_engine::screen::build::yubikey::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| BTN_CANCEL | 취소 | Cancel |
+| BTN_NEXT | 다음 | Next |
+| BTN_RETRY | 다시 시도 | Try again |
+| BTN_FINISH | 완료 | Done |
+| BTN_READ_AGAIN | 다시 읽기 | Read again |
+| BTN_CHOOSE_AGAIN | ← 다시 고르기 | ← Choose again |
+| BTN_NEXT_CONFIRM | 다음 (확인) | Next (confirm) |
+| BTN_NEXT_WORDS | 다음 (복구 단어 입력) | Next (enter recovery words) |
+| BTN_SET_PIN | PIN 설정 | Set PIN |
+| BTN_SET_PIN_NOW | PIN 설정하기 | Set PIN now |
+| STEP_CONFIRM | 확인 | Confirm |
+| STEP_RESULT | 결과 | Result |
+| CHECKING | 확인 중… | Checking… |
+| FIELD_PATH | 경로 | Path |
+| FIELD_POLICY | 정책 | Policy |
+| FIELD_FIRMWARE | 펌웨어 | Firmware |
+| FIELD_RELATION | 관계 | Relation |
+| FIELD_PIV_MANAGEMENT | PIV 관리 키 | PIV management key |
+| PATH_LINE | 경로: {0} | Path: {0} |
+| LABEL_TOUCH | 터치 | Touch |
+| LABEL_ZEC_NETWORK | Zcash 네트워크 | Zcash network |
+| LABEL_ADDRESS_TYPE | 주소 형식 ({0}) | Address type ({0}) |
+| LABEL_ACCOUNT_INDEX | 계정 인덱스 (0–{0}) | Account index (0–{0}) |
+| LABEL_ADDRESS_INDEX | 주소 인덱스 (0–{0}) | Address index (0–{0}) |
+| TYPE_WORD | 확인: '{0}' 입력 | Confirm: type '{0}' |
+| SHARED_ACK | 이해했습니다: 공유 키는 두 체인의 신원을 연결할 수 있습니다 | I understand: the shared key can link my identities on the two chains |
+| RUNNING_KEEP | YubiKey를 빼지 마세요. 몇 초 걸립니다(터치는 필요 없습니다). | Do not remove the YubiKey. It takes a few seconds (no touch needed). |
+| NO_SIGN_BEFORE_PIN | PIN을 설정하기 전에는 이 YubiKey로 서명하지 않습니다. | This YubiKey does not sign until its PIN is set. |
+| BACKUP_COPY | 백업 복사본 | Backup copy |
+| TOUCH_NEVER | 터치 없음 | No touch |
+| TOUCH_ALWAYS | 항상 | Always |
+| TOUCH_CACHED | 15초 유지 | Cached 15 s |
+| TOUCH_ALWAYS_FIXED | 항상(고정) | Always (fixed) |
+| TOUCH_CACHED_FIXED | 15초 유지(고정) | Cached 15 s (fixed) |
+| POLICY_TOUCH | 터치: {0} | Touch: {0} |
+| POLICY_TOUCH_SESSION | 터치: {0} · PIN: 세션마다 | Touch: {0} · PIN: once per session |
+| POLICY_TOUCH_EVERY | 터치: {0} · PIN: 서명마다 | Touch: {0} · PIN: every signature |
+| KIND_NONE | 없음 | None |
+| KIND_EVM | EVM 계정 | EVM account |
+| KIND_BTC | Bitcoin 주소 | Bitcoin address |
+| KIND_SHARED | EVM 공유 키 | EVM shared key |
+| KIND_ZEC | Zcash 주소 | Zcash address |
+| ZEC_MAINNET | 메인넷 (t1…) | Mainnet (t1…) |
+| ZEC_TESTNET | 테스트넷 (tm…) | Testnet (tm…) |
+| YK_PINS_FIRST | YubiKey 지갑은 PIN 설정을 마쳐야 끝납니다. 공장 기본 PIN(123456 / 12345678)으로는 서명하지 않습니다 — 아래 'PIN 설정하기'로 PIN을 바꾸세요. | The YubiKey wallet is finished only after the PIN setup. It does not sign with the factory default PINs (123456 / 12345678) — change the PIN with 'Set PIN now' below. |
+| YK_PIN_NEEDED | 이 YubiKey는 공장 기본 PIN을 쓰고 있어 서명하지 않았습니다. PIN을 설정한 뒤 다시 서명하세요. | This YubiKey uses its factory default PIN, so it did not sign. Set the PIN, then sign again. |
+| YK_LIST | YubiKey 계정은 복구 단어에서 만든 키를 YubiKey에 넣어 두고, 서명할 때마다 YubiKey에서 PIN과 터치로 서명합니다. 이 PC에는 공개키·주소·슬롯 표만 있습니다. 같은 키를 여러 YubiKey에 넣어 서로의 백업으로 쓸 수 있습니다(최대 8개). | YubiKey accounts keep keys made from recovery words on the YubiKey, and every signature is made on the YubiKey with the PIN and a touch. This PC holds only public keys, addresses and the slot table. The same keys can go on several YubiKeys as backups of each other (up to 8). |
+| YK_MNEMONIC_WALLET | 이 지갑의 복구 단어로 등록하면 그 단어가 이 PC에도 있으므로 보안 이득이 없습니다. 다른 복구 단어로 등록하거나, 키를 PC 밖에 두려면 첫 화면의 'YubiKey 지갑'(복구 단어를 저장하지 않는 지갑)을 새로 만드세요. | Enrolling with this wallet's recovery words adds no security, because those words are also on this PC. Enrol with other recovery words, or to keep the keys off the PC, create a new 'YubiKey wallet' (a wallet that does not store recovery words) from the first screen. |
+| PIN_GUIDE_PW1 | OpenPGP PIN: EVM·Bitcoin 서명할 때마다 입력 (기본 123456, 6자 이상) | OpenPGP PIN: entered for every EVM and Bitcoin signature (default 123456, 6 or more characters) |
+| PIN_GUIDE_PW3 | OpenPGP 관리자 PIN: 키를 넣을 때, OpenPGP PIN이 잠겼을 때 (기본 12345678, 8자 이상) | OpenPGP admin PIN: when importing keys and when the OpenPGP PIN is locked (default 12345678, 8 or more characters) |
+| PIN_GUIDE_PIV_PIN | PIV PIN: Solana 서명할 때 (기본 123456, 6–8자) | PIV PIN: for Solana signatures (default 123456, 6–8 characters) |
+| PIN_GUIDE_PUK | PIV PUK: PIV PIN이 잠겼을 때 풀기 (기본 12345678, 6–8자) | PIV PUK: unlocks a locked PIV PIN (default 12345678, 6–8 characters) |
+| PIN_GUIDE_MANAGEMENT | PIV 관리 키: 앱이 자동으로 만들어 PIN으로 잠가 보관 (입력할 필요 없음) | PIV management key: made by the app and kept locked with the PIN (nothing to enter) |
+| YK_PIN_LOCKS | 각각 3번 틀리면 따로 잠깁니다. 하나가 잠겨도 다른 쪽(OpenPGP/PIV)은 그대로이고, FIDO2·패스키 로그인은 이 중 어느 것과도 관계없습니다. | Each locks on its own after 3 wrong tries. If one locks, the other side (OpenPGP/PIV) stays as it is, and FIDO2/passkey sign-in is unrelated to all of them. |
+| YK_PIN_EASY | 편하게 쓰려면: 8자리 하나로 통일하세요 (네 개 모두 같은 값). 기본값 그대로 두면 YubiKey를 가진 사람이 서명할 수 있습니다. | For ease of use: use one 8-character PIN (the same value for all four). If you keep the defaults, anyone holding the YubiKey can sign. |
+| YK_PIN_TRADEOFF | 순서: PIV PIN → PIV PUK → PIV 관리 키(새로 만들어 PIN으로 보호) → OpenPGP 관리자 PIN → OpenPGP PIN. 하나로 통일하면 잠기기 전까지 맞혀 볼 기회가 늘고(네 곳 각 3번), 서명 PIN을 아는 사람이 관리자 권한도 갖습니다. 개인용으로는 괜찮은 선택입니다. | Order: PIV PIN → PIV PUK → PIV management key (made new and protected with the PIN) → OpenPGP admin PIN → OpenPGP PIN. One PIN for all gives more guesses before everything locks (3 at each of four places), and whoever knows the signing PIN also has admin rights. For personal use it is a reasonable choice. |
+| YK_PROTECT_MGMT | PIV 관리 키 자동 보호: 새 관리 키를 이 PC에서 무작위로 만들어 YubiKey에 PIN으로 잠가 둡니다('ykman piv access change-management-key --generate --protect'와 같음). 현재 PIV PIN만 묻고, 관리 키는 보여 주지도 묻지도 않습니다. | Protect PIV management key: a new management key is made at random on this PC and locked on the YubiKey with the PIN (the same as 'ykman piv access change-management-key --generate --protect'). Only the current PIV PIN is asked; the management key is never shown or asked. |
+| YK_IMPORT | 복구 단어에서 고른 키를 YubiKey에 씁니다. 그 슬롯에 이번에 넣을 키가 아닌 다른 키가 있으면 위의 확인을 마친 뒤에만 덮어씁니다. | Writes the chosen keys from the recovery words to the YubiKey. If a slot holds a key other than the one being imported, it is overwritten only after the confirmation above. |
+| YK_ADOPT | YubiKey에 이미 같은 복구 단어의 키가 들어 있을 때 씁니다. 카드에는 아무것도 쓰지 않고, 카드의 공개키가 복구 단어와 맞는지만 확인해 지갑에 연결합니다(재설치·새 PC·지갑 초기화 후). | Use this when the YubiKey already holds keys of the same recovery words. Nothing is written to the card; the wallet only checks that the card's public keys match the recovery words and connects them (after a reinstall, a new PC or a wallet reset). |
+| STEP_PLAN | 키·슬롯 고르기 | Choose keys and slots |
+| STEP_CREDENTIALS | 자격 정보 | Credentials |
+| STEP_CONNECT_READ | YubiKey 읽기·키 고르기 | Read YubiKey and choose keys |
+| STEP_CONNECT_ADDRESSES | 주소 확인 | Check addresses |
+| STEP_RESLOT_CHOOSE | 새 구성 고르기 | Choose new layout |
+| TITLE_YK_WALLET | YubiKey 지갑 만들기 | Create a YubiKey wallet |
+| BEFORE_START | 시작하기 전에 | Before you start |
+| INTRO_PAPER | · 종이와 펜, YubiKey를 준비하세요. 새 복구 단어 24개를 한 번 보여 드립니다. | · Have paper, a pen and the YubiKey ready. The 24 new recovery words are shown once. |
+| INTRO_NOT_STORED | · 복구 단어는 이 PC에 저장하지 않습니다. 적은 종이가 이 지갑의 유일한 백업입니다. | · The recovery words are not stored on this PC. The paper you write them on is this wallet's only backup. |
+| INTRO_CHECK | · 단어 4개로 바르게 적었는지 확인한 뒤, YubiKey에 넣을 키를 고르고 가져옵니다. | · After checking 4 words to see that you wrote them correctly, you choose the keys for the YubiKey and import them. |
+| INTRO_BACKUP | · 같은 단어로 백업 YubiKey를 바로 더 등록할 수 있습니다(마칠 때까지 메모리에만 있음). | · You can enrol backup YubiKeys with the same words right away (they stay only in memory until you finish). |
+| INTRO_ADMIN_PIN | · OpenPGP 관리자 PIN(새 카드는 12345678)이 필요합니다. | · The OpenPGP admin PIN is needed (12345678 on a new card). |
+| INTRO_TIME | · 10분쯤 걸리고, 중간에 유휴 한도(기본 10분) 넘게 입력이 없으면 처음부터 다시 합니다. | · It takes about 10 minutes; with no input for longer than the idle limit (10 minutes by default), you start over. |
+| INTRO_WARN | 복구 단어를 아는 사람은 누구든 YubiKey 없이 자산을 옮길 수 있습니다. 사진·클라우드에 남기지 마세요. | Anyone who knows the recovery words can move the assets without the YubiKey. Do not keep them in photos or the cloud. |
+| BTN_START | 시작하기 | Start |
+| CARD_YK_ACCOUNTS | YubiKey 계정 | YubiKey accounts |
+| BTN_ENROL | YubiKey 등록 | Enrol YubiKey |
+| BTN_CONNECT | YubiKey 연결하기 (복구 단어 없이) | Connect YubiKey (without recovery words) |
+| UNLOCK_TO_USE | 잠금을 해제하면 쓸 수 있습니다. | Available after unlocking. |
+| FACTORY_BAND | PIN: 공장 기본값 — 서명 안 됨 | PIN: factory default — cannot sign |
+| FIELD_SLOTS | 슬롯 | Slots |
+| COUNT | {0}개 | {0} |
+| BTN_PINS_CLOSE | PIN 설정 닫기 | Close PIN setup |
+| BTN_PINS_CHANGE | PIN 설정 / 기본값 변경 (PIN 안내) | Set PIN / change defaults (PIN guide) |
+| BTN_RESLOT | 슬롯 구성 바꾸기 | Change slot layout |
+| DANGER | 위험한 작업 | Dangerous actions |
+| BTN_REMOVE_RECORD | 지갑에서 기록 지우기 (카드는 그대로) | Remove record from wallet (card unchanged) |
+| BTN_ERASE_KEYS | YubiKey의 키 지우기… | Erase keys on the YubiKey… |
+| LAST_KEY | 이 지갑의 마지막 키라 기록을 지울 수 없습니다(지갑 초기화로만 가능). | This is the wallet's last key, so its record cannot be removed (only by resetting the wallet). |
+| CARD_PER_ACCOUNT | 계정별 YubiKey | YubiKeys per account |
+| BTN_RENAME_CARD | 이름 바꾸기 | Rename |
+| BTN_CLEAR_CARD_NAME | 이름 지우기 | Clear name |
+| CARD_NAME_HELP | 이 YubiKey를 구별할 이름입니다(예: 메인, 백업). 일련번호는 이름 옆에 늘 함께 보입니다. 비우고 저장하면 이름을 지웁니다. | A name to tell this YubiKey apart (for example Main or Backup). The serial is always shown next to the name. Save it empty to clear the name. |
+| HOLDER_BACKUP | {0} {1}(백업) | {0} {1} (backup) |
+| WIZARD_DONE | YubiKey 등록이 끝났습니다. | YubiKey enrolment has finished. |
+| STEP_4_OF_5 | 4/5단계 · YubiKey에 넣기 | Step 4/5 · Put on YubiKey |
+| TITLE_NEW_WALLET_ENROL | YubiKey 지갑 만들기 — YubiKey 등록 | Create a YubiKey wallet — enrol YubiKey |
+| RUNNING_IMPORT | YubiKey에 키를 넣는 중입니다 | Putting keys on the YubiKey |
+| LABEL_KEY | 넣을 키 | Key |
+| GAP_LIMIT | 주소 인덱스가 20 이상이면 다른 지갑으로 복구할 때 gap limit을 늘려야 합니다. | With an address index of 20 or more, other wallets need a larger gap limit to recover it. |
+| FIXED_TOUCH | '고정'을 고르면 관리자 PIN을 아는 프로그램도 터치를 끌 수 없지만, 나중에 바꾸려면 OpenPGP 초기화와 재등록이 필요합니다. | With 'fixed', even a program that knows the admin PIN cannot turn the touch off, but changing it later needs an OpenPGP reset and a new enrolment. |
+| CHECK_BACKUP | 백업 YubiKey 만들기 (같은 키 복사) | Make a backup YubiKey (copy the same keys) |
+| BACKUP_HELP | 같은 키를 다른 YubiKey에도 넣어 예비용으로 씁니다. 이미 등록한 YubiKey의 슬롯 구성을 그대로 따릅니다. 다른 구성(예: 같은 EVM 키 + 새 Zcash 키)은 이 체크를 끄고 아래에서 슬롯을 직접 고르세요 — 다른 YubiKey에 이미 있는 키는 확인 화면에 표시만 하고 그대로 넣습니다. | Puts the same keys on another YubiKey as a spare, following the slot layout of the enrolled YubiKey. For another layout (e.g. the same EVM key + a new Zcash key), untick this and choose the slots below — keys already on another YubiKey are only marked on the confirmation screen and put on as they are. |
+| LABEL_COPY_FROM | 복사할 YubiKey | YubiKey to copy |
+| BACKUP_OPTION | {0} (슬롯 {1}개) | {0} ({1} slots) |
+| SKIPPED_UNKNOWN | 복구 단어 없이 연결한 키는 복사하지 않습니다: {0} | Keys connected without recovery words are not copied: {0} |
+| BACKUP_SAME | 같은 슬롯·같은 경로·같은 정책으로 이 YubiKey에 넣습니다. 같은 복구 단어(+ passphrase)를 입력해야 합니다. | They go onto this YubiKey with the same slots, paths and policies. Enter the same recovery words (+ passphrase). |
+| WORDS_CHECKED | 복구 단어 확인을 마쳤습니다. 이제 YubiKey에 넣을 키를 고르세요. 첫 YubiKey를 가져오면 지갑이 만들어집니다. | The recovery words are checked. Now choose the keys for the YubiKey. The wallet is created when the first YubiKey is imported. |
+| FIRST_DEFAULTS | 처음이면 기본 선택 그대로 다음을 눌러도 됩니다(SIG: EVM 계정 0 · AUT: {0} 네이티브 세그윗 주소 0 · PIV: Solana 계정 1개(인덱스 0부터) · 터치: 항상). | The first time, you can keep the default choices and press Next (SIG: EVM account 0 · AUT: {0} Native SegWit address 0 · PIV: 1 Solana account (from index 0) · Touch: always). |
+| CARD_PIV_SOL | PIV — Solana 계정 | PIV — Solana accounts |
+| LABEL_SOL_COUNT | Solana 계정 수 (0–20) | Number of Solana accounts (0–20) |
+| LABEL_FIRST_INDEX | 첫 계정 인덱스 | First account index |
+| PIV_HELP | PIV 보관 슬롯 82부터 차례로 Solana 계정 m/44'/501'/i'/0'을 넣습니다. Solana를 쓰지 않으면 0으로 두세요. | Solana accounts m/44'/501'/i'/0' go into the PIV retired slots from 82 on. If you do not use Solana, leave it at 0. |
+| COMPUTING | 복구 단어에서 고른 키의 경로와 주소를 계산하고 있습니다(YubiKey와 통신하지 않음). | Computing the paths and addresses of the chosen keys from the recovery words (no YubiKey communication). |
+| BTN_BACK_SLOTS | ← 슬롯 다시 고르기 | ← Choose slots again |
+| SAME_ACK | 이해했습니다. 그래도 이 복구 단어로 등록합니다 | I understand. Enrol with these recovery words anyway |
+| CARD_CHECK_IMPORT | 가져오기 전에 확인하세요 | Check before importing |
+| CONFIRM_TEXT | 아래 경로와 주소는 입력한 복구 단어에서 이 PC가 계산한 값입니다(YubiKey와는 아직 통신하지 않았습니다). 쓰려는 주소와 전체가 같은지 확인하세요. | The paths and addresses below were computed by this PC from the recovery words you entered (no YubiKey communication yet). Check that each address matches the one you intend to use in full. |
+| RELATION_NEW | 새 키 | New key |
+| RELATION | {0} — 같은 경로를 가진 YubiKey: {1} | {0} — YubiKeys with the same path: {1} |
+| RELATION_ALREADY | 이미 다른 YubiKey에 있음 (이 YubiKey에도 같은 키를 넣습니다) | Already on another YubiKey (the same key also goes on this YubiKey) |
+| CARD_LINE | YubiKey {0} (펌웨어 {1}) — 이 YubiKey에만 씁니다. | YubiKey {0} (firmware {1}) — only this YubiKey is written. |
+| READING_CARD | 연결한 YubiKey를 읽는 중… | Reading the connected YubiKey… |
+| CONNECTED_CARD | 연결한 YubiKey | Connected YubiKey |
+| READING_SLOTS | 고른 슬롯에 이미 있는 키를 읽는 중… (PIN 없이 읽기만) | Reading the keys already in the chosen slots… (read only, no PIN) |
+| SLOTS_UNREADABLE | 고른 슬롯을 읽지 못했습니다: {0} 가져오기는 다른 키가 있으면 아무것도 쓰기 전에 멈춥니다. | Could not read the chosen slots: {0} The import stops before writing anything if another key is there. |
+| OCCUPANT_SECP | secp256k1 키 (EVM · Bitcoin P2WPKH로 본 주소) | secp256k1 key (addresses as EVM · Bitcoin P2WPKH) |
+| OCCUPANT_ED | Ed25519 키 (Solana 주소) | Ed25519 key (Solana address) |
+| OCCUPANT_UNKNOWN | 이 지갑이 읽지 못하는 키 (RSA 등 — GPG 키일 수 있음) | A key this wallet cannot read (RSA, … — may be a GPG key) |
+| CARD_CREDENTIALS | YubiKey 자격 정보 | YubiKey credentials |
+| CREDENTIALS_TEXT | YubiKey를 하나만 연결하세요. PIN·관리 키는 이 작업에만 쓰고 바로 지웁니다(저장하지 않음). | Connect only one YubiKey. The PIN and management key are used for this task only and wiped right away (not stored). |
+| CREDENTIALS_PW3 | 관리자 PIN(PW3)을 다음 창에서 입력합니다 (공장 기본값 12345678). | The admin PIN (PW3) is entered in the next window (factory default 12345678). |
+| MANAGEMENT_PROTECTED | 관리 키: PIN으로 보호됨 — PIV PIN만 입력 | Management key: PIN-protected — enter only the PIV PIN |
+| MANAGEMENT_DEFAULT | 기본 관리 키 사용 | Use the default management key |
+| MANAGEMENT_CUSTOM | 관리 키 직접 입력 (16진수 48자리) | Enter the management key (48 hex digits) |
+| MANAGEMENT_UNREAD | 연결한 YubiKey의 관리 키 설정을 아직 읽지 못했습니다. ykman으로 PIN 보호(--protect)를 해 둔 YubiKey라면 연결한 뒤 '← 이전' → '다음'으로 다시 읽으세요. | The connected YubiKey's management key setting has not been read yet. If the YubiKey was PIN-protected with ykman (--protect), connect it and read again with '← Back' → 'Next'. |
+| CARD_HOW | 어떻게 등록할까요? | How should it be enrolled? |
+| BTN_IMPORT | 복구 단어에서 키를 넣기 (처음 등록) | Put keys from the recovery words (first enrolment) |
+| BTN_ADOPT | 이미 넣은 키 연결하기 (가져오기 없이 등록) | Connect keys already on it (enrol without import) |
+| BTN_BACK | ← 이전 | ← Back |
+| ADOPTED | YubiKey {0}을(를) 가져오기 없이 등록했습니다 (카드에 쓰지 않음, 슬롯 {1}개). | YubiKey {0} enrolled without import (nothing written to the card, {1} slots). |
+| IMPORTED | YubiKey {0}에 키를 가져왔습니다 (슬롯 {1}개). | Keys imported to YubiKey {0} ({1} slots). |
+| CREATED_CONNECTED | YubiKey 지갑을 만들었습니다. 복구 단어 없이 카드의 공개키로 연결했으므로 이 PC에는 개인키도 복구 단어도 없습니다 — 카드를 잃었을 때를 대비해 원래 백업(복구 단어 등)이 있는지 확인하세요. | The YubiKey wallet was created. It was connected through the card's public keys without recovery words, so this PC has neither private keys nor recovery words — check that you have the original backup (recovery words, …) in case the card is lost. |
+| CREATED | YubiKey 지갑을 만들었습니다. 복구 단어는 이 PC에 저장하지 않았습니다 — 적은 종이를 안전하게 보관하세요. 백업 YubiKey를 지금 더 등록할 수 있습니다. | The YubiKey wallet was created. The recovery words were not stored on this PC — keep the paper safe. You can enrol more backup YubiKeys now. |
+| DETAILS_CLOSED | 슬롯·주소 자세히 ▸ | Slot and address details ▸ |
+| DETAILS_OPEN | 슬롯·주소 자세히 ▾ | Slot and address details ▾ |
+| REREAD | YubiKey에서 다시 읽은 공개키와 그 주소입니다. | The public keys read back from the YubiKey and their addresses. |
+| BTN_RECHECK | 다시 확인 | Check again |
+| BTN_ANOTHER_CONNECT | 다른 YubiKey 연결 | Connect another YubiKey |
+| BTN_ANOTHER_ENROL | 다른 YubiKey 등록(백업) | Enrol another YubiKey (backup) |
+| PIN_CARD_TITLE | 기본값 변경 / PIN 설정 — YubiKey {0} | Change defaults / set PIN — YubiKey {0} |
+| STEP_5_OF_5 | 5/5단계 · PIN 정하기 | Step 5/5 · Choose PIN |
+| FACTORY_SEEN | 공장 기본값: {0} — {1} | Factory defaults: {0} — {1} |
+| FACTORY_SEPARATE | 아래 '공장값 — 바꿔야 함' 버튼으로 하나씩 바꿉니다. | Change them one by one with the 'factory value — change it' buttons below. |
+| FACTORY_UNIFIED | 아래 “PIN 설정하기” 한 번으로 모두 바꿉니다. | One “Set PIN now” below changes them all. |
+| LABEL_MODE | 방식 | Mode |
+| MODE_UNIFIED | 8자리 하나로 통일 (권장) | One 8-character PIN (recommended) |
+| MODE_SEPARATE | 하나씩 따로 | One at a time |
+| FACTORY_MARK | {0} (공장값 — 바꿔야 함) | {0} (factory value — change it) |
+| BTN_PROTECT_MANAGEMENT | PIV 관리 키 자동 보호 | Protect PIV management key |
+| BTN_SET_PINS | PIN 설정하기 (8자리 하나) | Set PIN now (one 8-character PIN) |
+| PIN_GUIDE_CLOSED | PIN 안내 ▸ | PIN guide ▸ |
+| PIN_GUIDE_OPEN | PIN 안내 ▾ | PIN guide ▾ |
+| REMOVE_SELECTED | 선택한 YubiKey 기록을 지웁니다. | Removes the selected YubiKey record. |
+| REMOVE_TEXT | YubiKey {0}의 기록을 이 지갑에서 지웁니다. YubiKey 안의 키는 지우지 않습니다. 계속하려면 비밀번호를 입력하세요. | Removes the record of YubiKey {0} from this wallet. The keys on the YubiKey are not erased. Enter your password to continue. |
+| REMOVE_ACCOUNTS | YubiKey {0}의 계정 | Accounts of YubiKey {0} |
+| BACK_UNKNOWN | 이 지갑에서 서명 불가 — 카드를 'YubiKey 연결하기 (복구 단어 없이)'로 다시 연결하면 돌아옵니다(이 카드를 잃거나 키를 지우면 영구히 사라집니다) | Cannot sign in this wallet — it comes back if you connect the card again with 'Connect YubiKey (without recovery words)' (lost for good if this card is lost or its keys erased) |
+| BACK_WORDS | 이 지갑에서 서명 불가 — 같은 복구 단어로 다시 등록하면 돌아옵니다 | Cannot sign in this wallet — it comes back if you enrol again with the same recovery words |
+| LOST_CARD | 잃어버린 YubiKey라면: 기록을 지워도 카드의 키는 그대로입니다 — 백업 YubiKey나 복구 단어로 새 카드를 등록해 자산을 옮기세요. | If the YubiKey is lost: removing the record leaves the card's keys as they are — enrol a new card with a backup YubiKey or the recovery words and move the assets. |
+| TITLE_NEW_WALLET_CONNECT | YubiKey 지갑 만들기 — YubiKey 연결하기 | Create a YubiKey wallet — connect YubiKey |
+| CONNECT_RUNNING | YubiKey를 다시 읽고 저장하는 중입니다 | Reading the YubiKey again and saving |
+| CONNECT_RUNNING_KEEP | YubiKey를 빼지 마세요. 카드에는 아무것도 쓰지 않습니다. | Do not remove the YubiKey. Nothing is written to the card. |
+| SCANNING | 연결한 YubiKey를 읽는 중… (PIN 없음, 쓰기 없음) | Reading the connected YubiKey… (no PIN, no writes) |
+| SERIAL_FIRMWARE | {0} (펌웨어 {1}) | {0} (firmware {1}) |
+| NO_READABLE_KEYS | PIN 없이 읽을 수 있는 키(OpenPGP SIG·AUT의 secp256k1, PIV의 Ed25519)가 없습니다. 키가 든 YubiKey인지 확인하세요. | There are no keys readable without a PIN (secp256k1 in OpenPGP SIG/AUT, Ed25519 in PIV). Check that the YubiKey holds keys. |
+| LABEL_THIS_KEY | 이 키는 | This key is |
+| NETWORK_LINE | 네트워크: {0} | Network: {0} |
+| FORMAT_HELP | 같은 키라도 형식에 따라 주소가 다릅니다. 이전 지갑에서 쓰던 주소가 나오는 형식을 고르세요. | The same key gives different addresses in different formats. Choose the format that shows the address you used in your previous wallet. |
+| CHECK_BEFORE_SAVE | 저장하기 전에 확인하세요 — YubiKey {0} | Check before saving — YubiKey {0} |
+| CONNECT_CONFIRM_TEXT | 아래 주소는 YubiKey에서 읽은 공개키로 이 PC가 계산한 값입니다. 쓰려는 주소와 전체가 같은지 확인하세요. | The addresses below were computed by this PC from the public keys read from the YubiKey. Check that each matches the address you intend to use in full. |
+| SAME_KEY_HOLDERS | 같은 키를 가진 YubiKey: {0} — 그 계정에 이 YubiKey를 더합니다 | YubiKeys with the same key: {0} — this YubiKey is added to that account |
+| PIN_OWNERSHIP | PIN으로 소유 확인 (선택) | Check ownership with PIN (optional) |
+| PIV_FACTORY | 이 YubiKey의 PIV PIN이 공장 기본값(123456)입니다. 연결한 뒤 'PIN 설정'으로 바꾸기 전에는 이 지갑이 서명하지 않습니다. | This YubiKey's PIV PIN is the factory default (123456). This wallet does not sign until you change it with 'Set PIN' after connecting. |
+| SIGN_HELP | 서명할 때는 지금처럼 YubiKey에 PIN을 입력하고 터치합니다(공장 기본 PIN으로는 서명하지 않음). | To sign, you enter the PIN and touch the YubiKey as before (it does not sign with a factory default PIN). |
+| BTN_SAVE | 저장 | Save |
+| LOST_LINE | {0} — {1} (복구 단어 없음) | {0} — {1} (no recovery words) |
+| RESLOT_TITLE | 슬롯 구성 바꾸기 — YubiKey {0} | Change slot layout — YubiKey {0} |
+| RESLOT_RUNNING | YubiKey에 새 키를 넣는 중입니다 | Putting the new keys on the YubiKey |
+| LABEL_CHAIN | 체인 | Chain |
+| CARD_CURRENT_SLOTS | 지금 이 YubiKey의 슬롯 | Current slots of this YubiKey |
+| RESLOT_ONLY_PGP | OpenPGP 서명(SIG)·인증(AUT) 두 슬롯만 바꿉니다. PIV(Solana) 슬롯은 그대로입니다. | Only the two OpenPGP slots, signature (SIG) and authentication (AUT), change. The PIV (Solana) slots stay. |
+| RESLOT_UNKNOWN_CARD | 복구 단어 없이 연결한 YubiKey입니다. 바꾸면 SIG·AUT에 입력할 복구 단어의 키가 들어가고 이 YubiKey는 그 복구 단어의 카드가 됩니다. 지금 그 슬롯의 키는 다른 YubiKey에 없으면 영구히 사라집니다(다음 화면에서 확인). | This YubiKey was connected without recovery words. After the change, SIG and AUT hold keys of the recovery words you enter, and this YubiKey becomes a card of those recovery words. The keys now in those slots are lost for good unless another YubiKey holds them (checked on the next screen). |
+| CARD_NEW_LAYOUT | 새 구성 | New layout |
+| LABEL_PRESET | 조합 | Combination |
+| STANDARD_PATHS | 표준 경로만 씁니다: EVM m/44'/60'/0'/0/i, Bitcoin m/{44\|49\|84}'/{0\|1}'/0'/0/i, Zcash m/44'/{133\|1}'/0'/0/i. 터치 정책은 슬롯의 지금 값을 그대로 씁니다. | Only standard paths are used: EVM m/44'/60'/0'/0/i, Bitcoin m/{44\|49\|84}'/{0\|1}'/0'/0/i, Zcash m/44'/{133\|1}'/0'/0/i. The touch policy keeps the slot's current value. |
+| ADVANCED | 고급: EVM 공유 키도 고를 수 있게 하기 | Advanced: also offer the EVM shared key |
+| COMPUTING_RESLOT | 복구 단어에서 새 키의 경로와 주소를 계산하고 있습니다(YubiKey와 통신하지 않음). | Computing the paths and addresses of the new keys from the recovery words (no YubiKey communication). |
+| SAME_ACK_RESLOT | 이해했습니다. 그래도 이 복구 단어의 키를 넣습니다 | I understand. Put the keys of these recovery words anyway |
+| AFTER_CHANGE | 바꾼 뒤 YubiKey {0} | YubiKey {0} after the change |
+| RESLOT_CONFIRM_TEXT | 아래 경로와 주소는 입력한 복구 단어에서 이 PC가 계산한 값입니다(YubiKey와는 아직 통신하지 않았습니다). | The paths and addresses below were computed by this PC from the recovery words you entered (no YubiKey communication yet). |
+| RELATION_UNCHANGED | 그대로 (지금과 같은 키) | Unchanged (the same key as now) |
+| RELATION_PUT | 새로 넣음 | Newly put |
+| RELATION_PUT_BACKUP | 새로 넣음 — 같은 키를 가진 YubiKey: {0} (백업 복사본) | Newly put — YubiKeys with the same key: {0} (backup copy) |
+| CARD_DROPPED | 이 YubiKey에서 빠지는 계정 | Accounts leaving this YubiKey |
+| DROP_NOT_ELSEWHERE | 다른 YubiKey에 없음 — 바꾼 뒤에는 이 지갑에서 서명할 수 없습니다 | Not on another YubiKey — after the change it cannot be signed in this wallet |
+| DROP_LOST | 복구 단어 없음·다른 YubiKey에도 없음 — 바꾸면 이 키는 영구히 사라집니다 | No recovery words and not on another YubiKey — the change loses this key for good |
+| DROP_KEPT | {0}에 남아 있음 — 그 YubiKey로 계속 서명할 수 있습니다 | Still on {0} — that YubiKey can keep signing |
+| ZEC_UNUSABLE_CHANGE | Zcash 계정 {0} — 이 YubiKey의 이 슬롯에만 있는 키입니다. 바꾼 뒤에는 Zcash 탭에서 이 주소로 보낼 수 없습니다(잔액이 있으면 먼저 옮기세요). | Zcash account {0} — its key is only in this slot of this YubiKey. After the change, the Zcash tab cannot send from this address (if there is a balance, move it first). |
+| ZEC_UNUSABLE_ERASE | Zcash 계정 {0} — 이 YubiKey의 이 슬롯에만 있는 키입니다. 지운 뒤에는 Zcash 탭에서 이 주소로 보낼 수 없습니다(잔액이 있으면 먼저 옮기세요). | Zcash account {0} — its key is only in this slot of this YubiKey. After erasing, the Zcash tab cannot send from this address (if there is a balance, move it first). |
+| REMOVED_ACK | 이해했습니다: 빠지는 체인은 이 YubiKey로 서명할 수 없습니다 | I understand: chains leaving this YubiKey can no longer be signed with it |
+| ADMIN_NEXT | 다음 창에서 OpenPGP 관리자 PIN을 묻습니다(공장 기본값 12345678). 바뀌는 슬롯의 키는 덮어쓰고, 넣은 뒤 YubiKey에서 공개키를 다시 읽어 위 값과 비교합니다. | The next window asks for the OpenPGP admin PIN (factory default 12345678). The keys of changed slots are overwritten, and after the import the public keys are read back from the YubiKey and compared with the values above. |
+| RESLOT_DONE | YubiKey {0}의 슬롯 구성을 바꿨습니다. YubiKey에서 다시 읽은 공개키가 복구 단어에서 만든 키와 같습니다. | The slot layout of YubiKey {0} was changed. The public keys read back from the YubiKey match the keys made from the recovery words. |
+| CARD_APPLY_BACKUP | 백업 YubiKey에도 같은 구성 적용 | Apply the same layout to backup YubiKeys |
+| APPLY_HELP | 복구 단어는 이 작업을 마칠 때까지만 메모리에 있으므로 다시 묻지 않습니다. 그 YubiKey를 연결하고 고르세요. | The recovery words stay in memory until this task ends, so they are not asked again. Connect that YubiKey and choose it. |
+| APPLY_TO_SHARED | {0}에 같은 구성 적용 (백업: 같은 키 {1}개) | Apply the same layout to {0} (backup: {1} same keys) |
+| APPLY_TO | {0}에 같은 구성 적용 | Apply the same layout to {0} |
+| BTN_DONE_WIPE | 완료 (복구 단어 지우기) | Done (wipe recovery words) |
+| LABEL_METHOD | 방법 | Method |
+| RESET_IRREVERSIBLE | 되돌릴 수 없습니다: 초기화는 그 기능의 다른 키(GPG·PIV 인증서 등 이 지갑이 쓰지 않은 것 포함)도 모두 지우고 PIN을 공장 기본값으로 되돌립니다. | This cannot be undone: a reset also erases every other key of that function (including GPG keys, PIV certificates and others this wallet did not use) and returns the PINs to the factory defaults. |
+| CLEAR_TITLE | YubiKey의 키 지우기 — YubiKey {0} | Erase keys on the YubiKey — YubiKey {0} |
+| CLEAR_RUNNING | YubiKey의 키를 지우는 중입니다 | Erasing keys on the YubiKey |
+| DONT_REMOVE | YubiKey를 빼지 마세요. | Do not remove the YubiKey. |
+| CARD_WHAT_TO_ERASE | 무엇을 지울까요? | What should be erased? |
+| PGP_KEYS | OpenPGP 지갑 키 (SIG/AUT: EVM·Bitcoin·Zcash, {0}개) | OpenPGP wallet keys (SIG/AUT: EVM, Bitcoin, Zcash; {0}) |
+| PGP_OURS | 이 지갑의 키만 지우기 (권장) | Erase only this wallet's keys (recommended) |
+| PGP_RESET | OpenPGP 전체 초기화 — 다른 키도 지움 | Reset all of OpenPGP — erases other keys too |
+| PIV_SLOTS | PIV Solana 슬롯 ({0}개) | PIV Solana slots ({0}) |
+| PIV_OURS | Solana 키만 지우기 (권장) | Erase only the Solana keys (recommended) |
+| PIV_RESET | PIV 전체 초기화 — 인증서 등 다른 키도 지움 | Reset all of PIV — erases certificates and other keys too |
+| PIV_DELETE_FIRMWARE | 이 YubiKey의 등록 때 펌웨어는 {0}입니다. Yubico는 PIV 키 삭제를 5.7.4부터 문서화했습니다. 카드가 거부하면 'PIV 애플릿 초기화'를 쓰세요. | This YubiKey's firmware at enrolment is {0}. Yubico documents PIV key deletion from 5.7.4. If the card refuses, use 'Reset all of PIV'. |
+| HOW_CLOSED | 어떻게 지우나요 ▸ | How is it erased? ▸ |
+| HOW_OPEN | 어떻게 지우나요 ▾ | How is it erased? ▾ |
+| CARD_UNUSABLE | 이 YubiKey로 쓸 수 없게 되는 계정 | Accounts this YubiKey will no longer sign for |
+| CLEAR_LOST | 복구 단어 없음·다른 YubiKey에도 없음 — 지우면 이 키는 영구히 사라집니다 | No recovery words and not on another YubiKey — erasing loses this key for good |
+| CLEAR_NOT_ELSEWHERE | 다른 YubiKey에 없음 — 이 지갑의 계정 목록에서 빠집니다(같은 복구 단어로 다시 넣으면 돌아옵니다) | Not on another YubiKey — it leaves this wallet's account list (it comes back if the same recovery words are put on again) |
+| CLEAR_KEPT | {0}에도 있음 — 그 YubiKey로 계속 서명할 수 있습니다 | Also on {0} — that YubiKey can keep signing |
+| NO_SLOT_LEFT | 이 YubiKey에 지갑 슬롯이 하나도 남지 않으므로 이 YubiKey 기록을 지갑에서 지웁니다. | No wallet slot is left on this YubiKey, so its record is removed from the wallet. |
+| LAST_KEY_CLEAR | 이 YubiKey가 이 지갑의 마지막 키입니다. 모두 지우면 지갑에 남는 키가 없으므로 지울 수 없습니다. 다른 YubiKey를 먼저 등록하세요. | This YubiKey holds the wallet's last key. Erasing everything would leave the wallet without a key, so it cannot be erased. Enrol another YubiKey first. |
+| RESET_NO_PIN | 초기화는 PIN을 묻지 않습니다(PIN을 일부러 잠근 뒤 초기화합니다). | A reset does not ask for a PIN (it locks the PIN on purpose, then resets). |
+| ASKS | 다음 창에서 {0}을(를) 묻습니다. 이 작업에만 쓰고 바로 지웁니다. | The next window asks for the {0}. It is used for this task only and wiped right away. |
+| BTN_ERASE_THIS | 이 YubiKey의 키 지우기 | Erase this YubiKey's keys |
+| RESULT_OURS | {0}: 이 지갑의 키를 지웠습니다. | {0}: this wallet's keys were erased. |
+| RESULT_RESET | {0}: 전체를 공장 상태로 초기화했습니다 (PIN도 기본값). | {0}: fully reset to factory state (PINs back to defaults). |
+| RESULT_FAILED | {0}: 실패 — {1} | {0}: failed — {1} |
+| RESULT_SKIPPED | {0}: 앞 단계가 실패해 하지 않았습니다. | {0}: not done because an earlier step failed. |
+| RESULT_RECORD_REMOVED | 이 YubiKey에 지갑 슬롯이 남지 않아 기록을 지웠습니다. | No wallet slot is left on this YubiKey, so its record was removed. |
+| RESULT_SLOTS_REMOVED | 지운 슬롯을 이 지갑의 슬롯 표에서 뺐습니다. | The erased slots were taken out of this wallet's slot table. |
+| RESULT_VAULT_FAILED | YubiKey는 바뀌었지만 지갑의 슬롯 표를 고치지 못했습니다: {0} | The YubiKey changed, but the wallet's slot table could not be updated: {0} |
+| RESULT_RESET_PINS | 초기화한 애플릿의 PIN은 공장 기본값입니다(OpenPGP 123456 / 12345678, PIV 123456 / 12345678). 다시 쓰려면 등록한 뒤 'PIN 설정'에서 바꾸세요. | The PINs of a reset applet are the factory defaults (OpenPGP 123456 / 12345678, PIV 123456 / 12345678). To use it again, enrol it and change them in 'Set PIN'. |
+
+<!-- catalogue: yw_engine::screen::build::zec::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| OWN_CHANGE | 확인 대기 {0} (내 거래의 잔돈, 아직 쓸 수 없음) | Awaiting confirmation {0} (change of your own transaction, not spendable yet) |
+| UNCLASSIFIED | 미확정 출력 {0} (0 확인 — 입금인지 확인하지 않았습니다, 아직 쓸 수 없음) | Unconfirmed outputs {0} (0 confirmations — not checked as a deposit, not spendable yet) |
+| RECEIVE_NOTE | 일반(transparent) 주소입니다 — Zashi 등 비공개 주소로 받으려면 그 지갑에서 받으세요. | This is a transparent address — to receive on a shielded address (Zashi etc.), receive in that wallet. |
+| EVM_SHARED | EVM 계정과 같은 키를 쓰면 EVM 주소와 이 Zcash 주소가 같은 공개키라 누구나 두 주소를 한 사람의 것으로 묶을 수 있습니다. 같은 복구 단어를 다른 Zcash 지갑에 넣어도 이 주소는 나오지 않습니다(표준 경로가 아님). 정말 필요할 때만 쓰세요. | With the same key as an EVM account, the EVM address and this Zcash address share one public key, so anyone can link both addresses to one person. Putting the same recovery phrase into another Zcash wallet does not give this address (not the standard path). Use it only when you really need to. |
+| REVEAL_KEY | 개인키 보기 | Show private key |
+| DELETE | 삭제 | Delete |
+| IMPORT_HELP | 다른 지갑(zcashd 등)의 Zcash 일반 주소 개인키(압축 WIF 또는 16진수)를 가져와 이 네트워크의 계정으로 쓸 수 있습니다. 가져온 키는 복구 단어로 복구되지 않습니다. | You can import a Zcash transparent address private key (compressed WIF or hex) from another wallet (zcashd etc.) and use it as this network's account. An imported key is not restored by the recovery phrase. |
+| IMPORT_KEY | 개인키 가져오기 | Import private key |
+| DISABLED_TITLE | Zcash (일반 주소 전용) | Zcash (transparent addresses only) |
+| DISABLED_TEXT | Zcash 일반(transparent) 주소로 받고 보냅니다. 비공개(shielded) 전송은 지원하지 않습니다. | Receives and sends with a Zcash transparent address. Shielded transfers are not supported. |
+| DISABLED_HELP | 켜면 복구 단어에서 m/44'/133'/0'/0/0 (testnet m/44'/1'/0'/0/0) 주소 하나를 씁니다. 먼저 설정 → 네트워크(RPC)에서 그 네트워크의 Zcash RPC 주소(zcash:mainnet·zcash:testnet)를 넣으세요. | When on, one address m/44'/133'/0'/0/0 (testnet m/44'/1'/0'/0/0) of the recovery phrase is used. First enter that network's Zcash RPC address (zcash:mainnet·zcash:testnet) in Settings → Networks (RPC). |
+| ENABLE_MAINNET | Zcash mainnet 켜기 | Turn on Zcash mainnet |
+| ENABLE_TESTNET | Zcash testnet 켜기 (테스트) | Turn on Zcash testnet (test) |
+| RPC_SETUP | RPC 설정하기 | Set up RPC |
+| JOURNAL_DAMAGED | 거래 저널의 Zcash 기록이 손상되어 Zcash 보내기를 멈췄습니다. (E-VLT-006) | The Zcash records of the transaction journal are damaged, so Zcash sending is stopped. (E-VLT-006) |
+| NETWORK | 네트워크 | Network |
+| TESTNET_CHIP | Zcash testnet (테스트) | Zcash testnet (test) |
+| RPC_NONE | RPC 주소 없음 (E-KEY-005) — 설정 → 네트워크(RPC)에서 Zcash RPC 주소를 넣으세요 | No RPC address (E-KEY-005) — enter the Zcash RPC address in Settings → Networks (RPC) |
+| UPGRADE_UNKNOWN | 알 수 없음 | unknown |
+| RPC_CONNECTED | 연결됨 (genesis 확인) · 블록 {0} · 업그레이드 {1} | Connected (genesis verified) · block {0} · upgrade {1} |
+| RPC_CHECKING | 확인 중… | Checking… |
+| RPC_UNCHECKED | 확인 전 | Not checked yet |
+| UTXO_SOURCE | UTXO 원천 | UTXO source |
+| INDEXER_NODE | 노드 getaddressutxos | Node getaddressutxos |
+| DISABLE | Zcash 끄기 | Turn off Zcash |
+| ACCOUNT_TITLE | Zcash 계정 · {0} | Zcash account · {0} |
+| ACCOUNT_LOADING | Zcash 계정 키를 불러오는 중… (복구 단어가 없는 지갑은 YubiKey Zcash 슬롯만 쓸 수 있습니다) | Loading the Zcash account key… (a wallet without a recovery phrase can only use a YubiKey Zcash slot) |
+| KEY_SOURCE_LINE | 키 출처: {0} · {1} | Key source: {0} · {1} |
+| BALANCE_DASH | 잔액 — | Balance — |
+| CONFIRMED_BALANCE_NOTE | 확인된 잔액 {0} (서버 기준, 진행 중 거래의 입력 제외) | Confirmed balance {0} (per the server, inputs of transactions in progress excluded) |
+| REFRESH | 새로고침 | Refresh |
+| MY_ACCOUNTS | 내 Zcash 계정 | My Zcash accounts |
+| SOURCE_STANDARD | Zcash 표준 경로 (권장, 기본값) | Zcash standard path (recommended, default) |
+| EVM_PATH | EVM 경로 (비표준) | EVM path (non-standard) |
+| CARD_KEY | 카드 키 {0} (경로 모름) | Card key {0} (path unknown) |
+| CONFIRM_EVM | 정말 EVM 키 사용 | Really use the EVM key |
+| CANCEL | 취소 | Cancel |
+| RECEIVE | 받기 | Receive |
+| COPY_ADDRESS | 주소 복사 | Copy address |
+| QR_HIDE | QR 숨기기 | Hide QR |
+| QR_SHOW | QR 보기 | Show QR |
+| SEND | 보내기 | Send |
+| RECIPIENT_HELP | 받는 주소: t1…/t3… (testnet tm…/t2…), TEX(tex1…) 또는 일반 수신자가 있는 통합 주소(u1…). 비공개 주소(zs…)는 받지 않습니다. | Recipient: t1…/t3… (testnet tm…/t2…), TEX (tex1…) or a unified address with a transparent receiver (u1…). Shielded addresses (zs…) are not accepted. |
+| RECIPIENT | 받는 주소 | Recipient |
+| ADDRESS_ACK | 주소 전체를 직접 확인했습니다 | I checked the whole address myself |
+| CONFIRMED_UNREAD | 확인된 잔액: 아직 읽지 못했습니다 | Confirmed balance: not read yet |
+| CONFIRMED_BALANCE | 확인된 잔액 {0} | Confirmed balance {0} |
+| AMOUNT | 금액 (ZEC) | Amount (ZEC) |
+| MAX | 최대 | Max |
+| MAX_NOTE | 최대: 확인된 출력(최대 {0}개)의 합에서 수수료를 뺀 금액을 보냅니다(승인 창에서 확인). | Max: sends the sum of the confirmed outputs (up to {0}) minus the fee (confirmed in the approval window). |
+| FEE_NOTE | 수수료는 ZIP 317 기본값(입력·출력 수에 따라 0.0001 ZEC부터)입니다. 승인 창에서 받는 주소·금액·수수료·만료 높이를 확인하세요. | The fee is the ZIP 317 conventional fee (from 0.0001 ZEC, by the number of inputs·outputs). Check the recipient·amount·fee·expiry height in the approval window. |
+| SENT | 보냈습니다. txid {0} — 아래 활동에서 확인 상태를 봅니다. | Sent. txid {0} — see the confirmation status in the activity below. |
+| REVIEW | 검토 | Review |
+| COPY_HASH | 해시 복사 | Copy hash |
+| ACTIVITY | 활동 | Activity |
+| NO_ACTIVITY | 이 지갑에서 보낸 Zcash 거래가 없습니다. {0} | No Zcash transactions sent from this wallet. {0} |
+| CONFIRMED_AT | 확인됨 (블록 {0}) | Confirmed (block {0}) |
+| ROW | {0} · 보냄 {1} ZEC · {2} | {0} · sent {1} ZEC · {2} |
+| EXPIRY_HEIGHT | 만료 높이 {0} | Expiry height {0} |
+| TO_OWN | 받는 주소 → 내 계정: {0} | Recipient → my account: {0} |
+| TO_NONE | 받는 주소 - | Recipient - |
+| FEE | 수수료 {0} ZEC | Fee {0} ZEC |
+| UTXOS | 받은 출력 (UTXO, 서버 기준) | Received outputs (UTXO, per the server) |
+| UTXO_ERROR | 출력 목록을 불러오지 못했습니다: {0} | Could not load the output list: {0} |
+| NO_UTXOS | 이 주소에 사용 가능한 출력이 없습니다. | No spendable outputs on this address. |
+| IGNORED | 아주 작은 출력(먼지, {0} zats 이하)이나 한도({1}개)를 넘는 작은 출력 {2}개는 잔액과 보내기에서 제외했습니다. | {2} tiny outputs (dust, {0} zats or less) or small outputs over the limit ({1}) were left out of the balance and sending. |
+| UNCONFIRMED | 미확정 (0 확인) | Unconfirmed (0 confirmations) |
+| BLOCK | 블록 {0} | Block {0} |
+
+<!-- catalogue: yw_engine::screen::extension::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| CONNECTED | 확장이 지금 이 앱에 연결되어 있습니다. | The extension is connected to this app now. |
+| CONNECTED_BEFORE | 확장이 연결된 적 있음 (연결된 사이트가 있습니다). | The extension has connected before (there are connected sites). |
+| NEVER | 아직 연결되지 않음 — 확장을 설치한 뒤 dApp 사이트에서 '지갑 연결'을 누르면 연결됩니다. | Not connected yet — after installing the extension, press 'Connect wallet' on a dApp site. |
+| UNKNOWN | 지금은 연결되어 있지 않습니다. 연결 기록(연결된 사이트)은 잠금을 해제하면 보입니다. | Not connected now. The connection record (connected sites) shows after you unlock. |
+
 <!-- catalogue: yw_engine::screen::model::text -->
 
 | 이름 | 한국어 | English |
@@ -1635,6 +3199,12 @@
 | T_COPIED | 복사됨 | Copied |
 | T_COPIED_ADDRESS | 복사됨 · 붙여넣은 뒤 전체 확인 | Copied · check it whole after pasting |
 | T_PASTE_CHECK | 붙여넣은 뒤 전체 확인 | Check it whole after pasting |
+
+<!-- catalogue: yw_engine::screen::qr::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| RECEIVE_SHARED_ADDRESS_NOTE | 이 주소는 다른 EVM 체인(예: Ethereum·Base·Arbitrum)에서도 같은 주소이지만, 여기에는 선택한 네트워크의 자산만 보입니다. 다른 체인으로 받은 자산은 그 체인을 추가·선택해야 보입니다. | This address is the same on other EVM chains (e.g. Ethereum, Base, Arbitrum), but only the selected network's assets are shown here. Assets received on another chain appear after you add and select that chain. |
 
 <!-- catalogue: yw_engine::screen::text -->
 
@@ -2575,44 +4145,10 @@
 | 이름 | 한국어 | English |
 |---|---|---|
 | T_CLIP_CLEARED_LATE | 클립보드에 남아 있던 복구 단어·개인키를 지웠습니다. | The recovery words or private key left on the clipboard were cleared. |
-| T_PASSWORD_OLD_COPIES | 비밀번호를 바꾸면 지갑의 암호화 키도 새로 만듭니다. 그래서 바꾼 뒤에 더하거나 고친 내용(새 복구 단어·가져온 키, 계정 이름·주소록·기록)은 예전 사본과 예전 비밀번호로 열 수 없습니다. 2026-11-13 이전 버전에서 바꾼 비밀번호는 키를 그대로 두었으니, 그때 바꿨다면 지금 한 번 더 바꾸세요. 하지만 바꾸기 전에 만든 지갑 파일 사본(백업해 둔 vault.ywv, vault.ywv.corrupt-… 등)은 예전 비밀번호로 계속 열리고, 그 안에 이미 있던 복구 단어·개인키는 그대로 드러납니다. 예전 비밀번호가 약했다면 그런 사본은 나중에라도 오프라인으로 풀릴 수 있습니다. 예전 비밀번호와 사본이 함께 샜을 수 있다면 사본을 지우고, 새 복구 단어로 따로 만든 새 지갑으로 자산을 옮기세요. | Changing the password also renews the wallet's encryption key. So what you add or change afterwards (new recovery words, imported keys, account names, address book, records) cannot be opened with old copies and the old password. Versions before 2026-11-13 kept the key on a password change, so if you changed it then, change it once more now. Wallet file copies made before the change (a backed-up vault.ywv, vault.ywv.corrupt-… etc.) still open with the old password and reveal the recovery words and private keys they already hold. If the old password was weak, such copies may be cracked offline even later. If the old password and a copy may have leaked together, delete the copy and move your assets to a new wallet created separately with new recovery words. |
 | PASTE_CLEARED | 붙여넣은 뒤 클립보드를 비웠습니다. Windows 클립보드 기록(Win+V)을 쓴다면 그 항목도 지우세요. | The clipboard was emptied after pasting. If you use the Windows clipboard history (Win+V), delete that entry too. |
 | PASTE_EDGE_SPACE | 앞/뒤 공백이 포함되어 있습니다. 공백도 그대로 비밀번호·passphrase의 일부가 됩니다. | It starts or ends with a space. Spaces become part of the password or passphrase as they are. |
 | COPY_OFF | 복사가 꺼져 있습니다. 설정에서 바꿀 수 있습니다. | Copying is off. You can change this in settings. |
 | COPIED_SECRET | 클립보드에 복사했습니다. 30초 뒤 지웁니다. | Copied to the clipboard. It is cleared in 30 seconds. |
-
-<!-- catalogue: yw_app::app_extension::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| CONNECTED | 확장이 지금 이 앱에 연결되어 있습니다. | The extension is connected to this app now. |
-| CONNECTED_BEFORE | 확장이 연결된 적 있음 (연결된 사이트가 있습니다). | The extension has connected before (there are connected sites). |
-| NEVER | 아직 연결되지 않음 — 확장을 설치한 뒤 dApp 사이트에서 '지갑 연결'을 누르면 연결됩니다. | Not connected yet — after installing the extension, press 'Connect wallet' on a dApp site. |
-| UNKNOWN | 지금은 연결되어 있지 않습니다. 연결 기록(연결된 사이트)은 잠금을 해제하면 보입니다. | Not connected now. The connection record (connected sites) shows after you unlock. |
-
-<!-- catalogue: yw_app::app_rpc_import::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| JSON_PLAINTEXT | 이 파일에는 RPC 주소와 그 토큰이 암호화되지 않은 채 들어 있어, 이 Windows 사용자로 도는 다른 프로그램도 읽을 수 있습니다. 가져온 뒤 개발 스크립트에 더 쓰지 않으면 지우세요. | This file holds RPC addresses and their tokens unencrypted, so other programs running as this Windows user can read it. After importing, delete it unless development scripts still need it. |
-| JSON_LEFT | 가져오기를 마쳤습니다. 앱에는 암호화해 저장했지만 rpc.json에는 같은 주소·토큰이 암호화되지 않은 채 남아 있습니다. 개발 스크립트(probe-rpc 등)에 더 쓰지 않으면 지우세요. | Import finished. The app saved them encrypted, but rpc.json still holds the same addresses and tokens unencrypted. Delete it unless development scripts (probe-rpc and others) still need it. |
-| JSON_DELETE_CONFIRM | rpc.json을 지웁니다. 휴지통으로 가지 않아 되돌릴 수 없습니다. 앱에 저장한 RPC 주소는 그대로이고, 개발 스크립트가 이 파일을 쓴다면 scripts\\dev-rpc-setup.ps1로 다시 만들어야 합니다. | rpc.json will be deleted. It does not go to the Recycle Bin, so this cannot be undone. The RPC addresses saved in the app stay; if development scripts use this file, recreate it with scripts\\dev-rpc-setup.ps1. |
-| CARD_TITLE | rpc.json에서 가져오기 | Import from rpc.json |
-| CARD_HELP | 개발용 설정 파일(%USERPROFILE%\\.yw-dev\\rpc.json)에 있는 RPC 주소를 읽어 위 '네트워크별 RPC 주소' 목록에 넣습니다. 저장하기 전에 가린 목록으로 한 번 더 확인합니다. | Reads the RPC addresses in the development settings file (%USERPROFILE%\\.yw-dev\\rpc.json) into the 'RPC address per network' list above. A masked list is shown for one more check before saving. |
-| DELETE | 지우기 | Delete |
-| CANCEL | 취소 | Cancel |
-| IMPORT_BUTTON | rpc.json에서 가져오기 | Import from rpc.json |
-| DELETE_FILE | rpc.json 지우기… | Delete rpc.json… |
-| CONFIRM_TITLE | rpc.json에서 가져오기 — 확인 | Import from rpc.json — confirm |
-| CONFIRM_LEAD | 다음 RPC 주소를 가져옵니다(주소에는 토큰이 있어 가린 형태로만 보입니다): | These RPC addresses will be imported (they contain tokens, so they are shown masked only): |
-| HAS_ADDRESS |  — 기존 주소 있음 |  — has an address already |
-| OFF_TEMPLATE |  — 템플릿과 다른 주소(이 네트워크에 그대로 저장) |  — differs from the template (saved as is for this network) |
-| SAME_ENDPOINT | 모든 주소가 같은 QuickNode 엔드포인트(이름·토큰)입니다. RPC 공급자를 'QuickNode 멀티체인'으로 바꾸고 이름·토큰을 템플릿 자격 정보로 함께 저장합니다. | All addresses use the same QuickNode endpoint (name and token). The RPC provider is changed to 'QuickNode multichain' and the name and token are saved as the template credentials too. |
-| EXISTING | 이미 주소가 있는 네트워크가 {0}개 있습니다. 덮어쓰거나, 비어 있는 네트워크에만 넣을 수 있습니다. | {0} networks already have an address. You can overwrite them or fill only the empty networks. |
-| OVERWRITE | 덮어쓰기 | Overwrite |
-| FILL_EMPTY | 비어 있는 네트워크만 | Empty networks only |
-| IMPORT | 가져오기 | Import |
-| SAVE_NOTE | 저장은 '교체'와 같습니다: Windows가 이 사용자 계정에서만 풀 수 있게 암호화해 apikeys.dpapi에 둡니다. | Saving works like 'Replace': Windows encrypts it so only this user account can open it, in apikeys.dpapi. |
 
 <!-- catalogue: yw_app::build_info::start_text -->
 
@@ -2645,1540 +4181,6 @@
 | 이름 | 한국어 | English |
 |---|---|---|
 | QR_TOO_NARROW | 창을 넓히면 QR이 표시됩니다 | Widen the window to show the QR code |
-
-<!-- catalogue: yw_app::ui::qr::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| RECEIVE_SHARED_ADDRESS_NOTE | 이 주소는 다른 EVM 체인(예: Ethereum·Base·Arbitrum)에서도 같은 주소이지만, 여기에는 선택한 네트워크의 자산만 보입니다. 다른 체인으로 받은 자산은 그 체인을 추가·선택해야 보입니다. | This address is the same on other EVM chains (e.g. Ethereum, Base, Arbitrum), but only the selected network's assets are shown here. Assets received on another chain appear after you add and select that chain. |
-
-<!-- catalogue: yw_app::ui::removed::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| T_BALANCE_UNKNOWN | 잔액을 확인하지 못했습니다(이 네트워크를 연 적 없음). | The balance could not be checked (this network was never opened). |
-| T_BALANCE_SCOPE | 위 잔액은 지금 네트워크의 기본 자산만 마지막으로 읽은 값입니다 — 다른 네트워크와 토큰 잔액은 확인하지 않았습니다. | The balances above are only the last-read native asset of the current network — other networks and token balances were not checked. |
-| BALANCE_POSITIVE | 이 계정에 잔액이 있습니다: {0} ({1}). 지우기 전에 다른 계정으로 옮기세요. | This account has a balance: {0} ({1}). Move it to another account before removing. |
-| LAST_READ | 마지막으로 읽은 잔액: {0} ({1}) | Last read balance: {0} ({1}) |
-| CANNOT_SIGN | 이 지갑에서 서명 불가 | Cannot sign in this wallet |
-| STILL_SIGNS | YubiKey {0}{1} 계속 서명 | YubiKey {0} keeps signing |
-
-<!-- catalogue: yw_app::ui::screens::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| BACK_MAIN | ← 메인으로 | ← Back to main |
-| BACK_MAIN_TIP | 메인으로 (Esc) | Back to main (Esc) |
-| T_REFRESH_TIP | 새로고침 (F5) | Refresh (F5) |
-| LANGUAGE_HELP | 앱 화면과 승인 창의 언어입니다. 바꾸면 바로 적용되고, 이미 열린 승인 창은 처음 언어로 남습니다. | The language of the app screens and approval windows. A change applies at once; an approval window that is already open keeps its language. |
-| T_DONE_QUICKNODE | QuickNode 대시보드의 엔드포인트 주소(https://….quiknode.pro/…/)를 통째로 붙여넣으세요. 쓸 체인(Ethereum·Arbitrum·Base·Solana·Bitcoin 등)은 대시보드에서 그 엔드포인트에 켜 두어야 합니다. 입력은 가려지고, 이 Windows 사용자만 풀 수 있게 암호화해 저장합니다. | Paste the whole endpoint address from the QuickNode dashboard (https://….quiknode.pro/…/). The chains you use (Ethereum, Arbitrum, Base, Solana, Bitcoin …) must be enabled for that endpoint in the dashboard. The input is hidden and stored encrypted so that only this Windows user can decrypt it. |
-| T_QUICKNODE_CHAINS | QuickNode는 대시보드에서 쓸 체인(Ethereum·Arbitrum·Base·Solana·Bitcoin 등)을 엔드포인트에 하나씩 켜야 그 네트워크가 작동합니다. | With QuickNode, a network works only after its chain (Ethereum, Arbitrum, Base, Solana, Bitcoin …) is enabled for the endpoint in the dashboard. |
-| T_FIRST_1 | Your Wallet은 이 PC에서만 쓰는 개인용 암호화폐 지갑입니다. | Your Wallet is a personal crypto wallet used only on this PC. |
-| T_FIRST_2 | 돈을 보내거나 사이트에 서명할 때는 언제나 이 앱의 확인 창에서 내용을 보고 직접 승인합니다. | Whenever you send money or sign for a site, you check the details in this app's approval window and approve them yourself. |
-| T_FIRST_3 | 지갑을 만들 때 받는 복구 단어 24개가 유일한 백업입니다. 종이에 적어 안전한 곳에 보관하세요. | The 24 recovery words you get when creating the wallet are its only backup. Write them on paper and keep it in a safe place. |
-| NO_ENDPOINT | 이 네트워크({0})의 RPC 주소가 아직 없어 잔액을 읽을 수 없습니다. | This network ({0}) has no RPC address yet, so the balance cannot be read. |
-| T_BALANCE_FAILED | 잔액을 읽지 못했습니다. | The balance could not be read. |
-| T_BALANCE_LOADING | 잔액을 불러오는 중… | Loading the balance… |
-| UPDATED_AT | {0} 갱신 | updated {0} |
-| AT_BLOCK_WHEN | 블록 {0} 기준 · {1} | at block {0} · {1} |
-| AT_BLOCK | 블록 {0} 기준 | at block {0} |
-| UPDATE_FAILED | 갱신 실패 | update failed |
-| UPDATE_FAILED_SINCE | {0} 이후 갱신 실패 | update failed since {0} |
-| BALANCE_FAILURE | RPC {0} ({1}) — 잔액을 갱신하지 못했습니다. 'RPC 테스트'로 원인을 확인하세요. | RPC {0} ({1}) — the balance could not be updated. Use 'Test RPC' to find the cause. |
-| T_ACTIVITY_RECEIVED | 받은 입금은 이 목록(보낸 거래)에 나오지 않습니다. 아래 '받은 내역도 보기'를 켜면 최근 받은 내역을 따로 보여 줍니다(기본 꺼짐). | Received deposits do not appear in this list (sent transactions). Turn on 'Also show received' below to see recent deposits separately (off by default). |
-| T_ALT_PASS | passphrase 확인값과 맞지 않는 passphrase로 연 지갑입니다. 오타라면 이 지갑은 원래 지갑이 아닌 다른(빈) 지갑이고, 여기로 받은 자산은 지금 입력한 passphrase와 대소문자·공백까지 정확히 같은 값을 다시 넣어야만 꺼낼 수 있습니다. 그래서 받기와 사이트 연결·서명을 막았습니다. 추가한 계정·계정 이름·주소록·연결 기록도 저장되지 않습니다. 잘못 입력했다면 잠그고 다시 여세요. | This wallet was opened with a passphrase that does not match the passphrase check. If it was a typo, this is a different (empty) wallet, not your original one, and assets received here can only be taken out by entering exactly this passphrase again, including case and spaces. So receiving, site connections and signing are blocked. Added accounts, account names, address book entries and connection records are not saved either. If you mistyped, lock and open the wallet again. |
-| T_MAINNET | 메인넷 — 실제 자산 | Mainnet — real assets |
-| T_ACCOUNTS_BACKUP | '가져온 개인키' 계정은 복구 단어로 복구되지 않습니다 — 그 개인키를 따로 백업하세요. | 'Imported private key' accounts are not restored from the recovery words — back up those private keys separately. |
-| T_ACCOUNTS_KEY_ONLY | 이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다. | This wallet started from a private key and has no recovery words. Every account is an 'imported key', and each original private key is its only backup. |
-| T_ACCOUNTS_YUBIKEY | 이 지갑은 복구 단어를 저장하지 않습니다. [YubiKey] 계정의 키는 카드 안에만 있고, 백업은 등록할 때 적은 복구 단어입니다(복구 단어 없이 연결한 키는 그 카드와 같은 키를 가진 백업 카드). | This wallet stores no recovery words. The keys of [YubiKey] accounts exist only on the card, and their backup is the recovery words written down at enrolment (for a key connected without recovery words, a backup card holding the same key). |
-| T_ACCOUNTS_IMPORTED | [가져온 키]는 원래 개인키가 백업입니다. | For [imported key] accounts, the original private key is the backup. |
-| T_ACCOUNTS_YUBIKEY_WORDS | [YubiKey] 계정은 YubiKey를 등록할 때 쓴 복구 단어로 복구됩니다(이 지갑의 복구 단어와 다를 수 있음). | [YubiKey] accounts are restored from the recovery words used when the YubiKey was enrolled (they may differ from this wallet's recovery words). |
-| T_REMOVE_KEY | 선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 설정 → 보안 → '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요. | Removes the selected imported private-key account from this wallet. Imported private keys are not restored from the recovery words, so once removed, the assets of this account cannot be reached again without the original private key. Before removing, make sure you exported the private key with Settings → Security → 'Show private key' and stored it safely. Enter your password to continue. |
-| T_DISCARD | 폐기는 이 앱에서 추적만 멈추고 '폐기됨'으로 표시합니다. 네트워크에서 거래를 취소하지는 않습니다. 이미 전파된 거래라면 나중에 처리될 수 있고, 그 사이 같은 송금을 다시 보내면 두 거래가 모두 처리되어 두 번 지불될 수 있습니다. 확실히 막으려면 폐기 대신 '취소'(같은 nonce의 취소 거래)를 쓰고, 다시 보내기 전에 탐색기에서 이 거래가 사라졌는지 확인하세요. | Discarding only stops tracking in this app and marks the transaction 'discarded'. It does not cancel the transaction on the network. A transaction already broadcast may still be processed later, and if you send the same transfer again in the meantime, both may be processed and you pay twice. To be sure, use 'Cancel' (a cancel transaction with the same nonce) instead of discarding, and check in the explorer that this transaction is gone before sending again. |
-| T_TOKEN_DELETE | 이 토큰을 이 네트워크의 토큰 목록에서 지웁니다. 토큰이나 잔액은 그대로이며 블록체인에는 아무것도 보내지 않습니다. 같은 컨트랙트 주소로 언제든 다시 추가할 수 있습니다. 지운 뒤 이 토큰의 활동 기록은 원시 단위로 보입니다. | Removes this token from this network's token list. The token and its balance stay as they are, and nothing is sent to the blockchain. You can add it again at any time with the same contract address. After removal, this token's activity is shown in raw units. |
-| VAULT_FILE | 지갑 파일(vault.ywv): 저장 횟수(세대) {0} · 마지막 저장 {1}. 기억하는 것보다 작거나 이전 시각이면 파일이 예전 사본으로 바뀌었을 수 있습니다. | Wallet file (vault.ywv): save count (generation) {0} · last saved {1}. If it is lower or earlier than you remember, the file may have been replaced by an older copy. |
-| SETTINGS_TAMPERED_BANNER | {0}. 지금은 앱에 저장된 값을 씁니다. 직접 바꾼 것이 아니라면 '앱에 저장된 값으로 되돌리기'를 누르세요. | {0}. The values saved in the app are used for now. If you did not change it yourself, press 'Restore the app's saved values'. |
-| SETTINGS_RESTORE | 앱에 저장된 값으로 되돌리기 | Restore the app's saved values |
-| SETTINGS_ACCEPT_FILE | 파일 값 사용… | Use the file's values… |
-| DISMISS_BANNERS | 알림 닫기 | Dismiss notices |
-| DEFAULT_VALUE | 기본값 | default |
-| DIFF_AUTO_LOCK | 자동 잠금: 지금 {0}분 → 파일 {1}분 (autoLockMinutes) | Auto-lock: now {0} min → file {1} min (autoLockMinutes) |
-| DIFF_FEE_CAPS | EVM 수수료 상한 — {0}: maxFee {1} → {2} gwei · 우선 수수료 {3} → {4} gwei · 총 {5} → {6} (feeCaps) | EVM fee caps — {0}: maxFee {1} → {2} gwei · priority fee {3} → {4} gwei · total {5} → {6} (feeCaps) |
-| DIFF_INDEXER | Bitcoin 주소 조회 서버: 지금 {0} → 파일 {1} (bitcoin.indexer/esploraBaseUrl) — 파일 값을 쓰면 주소 조회가 그 서버로 갑니다 | Bitcoin address lookup server: now {0} → file {1} (bitcoin.indexer/esploraBaseUrl) — with the file's value, address lookups go to that server |
-| DIFF_NEW_CHAIN | 새 사용자 체인: {0} (chainId {1}) — 앱이 제네시스를 고정한 적 없음 (evmChains) | New user chain: {0} (chainId {1}) — the app never pinned its genesis (evmChains) |
-| BACKUP_CARD_HELP | 복구 단어(니모닉)는 지갑 전체의 백업입니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다. | The recovery words (mnemonic) are the backup of the whole wallet. Your password is asked again before they are shown, in a window excluded from screen capture. |
-| BACKUP_STATUS_TITLE | 백업 현황 — 이 지갑을 다시 열려면 | Backup status — to open this wallet again |
-| BACKUP_STATUS_HELP | 이 PC의 비밀번호는 백업이 아닙니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다. | The password on this PC is not a backup. Your password is asked again before anything is shown, in a window excluded from screen capture. |
-| REVEAL_FIRST_MNEMONIC | 첫 복구 단어 보기 | Show first recovery words |
-| REVEAL_MNEMONIC | 복구 단어 보기 | Show recovery words |
-| REVEAL_KEY | 개인키 보기 | Show private key |
-| MANAGE_MNEMONICS | 복구 단어 관리 ▸ | Manage recovery words ▸ |
-| BACKUP_STATUS_PHRASE | · {0} · {1}단어{2}{3} · {4} | · {0} · {1} words{2}{3} · {4} |
-| BACKUP_STATUS_FIRST |  (첫 복구 단어) |  (first recovery words) |
-| BACKUP_CONFIRMED | 백업 확인됨 ✓ | backup checked ✓ |
-| BACKUP_NOT_CONFIRMED | 백업 확인 전 ⚠ — 설정 → 복구 단어에서 '백업 확인' | backup not checked ⚠ — Settings → Recovery words → 'Check backup' |
-| BACKUP_STATUS_IMPORTED | · 가져온 개인키 {0}개 — 복구 단어로 되찾을 수 없고, 각각 원래 개인키가 백업입니다 | · {0} imported private keys — not recoverable from recovery words; each original private key is its backup |
-| BACKUP_STATUS_CARD_ON | · {0} — 복구 단어 없음, {1}에 있음 | · {0} — no recovery words, on {1} |
-| BACKUP_STATUS_CARD_ONLY | · {0} — 복구 단어 없음, {1}에만 있음 ⚠ | · {0} — no recovery words, only on {1} ⚠ |
-| BACKUP_STATUS_CARD_WORDS | · {0} — YubiKey {1} · 복구 단어로 다시 만들 수 있음 | · {0} — YubiKey {1} · can be recreated from recovery words |
-| ELSEWHERE_SECURITY | 복구 단어별 보기·백업 확인은 '복구 단어' 탭에 있습니다. | Viewing each set of recovery words and checking backups is on the 'Recovery words' tab. |
-| ELSEWHERE_CHAINS | 토큰 추가는 메인 화면의 '토큰' 카드에 있습니다. | Adding tokens is on the main screen's 'Tokens' card. |
-| ELSEWHERE_BITCOIN | Bitcoin 계정과 주소 방식은 메인 화면의 Bitcoin 탭에 있습니다. | Bitcoin accounts and address types are on the main screen's Bitcoin tab. |
-| ELSEWHERE_YUBIKEY | 서명할 때는 승인 뒤 PIN 창이 저절로 열립니다. | When signing, the PIN window opens by itself after approval. |
-| ELSEWHERE_OTHER | Zcash는 메인 화면의 Zcash 탭에서 켭니다. | Zcash is turned on in the main screen's Zcash tab. |
-| ADDRESS_BOOK | 주소록 | Address book |
-| SITES_WC | 사이트·WalletConnect | Sites · WalletConnect |
-| SETTINGS | 설정 | Settings |
-| SETTINGS_TIP | 설정 (Ctrl+,) | Settings (Ctrl+,) |
-| LOCK | 잠금 | Lock |
-| LOCK_TIP | 잠금 (Ctrl+L) | Lock (Ctrl+L) |
-| STARTING | 지갑을 불러오는 중… | Loading the wallet… |
-| PLEASE_WAIT | 잠시만 기다려 주세요 | Please wait |
-| LEFTOVER | 이전 지갑의 파일이 데이터 폴더에 남아 있습니다. 앱을 종료하고 파일을 다른 곳으로 옮긴 뒤 다시 실행하세요. | Files of an earlier wallet are left in the data folder. Quit the app, move the files elsewhere and start it again. |
-| OPEN_FOLDER | 폴더 열기 | Open folder |
-| LEFTOVER_MOVE | 남은 파일을 reset- 폴더로 옮기기… | Move the leftover files to a reset- folder… |
-| FIRST_NEW_TITLE | 새로 시작합니다 | Start fresh |
-| FIRST_NEW_TEXT | 새 지갑을 만들고 복구 단어 24개를 종이에 적습니다. 5분쯤 걸립니다. | Create a new wallet and write its 24 recovery words on paper. It takes about 5 minutes. |
-| CREATE_WALLET | 새 지갑 만들기 | Create a new wallet |
-| FIRST_YK_WALLET | YubiKey에 보관하는 새 지갑 | New wallet kept on a YubiKey |
-| FIRST_YK_WALLET_HELP | YubiKey에 보관하는 새 지갑: {0} YubiKey 5(펌웨어 5.2.3 이상, Solana 계정은 5.7.4 이상)가 필요합니다. | New wallet kept on a YubiKey: {0} Requires a YubiKey 5 (firmware 5.2.3 or later; 5.7.4 or later for Solana accounts). |
-| FIRST_EXISTING_TITLE | 이미 쓰던 지갑이 있습니다 | I already have a wallet |
-| FIRST_IMPORT | 복구 단어로 가져오기 | Import with recovery words |
-| FIRST_KEY | 개인키로 시작하기 | Start with a private key |
-| FIRST_YK_CONNECT | YubiKey 연결하기 (복구 단어 없이) | Connect a YubiKey (no recovery words) |
-| FIRST_IMPORT_HELP | · 복구 단어로 가져오기: 다른 지갑에서 쓰던 영어 복구 단어(니모닉) 12·15·18·21·24개로 그 지갑을 그대로 가져옵니다. | · Import with recovery words: brings in a wallet you used elsewhere, as it is, from its 12, 15, 18, 21 or 24 English recovery words (mnemonic). |
-| FIRST_KEY_HELP | · 개인키로 시작하기: {0} | · Start with a private key: {0} |
-| FIRST_YK_CONNECT_HELP | · YubiKey 연결하기: 이미 키가 들어 있는 YubiKey(새 PC, 다시 설치)를 복구 단어 없이 연결합니다. 카드의 공개키만 읽고 아무것도 쓰지 않습니다. | · Connect a YubiKey: connects a YubiKey that already holds keys (new PC, reinstall) without recovery words. Only the card's public keys are read; nothing is written. |
-| BEFORE_START | 시작하기 전에 | Before you start |
-| CREATE_INTRO_1 | · 종이와 펜을 준비하세요. 다음 화면들에서 복구 단어 24개와 첫 주소를 적습니다. | · Have paper and a pen ready. On the next screens you write down 24 recovery words and the first address. |
-| CREATE_INTRO_2 | · 복구 단어는 종이(또는 금속)에만 적고 사진·클라우드·메신저에 남기지 마세요. | · Write the recovery words only on paper (or metal); never keep them in photos, the cloud or messengers. |
-| CREATE_INTRO_3 | · 화면 공유·녹화를 끄고 주변에 사람이나 카메라가 없는지 확인하세요. | · Turn off screen sharing and recording, and make sure no people or cameras are around. |
-| CREATE_INTRO_HELP | 복구 단어를 아는 사람은 누구든 지갑의 자산을 옮길 수 있습니다. 이 앱도 복구 단어를 대신 보관하거나 되찾아 주지 못합니다. | Anyone who knows the recovery words can move the wallet's assets. This app cannot keep the recovery words for you or recover them. |
-| START | 시작하기 | Start |
-| CANCEL | 취소 | Cancel |
-| BACKUP_PENDING_TITLE | 백업 확인이 필요합니다 | Backup check needed |
-| BACKUP_PENDING_BANNER | 백업 확인이 끝나지 않았습니다. 확인 전에는 보내기·서명·dApp 승인을 쓸 수 없습니다. | The backup check is not finished. Until it is, sending, signing and dApp approvals are not available. |
-| BACKUP_PENDING_TEXT | 복구 단어를 다시 보고, 그중 단어 4개를 입력해 종이에 바르게 적었는지 확인합니다. | View the recovery words again and enter 4 of them to check that they are written correctly on paper. |
-| BACKUP_CHECK | 복구 단어 보고 백업 확인 | View recovery words and check backup |
-| RECEIVE | 받기 | Receive |
-| BACKUP_PENDING_RESET | 복구 단어를 적지 못했거나 잃어버렸다면, 이 지갑에 자산을 받기 전에 초기화하고 새로 만드세요. | If you could not write down the recovery words or lost them, reset and create a new wallet before receiving any assets into this one. |
-| IMPORT_WALLET | 기존 지갑 가져오기 | Import an existing wallet |
-| IMPORT_NEED_TITLE | 준비할 것 | What you need |
-| IMPORT_NEED_WORDS | · 다른 지갑에서 쓰던 영어 복구 단어(BIP39 니모닉) 12·15·18·21·24개 | · The 12, 15, 18, 21 or 24 English recovery words (BIP39 mnemonic) you used in another wallet |
-| IMPORT_NEED_PASSPHRASE | · 그 지갑에서 BIP39 passphrase(25번째 단어)를 썼다면 그 passphrase | · If that wallet used a BIP39 passphrase (25th word), that passphrase |
-| IMPORT_KEY_HINT | 복구 단어 없이 개인키(EVM·Solana·Bitcoin)만 있다면 첫 화면의 '개인키로 시작하기'를 쓰세요. 이미 지갑이 있다면 메인 화면의 '개인키 가져오기'로 더할 수 있습니다. | If you only have a private key (EVM, Solana, Bitcoin) and no recovery words, use 'Start with a private key' on the first screen. If you already have a wallet, add it with 'Import private key' on the main screen. |
-| IMPORT_ADDRESS_TEXT | 가져온 지갑의 첫 주소입니다. 이전 지갑에서 쓰던 주소와 전체가 같은지 확인하세요. | This is the first address of the imported wallet. Check that it is exactly the address you used in your earlier wallet. |
-| IMPORT_CORRECT | 맞습니다 | It matches |
-| IMPORT_WRONG | 다릅니다 | It differs |
-| IMPORT_ADDRESS_HELP | 다르면 복구 단어의 순서·철자나 passphrase를 확인하세요. '다릅니다'를 누르면 복구 단어를 다시 입력합니다. | If it differs, check the order and spelling of the recovery words or the passphrase. 'It differs' lets you enter the recovery words again. |
-| LOCKED_TITLE | 지갑이 잠겨 있습니다 | The wallet is locked |
-| LOCKED_TEXT | 계정과 잔액을 보려면 비밀번호로 잠금을 해제하세요. | Unlock with your password to see accounts and balances. |
-| UNLOCK | 잠금 해제 | Unlock |
-| LOCKED_AUTO_LOCK | {0}분 동안 쓰지 않거나, Windows를 잠그거나 절전에 들어가면 지갑이 자동으로 잠깁니다. | The wallet locks itself after {0} minutes without use, or when Windows locks or goes to sleep. |
-| LOCKED_DAMAGED | 비밀번호가 맞는데도 계속 열리지 않으면 지갑 파일이 손상되었을 수 있습니다. 같은 비밀번호로 이전 사본(.prev) 복구를 시도할 수 있습니다. 지갑 파일이 정상이면 복구하지 않고 그대로 엽니다. | If the wallet keeps failing to open although the password is right, the wallet file may be damaged. You can try restoring the previous copy (.prev) with the same password. If the wallet file is fine, it simply opens without restoring. |
-| RECOVER_PREV | 이전 사본(.prev)으로 복구 | Restore the previous copy (.prev) |
-| FORGOT_PASSWORD | 비밀번호를 잊었나요? | Forgot your password? |
-| RESET_WALLET | 지갑 초기화… | Reset wallet… |
-| MISMATCH_TITLE | passphrase 확인 | Check the passphrase |
-| MISMATCH_BANNER | passphrase가 다를 수 있습니다. 다른 passphrase는 다른(빈) 지갑을 엽니다. | The passphrase may be different. A different passphrase opens a different (empty) wallet. |
-| MISMATCH_CHECK | 다른 passphrase는 다른(빈) 지갑을 엽니다 | A different passphrase opens a different (empty) wallet |
-| MISMATCH_RETRY | 다시 입력 | Enter again |
-| MISMATCH_CONTINUE | 이 passphrase로 계속 | Continue with this passphrase |
-| DONE_TITLE | 준비되었습니다 | All set |
-| DONE_YK_CREATED | YubiKey 지갑을 만들었습니다 (YubiKey {0}). | The YubiKey wallet was created (YubiKey {0}). |
-| DONE_YK_CREATED_BACKUP | 이 지갑의 백업은 방금 적은 복구 단어 24개입니다. 이 PC에는 저장하지 않았으니 종이를 안전하게 보관하세요. | This wallet's backup is the 24 recovery words you just wrote down. They are not stored on this PC, so keep the paper safe. |
-| DONE_YK_CONNECTED | YubiKey를 연결했습니다 (YubiKey {0}). | The YubiKey was connected (YubiKey {0}). |
-| DONE_YK_CONNECTED_BACKUP | 복구 단어 없이 카드의 공개키로 연결했습니다. 이 PC에는 개인키도 복구 단어도 없어 카드가 그 키의 유일한 사본일 수 있습니다 — 카드를 잃었을 때를 대비해 원래 백업(복구 단어 등)이 있는지 확인하세요. | Connected with the card's public keys, without recovery words. This PC has neither private keys nor recovery words, so the card may be the only copy of those keys — make sure the original backup (recovery words etc.) exists in case the card is lost. |
-| DONE_IMPORTED | 지갑을 가져왔습니다. 이제 지갑을 쓸 수 있습니다. | The wallet was imported. You can use it now. |
-| DONE_IMPORTED_BACKUP | 이 지갑의 백업은 방금 입력한 복구 단어(와 passphrase)입니다. 그 종이 백업을 계속 안전하게 보관하세요. | This wallet's backup is the recovery words (and passphrase) you just entered. Keep that paper backup safe. |
-| DONE_BACKUP_OK | 백업을 확인했습니다. 이제 지갑을 쓸 수 있습니다. | The backup was checked. You can use the wallet now. |
-| DONE_SETUP | 처음 설정 | First setup |
-| DONE_OPEN_WALLET | 지갑 열기 | Open wallet |
-| DONE_RPC_TITLE | ① 블록체인 연결(RPC) | ① Blockchain connection (RPC) |
-| DONE_RPC_SUMMARY | RPC 주소 {0}개 · 이번 실행 테스트: 작동 {1} · 실패 {2} | {0} RPC addresses · tests this run: {1} working · {2} failed |
-| OPEN_RPC_SETTINGS | RPC 설정 열기 | Open RPC settings |
-| DONE_RPC_NEED | 잔액을 보고 돈을 보내려면 블록체인 노드에 연결할 RPC 주소가 필요합니다. | To see balances and send money, you need an RPC address that connects to a blockchain node. |
-| QUICKNODE_ADDRESS | QuickNode 주소 | QuickNode address |
-| DONE_CONNECT | 연결하기 | Connect |
-| DONE_OTHER_PROVIDERS | 알케미·직접 입력은 설정에서 ▸ | Alchemy or manual entry in settings ▸ |
-| DONE_PROVIDER_HELP | 선택한 RPC 공급자의 자격 정보나 주소는 설정 → 네트워크(RPC)에서 넣습니다. | Enter the selected RPC provider's credentials or addresses in Settings → Network (RPC). |
-| DONE_SET_RPC | RPC 설정하기 | Set up RPC |
-| DONE_RPC_JSON | rpc.json이 있습니다 — 설정에서 가져오기 ▸ | rpc.json found — import it in settings ▸ |
-| OPEN_ROW | {0} 행 열기 ▸ | Open the {0} row ▸ |
-| TESTING_NAME | … {0} 테스트 중 | … testing {0} |
-| WORKS_OF | {0}개 중 {1}개 작동 | {1} of {0} working |
-| WORKS_OF_TESTING | {0}개 중 {1}개 작동 · {2}개 테스트 중 | {1} of {0} working · {2} being tested |
-| DONE_FAILED_HELP | QuickNode 대시보드에서 그 체인을 켰는지 확인한 뒤 설정 → 네트워크(RPC)의 “모두 테스트”로 다시 확인하세요. 나머지는 지금 쓸 수 있습니다. | Check that the chain is enabled in the QuickNode dashboard, then test again with “Test all” in Settings → Network (RPC). The others can be used now. |
-| DONE_DAPP_TITLE | ② dApp 연결 (선택, 둘 중 하나) | ② dApp connection (optional, either one) |
-| CHROME_EXTENSION_STATUS | Chrome 확장: {0} | Chrome extension: {0} |
-| HOW_TO_INSTALL | 설치 방법 | How to install |
-| NO_PROJECT_ID | Project ID 없음 | no Project ID |
-| CONFIGURED | 설정됨 | configured |
-| DONE_DEPOSIT_TITLE | ③ 첫 입금 시험 | ③ First deposit test |
-| DONE_DEPOSIT_TEXT | 실제 자산은 소액으로 받기 → 보내기를 한 번 해 보세요. | With real assets, try receive → send once with a small amount. |
-| DONE_DEPOSIT_SEPOLIA |  EVM 탭은 Sepolia 테스트넷으로 시작합니다. |  The EVM tab starts on the Sepolia testnet. |
-| DONE_DEPOSIT_NETWORK |  지금 EVM 네트워크: {0}. |  Current EVM network: {0}. |
-| DONE_BALANCE_SEPOLIA | · EVM 탭은 Sepolia 테스트넷으로 시작합니다 — 쓰던 네트워크를 고르세요 | · The EVM tab starts on the Sepolia testnet — choose the network you used |
-| DONE_SHOW_MAINNET | Ethereum 메인넷으로 보기 | Show Ethereum mainnet |
-| DONE_BALANCE_NETWORK | · EVM 탭은 지금 {0}입니다 — 다른 네트워크는 메인 화면의 네트워크 칩에서 고르세요 | · The EVM tab is on {0} — choose other networks with the network chip on the main screen |
-| DONE_BALANCE_ACCOUNTS | · 계정은 자동으로 찾지 않습니다. 이전 지갑에서 계정을 여러 개 썼다면 “내 EVM 계정 → 계정 추가”를 차례로 누르세요. Solana의 다른 경로는 Solana 탭 “다른 경로 스캔”. | · Accounts are not searched automatically. If you used several accounts in your earlier wallet, press “My EVM accounts → Add account” for each. For other Solana paths, use “Scan other paths” on the Solana tab. |
-| DONE_OFF_BOTH | · Bitcoin·Zcash는 꺼져 있습니다 — 설정 → Bitcoin, Zcash 탭에서 켜면 보입니다(Bitcoin은 네이티브 세그윗 계정 0부터). | · Bitcoin and Zcash are off — turn them on in Settings → Bitcoin and on the Zcash tab to see them (Bitcoin from native SegWit account 0). |
-| DONE_OFF_BITCOIN | · Bitcoin은 꺼져 있습니다 — 설정 → Bitcoin에서 켜면 보입니다(네이티브 세그윗 계정 0부터). | · Bitcoin is off — turn it on in Settings → Bitcoin to see it (from native SegWit account 0). |
-| DONE_OFF_ZCASH | · Zcash는 꺼져 있습니다 — Zcash 탭에서 켜면 보입니다. | · Zcash is off — turn it on in the Zcash tab to see it. |
-| DONE_NO_BALANCE | 잔액이 안 보이면 | If no balance shows |
-| RECOVERY_TITLE | 지갑 파일 복구 | Wallet file recovery |
-| RECOVERY_MISSING | 지갑 파일이 없고 이전 사본(.prev)이 있습니다. | The wallet file is missing and a previous copy (.prev) exists. |
-| RECOVERY_PREV_HELP | 이전 사본으로 복구하면 마지막 변경(예: 가져온 개인키)이 사라질 수 있습니다. 지금 파일은 지우지 않고 데이터 폴더에 vault.ywv.corrupt-<시각> 이름으로 옮겨 두며, 복구 뒤 그 이름을 알려 드립니다(직접 되돌리는 방법: 복구 안내). | Restoring the previous copy may lose the last change (for example an imported private key). The current file is not deleted: it is moved in the data folder to the name vault.ywv.corrupt-<time>, which is shown after the restore (to undo it yourself: recovery guide). |
-| DATA_FOLDER | 데이터 폴더 | Data folder |
-| RECOVERY_RESTORE | 이전 사본으로 복구 | Restore previous copy |
-| EXIT | 종료 | Quit |
-| RECOVERY_NEVER_DELETES | 앱은 지갑 파일을 지우거나 덮어쓰지 않습니다. 복구 단어가 있으면 언제든 새로 가져올 수 있습니다. | The app never deletes or overwrites wallet files. With the recovery words you can always import the wallet again. |
-| RECOVERY_RESET | 복구할 수 없다면: 지갑 파일을 데이터 폴더 안의 reset- 폴더로 옮겨 두고 처음부터 시작합니다. | If it cannot be restored: the wallet files are moved to a reset- folder inside the data folder and you start over. |
-| AT_BLOCK_FAILED | 블록 {0} 기준 · 갱신 실패 {1} | at block {0} · update failed {1} |
-| BALANCE_NONE | 잔액 — | Balance — |
-| BALANCE_NOT_YET | 잔액을 아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요. | The balance has not been read yet. Check the RPC connection and refresh. |
-| TOKENS_LINE | 토큰: {0} | Tokens: {0} |
-| SEND | 보내기 | Send |
-| REFRESH | 새로고침 | Refresh |
-| NETWORK | 네트워크 | Network |
-| TESTNET_PILL | 테스트넷 — 실제 자산이 아닙니다 | Testnet — not real assets |
-| MY_ACCOUNTS | 내 EVM 계정 | My EVM accounts |
-| SAVE | 저장 | Save |
-| RENAME | 이름 바꾸기 | Rename |
-| HIDE | 숨기기 | Hide |
-| DELETE | 삭제 | Delete |
-| ADD_ACCOUNT | 계정 추가 | Add account |
-| IMPORT_KEY | 개인키 가져오기 | Import private key |
-| ADD_MANAGE_MNEMONICS | 복구 단어 추가·관리 | Add or manage recovery words |
-| BACK_DONE | ← 처음 설정으로 | ← Back to first setup |
-| TAB_SECURITY | 보안 | Security |
-| TAB_MNEMONICS | 복구 단어 | Recovery |
-| TAB_NETWORK | 네트워크(RPC) | Network (RPC) |
-| TAB_CHAINS | EVM 체인 | EVM chains |
-| TAB_AI | AI 설명 | AI |
-| TAB_OTHER | 브라우저·정보 | Browser · info |
-| ADVANCED_HIDE | 고급 설정 숨기기 ▾ | Hide advanced settings ▾ |
-| ADVANCED_SHOW | 고급 설정 보기 ▸ | Show advanced settings ▸ |
-| AUTO_LOCK_TITLE | 자동 잠금 | Auto-lock |
-| AUTO_LOCK_HELP | 정한 시간 동안 쓰지 않으면 지갑을 잠급니다. Windows를 잠그거나 절전에 들어갈 때도 잠깁니다. | Locks the wallet when it is not used for the set time. It also locks when Windows locks or goes to sleep. |
-| AUTO_LOCK_LABEL | 잠그기까지(분, 1–60) | Lock after (min, 1–60) |
-| SECRETS_TITLE | 복구 단어·개인키 | Recovery words · private keys |
-| SECRETS_KEY_ONLY | 이 지갑은 개인키로 시작해 복구 단어가 없습니다. 각 계정의 백업은 그 원래 개인키이며, 보기 전에 비밀번호를 다시 묻고 화면 캡처에서 제외된 창에 보여줍니다. | This wallet started from a private key and has no recovery words. Each account's backup is its original private key; your password is asked again before it is shown, in a window excluded from screen capture. |
-| SECRETS_KEY_NOTE | 개인키 보기는 메인 화면에서 선택한 EVM 계정의 키를 보여줍니다. Solana·Bitcoin의 가져온 개인키는 각 탭의 계정에서 '개인키 보기'를 누르세요. | 'Show private key' shows the key of the EVM account selected on the main screen. For imported Solana and Bitcoin keys, press 'Show private key' at the account on each tab. |
-| ALLOW_COPY | 복구 단어·개인키 복사 허용 | Allow copying recovery words and private keys |
-| ALLOW_COPY_HELP | 기본은 꺼짐입니다. 켜면 복사한 값은 클립보드 기록에 남지 않고 30초 뒤 지워집니다. | Off by default. When on, a copied value is kept out of the clipboard history and cleared after 30 seconds. |
-| PASSWORD_TITLE | 비밀번호 | Password |
-| PASSWORD_HELP | 이 PC에서 지갑을 열 때 쓰는 비밀번호입니다. 바꿔도 복구 단어와 주소는 그대로입니다. | The password that opens the wallet on this PC. Changing it keeps the recovery words and addresses. |
-| CHANGE_PASSWORD | 비밀번호 변경 | Change password |
-| FILE_PROTECTION_TITLE | 지갑 파일과 보호 상태 | Wallet file and protection |
-| WER_PROTECTED | Windows 오류 보고(WER)에서 이 앱을 제외했습니다: 비정상 종료 때 메모리 덤프를 남기지 않습니다. | This app is excluded from Windows Error Reporting (WER): no memory dump is left after a crash. |
-| RESET_TITLE | 지갑 초기화 | Reset wallet |
-| RESET_CARD_HELP | 이 PC의 지갑 파일을 데이터 폴더 안의 reset- 폴더로 옮기고(지우지 않음) 처음 화면으로 돌아갑니다. 다시 쓰려면 복구 단어·원래 개인키, 또는 YubiKey(“YubiKey 연결하기 (복구 단어 없이)”)가 필요합니다. | Moves this PC's wallet files to a reset- folder inside the data folder (nothing is deleted) and returns to the first screen. To use the wallet again you need the recovery words, the original private keys, or a YubiKey (“Connect a YubiKey (no recovery words)”). |
-| RPC_PROVIDER_TITLE | RPC 공급자 | RPC provider |
-| RPC_JSON_FOUND | rpc.json이 있습니다 — 맨 아래 “rpc.json에서 가져오기”로 한 번에 넣을 수 있습니다. | rpc.json found — “Import from rpc.json” at the bottom adds it all at once. |
-| RPC_PROVIDER_HELP | RPC는 지갑이 블록체인에서 잔액을 읽고 거래를 보낼 때 쓰는 연결 주소입니다. QuickNode나 알케미 계정 정보를 한 번 넣으면 아래 모든 네트워크의 주소를 자동으로 만들 수 있습니다. | RPC is the connection address the wallet uses to read balances from the blockchain and send transactions. Enter your QuickNode or Alchemy account details once to create the addresses of all networks below automatically. |
-| TPL_QUICKNODE | QuickNode 멀티체인 | QuickNode multichain |
-| ALCHEMY | 알케미 | Alchemy |
-| TPL_MANUAL | 직접 입력 | Manual entry |
-| NONE | 없음 | none |
-| QN_STORED | 저장된 QuickNode 자격 정보: {0} (저장된 값은 다시 보이지 않습니다) | Stored QuickNode credentials: {0} (stored values are never shown again) |
-| QN_NAME | 엔드포인트 이름 | Endpoint name |
-| QN_NAME_HELP | QuickNode 엔드포인트 주소 https://<이름>.quiknode.pro/… 의 <이름> 부분입니다. 대시보드의 주소 전체를 이 칸이나 토큰 칸에 붙여넣어도 됩니다(이름과 토큰을 알아서 나눕니다). | The <name> part of the QuickNode endpoint address https://<name>.quiknode.pro/…. You may also paste the whole address from the dashboard into this field or the token field (name and token are split for you). |
-| QN_TOKEN | 토큰 | Token |
-| QN_TOKEN_HELP | 주소 끝의 긴 문자열입니다. 입력한 값은 가려지고, 저장하면 Windows가 이 사용자 계정에서만 풀 수 있게 암호화합니다. | The long string at the end of the address. The input is hidden, and when saved Windows encrypts it so that only this user account can decrypt it. |
-| ALCHEMY_STORED | 저장된 알케미 키: {0} (저장된 값은 다시 보이지 않습니다) | Stored Alchemy key: {0} (stored values are never shown again) |
-| API_KEY | API 키 | API key |
-| ALCHEMY_KEY_HELP | 알케미 대시보드의 API Key입니다. 입력한 값은 가려집니다. | The API Key from the Alchemy dashboard. The input is hidden. |
-| MANUAL_HELP | 직접 입력: 아래 '네트워크별 RPC 주소'에서 네트워크마다 '입력'으로 https:// 주소를 넣으세요. | Manual entry: in 'RPC addresses by network' below, use 'Enter' on each network to add its https:// address. |
-| GENERATE | 저장하고 RPC 주소 만들기 | Save and create RPC addresses |
-| TPL_SAVE | 자격 정보만 저장 | Save credentials only |
-| TPL_DELETE | 자격 정보 삭제 | Delete credentials |
-| TPL_DELETED | 자격 정보를 지웠습니다. 이미 만든 네트워크별 RPC 주소는 그대로입니다. | The credentials were deleted. RPC addresses already created for each network stay as they are. |
-| GENERATE_HELP | '저장하고 RPC 주소 만들기'는 위 칸의 자격 정보를 저장하고 아래 목록의 주소를 한 번에 만든 뒤 하나씩 테스트합니다. 이미 있는 주소는 덮어쓸지 따로 묻습니다. | 'Save and create RPC addresses' saves the credentials above, creates the addresses in the list below at once and tests them one by one. You are asked separately before existing addresses are overwritten. |
-| RPC_LIST_TITLE | 네트워크별 RPC 주소 | RPC addresses by network |
-| RPC_LIST_HELP | '테스트'는 그 주소가 올바른 네트워크를 가리키는지 한 번 확인합니다. 주소에는 토큰이 들어 있어 '교체'를 누르면 가린 형태로만 보입니다. | 'Test' checks once that the address points to the right network. Addresses contain tokens, so 'Replace' shows them masked only. |
-| REPLACE | 교체 | Replace |
-| ENTER | 입력 | Enter |
-| TEST | 테스트 | Test |
-| WORKS | 작동 | Working |
-| FAILED | 실패 | Failed |
-| TESTING | 테스트 중 | Testing |
-| ROW_NO_ADDRESS | {0} · 주소 없음 | {0} · no address |
-| ROW_ADDRESS | {0} · 지금 주소 {1} | {0} · current address {1} |
-| ROW_TEMPLATE_STORED | {0} 자격 정보가 저장되어 있습니다 — 위 “저장하고 RPC 주소 만들기”로 비어 있는 주소를 한 번에 만들 수 있습니다. | {0} credentials are stored — “Save and create RPC addresses” above creates the empty addresses at once. |
-| ROW_PASTE_HELP | https:// 로 시작하는 전체 주소를 붙여넣으세요. 저장 전에 형식을 검사하고, 저장하면 바로 테스트합니다. | Paste the whole address starting with https://. Its format is checked before saving, and it is tested right after saving. |
-| RPC_URL_DELETED | RPC 주소를 지웠습니다. | The RPC address was deleted. |
-| DORMANT_TITLE | 보관 중인 항목 | Kept entries |
-| DORMANT_HELP | 이 버전에서 쓰지 않는 RPC 항목 {0}개를 지우지 않고 보관하고 있습니다(등록되지 않은 체인의 주소나 다른 버전의 앱이 쓴 항목). 체인을 다시 추가하거나 다른 버전으로 돌아가면 다시 쓰입니다. | {0} RPC entries not used by this version are kept, not deleted (addresses of unregistered chains, or entries written by another app version). They are used again when you add the chain back or return to that version. |
-| DORMANT_DELETE | 보관 항목 삭제 | Delete kept entries |
-| RPC_LIST_SUMMARY | RPC 주소 {0}/{1}개 설정 · 이번 실행 테스트: 작동 {2} · 실패 {3} · 안 함 {4} | RPC addresses {0}/{1} set · tests this run: {2} working · {3} failed · {4} not run |
-| FAILED_NETWORKS | 실패한 네트워크 | Failed networks |
-| TESTING_PROGRESS | 테스트 중 {0}/{1} | Testing {0}/{1} |
-| TEST_ALL | 모두 테스트 | Test all |
-| EXTENSION_TITLE | 브라우저 확장 | Browser extension |
-| EXTENSION_OPEN | Chrome 확장 설치 방법·폴더 | Chrome extension setup · folder |
-| WC_HELP | 확장 없이 dApp의 WalletConnect QR·링크로 연결합니다(EVM). 처음 한 번 Reown Project ID가 필요하고, 연결·세션 관리는 '연결된 사이트 · WalletConnect' 화면에서 합니다. | Connects through a dApp's WalletConnect QR code or link, without the extension (EVM). It needs a Reown Project ID once; connections and sessions are managed on the 'Connected sites · WalletConnect' screen. |
-| STATUS | 상태 | Status |
-| WC_OFF | Project ID 없음 — 꺼져 있음 | No Project ID — off |
-| WC_ON | Project ID 설정됨 · 세션 {0}개 | Project ID set · {0} sessions |
-| WC_OPEN_SITES | 연결된 사이트 · WalletConnect 열기 | Open connected sites · WalletConnect |
-| BROWSER_LINK_TITLE | 브라우저 연결 | Browser connection |
-| BROWSER_LINK_HELP | Chrome 확장과 이 앱을 잇는 설정입니다. 사이트의 연결·서명 요청은 언제나 이 앱의 승인 창에서 확인합니다. | Settings that link the Chrome extension and this app. Site connection and signing requests are always checked in this app's approval window. |
-| AUTOLAUNCH | dApp 요청 시 앱 자동 실행 | Start the app on a dApp request |
-| AUTOLAUNCH_HELP | 끄면 앱이 꺼져 있을 때 사이트의 지갑 요청은 실패합니다. | When off, a site's wallet requests fail while the app is not running. |
-| LOCALHOST | localhost dApp 허용 (개발용) | Allow localhost dApps (development) |
-| LOCALHOST_HELP | dApp을 직접 개발할 때만 켜세요. http://localhost·127.0.0.1 페이지가 연결을 요청할 수 있게 됩니다. | Turn on only when you develop a dApp yourself. Pages on http://localhost and 127.0.0.1 can then request a connection. |
-| DIAGNOSTICS_TITLE | 진단 | Diagnostics |
-| DIAGNOSTICS_HELP | 로그에는 비밀번호·니모닉·개인키·API 키·RPC 엔드포인트 URL이 없습니다. 주소와 거래 해시는 있을 수 있습니다. | Logs contain no passwords, mnemonics, private keys, API keys or RPC endpoint URLs. They may contain addresses and transaction hashes. |
-| OPEN_LOG_FOLDER | 로그 폴더 열기 | Open log folder |
-| LOG_LEVEL | 로그 수준 | Log level |
-| LOG_LEVEL_HELP | 문제를 조사할 때만 debug로 바꾸세요. 기본값은 info입니다. | Switch to debug only while investigating a problem. The default is info. |
-| ABOUT_TITLE | 정보 | About |
-| VERSION | 버전 | Version |
-| SHORTCUTS | 단축키 | Shortcuts |
-| SHORTCUTS_TEXT | Ctrl+L 잠금 · Ctrl+1 / 2 / 3 / 4 체인 탭(EVM·Solana·Bitcoin·Zcash) · F5 새로고침 · Ctrl+, 설정 · Esc 뒤로·취소 · Tab 다음 칸 · PgUp / PgDn 한 쪽 스크롤 · Ctrl+Home / End 맨 위·맨 아래 | Ctrl+L lock · Ctrl+1 / 2 / 3 / 4 chain tabs (EVM, Solana, Bitcoin, Zcash) · F5 refresh · Ctrl+, settings · Esc back/cancel · Tab next field · PgUp / PgDn scroll a page · Ctrl+Home / End top/bottom |
-| OK | 확인 | OK |
-| C_COPY_TITLE | 복사 허용 | Allow copying |
-| C_COPY_TEXT | 복사를 허용하면 복구 단어(니모닉)·개인키를 클립보드에 넣을 수 있습니다. 클립보드 기록·클라우드 동기화에서는 제외하고 30초 뒤 지우지만, 그 사이에는 다른 프로그램이 읽을 수 있습니다. 그 전에 앱이 비정상 종료되면 다음에 앱을 열 때 지우며, 그때까지는 클립보드에 남습니다. | Allowing copying lets recovery words (mnemonic) and private keys go to the clipboard. They are kept out of the clipboard history and cloud sync and cleared after 30 seconds, but other programs can read them in the meantime. If the app crashes before that, they are cleared the next time the app opens and stay on the clipboard until then. |
-| C_ALLOW | 허용 | Allow |
-| C_LOCALHOST_TITLE | localhost dApp 허용 | Allow localhost dApps |
-| C_LOCALHOST_TEXT | 개발용 설정입니다. 켜면 http://localhost 와 http://127.0.0.1 페이지가 지갑 연결을 요청할 수 있습니다. | A development setting. When on, pages on http://localhost and http://127.0.0.1 can request a wallet connection. |
-| C_TURN_ON | 켜기 | Turn on |
-| C_REVEAL_TEXT | 화면 근처의 사람이나 카메라가 볼 수 있습니다. 계속하려면 비밀번호를 입력하세요. | People or cameras near the screen can see it. Enter your password to continue. |
-| C_CONTINUE | 계속 | Continue |
-| C_GENERATE_TITLE | RPC 주소 만들기 | Create RPC addresses |
-| C_CREATE | 만들기 | Create |
-| C_RPC_DELETE_TITLE | RPC 주소 지우기 | Delete RPC address |
-| C_REMOVE | 지우기 | Delete |
-| C_TPL_DELETE_TITLE | 자격 정보 지우기 | Delete credentials |
-| C_LLM_KEY_TITLE | AI API 키 지우기 | Delete AI API key |
-| C_LLM_KEY_TEXT | 저장된 AI 설명용 API 키를 지웁니다. 저장된 키는 다시 볼 수 없어, AI 설명을 다시 쓰려면 키를 다시 넣어야 합니다. | Deletes the stored API key for AI explanations. A stored key cannot be shown again, so to use AI explanations again you must enter the key again. |
-| C_YK_ABANDON_TITLE | YubiKey 지갑 만들기를 그만둘까요? | Stop creating the YubiKey wallet? |
-| C_YK_ABANDON_YES | 그만두기 | Stop |
-| C_PIN_LATER_TITLE | PIN을 나중에 설정할까요? | Set the PIN later? |
-| C_PIN_LATER_TEXT | PIN을 설정하기 전에는 이 YubiKey로 서명하지 않습니다. 나중에 설정 → YubiKey에서 바꿀 수 있습니다. | This YubiKey is not used for signing until its PIN is set. You can change it later in Settings → YubiKey. |
-| C_PIN_LATER_YES | 나중에 | Later |
-| C_REMOVE_KEY_TITLE | 가져온 개인키 삭제 | Delete imported private key |
-| C_REMOVE_YK_TITLE | YubiKey 기록 삭제 | Delete YubiKey record |
-| C_CHAIN_PIN_TITLE | 체인 추가 — 제네시스 고정 | Add chain — pin genesis |
-| C_CHAIN_PIN_YES | 고정하고 저장 | Pin and save |
-| C_REPIN | 다시 고정 | Pin again |
-| C_CHAIN_DELETE_TITLE | 체인 삭제 | Delete chain |
-| C_CHAIN_DELETE_TEXT | 체인 정의, RPC 주소, 수수료 상한을 지웁니다. 이 체인의 토큰·활동 기록은 남고, 같은 chainId를 다시 추가하면 다시 보입니다. | Deletes the chain definition, its RPC address and fee caps. The chain's tokens and activity stay and show again when the same chainId is added back. |
-| C_BOOK_DELETE_TITLE | 주소록 항목 삭제 | Delete address book entry |
-| C_TOKEN_DELETE_TITLE | 토큰 삭제 | Delete token |
-| C_DISCONNECT_TITLE | 모든 사이트 연결 해제 | Disconnect all sites |
-| C_DISCONNECT_TEXT | 연결된 모든 사이트의 연결을 해제합니다. 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다. | Disconnects all connected sites. A site has to request a connection again to see your accounts. |
-| C_DISCONNECT_WC_TEXT | 연결된 모든 사이트의 연결을 해제하고 WalletConnect 세션 {0}개도 끊습니다(dApp 쪽 연결도 끊깁니다). 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다. | Disconnects all connected sites and also ends {0} WalletConnect sessions (the dApp side is disconnected too). A site has to request a connection again to see your accounts. |
-| C_DISCONNECT_YES | 모두 해제 | Disconnect all |
-| C_SETTINGS_FILE_TITLE | 설정 파일 값 사용 | Use the settings file's values |
-| C_SETTINGS_FILE_TEXT | settings.json의 아래 값을 그대로 씁니다. 이 PC에서 직접 바꾼 경우에만 고르세요. 모르는 변경이면 '취소'를 누른 뒤 '앱에 저장된 값으로 되돌리기'를 누르세요. | Uses the values below from settings.json as they are. Choose this only if you changed them yourself on this PC. For a change you do not recognise, press 'Cancel' and then 'Restore the app's saved values'. |
-| C_SETTINGS_FILE_YES | 파일 값 사용 | Use the file's values |
-| C_WC_DISCONNECT_TITLE | 모든 WalletConnect 세션 끊기 | End all WalletConnect sessions |
-| C_WC_DISCONNECT_TEXT | WalletConnect 세션 {0}개를 모두 끊을까요? 다시 쓰려면 dApp마다 QR이나 링크로 새로 연결해야 합니다. | End all {0} WalletConnect sessions? To use them again, connect each dApp anew with its QR code or link. |
-| C_WC_DISCONNECT_YES | 모두 끊기 | End all |
-| C_DISCARD_TITLE | 거래 폐기 | Discard transaction |
-| C_DISCARD_YES | 폐기 | Discard |
-| C_LLM_ON_TITLE | AI 설명 켜기 | Turn on AI explanations |
-| C_PRUNE_TEXT | 이 버전에서 쓰지 않는 항목 {0}개({1})를 apikeys.dpapi에서 지웁니다. 나중에 그 체인을 다시 추가하거나 다른 버전의 앱을 쓰면 주소·자격 정보를 다시 입력해야 합니다. | Deletes {0} entries not used by this version ({1}) from apikeys.dpapi. If you later add the chain back or use another app version, you must enter the addresses and credentials again. |
-| C_REMOVED_ACCOUNT | 지워지는 계정 | Account to be removed |
-| C_TOKEN | 토큰 | Token |
-| C_CONTRACT_ADDRESS | 컨트랙트 주소 | Contract address |
-| C_ACCOUNT | 계정 | Account |
-| C_OVERWRITE | 기존 주소 덮어쓰기 | Overwrite existing addresses |
-| C_UNDERSTOOD | 이해했습니다 | I understand |
-| C_REPIN_CHECK | 새 제네시스 해시를 공식 자료로 확인했습니다 | I checked the new genesis hash against official sources |
-| C_KEEP_CREATING | 계속 만들기 | Keep creating |
-| C_PIN_NOW | 지금 PIN 설정 | Set PIN now |
-| C_RPC_AGAIN_MANUAL | “입력”으로 다시 넣어야 합니다 | enter it again with “Enter” |
-| C_RPC_AGAIN_TEMPLATE | “저장하고 RPC 주소 만들기”({0} 자격 정보: {1}) 또는 “입력”으로 다시 넣어야 합니다 | add it again with “Save and create RPC addresses” ({0} credentials: {1}) or “Enter” |
-| C_RPC_REFILL |  공급자 템플릿의 자격 정보가 저장돼 있어 다음 실행 때 템플릿 주소로 다시 채워집니다. 다른 주소를 쓰려면 지우지 말고 “교체”하세요. |  The provider template's credentials are stored, so the template address fills it again at the next start. To use another address, use “Replace” instead of deleting. |
-| C_RPC_DELETE_TEXT | {0} ({1})의 RPC 주소를 지웁니다. 저장된 주소는 다시 볼 수 없어, 다시 쓰려면 {2}.{3} 이 네트워크에 확정 전 거래가 있으면 주소를 다시 넣을 때까지 상태 확인이 멈춥니다. | Deletes the RPC address of {0} ({1}). A stored address cannot be shown again; to use one again, {2}.{3} If this network has unconfirmed transactions, their status checks stop until an address is added again. |
-| C_TPL_DELETE_ALCHEMY | 저장된 알케미 API 키를 지웁니다. 저장된 값은 다시 볼 수 없습니다. 이미 만든 네트워크별 RPC 주소는 그대로이고, 새 체인 주소를 만들 때 다시 넣어야 합니다. | Deletes the stored Alchemy API key. Stored values cannot be shown again. RPC addresses already created stay as they are; enter the key again to create addresses for new chains. |
-| C_TPL_DELETE_QUICKNODE | 저장된 QuickNode 자격 정보(엔드포인트 이름·토큰)를 지웁니다. 저장된 값은 다시 볼 수 없습니다. 이미 만든 네트워크별 RPC 주소는 그대로이고, 새 체인 주소를 만들 때 다시 넣어야 합니다. | Deletes the stored QuickNode credentials (endpoint name and token). Stored values cannot be shown again. RPC addresses already created stay as they are; enter them again to create addresses for new chains. |
-| C_GENERATE_TEXT | 선택한 템플릿으로 아래 네트워크의 RPC 주소를 만듭니다. 이미 주소가 있는 네트워크는 '기존 주소 덮어쓰기'를 켰을 때만 바꿉니다. | Creates RPC addresses for the networks below with the selected template. Networks that already have an address change only with 'Overwrite existing addresses' on. |
-| C_GENERATE_EXISTING |  — 기존 주소 있음 |  — has an address |
-| C_GENERATE_SKIPPED | \n건너뜀(템플릿 항목 없음): | \nSkipped (no template entry): |
-
-<!-- catalogue: yw_app::ui::screens_book::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| BOOK_SHARED | EVM 주소 하나는 모든 EVM 체인(Ethereum·Arbitrum·Base·BNB·Robinhood·HyperEVM·직접 추가한 체인)에서 함께 씁니다. Solana 주소는 mainnet·devnet에서 같습니다. Bitcoin 주소는 mainnet(bc1…)과 testnet4(tb1…)가 달라 그 주소의 네트워크 보내기 화면에만 나옵니다. | One EVM address is shared by every EVM chain (Ethereum·Arbitrum·Base·BNB·Robinhood·HyperEVM·chains you added). A Solana address is the same on mainnet·devnet. Bitcoin addresses differ between mainnet (bc1…) and testnet4 (tb1…) and appear only on the send screen of their network. |
-| DELETE_SELECTED | 선택한 주소록 항목을 지웁니다. | Deletes the selected address-book entry. |
-| DELETE_SCOPE_EVM |  EVM 항목은 모든 EVM 체인에서 함께 지워집니다. |  An EVM entry is deleted on every EVM chain. |
-| DELETE_SCOPE_SOL |  Solana mainnet·devnet에서 함께 지워집니다. |  It is deleted on Solana mainnet·devnet alike. |
-| DELETE | {0}({1}) 항목을 주소록에서 지웁니다.{2} 블록체인에는 아무것도 보내지 않으며, 같은 주소를 언제든 다시 추가할 수 있습니다. | Deletes the entry {0}({1}) from the address book.{2} Nothing is sent to the blockchain, and you can add the same address again at any time. |
-| TITLE | 주소록 | Address book |
-| ADD_OPEN | ＋ 주소 추가 | ＋ Add address |
-| HEADING_EVM | EVM 주소록 — 모든 EVM 체인 공용 ({0}개) | EVM address book — shared by every EVM chain ({0}) |
-| HEADING_SOL | Solana 주소록 — mainnet·devnet 공용 ({0}개) | Solana address book — shared by mainnet·devnet ({0}) |
-| HEADING_BTC | Bitcoin 주소록 ({0}개) | Bitcoin address book ({0}) |
-| EMPTY | {0} 주소록이 비어 있습니다. | The {0} address book is empty. |
-| VERIFIED_MARK |  ✓ 확인됨 |  ✓ verified |
-| UNFAVORITE | 즐겨찾기 해제 | Remove from favorites |
-| FAVORITE | 즐겨찾기 | Favorite |
-| EDIT | 편집 | Edit |
-| DELETE_ICON | 삭제 | Delete |
-| EDIT_TITLE | {0} 주소 편집 | Edit {0} address |
-| ADD_TITLE | 주소 추가 | Add address |
-| FORM_HELP | 이름을 붙인 주소는 보내기·승인 창에 '주소록: 이름'으로 나오고, 비슷하게 생긴 가짜 주소를 경고합니다. 보낸 뒤 '주소록에 저장'으로도 넣을 수 있습니다. | A named address shows as 'Address book: name' on send and approval windows, and look-alike fake addresses are flagged. You can also add one after sending with 'Save to address book'. |
-| CHAIN | 체인 | Chain |
-| SHARE_EVM | EVM 주소 하나를 모든 EVM 체인에서 같이 씁니다. | One EVM address is used on every EVM chain. |
-| SHARE_SOL | Solana mainnet·devnet에서 같이 씁니다. | Used on Solana mainnet·devnet alike. |
-| SHARE_BTC | Bitcoin 주소는 그 주소의 네트워크(mainnet bc1… · testnet4 tb1…) 보내기 화면에만 나옵니다. | A Bitcoin address appears only on the send screen of its network (mainnet bc1… · testnet4 tb1…). |
-| ADDRESS | 주소 | Address |
-| NAME | 이름 | Name |
-| VERIFIED_CHECK | 다른 경로(전화·대면 등)로 확인한 주소 | Address checked another way (phone, in person, …) |
-| FAVORITE_CHECK | ★ 즐겨찾기 (보내기 화면 맨 위에) | ★ Favorite (top of the send screen) |
-| ACK | 주소 전체를 직접 확인했습니다 | I checked the whole address myself |
-| SAVE | 저장 | Save |
-| ADD | 추가 | Add |
-| CANCEL | 취소 | Cancel |
-| SAVE_THIS | ＋ 이 주소를 주소록에 저장 | ＋ Save this address to the address book |
-| SAVED | 받는 주소를 주소록에 저장했습니다. 다음 보내기부터 '주소록: 이름'으로 표시됩니다. | Saved the recipient to the address book. From the next send it shows as 'Address book: name'. |
-| NOT_IN_BOOK | 받는 주소 {0}는 주소록에 없습니다. | The recipient {0} is not in the address book. |
-| SAVE_HELP | 저장해 두면 다음에 즐겨찾기·주소록에서 바로 고를 수 있고, 비슷하게 생긴 가짜 주소를 경고합니다. | Once saved, you can pick it from favorites or the address book next time, and look-alike fake addresses are flagged. |
-| SAVE_TO_BOOK | 주소록에 저장 | Save to address book |
-| PROMPT_EVM | 모든 EVM 체인에서 같은 이름으로 보입니다. | Shows with the same name on every EVM chain. |
-| PROMPT_SOL | Solana mainnet·devnet에서 같은 이름으로 보입니다. | Shows with the same name on Solana mainnet·devnet. |
-| PROMPT_BTC | Bitcoin {0} 보내기 화면에 나옵니다. | Appears on the Bitcoin {0} send screen. |
-| PICK_NONE | 이 네트워크의 일치하는 주소록 항목이 없습니다. 주소록에 저장하면 여기에서 고를 수 있습니다. | No matching address-book entry for this network. Save one to the address book to pick it here. |
-| PICK | {0}주소록: {1} | {0}Address book: {1} |
-
-<!-- catalogue: yw_app::ui::screens_btc::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| PENDING_LINE | 미확정 입금 {0} (0 확인 — 바뀌거나 취소될 수 있습니다, 아직 쓸 수 없음) | Unconfirmed deposit {0} (0 confirmations — it may change or be cancelled; not spendable yet) |
-| T_BTC_ESPLORA_NOTE | 인덱서(Esplora 서버)는 조회하는 주소와 이 PC의 IP를 봅니다. 기본값은 mempool.space이며 자체 Esplora 서버로 바꿀 수 있습니다. mempool.space에 연결되지 않으면 아래 Esplora URL을 https://blockstream.info/api (testnet4는 https://blockstream.info/testnet4/api)로 바꾸고 테스트하세요. Esplora URL은 평문으로 저장되므로 토큰·API 키가 들어 있는 URL은 넣지 마세요. | The indexer (Esplora server) sees the addresses you look up and this PC's IP. The default is mempool.space; you can switch to your own Esplora server. If mempool.space does not connect, change the Esplora URL below to https://blockstream.info/api (testnet4: https://blockstream.info/testnet4/api) and test it. The Esplora URL is stored in plain text, so do not enter a URL that contains a token or API key. |
-| JOURNAL_DAMAGED | 거래 저널의 Bitcoin 기록이 손상되어 Bitcoin 보내기를 멈췄습니다. (E-VLT-006) | The Bitcoin entries of the transaction journal are damaged, so Bitcoin sending is stopped. (E-VLT-006) |
-| ACCOUNTS_HELP | 주소 형식은 계정마다 고정입니다(BIP44·49·84·86). 다른 지갑에서 복구할 때 같은 형식을 고르세요. | The address format is fixed per account (BIP44·49·84·86). Choose the same format when you restore in another wallet. |
-| ADD_ACCOUNT_HELP | 잘 모르면 네이티브 세그윗을 고르세요. 탭루트 주소로는 일부 거래소가 보내 주지 않습니다. 레거시·호환 세그윗은 오래된 서비스용입니다. | If unsure, choose Native SegWit. Some exchanges do not send to Taproot addresses. Legacy and Nested SegWit are for older services. |
-| WITH_EURO | {0}으로 | {0} |
-| WITH_RO | {0}로 | {0} |
-| MISMATCH_KEEP | 설정을 {0} 되돌리기 | Set the setting back to {0} |
-| MISMATCH_USE | {0} 바꾸기 | Switch to {0} |
-| WAIT_FAST | 약 20분 | about 20 min |
-| WAIT_NORMAL | 약 1시간 | about 1 hour |
-| WAIT_SLOW | 약 4시간 | about 4 hours |
-| NO_ESTIMATE | 추정 없음 | no estimate |
-| KIND_P2PKH | 레거시 (P2PKH) | Legacy (P2PKH) |
-| KIND_P2SH | 호환 세그윗·스크립트 (P2SH) | Nested SegWit · script (P2SH) |
-| KIND_P2WPKH | 네이티브 세그윗 (P2WPKH) | Native SegWit (P2WPKH) |
-| KIND_P2WSH | 스크립트 세그윗 (P2WSH) | Script SegWit (P2WSH) |
-| KIND_P2TR | 탭루트 (P2TR) | Taproot (P2TR) |
-| ACCOUNT_FALLBACK | Bitcoin 계정 | Bitcoin account |
-| STAGE_PRECHECK | 노드 사전 검사(testmempoolaccept) 중… | Node pre-check (testmempoolaccept)… |
-| STAGE_APPLYING | 저널에 기록하는 중… | Writing to the journal… |
-| STAGE_SENDING | 전송 중… | Sending… |
-| RPC_SETUP | RPC 설정하기 | Set up RPC |
-| STATUS_NO_RPC | RPC 주소 없음 (E-KEY-005) | No RPC address (E-KEY-005) |
-| STATUS_BLOCKED | 차단됨 | Blocked |
-| STATUS_CONNECTED | 연결됨 · 블록 높이 {0} (서버 기준) | Connected · block height {0} (server data) |
-| STATUS_UNCHECKED | 확인 전 | Not checked |
-| STATUS_GENESIS_OK | genesis 확인됨 | genesis verified |
-| STATUS_LINE | Core RPC ({0}): {1}   ·   인덱서: {2} ({3}) | Core RPC ({0}): {1}   ·   Indexer: {2} ({3}) |
-| DISCOVERY_PROGRESS | {0} 검사한 주소 {1}개 | {0} Addresses checked: {1} |
-| DISCOVERY_MORE | 주소를 더 찾는 중… | Searching for more addresses… |
-| DISCOVERY_RUNNING | 주소를 찾는 중… | Searching for addresses… |
-| CANCEL | 취소 | Cancel |
-| RETRY | 다시 시도 | Try again |
-| FIND_MORE | 더 찾기 | Find more |
-| MY_ACCOUNTS | 내 Bitcoin 계정 | My Bitcoin accounts |
-| RENAME | 이름 바꾸기 | Rename |
-| HIDE | 숨기기 | Hide |
-| ADD_ACCOUNT | 계정 추가 | Add account |
-| ADDRESS_MODE | 주소 방식 — {0} | Address mode — {0} |
-| MNEMONIC | 복구 단어 | Recovery words |
-| ADDED_MNEMONIC_HELP | 추가한 복구 단어의 표준 경로 m/{44·49·84·86}'/{코인}'/{계정}'에서 만듭니다(계정 0부터). | Created on the standard path m/{44·49·84·86}'/{coin}'/{account}' of the added recovery words (from account 0). |
-| KEY_SOURCE | 키 출처 | Key source |
-| NO_EVM_ACCOUNTS | EVM 계정이 없습니다 | There are no EVM accounts |
-| EVM_PICK_HELP | 주소 형식을 누르면 확인 창이 열립니다. 그 EVM 계정의 키로 주소 하나를 만듭니다. | Pressing an address format opens a confirmation. One address is created with that EVM account's key. |
-| AVAILABLE_NOTE | 사용 가능 (확인 1 이상, 서버 기준) | Available (1+ confirmations, server data) |
-| FROZEN | 동결 {0} | Frozen {0} |
-| PENDING_BALANCE | 확인 대기 {0} (아직 쓸 수 없음) | Awaiting confirmation {0} (not spendable yet) |
-| BALANCE_DASH | 잔액 — | Balance — |
-| BALANCE_UNKNOWN | 잔액 알 수 없음 | Balance unknown |
-| VERIFY_FAILURES | 검증 실패 UTXO {0}개 | UTXOs that failed verification: {0} |
-| SKIPPED_ADDRESSES | UTXO가 너무 많아 목록을 받지 못한 주소 {0}개 — 그 주소의 UTXO는 지난번에 확인한 그대로 두며 이미 쓰였을 수 있습니다 | Addresses whose UTXO list could not be read because it is too long: {0} — their UTXOs stay as last checked and may already be spent |
-| HINT_MISMATCH | 서버 응답 불일치 UTXO {0}개 (검증한 값을 씁니다) | UTXOs where the server answer differs: {0} (the verified values are used) |
-| AUTO_FROZEN | 작은 입금 자동 동결(먼지 공격 방지) {0}개 | Small deposits frozen automatically (dust attack protection): {0} |
-| UTXO_TITLE | UTXO (검증됨) | UTXOs (verified) |
-| UTXO_HELP | UTXO는 받은 돈 한 건 한 건입니다. 작은 입금은 먼지 공격을 막으려고 자동으로 동결합니다. 위 계정 카드의 잔액은 이전 거래로 검증한 UTXO 가운데 확인 수 1 이상(서버 기준)인 것의 합이고, 진행 중 거래가 쓰는 UTXO는 빠집니다. | A UTXO is one single amount you received. Small deposits are frozen automatically to block dust attacks. The balance on the account card above is the sum of the UTXOs verified by their previous transactions with 1+ confirmations (server data); UTXOs used by a pending transaction are left out. |
-| NO_UTXOS | 검증된 UTXO가 없습니다. | No verified UTXOs. |
-| UTXO_FROZEN | 동결 | frozen |
-| UTXO_AUTO_FROZEN | 자동 동결(작은 입금, 먼지 공격 방지) | frozen automatically (small deposit, dust attack protection) |
-| UTXO_IN_FLIGHT | 진행 중 거래가 사용 | used by a pending transaction |
-| UTXO_OWN | 내 잔돈 | my change |
-| UTXO_HINT | 서버 응답 불일치 | server answer differs |
-| UNFREEZE | 해제 | Unfreeze |
-| FREEZE | 동결 | Freeze |
-| UTXO_HIDDEN | UTXO {0}개는 목록에 표시하지 않았습니다(표시 상한 {1}개). | {0} UTXOs are not listed (display limit {1}). |
-| ACTIVITY_TITLE | 보낸 거래 | Sent transactions |
-| NO_ACTIVITY | 아직 보낸 거래가 없습니다. | No sent transactions yet. |
-| TO_BOOK | → 주소록: {0} | → Address book: {0} |
-| TO_OWN | → 내 계정: {0} | → My account: {0} |
-| ROW_AMOUNT_TO | 받는 금액 {0} · 받는 주소{1} | Amount {0} · Recipient{1} |
-| ROW_TO | 받는 주소{0} | Recipient{0} |
-| BUMP_FEE | 수수료 올리기 | Bump fee |
-| REBROADCAST | 같은 바이트 다시 전송 | Resend the same bytes |
-| ABANDON | 포기 | Abandon |
-| ESPLORA_SEND | Esplora로 전송 | Send via Esplora |
-| CONTINUE_SEND | 전송 계속 | Continue sending |
-| DISABLED_HELP_MNEMONIC | 설정 → Bitcoin에서 켜면 네이티브 세그윗(bc1q…) 계정 0의 주소를 찾아 잔액을 보여줍니다. 다른 주소 형식(탭루트·호환 세그윗·레거시)은 켠 뒤 [계정 추가]로 더하고, 다른 지갑의 WIF 개인키는 [개인키 가져오기]로 더합니다. 먼저 네트워크(RPC)에 bitcoin 주소가 있어야 합니다. | Turn it on in Settings → Bitcoin to find the addresses of Native SegWit (bc1q…) account 0 and show the balance. After that, add other address formats (Taproot, Nested SegWit, Legacy) with [Add account] and WIF private keys from other wallets with [Import private key]. A bitcoin address must be set in Network (RPC) first. |
-| DISABLED_HELP_KEYS | 설정 → Bitcoin에서 켜면 가져온 Bitcoin 개인키의 잔액을 보여주고 받기·보내기를 할 수 있습니다. 먼저 네트워크(RPC)에 bitcoin 주소가 있어야 합니다. | Turn it on in Settings → Bitcoin to see the balance of imported Bitcoin private keys and to receive and send. A bitcoin address must be set in Network (RPC) first. |
-| BTC_SETTINGS | Bitcoin 설정 | Bitcoin settings |
-| NETWORK | 네트워크 | Network |
-| TIP_REGRESSED_HELP | 노드 블록 높이가 이 지갑이 전에 본 높이보다 6블록 넘게 낮습니다. 노드(RPC)를 바꿨거나 이전 노드가 잘못된 높이를 알려 준 경우에만 기록을 초기화하세요. | The node block height is more than 6 blocks below the height this wallet saw before. Reset the record only if you changed the node (RPC) or the previous node reported a wrong height. |
-| RESET_TIP | 블록 높이 기록 초기화 | Reset the block height record |
-| SIGNED_PENDING | 서명했지만 보내지 않은 Bitcoin 거래가 {0}건 있습니다. 아래 활동에서 [전송 계속] 또는 [취소]를 고르세요. | Signed Bitcoin transactions not sent: {0}. Choose [Continue sending] or [Cancel] in the activity below. |
-| RECEIVE_HINT | 받을 주소는 '받기'를 누르면 새로 만듭니다. | Press 'Receive' to create a receive address. |
-| SEND | 보내기 | Send |
-| RECEIVE | 받기 | Receive |
-| REFRESH | 새로고침 | Refresh |
-| REFRESHING | 새로고침 중… | Refreshing… |
-| SEND_BLOCKED | 보내기: {0} | Send: {0} |
-| EXPECTED_FEE | 예상 수수료 | Expected fee |
-| FEE_ABOUT | 약 {0} sats ({1} BTC) | about {0} sats ({1} BTC) |
-| FEE_ESTIMATE_HELP | 입력 1개·출력 2개 기준 — UTXO를 여러 개 쓰면 늘어납니다. 검토에서 다시 계산합니다. | For 1 input and 2 outputs — more UTXOs make it higher. Review calculates it again. |
-| FEE_OVER_CAP | 이 수수료율은 상한을 넘어 검토 뒤 수수료(sats)를 직접 입력해야 합니다. | This fee rate is above the cap: after review you must enter the fee (sats) yourself. |
-| FEE | 수수료 | Fee |
-| FEE_LOADING | 수수료 추정을 불러오는 중… | Loading fee estimates… |
-| FEE_CHOICE_HELP | 빠름·보통·느림 = 노드 추정(2·6·24블록). 추정이 없으면(testnet4에서 흔함) 직접 입력만 됩니다. | Fast·Normal·Slow = node estimates (2·6·24 blocks). Without an estimate (common on testnet4) only manual entry works. |
-| FEE_RATE_LABEL | 수수료율 (sat/vB) | Fee rate (sat/vB) |
-| FLOOR_NOTE | 수수료 하한 {0} (노드 기준): 추정이 하한보다 낮으면 하한을 적용합니다(하한 적용). 직접 입력은 하한 이상이어야 합니다. | Fee floor {0} (node data): an estimate below the floor uses the floor (Floor applied). A manual entry must be at or above the floor. |
-| FLOOR_UNKNOWN | 수수료 하한(1 sat/vB와 노드 최소값 중 큰 값)은 검토할 때 노드에서 확인합니다. | The fee floor (the larger of 1 sat/vB and the node minimum) is checked with the node at review. |
-| TYPED_FEE_BANNER | 수수료(sats)를 정확히 입력해 상한 해제 — 계획 수수료 {0} | Enter the exact fee (sats) to lift the cap — planned fee {0} |
-| TYPED_FEE_LABEL | 수수료(sats) | Fee (sats) |
-| SEND_TITLE | 보내기 — {0} | Send — {0} |
-| FROM_ACCOUNT | 보내는 계정 | From account |
-| AVAILABLE_VERIFIED | 사용 가능 {0} (검증됨, 확인 1 이상 서버 기준) | Available {0} (verified, 1+ confirmations, server data) |
-| RECIPIENT_CARD | 받는 사람 | Recipient |
-| RECIPIENT_ADDRESS | 받는 주소 | Recipient address |
-| PICK_FROM_BOOK | 주소록에서 선택 | Pick from address book |
-| ADDRESS_HINT | bc1…·tb1… 등 Bitcoin 주소 | A Bitcoin address such as bc1… or tb1… |
-| ADDRESS_KIND | 주소 종류: {0} | Address type: {0} |
-| CHECK_WHOLE | 강조된 앞뒤 4자만 보지 말고 가운데까지 주소 전체를 확인하세요. | Check the whole address, the middle too, not only the highlighted first and last 4 characters. |
-| BOOK_ENTRY | 주소록: {0}{1} | Address book: {0}{1} |
-| VERIFIED | ✓ 확인됨 | ✓ verified |
-| ADDR_ACK | 주소 전체를 직접 확인했습니다 | I checked the whole address myself |
-| AMOUNT_CARD | 금액과 수수료 | Amount and fee |
-| AVAILABLE_UNREAD | 사용 가능: 잔액을 아직 읽지 못했습니다 | Available: the balance has not been read yet |
-| AVAILABLE | 사용 가능 {0} | Available {0} |
-| AMOUNT | 금액 | Amount |
-| MAX | 최대 | Max |
-| MAX_HELP | 최대: 동결되지 않은 확인된 UTXO(최대 100개)의 합에서 수수료를 뺀 금액을 보냅니다(승인 창에서 확인). | Max: sends the sum of the unfrozen confirmed UTXOs (up to 100) minus the fee (shown in the approval window). |
-| AMOUNT_HINT | BTC는 소수 8자리까지(예 0.0012) · sats는 정수(예 120000) | BTC with up to 8 decimals (e.g. 0.0012) · sats as a whole number (e.g. 120000) |
-| REVIEW | 검토 | Review |
-| BUMP_TITLE | 수수료 올리기 — {0} | Bump fee — {0} |
-| REPLACED_TX | 교체 대상 거래 | Transaction to replace |
-| STATUS | 상태: {0} | Status: {0} |
-| CURRENT_FEE | 현재 수수료 {0} · {1} | Current fee {0} · {1} |
-| BUMP_AMOUNT | 받는 금액 {0}{1} · 받는 주소: | Amount {0}{1} · Recipient: |
-| BUMP_SEND_MAX_NOTE | (보내기 최대: 수수료가 오른 만큼 받는 금액이 줄어듭니다) | (send max: the recipient gets less by the fee increase) |
-| BUMP_HELP | 새 수수료는 이전 수수료 + 노드 최소 증분 이상이고 수수료율이 더 높아야 합니다. 받는 주소·금액은 그대로이고(보내기 최대 거래는 받는 금액이 줄어듭니다) 매번 새로 승인합니다. | The new fee must be at least the old fee plus the node's minimum increment, at a higher fee rate. Recipient and amount stay the same (a send-max transaction's amount goes down), and every bump is approved anew. |
-| RESULT_BUMP | 수수료 올리기 결과 | Fee bump result |
-| RESULT_SEND | 보내기 결과 | Send result |
-| NO_RESULT | 표시할 결과가 없습니다. | No result to show. |
-| BACK_MAIN | 메인으로 | Back to main |
-| SIGNED_BANNER | 서명하고 저널에 기록했습니다. 아래 해시는 이 지갑이 계산한 값입니다. | Signed and written to the journal. The hash below is the value this wallet computed. |
-| FINISHED_SEE_ACTIVITY | 종결 (활동 참고) | Finished (see activity) |
-| RESULT_STATUS | 상태: {0} ({1}) | Status: {0} ({1}) |
-| COPY_HASH | 해시 복사 | Copy hash |
-| NOT_SENT_KEPT | 전송하지 않았습니다. 입력은 보내기 화면에 남아 있으니 수수료를 바꿔 다시 검토하세요. | Not sent. Your input is still on the send screen: change the fee and review again. |
-| TO_SEND_SCREEN | 보내기 화면으로 | Back to send |
-| RECEIVE_TITLE | 받기 — {0} | Receive — {0} |
-| PREPARING_ADDRESS | 주소를 준비하는 중… | Preparing the address… |
-| FIXED_ADDRESS | {0} · 고정 주소 | {0} · fixed address |
-| RECEIVE_INDEX | {0} · 받기 주소 {1}번 | {0} · receive address #{1} |
-| ADDRESS_FORMAT | 주소 형식: {0} | Address format: {0} |
-| NEW_ADDRESS | 새 주소 | New address |
-| SETTINGS_CARD | Bitcoin 사용과 네트워크 | Bitcoin use and network |
-| ENABLE | Bitcoin 사용 | Use Bitcoin |
-| TESTNET4_RADIO | testnet4 (테스트, 가치 없음) | testnet4 (test, no value) |
-| ENABLE_HELP | 켤 때 고른 네트워크의 BIP84 주소를 찾습니다. 켠 뒤 네트워크를 바꾸면(진행 중 거래가 없을 때만) 주소 인덱스·UTXO 캐시·동결·보낸 주소 기록을 새로 시작하고 다시 찾습니다. 끄면 데이터는 남습니다. | Turning it on searches the BIP84 addresses of the chosen network. Changing the network after that (only without a pending transaction) starts the address indexes, UTXO cache, freezes and sent-address record over and searches again. Turning it off keeps the data. |
-| RPC_SET | 설정됨 | set |
-| RPC_NONE | 없음 — {0} | none — {0} |
-| RPC_LINE | Core RPC 주소 {0}: {1} | Core RPC address {0}: {1} |
-| GO_NETWORK | 네트워크(RPC) 설정으로 | Network (RPC) settings |
-| INDEXER_CARD | 주소 조회 서버(인덱서) | Address lookup server (indexer) |
-| INDEXER | 인덱서 | Indexer |
-| INDEXER_HELP | Esplora: 무료·키 없음(기본 mempool.space). bb-rpc: Core URL의 bb_* (QuickNode BTC Blockbook 유료 애드온). bb-rest: Core URL의 /api/v2/ (알케미 UTXO API). | Esplora: free, no key (default mempool.space). bb-rpc: bb_* on the Core URL (QuickNode BTC Blockbook paid add-on). bb-rest: /api/v2/ on the Core URL (Alchemy UTXO API). |
-| SAVE | 저장 | Save |
-| DEFAULT | 기본값으로 | Default |
-| TEST | 테스트 | Test |
-| ESPLORA_TEST_HELP | `테스트`는 입력 칸의 값(비어 있으면 저장된 값)으로 GET /block-height/0을 한 번 보냅니다. 주소를 보내지 않으므로 잠긴 상태에서도 됩니다. `저장`은 테스트를 요구하지 않으며 쓰기 전에 연결 검사가 다시 확인합니다. | `Test` sends one GET /block-height/0 with the value in the field (the saved value if empty). It sends no address, so it also works while locked. `Save` does not require a test; the connection check verifies again before use. |
-
-<!-- catalogue: yw_app::ui::screens_evm::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| CHAIN_ADD_HELP | 다른 EVM 체인(L1·L2)은 여기서 추가합니다 — chainId·RPC 주소를 넣으면 chainId와 블록 0을 확인해 등록합니다. | Add other EVM chains (L1·L2) here — enter the chainId and RPC address, and the chainId and block 0 are checked before the chain is registered. |
-| CHAIN_ADD | EVM 체인 추가 | Add EVM chain |
-| CHAIN_EDIT_TITLE | EVM 체인 편집 | Edit EVM chain |
-| RECIPIENT | 받는 주소{0} | Recipient{0} |
-| TO_BOOK |  → 주소록: {0} |  → Address book: {0} |
-| TO_MINE |  → 내 계정: {0} |  → My account: {0} |
-| SENT_TITLE | 보낸 거래 | Sent transactions |
-| SENT_NONE | 아직 보낸 거래가 없습니다. | No transactions sent yet. |
-| SPEED_UP | 수수료 올리기 | Speed up |
-| CANCEL_TX | 취소 | Cancel |
-| RESEND | 재전송 | Rebroadcast |
-| DISCARD | 폐기 | Discard |
-| ACTIVITY_FOLD | 이전 활동 접기 ▾ | Hide earlier activity ▾ |
-| ACTIVITY_MORE | 이전 활동 {0}건 더 보기 ▸ | Show {0} earlier ▸ |
-| RPC_NO_ADDRESS | RPC 주소 없음 (E-KEY-005) | No RPC address (E-KEY-005) |
-| RPC_BLOCKED | RPC: 차단 {0}   ·   {1} | RPC: blocked {0}   ·   {1} |
-| CONNECTED | 연결됨 | Connected |
-| UNCHECKED | 확인 전 | Not checked |
-| BLOCKED_CODE | 차단 {0} | Blocked {0} |
-| MAINNET_WORD | 메인넷 | Mainnet |
-| MAINNET_SUFFIX | {0} (메인넷) | {0} (Mainnet) |
-| REPIN_IN_SETTINGS | 설정에서 다시 고정 | Re-pin in settings |
-| RPC_TEST | RPC 테스트 | Test RPC |
-| RPC_SETTINGS | RPC 설정 | RPC settings |
-| IMPORTED_KEY | 가져온 개인키 | Imported private key |
-| BALANCE_AT_BLOCK | 잔액 {0} (블록 {1}) | Balance {0} (block {1}) |
-| REFRESH_FAILED |  — 갱신 실패 {0} |  — refresh failed {0} |
-| TOKENS_TITLE | 토큰 | Tokens |
-| TOKENS_NONE | 표시할 토큰이 없습니다. '토큰 추가'로 컨트랙트 주소를 넣으면 잔액을 함께 봅니다. | No tokens to show. Add a contract address with 'Add token' to see its balance here. |
-| TOKENS_NONE_SHOWN | 보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다. | No visible tokens. Hidden tokens can be shown again below. |
-| TOKEN_ADD | 토큰 추가 | Add token |
-| HIDE_ZERO_COUNT | 잔액 0 숨기기 ({0}개) | Hide zero balances ({0}) |
-| HIDE_ZERO | 잔액 0 숨기기 | Hide zero balances |
-| HIDDEN_FOLD_COUNT | 숨긴 토큰 {0}개 접기 ▾ | Hide {0} hidden tokens ▾ |
-| HIDDEN_SHOW_COUNT | 숨긴 토큰 {0}개 보기 ▸ | Show {0} hidden tokens ▸ |
-| TOKEN_HIDDEN_NOTE | 숨긴 토큰은 이 목록과 보내기 화면의 자산 선택에서만 빠집니다. 자산은 그대로입니다. | Hidden tokens are only left out of this list and the send screen's asset choice. The assets stay as they are. |
-| BALANCE_UNKNOWN | 잔액 알 수 없음 | Balance unknown |
-| HIDDEN | 숨김 | Hidden |
-| NAME_HIDDEN | {0} · 숨김 | {0} · hidden |
-| SEND | 보내기 | Send |
-| UNHIDE | 다시 보이기 | Show |
-| HIDE | 숨기기 | Hide |
-| DELETE | 삭제 | Delete |
-| USER_TOKEN | {0} (사용자 추가) | {0} (added by you) |
-| NAME_BALANCE_UNKNOWN | {0} · 잔액 모름 | {0} · balance unknown |
-| SEND_TITLE | 보내기 — {0} | Send — {0} |
-| TESTNET_BAND | 테스트넷 — 실제 자산이 아닙니다 | Testnet — not real assets |
-| IN_FLIGHT | 이 계정의 이전 거래가 아직 확정되지 않았습니다. 확정된 뒤 보낼 수 있습니다. | This account's previous transaction is not final yet. You can send once it is. |
-| FROM_ACCOUNT | 보내는 계정 | From account |
-| BALANCE_SUFFIX |  · 잔액 {0} |  · balance {0} |
-| SWITCH_ACCOUNT | 다른 계정으로 바꾸기 (메인) | Switch account (main) |
-| RECIPIENT_CARD | 받는 사람 | Recipient |
-| RECIPIENT_FIELD | 받는 주소 | To address |
-| PICK_FROM_BOOK | 주소록에서 선택 | Pick from address book |
-| ADDRESS_FORMAT | 0x로 시작하는 42자 주소 | A 42-character address starting with 0x |
-| CHECK_WHOLE | 앞뒤만이 아니라 주소 전체를 확인하세요. | Check the whole address, not only its start and end. |
-| ACK_WHOLE | 주소 전체를 직접 확인했습니다 | I checked the whole address myself |
-| ASSET_CARD | 보낼 자산과 금액 | Asset and amount |
-| ASSET | 자산 | Asset |
-| HIDDEN_FOLD | 숨긴 토큰 접기 ▾ | Hide hidden tokens ▾ |
-| HIDDEN_TOKENS | 숨긴 토큰 | Hidden tokens |
-| AT_BLOCK |  (블록 {0} 기준) |  (as of block {0}) |
-| HELD_UNREAD | 보유 {0}: 잔액을 아직 읽지 못했습니다 | Holding {0}: balance not read yet |
-| HELD | 보유 {0}{1} | Holding {0}{1} |
-| TOKEN_CONTRACT | 토큰 컨트랙트 {0} | Token contract {0} |
-| AMOUNT_FIELD | 금액 ({0}) | Amount ({0}) |
-| MAX | 최대 | Max |
-| AMOUNT_HINT_NATIVE | 예: 0.01 · '최대'는 수수료를 뺀 잔액 전부입니다. | e.g. 0.01 · 'Max' is the whole balance minus the fee. |
-| AMOUNT_HINT_TOKEN | 예: 0.01 · '최대'는 이 토큰 잔액 전부입니다. 수수료는 {0}로 따로 냅니다. | e.g. 0.01 · 'Max' is the whole token balance. The fee is paid separately in {0}. |
-| NO_FEE_ASSET | 수수료를 낼 {0}이(가) 부족합니다 — 이 계정에 {0}을(를) 먼저 받으세요. | Not enough {0} to pay the fee — receive {0} on this account first. |
-| FEE_HELD | {0} (보유 {1}) | {0} (holding {1}) |
-| BALANCE_UNKNOWN_SHORT | 잔액 모름 | balance unknown |
-| FEE_DETAIL | 계산: {0} | Calculation: {0} |
-| FEE_DETAIL_HIDE | 수수료 계산 숨기기 ▾ | Hide fee calculation ▾ |
-| FEE_DETAIL_SHOW | 수수료 계산 보기 (가스 한도·gwei) ▸ | Show fee calculation (gas limit·gwei) ▸ |
-| ESTIMATE_FAILED | 가스 추정 실패 — 거래가 실패할 수 있습니다 (승인 창에서 확인) | Gas estimation failed — the transaction may fail (check in the approval window) |
-| REVIEW | 검토 | Review |
-| CANCEL | 취소 | Cancel |
-| PICK_MINE | 내 계정: {0} | My account: {0} |
-| PICK_FAVORITE | ★ 주소록: {0} | ★ Address book: {0} |
-| PICK_BOOK | 주소록: {0} | Address book: {0} |
-| PICK_NONE | 일치하는 주소록 항목이 없습니다. 주소록에 저장하면 여기에서 고를 수 있습니다. | No matching address-book entry. Save one to the address book to pick it here. |
-| RESULT_TITLE | 보내기 결과 | Send result |
-| RESULT_SENT | 전송했습니다. 블록에 포함되면(확인 1) 활동에 '확정'으로 표시됩니다. | Sent. Once it is in a block (1 confirmation), Activity shows it as 'Final'. |
-| STATE | 상태 | Status |
-| TX_HASH | 거래 해시 | Transaction hash |
-| BACK_MAIN | 메인으로 | Back to main |
-| RECEIVE_TITLE | 받기 — {0} | Receive — {0} |
-| BACKUP_PENDING | 백업 확인 전입니다. 확인을 마치기 전에는 큰 금액을 받지 마세요. | The backup is not confirmed yet. Do not receive large amounts until it is. |
-| TESTNET_ADDRESS | 테스트넷 주소입니다. | This is a testnet address. |
-| RECEIVE_ONLY | {0} 네트워크의 자산만 이 주소로 받으세요. | Receive only assets of the {0} network at this address. |
-| PLAIN_QR | 주소만 담은 QR에는 네트워크 정보가 없습니다. 보내는 쪽(거래소 출금 화면 등)에서 네트워크를 {0}(으)로 직접 고르세요. | A QR code with only the address carries no network. The sender (an exchange withdrawal screen, …) must pick {0} as the network themselves. |
-| TOKEN_TITLE | 토큰 추가 — {0} | Add token — {0} |
-| CONTRACT_ADDRESS | 컨트랙트 주소 | Contract address |
-| LOOKUP | 조회 | Look up |
-| TOKEN_HELP | 토큰의 컨트랙트 주소를 넣고 '조회'를 누르면 체인에서 소수 자릿수와 기호를 읽습니다. 공식 사이트나 탐색기에서 확인한 주소만 쓰세요. | Enter the token's contract address and press 'Look up' to read its decimals and symbol from the chain. Use only an address you checked on the official site or an explorer. |
-| UNREADABLE | 읽을 수 없음 | unreadable |
-| SYMBOL_UNSHOWABLE | (표시할 수 없는 기호) | (symbol cannot be shown) |
-| TOKEN_META | decimals: {0}, 체인에서 읽은 기호: {1} | decimals: {0}, symbol read from the chain: {1} |
-| LABEL | 라벨 | Label |
-| LABEL_HELP | 목록과 승인 창에 보일 이름입니다. 컨트랙트 주소와 함께 표시됩니다. | The name shown in the list and approval windows, together with the contract address. |
-| SAVE | 저장 | Save |
-| CHAINS_TITLE | EVM 체인 | EVM chains |
-| CHAINS_HELP | 기본 체인 7개(Ethereum·Sepolia·HyperEVM·Arbitrum One·Base·BNB Smart Chain·Robinhood Chain)와 직접 추가한 체인입니다. 체인마다 RPC 주소가 있어야 쓸 수 있고, 연결할 때마다 chainId와 첫 블록(제네시스)을 다시 확인합니다. | The 7 built-in chains (Ethereum·Sepolia·HyperEVM·Arbitrum One·Base·BNB Smart Chain·Robinhood Chain) and chains you added. Each chain needs an RPC address, and every connection checks the chainId and the first block (genesis) again. |
-| CHAIN_LINE | {0}, 소수 {1} · 시뮬레이션 {2} · {3} · RPC 주소: {4} | {0}, decimals {1} · simulation {2} · {3} · RPC address: {4} |
-| QUICKNODE_ENTRY | QuickNode 서브도메인 {0} | QuickNode subdomain {0} |
-| ALCHEMY_ENTRY | 알케미 라벨 {0} | Alchemy label {0} |
-| EXPLORER_ENTRY | 탐색기 {0} | Explorer {0} |
-| PIN_ON_FIRST | 첫 연결 때 고정 | pinned on first connection |
-| EDIT | 편집 | Edit |
-| REPIN | 다시 고정 | Re-pin |
-| CAPS_TITLE | EVM 수수료 상한 (고급) | EVM fee caps (advanced) |
-| CAPS_HELP | 지갑이 계산한 수수료가 이 값을 넘으면 보내기를 막습니다(잘못된 RPC가 수수료를 부풀리는 것을 막는 안전장치). 보통은 바꿀 필요가 없습니다. | Sending is blocked when the fee the wallet computes exceeds these values (a safeguard against a bad RPC inflating the fee). Usually there is no need to change them. |
-| CHAIN | 체인 | Chain |
-| CAPS_PICK | 상한을 바꿀 체인을 고르세요. | Pick the chain whose caps to change. |
-| CAPS_FEE | maxFee 상한 (gwei) | maxFee cap (gwei) |
-| CAPS_TIP | tip 상한 (gwei) | tip cap (gwei) |
-| CAPS_TOTAL | 총 최대 수수료 ({0}) | Total max fee ({0}) |
-| DEFAULTS | 기본값으로 | Reset |
-| CAPS_RANGE | 범위: maxFee 1–10,000 gwei, tip 0.01–10,000 gwei(maxFee 상한 이하), 총 0.0001–10. 다음 준비부터 적용됩니다. | Ranges: maxFee 1–10,000 gwei, tip 0.01–10,000 gwei (at most the maxFee cap), total 0.0001–10. Applies from the next preparation. |
-| CHAIN_ID_HELP | 체인 고유 번호입니다(10진수). 체인 공식 문서나 chainlist에서 확인하세요. | The chain's unique number (decimal). Check it in the chain's official docs or on chainlist. |
-| NAME | 이름 | Name |
-| NATIVE_HELP | 수수료를 내는 기본 자산의 기호와 소수 자릿수입니다(대부분 18). | The symbol and decimals of the native asset that pays fees (mostly 18). |
-| CREDENTIAL_SET | 설정됨 | set |
-| CREDENTIAL_NONE | 없음 | none |
-| RPC_HINT_QUICKNODE | https:// 주소 또는 QuickNode 서브도메인(예 base-sepolia). 자격 정보: {0} | An https:// address or a QuickNode subdomain (e.g. base-sepolia). Credential: {0} |
-| RPC_HINT_ALCHEMY | https:// 주소 또는 알케미 라벨(예 base-sepolia). 자격 정보: {0} | An https:// address or an Alchemy label (e.g. base-sepolia). Credential: {0} |
-| RPC_HINT_MANUAL | https:// 주소 (직접 입력 템플릿) | An https:// address (manual template) |
-| RPC_ADDRESS | RPC 주소 | RPC address |
-| RPC_KEEP | {0} · 비워 두면 기존 주소를 유지합니다. | {0} · Leave empty to keep the current address. |
-| EXPLORER_OPTIONAL | 탐색기 URL(선택) | Explorer URL (optional) |
-| SIMULATION | 시뮬레이션 | Simulation |
-| SIM_AUTO | auto (항상 시도) | auto (always try) |
-| SIM_UNSUPPORTED | unsupported (호출하지 않음) | unsupported (never called) |
-| SIM_HELP | 승인 전에 거래 결과를 미리 실행해 보는 기능입니다. RPC가 지원하지 않으면 unsupported를 고르세요. 그 체인의 승인은 언제나 고위험 경고와 함께 표시됩니다. | Runs the transaction ahead of the approval to preview its result. Pick unsupported if the RPC does not support it; approvals on that chain then always show a high-risk warning. |
-| CHAIN_PIN | 이 체인의 제네시스 해시를 지금 받은 값으로 고정합니다. 이후 연결할 때마다 chainId와 이 값을 비교하고, 다르면 이 체인을 쓰지 않습니다. 해시가 공식 자료(체인 문서·탐색기)의 값과 같은지 확인하세요.\nchainId {0}\n이름 {1}\nRPC {2}\n제네시스 {3} | Pins this chain's genesis hash to the value just received. Every later connection compares the chainId and this value, and the chain is not used if they differ. Check that the hash matches the official sources (chain docs, explorer).\nchainId {0}\nName {1}\nRPC {2}\nGenesis {3} |
-| CHAIN_REPIN | 고정된 제네시스 해시와 RPC가 알려준 값이 다릅니다. RPC가 다른 체인을 가리키거나 체인이 새로 시작되었을 수 있습니다. 새 값을 공식 자료로 확인한 경우에만 다시 고정하세요.\n고정된 값 {0}\n새 값     {1} | The pinned genesis hash differs from the value the RPC reported. The RPC may point to another chain, or the chain may have restarted. Re-pin only if you checked the new value against official sources.\nPinned {0}\nNew    {1} |
-
-<!-- catalogue: yw_app::ui::screens_explorer::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| EXPLORER_CARD | 활동·보내기 결과의 '탐색기에서 열기'와 계정 카드의 '탐색기에서 주소 보기'가 기본 브라우저로 여는 주소입니다. 거래 해시와 주소는 공개 정보지만, 여는 순간 그 사이트는 내 IP와 함께 그 거래·주소를 봅니다. 앱은 탐색기 페이지를 읽지 않습니다. | The addresses that 'Open in explorer' (activity, send result) and 'View address in explorer' (account cards) open in your default browser. Transaction hashes and addresses are public, but the moment you open one, that site sees the transaction or address together with your IP. The app never reads explorer pages. |
-| EXPLORER_RULES | https:// 로 시작하고 거래 페이지에는 {hash}, 주소 페이지에는 {address}를 한 번씩 넣으세요(예: https://etherscan.io/tx/{hash}). 비워 두면 기본값을 씁니다. 256자 이하, 영문·숫자와 - . _ ~ : / ? & = + 만 쓸 수 있습니다(사용자 정보 …@·# 뒤 부분 없음). | Start with https:// and put {hash} once in the transaction page and {address} once in the address page (e.g. https://etherscan.io/tx/{hash}). Leave empty to use the default. Up to 256 characters; only letters, digits and - . _ ~ : / ? & = + (no user info …@, nothing after #). |
-| OPEN | 탐색기에서 열기 | Open in explorer |
-| COPY_LINK | 탐색기 링크 복사 | Copy explorer link |
-| VIEW_ADDRESS | 탐색기에서 주소 보기 | View address in explorer |
-| LINE_NONE | {0}: 없음 | {0}: none |
-| LINE_CUSTOM | {0}: {1} · 사용자 지정 | {0}: {1} · custom |
-| LINE_CHAIN_DEFAULT | {0}: {1} · 기본(체인 등록 값) | {0}: {1} · default (from the chain entry) |
-| LINE_DEFAULT | {0}: {1} · 기본 | {0}: {1} · default |
-| CARD_TITLE | 블록 탐색기 | Block explorer |
-| CHANGE | 변경 | Change |
-| RESET | 기본값으로 | Reset |
-| SAVE | 저장 | Save |
-| CANCEL | 취소 | Cancel |
-
-<!-- catalogue: yw_app::ui::screens_hypercore::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| MAINNET | 메인넷 | Mainnet |
-| TESTNET | 테스트넷 | Testnet |
-| HC_MAINNET | HyperCore 메인넷: 실제 자산 | HyperCore mainnet: real assets |
-| TESTNET_BAND | 테스트넷 — 실제 자산이 아닙니다 | Testnet — not real assets |
-| FOLDED_STATE | 계정 가치 {0} USDC · 현물 {1}종 | Account value {0} USDC · {1} spot tokens |
-| LOADING | 불러오는 중… | Loading… |
-| LOAD_FAILED | 잔액을 불러오지 못했습니다 | Could not load the balances |
-| NOT_LOADED | 잔액을 아직 불러오지 않았습니다 | The balances are not loaded yet |
-| NOT_LOADED_DOT | 잔액을 아직 불러오지 않았습니다. | The balances are not loaded yet. |
-| EXPAND | 펼치기 ▸ | Expand ▸ |
-| COLLAPSE | 접기 ▴ | Collapse ▴ |
-| CARD_HELP | 같은 EVM 주소의 HyperCore(Hyperliquid L1) 잔액입니다. 이 지갑은 전송만 하고 거래(주문)는 하지 않습니다. | HyperCore (Hyperliquid L1) balances of the same EVM address. This wallet only transfers; it does not trade (place orders). |
-| PERP_USDC | 선물(perp) USDC | Perp USDC |
-| PERP_STATE | 계정 가치 {0} · 출금 가능 {1} | Account value {0} · withdrawable {1} |
-| OPEN_POSITIONS |  · 열린 포지션 {0}개 |  · {0} open positions |
-| SPOT | 현물(spot) | Spot |
-| NONE | 없음 | None |
-| SPOT_COIN | 현물 {0} | Spot {0} |
-| ON_HOLD | {0} (주문 보류 {1}) | {0} (on hold for orders {1}) |
-| SEND_CORE | 보내기(Core) | Send (Core) |
-| CLASS | 현물↔선물 이동 | Spot↔perp |
-| WITHDRAW | Arbitrum으로 출금 | Withdraw to Arbitrum |
-| TO_EVM | HyperEVM으로 이동 | Move to HyperEVM |
-| FROM_EVM | HyperEVM에서 Core로 이동 | Move from HyperEVM to Core |
-| REFRESH | 새로고침 | Refresh |
-| ACTIVITY | HyperCore 활동 (이번 실행) | HyperCore activity (this run) |
-| ACTIVITY_HELP | Hyperliquid는 전송에 거래 해시를 돌려주지 않아 활동 줄에는 탐색기 링크가 없습니다. 위 '탐색기에서 주소 보기'에서 이 계정의 기록을 확인하세요. | Hyperliquid returns no transaction hash for transfers, so the activity rows have no explorer link. Check this account's history with 'View address in explorer' above. |
-| STATUS_LINE | 상태: {0} · nonce {1} | Status: {0} · nonce {1} |
-| TITLE_SEND | 보내기 (HyperCore) | Send (HyperCore) |
-| TITLE_CLASS | 현물↔선물 USDC 이동 | Move USDC spot↔perp |
-| TITLE_WITHDRAW | Arbitrum으로 USDC 출금 | Withdraw USDC to Arbitrum |
-| TITLE_TO_EVM | HyperEVM으로 이동 | Move to HyperEVM |
-| SIGNING_ACCOUNT | 서명 계정 | Signing account |
-| CONTENT | 내용 | Details |
-| ASSET_PERP | USDC — 선물(perp) 잔액 (출금 가능 {0}) | USDC — perp balance (withdrawable {0}) |
-| ASSET_SPOT | 현물 {0} — {1} | Spot {0} — {1} |
-| RECIPIENT_CORE | 받는 주소 (HyperCore) | Recipient (HyperCore) |
-| SPOT_TO_PERP | 현물(spot) → 선물(perp) | Spot → perp |
-| PERP_TO_SPOT | 선물(perp) → 현물(spot) | Perp → spot |
-| CLASS_HELP | 같은 계정 안에서 USDC를 옮깁니다. 받는 주소는 없습니다. | Moves USDC within the same account. There is no recipient. |
-| RECIPIENT_ARBITRUM | 받는 주소 (Arbitrum One) | Recipient (Arbitrum One) |
-| WITHDRAW_BANNER | 고정 출금 수수료 {0} USDC는 입력한 금액에서 빠집니다(받는 금액 = 입력 금액 − {0}). 출금 가능액 전체를 출금할 수 있습니다. Arbitrum One에 USDC로 도착하며 약 5분 걸립니다. | The fixed withdrawal fee of {0} USDC comes out of the amount entered (received = amount − {0}). The whole withdrawable balance can be withdrawn. It arrives as USDC on Arbitrum One in about 5 minutes. |
-| NO_EVM_TOKENS | HyperEVM에 연결된 현물 토큰 잔액이 없습니다. | No balance of a spot token linked to HyperEVM. |
-| EVM_TOKEN | {0} (시스템 주소 {1}) | {0} (system address {1}) |
-| TO_EVM_HELP | 토큰의 시스템 주소로 보내면 HyperEVM의 같은 주소(이 계정)로 들어갑니다. HyperCore에서 HYPE로 가스(200k gas)를 냅니다. | Sending to the token's system address delivers it to the same address (this account) on HyperEVM. Gas (200k gas) is paid in HYPE on HyperCore. |
-| AMOUNT | 금액 | Amount |
-| MAX | 최대 | Max |
-| AVAILABLE_TO_EVM | 옮길 수 있는 양: {0} {1} (HyperEVM 자릿수를 넘는 끝수는 HyperCore에 남깁니다) | Movable: {0} {1} (digits beyond HyperEVM's decimals stay on HyperCore) |
-| AVAILABLE_WITHDRAW | 출금 가능: {0} {1} (수수료는 이 금액에서 빠집니다) | Withdrawable: {0} {1} (the fee comes out of this amount) |
-| AVAILABLE | 사용 가능: {0} {1} | Available: {0} {1} |
-| AVAILABLE_LATER | 사용 가능한 양은 잔액을 불러온 뒤 보입니다. | The available amount shows once the balances are loaded. |
-| REVIEW | 검토 | Review |
-| CANCEL | 취소 | Cancel |
-| ACK | 주소 전체를 직접 확인했습니다 | I checked the whole address myself |
-| SETTINGS_SHOW | EVM 탭에 HyperCore 카드 보이기 (잔액·전송, 거래 없음) | Show the HyperCore card on the EVM tab (balances and transfers, no trading) |
-| MAINNET_API | 메인넷 API | Mainnet API |
-| FIXED | {0} (고정) | {0} (fixed) |
-| TESTNET_API | 테스트넷 API | Testnet API |
-| SAVE | 저장 | Save |
-| OFFICIAL | 공식 주소로 | Use official |
-| API_HELP | HTTPS만 됩니다. /info와 /exchange가 이 주소 뒤에 붙습니다. | HTTPS only. /info and /exchange are appended to this address. |
-
-<!-- catalogue: yw_app::ui::screens_keys::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| KEY_START_CARD | MetaMask·Phantom·Electrum 등에서 내보낸 개인키 하나로 지갑을 만듭니다. 복구 단어(24단어)는 만들지 않습니다. | Makes a wallet from one private key exported from MetaMask, Phantom, Electrum and others. No recovery words (24 words) are created. |
-| KEY_START_BACKUP | 복구 단어 없이 개인키로 지갑을 만듭니다. 이 지갑의 백업은 지금 입력할 원래 개인키뿐입니다. 이 PC나 지갑 파일을 잃으면 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 종이 등 안전한 곳에 따로 보관하세요. | This makes a wallet from a private key, without recovery words. Its only backup is the original private key you are about to enter. If you lose this PC or the wallet file, only the original private key can restore it, so keep the original private key separately in a safe place, such as on paper. |
-| KEY_START_OK | 개인키로 지갑을 만들었습니다. 이제 지갑을 쓸 수 있습니다. | The wallet was created from the private key. You can use the wallet now. |
-| BTC_SCRIPT | 이전 지갑에서 이 키로 쓰던 주소와 같은 형식을 고르세요. 다음 화면에서 주소를 보고 확인합니다. 5·9로 시작하는 압축되지 않은 WIF는 P2PKH(레거시)만 쓸 수 있습니다. | Choose the same address type you used with this key in your previous wallet. The next screen shows the address so you can check it. An uncompressed WIF starting with 5 or 9 can only use P2PKH (legacy). |
-| BTC_IMPORTED | 가져온 개인키는 Bitcoin 계정 목록에 "[가져온 키]"로 보입니다. 주소 하나만 쓰고(잔돈도 같은 주소로 돌아옴) 복구 단어로 복구되지 않습니다. 잔액·받기·보내기는 다른 계정과 같습니다. | An imported private key appears in the Bitcoin account list as "[imported key]". It uses a single address (change comes back to the same address) and cannot be restored from recovery words. Balance, receive and send work like other accounts. |
-| BTC_IMPORT_HINT | 다른 지갑에서 쓰던 Bitcoin 개인키(WIF)도 이 목록에 더할 수 있습니다. 누르면 주소 형식을 고릅니다. | You can also add a Bitcoin private key (WIF) from another wallet to this list. Press the button to choose the address type. |
-| REMOVE_IMPORTED | 선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 이 계정의 '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요. | Deletes the selected imported private-key account from this wallet. Imported private keys cannot be restored from recovery words, so once deleted, this account's assets cannot be reached again without the original private key. Before deleting, make sure you exported the private key with this account's 'Show private key' and stored it safely. Enter your password to continue. |
-| NO_ACCOUNTS | 이 지갑에는 {0} 계정이 없습니다. | This wallet has no {0} account. |
-| HELP_EVM | 16진수 64자리 개인키(0x 선택) — MetaMask·Rabby의 '개인키 내보내기' 값입니다. 모든 EVM 체인(기본 7개와 직접 추가한 체인)에서 같은 주소로 쓰입니다. | A private key of 64 hexadecimal characters (0x optional) — the value of 'Export private key' in MetaMask or Rabby. It has the same address on every EVM chain (the 7 built-in ones and chains you added). |
-| HELP_SOL | Phantom·Solflare의 '개인키 내보내기'(base58) 또는 solana-keygen JSON 파일의 내용입니다. | The 'Export private key' value (base58) from Phantom or Solflare, or the contents of a solana-keygen JSON file. |
-| HELP_BTC | WIF 형식(5·K·L로 시작하면 mainnet, 9·c로 시작하면 testnet4) — Electrum 'Export private key', Bitcoin Core dumpprivkey 값입니다. | WIF format (starting with 5, K or L: mainnet; 9 or c: testnet4) — the value of Electrum's 'Export private key' or Bitcoin Core's dumpprivkey. |
-| HELP_ZEC | 압축 WIF(K·L로 시작하면 mainnet, c로 시작하면 testnet) 또는 16진수 64자리 — zcashd dumpprivkey 값입니다. 일반(transparent) 주소 하나로 씁니다. | A compressed WIF (starting with K or L: mainnet; c: testnet) or 64 hexadecimal characters — the value of zcashd dumpprivkey. It is used as one regular (transparent) address. |
-| ADDRESS_TYPE | 주소 형식 | Address type |
-| TITLE | 개인키로 시작하기 | Start with a private key |
-| WHICH_CHAIN | 어떤 체인의 개인키입니까? | Which chain is the private key for? |
-| CHAIN | 체인 | Chain |
-| EVM_RADIO | EVM (이더리움 등) | EVM (Ethereum and others) |
-| BACKUP_TITLE | 이 지갑의 백업 | This wallet's backup |
-| NO_ADD_ACCOUNT | 복구 단어가 없어 “계정 추가”는 없습니다 — 나중에 설정 → 복구 단어에서 더하면 생깁니다. 메인 화면의 '개인키 가져오기'로 다른 개인키를 더할 수 있습니다(체인마다 최대 15개). | Without recovery words there is no “Add account” — it appears if you add recovery words later in Settings → Recovery words. You can add other private keys with 'Import private key' on the main screen (up to 15 per chain). |
-| START | 시작하기 | Start |
-| CANCEL | 취소 | Cancel |
-| ADDRESS_TITLE | 주소 확인 | Check the address |
-| ADDRESS_LEAD | 입력한 개인키의 {0} 주소입니다. 이전 지갑에서 쓰던 주소와 전체가 같은지 확인하세요. | This is the {0} address of the private key you entered. Check that all of it matches the address from your previous wallet. |
-| NETWORK | 네트워크 | Network |
-| CORRECT | 맞습니다 | It matches |
-| WRONG | 다릅니다 | It differs |
-| WRONG_HELP | 다르면 '다릅니다'를 눌러 개인키를 다시 입력하세요. Bitcoin은 주소 형식이 다르면 주소도 다릅니다 — 앞 화면에서 형식을 바꿀 수 있습니다. | If it differs, press 'It differs' and enter the private key again. For Bitcoin, a different address type gives a different address — you can change the type on the previous screen. |
-| KEY_ONLY_NOTE | 이 지갑은 개인키로 시작해 복구 단어가 없습니다. 이 체인을 쓰려면 그 체인의 개인키를 가져오세요. | This wallet was started from a private key and has no recovery words. To use this chain, import a private key for it. |
-| YUBIKEY_NOTE | 이 YubiKey 지갑에는 복구 단어가 저장되어 있지 않습니다. 이 체인을 쓰려면 같은 복구 단어로 YubiKey에 이 체인의 키를 등록하거나(설정 → YubiKey), 그 체인의 개인키를 가져오세요. | This YubiKey wallet stores no recovery words. To use this chain, enrol this chain's key on a YubiKey with the same recovery words (Settings → YubiKey), or import a private key for that chain. |
-| IMPORT_KEY | 개인키 가져오기 | Import private key |
-| ENROL_YUBIKEY | YubiKey 등록 | Enrol YubiKey |
-| CONNECT_YUBIKEY | YubiKey 연결하기 (복구 단어 없이) | Connect YubiKey (no recovery words) |
-| SHOW_KEY | 개인키 보기 | Show private key |
-| DELETE | 삭제 | Delete |
-| NEXT_KEY | 다음 (개인키 입력) | Next (enter private key) |
-
-<!-- catalogue: yw_app::ui::screens_links::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| T_HASH_COPY | 해시 복사 | Copy hash |
-| T_ADDRESS_COPY | 주소 복사 | Copy address |
-| T_EXPLORER_OPEN | 탐색기에서 열기 | Open in explorer |
-| T_EXPLORER_COPY | 탐색기 링크 복사 | Copy explorer link |
-| T_SAVE_ADDRESS | 이 주소 저장 | Save this address |
-| PICK_ACCOUNT | 계정을 고르세요 | Choose an account |
-| ACCOUNT | 계정 | Account |
-
-<!-- catalogue: yw_app::ui::screens_llm::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| PRESET_OPENAI | OpenAI | OpenAI |
-| PRESET_CLAUDE | Claude | Claude |
-| PRESET_OPENROUTER | OpenRouter | OpenRouter |
-| PRESET_OLLAMA | Ollama (로컬) | Ollama (local) |
-| PRESET_LM_STUDIO | LM Studio (로컬) | LM Studio (local) |
-| CARD | AI 설명 (선택 기능) | AI explanation (optional) |
-| INTRO | 승인 창에 dApp 요청(거래·서명)을 AI가 한국어로 풀어 쓴 참고 설명을 따로 덧붙입니다. 기본은 꺼짐입니다. AI 설명은 틀릴 수 있고, 승인 버튼·위험 표시·경고에는 전혀 쓰이지 않습니다. | Adds a separate reference explanation of dApp requests (transactions, signatures), written by an AI in English, to the approval window. Off by default. AI explanations can be wrong and are never used for the approve button, the risk display or the warnings. |
-| STATUS_ON | 상태: 켜짐 — dApp 요청마다 {0}(으)로 요청 내용을 보냅니다 | Status: on — the request content is sent to {0} for every dApp request |
-| STATUS_UNUSABLE | 상태: 켜짐으로 저장됐지만 엔드포인트·모델이 없어 쓰지 않습니다 | Status: saved as on, but not used because the endpoint or the model is missing |
-| STATUS_OFF | 상태: 꺼짐 — 외부로 아무것도 보내지 않습니다 | Status: off — nothing is sent out |
-| ENABLE | AI 설명 사용 | Use AI explanations |
-| ENABLE_HELP | 켤 때 어떤 정보가 어디로 전송되는지 먼저 보여주고 동의를 받습니다. 지갑에서 직접 만든 보내기(EVM·Solana·Bitcoin)는 설명하지 않습니다. | Turning it on first shows what is sent where and asks for your consent. Sends made in the wallet itself (EVM, Solana, Bitcoin) are not explained. |
-| PROVIDER_CARD | AI 공급자 (OpenAI 호환) | AI provider (OpenAI-compatible) |
-| PROVIDER_HELP | OpenAI 호환 채팅 API의 전체 주소입니다(…/chat/completions). https:// 주소, 또는 이 PC에서 돌리는 로컬 모델(http://127.0.0.1 · localhost · [::1])만 허용합니다. 주소를 바꾸면 AI 설명이 꺼지고 다시 동의해야 합니다. | The full address of an OpenAI-compatible chat API (…/chat/completions). Only https:// addresses or a local model on this PC (http://127.0.0.1 · localhost · [::1]) are allowed. Changing the address turns AI explanations off and needs your consent again. |
-| QUICK_FILL | 빠른 입력 | Quick fill |
-| QUICK_HELP | 버튼은 엔드포인트 칸만 채웁니다. '저장'해야 바뀝니다. 모델 이름은 공급자 문서에서 확인하세요(OpenRouter는 openai/gpt-… · anthropic/claude-… 형식). Ollama·LM Studio는 이 PC에서 서버를 켜 두어야 합니다. | The buttons only fill the endpoint field; 'Save' applies it. Look up the model name in the provider's documentation (OpenRouter uses openai/gpt-… · anthropic/claude-…). Ollama and LM Studio need their server running on this PC. |
-| ENDPOINT | 엔드포인트 | Endpoint |
-| PATH_HINT | 주소가 /chat/completions로 끝나지 않습니다. OpenAI 호환 채팅 API의 전체 주소를 넣으세요(…/v1/responses 같은 다른 API 주소는 HTTP 404가 납니다). | The address does not end in /chat/completions. Enter the full address of an OpenAI-compatible chat API (another API address such as …/v1/responses answers HTTP 404). |
-| ANTHROPIC_NOTE | Claude(api.anthropic.com의 OpenAI 호환 층): 응답 형식은 json_schema만 받습니다(json_object는 HTTP 400). 추론 강도(reasoning_effort)는 무시합니다. Claude 5 모델은 기본으로 생각(추론)을 하므로 10초 기한에는 빠른 모델(예: claude-haiku-4-5-20251001)이 맞습니다. | Claude (the OpenAI-compatible layer of api.anthropic.com): only the json_schema response format is accepted (json_object answers HTTP 400). The reasoning effort (reasoning_effort) is ignored. Claude 5 models think (reason) by default, so a fast model (e.g. claude-haiku-4-5-20251001) suits the 10-second deadline. |
-| MODEL | 모델 | Model |
-| FORMAT | 응답 형식 | Response format |
-| FORMAT_SCHEMA | json_schema (기본) | json_schema (default) |
-| OPENAI_NOTE | api.openai.com에는 max_tokens를 보내지 않습니다(최신 추론 모델이 HTTP 400으로 거부합니다). 다른 주소로 바꾸면 이 값을 다시 씁니다. | max_tokens is not sent to api.openai.com (recent reasoning models refuse it with HTTP 400). It is used again with another address. |
-| EFFORT | 추론 강도 | Reasoning effort |
-| EFFORT_NONE | 보내지 않음 (기본) | Not sent (default) |
-| OPTIONS_HELP | 공급자가 json_schema를 거부하면(HTTP 400) json_object로 바꾸세요. max_tokens는 0이면 보내지 않고, 1–4096이면 그 값을 보냅니다. 추론 강도는 추론 모델이 답하기 전에 생각하는 양(reasoning_effort)입니다. 높을수록 느려져 10초 기한을 넘기 쉽고, 추론 모델이 아니면 HTTP 400으로 거부할 수 있습니다 — 그러면 '보내지 않음'으로 두세요. | If the provider refuses json_schema (HTTP 400), switch to json_object. max_tokens 0 is not sent; 1–4096 is sent as is. The reasoning effort is how much a reasoning model thinks before answering (reasoning_effort). Higher is slower and easily misses the 10-second deadline, and a model that does not reason may refuse it with HTTP 400 — then leave it at 'Not sent'. |
-| SAVE | 저장 | Save |
-| TEST | 연결 테스트 | Test connection |
-| TEST_HELP | 연결 테스트는 지어낸 표본 요청(주소 0x…dEaD, 0.01 SepoliaETH)으로 저장된 설정을 한 번 호출해 응답 형식만 확인합니다. 내 주소·거래는 보내지 않고, 켜기 전에도 할 수 있습니다. | The connection test calls the saved settings once with a made-up sample request (address 0x…dEaD, 0.01 SepoliaETH) and checks only the answer format. Your addresses and transactions are not sent, and it works before turning the feature on. |
-| TESTING | 연결 테스트 중… (최대 10초) | Testing the connection… (up to 10 s) |
-| KEY_CARD | AI API 키 | AI API key |
-| KEY_STATE | 저장된 API 키: {0} (저장된 값은 다시 보이지 않습니다) | Saved API key: {0} (a saved value is never shown again) |
-| KEY_NONE | 없음 | none |
-| KEY_WITHHELD | 다른 엔드포인트 주소용이라 보내지 않음 — API 키를 다시 입력하세요 | for another endpoint address, so not sent — enter the API key again |
-| KEY_SET | 설정됨 | set |
-| KEY | API 키 | API key |
-| KEY_SAVE | 키 저장 | Save key |
-| KEY_DELETE | 키 삭제 | Delete key |
-| KEY_DELETED | API 키를 지웠습니다. | API key deleted. |
-| KEY_HELP | 로컬 모델처럼 키가 필요 없으면 비워 두세요. 키는 Windows가 이 사용자 계정에서만 풀 수 있게 암호화해 저장하고, 로그에 남기지 않습니다. | Leave it empty when no key is needed, as with a local model. The key is stored encrypted so that only this Windows user account can decrypt it, and it is never logged. |
-
-<!-- catalogue: yw_app::ui::screens_mnemonics::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| NO_PHRASES | 이 지갑에는 아직 복구 단어가 없습니다(개인키·YubiKey로 시작한 지갑). 복구 단어를 더하면 그 계정이 계정 목록에 생깁니다. | This wallet has no recovery phrase yet (it was started from a private key or a YubiKey). When you add one, its accounts appear in the account list. |
-| WORDS | {0}단어 | {0} words |
-| PASSPHRASE_USED | passphrase 사용 | passphrase used |
-| ACCOUNTS | 계정: EVM {0} · Solana {1} · Bitcoin {2} · Zcash {3} | Accounts: EVM {0} · Solana {1} · Bitcoin {2} · Zcash {3} |
-| PRIMARY | 처음 만든(가져온) 복구 단어 · 지울 수 없음 | first created (imported) recovery phrase · cannot be deleted |
-| BACKUP_CONFIRMED | 백업 확인됨 | backup confirmed |
-| BACKUP_PENDING | 백업 확인 전 | backup not confirmed |
-| FIRST_ADDRESS | 첫 주소(종이에 함께 적은 주소): | First address (written on the paper with the words): |
-| SAVE | 저장 | Save |
-| CANCEL | 취소 | Cancel |
-| RENAME | 이름 바꾸기 | Rename |
-| SHOW_WORDS | 단어 보기 | Show words |
-| BACKUP_CHECK | 백업 확인 | Backup check |
-| DELETE | 지우기 | Delete |
-| IMPORT_MORE | 복구 단어 추가 가져오기 | Import another recovery phrase |
-| CREATE_MORE | 새 복구 단어 만들기 (추가) | Create another recovery phrase |
-| ADDED_HELP | 추가한 복구 단어에서도 EVM·Solana·Bitcoin·Zcash 계정을 만들 수 있습니다(각 탭의 '계정 추가'에서 복구 단어를 고릅니다). 비밀번호를 다시 입력해야 합니다. | Added recovery phrases can make EVM, Solana, Bitcoin and Zcash accounts too (choose the recovery phrase under 'Add account' on each tab). You need to enter the password again. |
-| REMOVED_ACCOUNTS | 지워지는 계정 | Accounts that will be removed |
-| REVEAL_STEP | 1. 단어 보기 (끝까지 보고 적어 두기) | 1. Show words (see them to the end and write them down) |
-| REVEALED | 단어를 끝까지 보았습니다. | You saw the words to the end. |
-| NOT_REVEALED | 아직 단어를 보지 않았습니다. | You have not seen the words yet. |
-| TYPE_STEP | 2. 확인: '{0}' 입력 | 2. Confirm: type '{0}' |
-| DELETE_THIS | 이 복구 단어 지우기 | Delete this recovery phrase |
-| ZEC_ACCOUNT | Zcash 계정 ({0}) | Zcash account ({0}) |
-| PREVIEW_TITLE | 가져올 복구 단어 | Recovery phrase to import |
-| PREVIEW_HELP | 이 복구 단어의 첫 계정(m/44'/60'/0'/0/0) 주소입니다. 다른 지갑에서 보던 주소와 같은지 확인하세요. 다르면 단어나 passphrase가 틀렸습니다. | This is the address of this recovery phrase's first account (m/44'/60'/0'/0/0). Check that it matches the address you saw in your other wallet. If it differs, the words or the passphrase are wrong. |
-| YK_SAME | 이 복구 단어는 이 지갑에 등록된 YubiKey {0}의 키를 만든 단어입니다. 가져오면 그 단어가 이 PC의 vault에 저장됩니다. | These words made the keys of YubiKey {0} enrolled in this wallet. Importing them stores the words in this PC's vault. |
-| YK_SAME_ACK | 이해했습니다: 이 단어를 이 PC에 저장하면 YubiKey의 보안 이득이 없어집니다 | I understand: storing these words on this PC removes the YubiKey's security benefit |
-| IMPORT | 가져오기 | Import |
-| PICK_EVM | 어느 복구 단어에서 계정을 만들까요? | Which recovery phrase should the account come from? |
-| PICK_SOL | 어느 복구 단어에서 Solana 계정을 만들까요? (m/44'/501'/i'/0') | Which recovery phrase should the Solana account come from? (m/44'/501'/i'/0') |
-
-<!-- catalogue: yw_app::ui::screens_received::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| RECEIVED_TOGGLE | 받은 내역도 보기 | Also show received |
-| RECEIVED_TOGGLE_HC | 받은 내역도 보기 (위 HyperCore 카드 포함) | Also show received (including the HyperCore card above) |
-| RECEIVED_HELP | 받은 내역은 참고용입니다. 여기의 주소를 복사해 보내지 마세요 — 보낼 주소는 주소록이나 상대에게 직접 받은 값을 쓰세요. | The received history is for reference. Do not copy an address from here to send to — use your address book or an address you got directly from the other person. |
-| EVM_NATIVE | 네이티브 코인 입금은 표시하지 않습니다 — 계정 카드의 '탐색기에서 주소 보기'로 확인하세요. | Native coin deposits are not shown — check them with 'View address in explorer' on the account card. |
-| DUST | 먼지 금액·0원 입금 {0}건은 숨겼습니다(주소 오염 대비). | {0} dust or zero-value deposits hidden (address poisoning). |
-| PENDING_STATUS | 상태: 미확정 (0 확인) — 바뀌거나 취소될 수 있습니다 | Status: unconfirmed (0 confirmations) — it may change or be cancelled |
-| PENDING_SENDER | 보낸 주소: 확인된 뒤 표시합니다 | Sender: shown once confirmed |
-| PENDING_HELP | 미확정 입금은 참고용입니다 — 확인(블록 1개) 전에는 잔액에 넣지 않고 보낼 때도 쓰지 않습니다. | Unconfirmed deposits are for reference — until confirmed (1 block) they are not in the balance and are not spent. |
-| GONE | 확인되기 전에 사라진 미확정 입금 {0}건 — 다른 거래로 바뀌었거나 취소되었을 수 있습니다. | {0} unconfirmed deposits disappeared before confirming — they may have been replaced or cancelled. |
-| DROPPED | 상태를 확인할 수 없어 목록에서 뺀 미확정 입금 {0}건 — 탐색기에서 확인하세요. | {0} unconfirmed deposits removed from the list because their status cannot be checked — check the explorer. |
-| NAME_MINE |  → 내 계정: {0} |  → my account: {0} |
-| NAME_BOOK |  → 주소록: {0} |  → address book: {0} |
-| LOOK_ALIKE | 주소 오염 의심 — {0}과 앞뒤가 같은 다른 주소 | Possible address poisoning — a different address with the same start and end as {0} |
-| WHOM_SENT | 보낸 내역의 주소 | an address from your sent history |
-| WHOM_MINE | 내 계정 '{0}' | my account '{0}' |
-| WHOM_BOOK | 주소록 '{0}' | address book '{0}' |
-| WHOM_QUOTED | '{0}' | '{0}' |
-| WHEN_PENDING | 미확정 | Unconfirmed |
-| WHEN_BLOCK | 블록 {0} | Block {0} |
-| WHEN_UNKNOWN | 시각 모름 | Time unknown |
-| ROW | {0} · 받음 {1} {2} | {0} · Received {1} {2} |
-| CONFIRMED_AT | 상태: 확인됨 (블록 {0}) | Status: confirmed (block {0}) |
-| CONFIRMED | 상태: 확인됨 | Status: confirmed |
-| SENDER | 보낸 주소{0} | Sender{0} |
-| NO_SENDER | 보낸 주소 - | Sender - |
-| TITLE | 받은 내역 | Received |
-| NOT_LOADED | 받은 내역을 아직 불러오지 않았습니다. | The received history is not loaded yet. |
-| LOAD_FAILED | 받은 내역을 불러오지 못했습니다: {0} | Could not load the received history: {0} |
-| LOADING | 받은 내역을 불러오는 중… | Loading the received history… |
-| EMPTY | 최근 받은 입금이 없습니다. | No recent deposits. |
-| FOLD | 받은 내역 접기 ▾ | Hide received ▾ |
-| MORE | 받은 내역 {0}건 더 보기 ▸ | Show {0} more received ▸ |
-
-<!-- catalogue: yw_app::ui::screens_reset::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| T_WAIT_STALLED | 30초가 지나도 불러오기가 끝나지 않았습니다. '다시 불러오기'를 누르거나, '잠금'을 누른 뒤 다시 잠금 해제해 보세요. 그래도 안 되면 앱을 종료했다가 다시 실행하세요. 계속되면 로그 폴더의 yw-app.log를 확인하세요. 처음부터 다시 쓰려면 복구 단어·원래 개인키, 또는 YubiKey(“YubiKey 연결하기 (복구 단어 없이)”)가 필요합니다 — 있다면 잠금 화면의 '지갑 초기화…'로 시작할 수 있습니다. | Loading has not finished after 30 seconds. Press 'Reload', or press 'Lock' and unlock again. If that does not help, quit the app and start it again. If it keeps happening, check yw-app.log in the log folder. To start over you need your recovery words or original private keys, or a YubiKey (“Connect a YubiKey (no recovery words)”) — if you have them, you can start with 'Reset wallet…' on the lock screen. |
-| T_META_FAILED | 계정 이름·주소록·연결한 사이트·보안 설정 기록이 담긴 meta 파일(meta.ywm)을 불러오지 못했습니다. 파일은 그대로 두었고, 불러오기에 성공할 때까지 이 파일에 아무것도 쓰지 않습니다. '다시 불러오기'를 누르거나, '잠금'을 누른 뒤 다시 잠금 해제해 보세요. 계속 실패하면 디스크 공간과 백신의 파일 차단을 확인하고 로그 폴더의 yw-app.log를 보세요. 그래도 안 되면 앱을 종료하고 데이터 폴더를 통째로 백업한 뒤 복구 안내(recovery-guide)를 따르세요. | The meta file (meta.ywm), which holds account names, the address book, connected sites and the security settings record, could not be loaded. The file was left as it is, and nothing is written to it until a load succeeds. Press 'Reload', or press 'Lock' and unlock again. If it keeps failing, check the disk space and whether antivirus software blocks the file, and look at yw-app.log in the log folder. If that does not help, quit the app, back up the whole data folder and follow the recovery guide (recovery-guide). |
-| T_RESET_INTRO | 이 PC의 지갑 파일을 옮겨 두고 처음 화면으로 돌아갑니다. 자산은 블록체인에 그대로 있지만, 이 지갑을 다시 쓰려면 복구 단어(니모닉) — 여러 개면 각각 — 또는 원래 개인키가 있어야 합니다. YubiKey의 키는 카드에 남아 'YubiKey 연결하기 (복구 단어 없이)'로 다시 연결할 수 있습니다. | Moves this PC's wallet files aside and returns to the first screen. Your assets stay on the blockchain, but to use this wallet again you need its recovery words (mnemonic) — each of them if there are several — or the original private keys. YubiKey keys stay on the card and can be connected again with 'Connect a YubiKey (no recovery words)'. |
-| T_RESET_NOUNLOCK | 비밀번호를 잊었어도 진행할 수 있습니다. 잠금 해제 없이 파일만 옮깁니다. | You can go ahead even if you forgot the password. Only the files are moved, without unlocking. |
-| T_RESET_MOVE | 지갑 파일(vault.ywv와 이전 사본 .prev, meta.ywm, journal.ywj, 격리된 손상 파일)을 지우지 않고 데이터 폴더 안의 새 폴더로 옮깁니다. 옮긴 파일은 예전 비밀번호로 계속 열리며, 되돌리는 방법은 복구 안내(recovery-guide)와 새 폴더의 README-reset.txt에 있습니다. | The wallet files (vault.ywv and its earlier copy .prev, meta.ywm, journal.ywj, quarantined damaged files) are moved, not deleted, to a new folder inside the data folder. The moved files still open with the old password; how to undo is in the recovery guide (recovery-guide) and in README-reset.txt in the new folder. |
-| T_RESET_YUBIKEY | YubiKey를 쓰는 지갑이었다면 YubiKey 안의 키는 그대로 남습니다. 초기화는 YubiKey를 지우거나 바꾸지 않습니다. 다시 쓰려면 복구 단어로 지갑을 가져온 뒤 YubiKey를 다시 등록하거나, 복구 단어 없이 첫 화면의 'YubiKey 연결하기 (복구 단어 없이)'로 카드의 키를 다시 연결하세요. | If the wallet used a YubiKey, the keys on the YubiKey stay as they are. A reset does not erase or change the YubiKey. To use it again, import the wallet from the recovery words and enrol the YubiKey again, or connect the card's keys again without recovery words with 'Connect a YubiKey (no recovery words)' on the first screen. |
-| T_RESET_SETTINGS | 설정(settings.json)과 저장한 API 키·RPC 주소(apikeys.dpapi)는 기본으로 그대로 둡니다. 새 지갑에서도 같은 RPC 설정을 씁니다. | The settings (settings.json) and the saved API keys and RPC addresses (apikeys.dpapi) stay by default. A new wallet uses the same RPC settings. |
-| T_RESET_IN_FLIGHT | 보내는 중인 거래가 있습니다. 초기화해도 이미 보낸 거래는 블록체인에서 계속 처리되지만, 이 앱에서는 결과를 더 볼 수 없습니다. 끝난 뒤에 초기화하는 것을 권합니다. | A transaction is being sent. Transactions already sent are still processed on the blockchain after a reset, but this app can no longer show their results. Resetting after they finish is recommended. |
-| T_EXT_COMPAT | dApp의 지갑 목록에 Your Wallet이 없으면: Chrome 툴바의 Your Wallet 아이콘 → 'MetaMask처럼 보이기'(Solana는 'Phantom처럼 보이기', Bitcoin은 'UniSat처럼'·'Xverse처럼 보이기')를 고르고 dApp 탭을 새로고침하세요. 그때는 실제 MetaMask 등 같은 종류의 확장을 꺼 두세요. | If Your Wallet is not in a dApp's wallet list: choose the Your Wallet icon in the Chrome toolbar → 'Appear as MetaMask' (Solana: 'Appear as Phantom', Bitcoin: 'Appear as UniSat' or 'Appear as Xverse') and refresh the dApp tab. Turn off the real MetaMask or other extensions of the same kind while doing so. |
-| T_EXT_COMPAT_SHORT | 지갑 목록에 Your Wallet이 없는 dApp은 Chrome의 Your Wallet 아이콘에서 'MetaMask처럼 보이기'(Solana는 'Phantom처럼', Bitcoin은 'UniSat'·'Xverse처럼')를 고른 뒤 탭을 새로고침하세요. | For a dApp whose wallet list lacks Your Wallet, choose 'Appear as MetaMask' (Solana: 'as Phantom', Bitcoin: 'as UniSat' or 'as Xverse') from the Your Wallet icon in Chrome, then refresh the tab. |
-| T_EXT_STEP_5 | 5. dApp 사이트를 열고(설치 전에 열어 둔 탭은 새로고침) “지갑 연결”에서 Your Wallet을 고르세요. 이 앱에 연결 창이 뜨면 설치가 끝난 것입니다 — 그 뒤로는 툴바의 Your Wallet 아이콘과 위 “연결 상태”에 연결됨이 보입니다. 그 전에는 아이콘이 “확인 불가”로 보이는 것이 정상입니다. | 5. Open a dApp site (refresh tabs opened before the install) and choose Your Wallet under “Connect wallet”. When the connect window appears in this app, the install is done — from then on the Your Wallet toolbar icon and “Connection status” above show connected. Before that, the icon showing “unknown” is normal. |
-| ACCOUNTS_FAILED | 계정 목록을 불러오지 못했습니다. 위 안내를 보세요. | The account list could not be loaded. See the notice above. |
-| ACCOUNTS_LOADING | 계정을 불러오는 중… | Loading accounts… |
-| RELOAD | 다시 불러오기 | Reload |
-| LOCK | 잠금 | Lock |
-| OPEN_LOG_FOLDER | 로그 폴더 열기 | Open log folder |
-| RESET_LINK | 지갑 초기화… | Reset wallet… |
-| RESET_TITLE | 지갑 초기화 | Reset wallet |
-| BACKUP_STATUS | 백업 현황 — 이 지갑을 다시 열려면 | Backup status — to open this wallet again |
-| WHAT_IT_DOES | 무엇을 하나요 | What it does |
-| MOVE_TO | 옮길 곳 | Moves to |
-| STAMP_PLACEHOLDER | <날짜시각(UTC)> | <date-time (UTC)> |
-| FILES_TO_MOVE | 옮길 파일 | Files to move |
-| NO_FILES | (옮길 지갑 파일이 없습니다) | (no wallet files to move) |
-| YUBIKEY_ENROLLED | 이 지갑에는 YubiKey가 등록되어 있습니다. YubiKey와 그 PIN은 그대로 두세요. | A YubiKey is enrolled in this wallet. Leave the YubiKey and its PIN as they are. |
-| MOVE_SETTINGS | 설정과 API 키도 함께 옮기기 (앱 설정을 처음 상태로) | Also move the settings and API keys (app settings back to defaults) |
-| CONFIRM | 확인 | Confirm |
-| TYPE_PHRASE | 계속하려면 아래 칸에 '{0}'를 입력한 뒤, 빨간 버튼을 2초 동안 누르고 있으세요. | To continue, type '{0}' in the box below, then hold the red button for 2 seconds. |
-| PHRASE_LABEL | 확인 문구 | Confirmation |
-| HOLD_NEEDS_PHRASE | '{0}'를 입력하면 누를 수 있습니다 | Type '{0}' to enable |
-| HOLD_KEEP | 계속 누르고 있으세요… | Keep holding… |
-| HOLD_TO_RESET | 2초 동안 눌러 초기화 | Hold 2 seconds to reset |
-| CANCEL | 취소 | Cancel |
-| BACK | ← 돌아가기 | ← Back |
-| EXT_TITLE | Chrome 확장 설치 | Install the Chrome extension |
-| EXT_INTRO | dApp 사이트가 이 지갑을 쓰려면 Chrome에 Your Wallet 확장을 한 번 설치해야 합니다. 확장은 요청을 이 앱에 전달할 뿐이고, 승인은 언제나 이 앱의 창에서 합니다. | For dApp sites to use this wallet, install the Your Wallet extension in Chrome once. The extension only passes requests to this app; approvals always happen in this app's windows. |
-| EXT_STATUS | 연결 상태 | Connection status |
-| EXT_HOW | 설치 방법 | How to install |
-| EXT_STEP_1 | 1. Chrome 주소창에 chrome://extensions 를 입력합니다 (아래 'chrome://extensions 주소 복사' 후 붙여넣기). | 1. Enter chrome://extensions in the Chrome address bar (use 'Copy chrome://extensions' below, then paste). |
-| EXT_STEP_2 | 2. 오른쪽 위 '개발자 모드'를 켭니다. | 2. Turn on 'Developer mode' at the top right. |
-| EXT_ID_UNKNOWN | (확인할 수 없음) | (cannot be checked) |
-| EXT_STEP_3 | 3. '압축해제된 확장 프로그램을 로드합니다'를 누르고 아래 확장 폴더를 선택합니다. 카드에 보이는 ID가 {0}인지 확인하세요(다르면 그 카드를 삭제하세요 — 앱이 연결을 받지 않습니다). | 3. Press 'Load unpacked' and select the extension folder below. Check that the ID on the card is {0} (if it differs, remove that card — the app does not accept its connection). |
-| EXT_STEP_4 | 4. 퍼즐 모양 아이콘에서 Your Wallet을 고정해 두면 편합니다. | 4. Pinning Your Wallet from the puzzle-piece icon is convenient. |
-| EXT_UPDATE | 앱을 업데이트한 뒤에는 chrome://extensions의 Your Wallet 카드에서 '새로고침'(↻)을 누르세요. | After updating the app, press 'Reload' (↻) on the Your Wallet card in chrome://extensions. |
-| EXT_FOLDER | 확장 폴더 | Extension folder |
-| EXT_EXPECTED | 있어야 할 곳 | Expected at |
-| EXT_COPY_PATH | 확장 폴더 경로 복사 | Copy extension folder path |
-| EXT_COPY_URL | {0} 주소 복사 | Copy {0} |
-| EXT_OPEN_FOLDER | 탐색기에서 폴더 열기 | Open folder in Explorer |
-| EXT_CHROME_BLOCKS | Chrome은 다른 프로그램이 chrome:// 주소를 여는 것을 막습니다. 주소를 복사한 뒤 Chrome 주소창에 붙여넣으세요. | Chrome blocks other programs from opening chrome:// addresses. Copy the address and paste it into the Chrome address bar. |
-| EXT_LINK | 브라우저에서 쓰려면: Chrome 확장 설치 방법 | To use it in the browser: how to install the Chrome extension |
-
-<!-- catalogue: yw_app::ui::screens_sites::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| DISCONNECT | 연결 해제 | Disconnect |
-| PAGE_LINE | {0} / {1}쪽 (연결 {2}곳, 한 쪽에 {3}곳) | Page {0} / {1} ({2} connections, {3} per page) |
-| PREV_PAGE | 이전 쪽 | Previous page |
-| NEXT_PAGE | 다음 쪽 | Next page |
-| PROOF_ONLY | 메시지 서명·소유 증명만 | Message signing and proof of ownership only |
-| SOL_RIGHTS | 연결·메시지 서명·거래 서명(매번 승인) | Connect, message signing, transaction signing (approved each time) |
-| SITE_DEFAULT | 사이트가 기본으로 쓰는 계정 | Account the site uses by default |
-| SITE_DEFAULT_LABEL | {0} · 사이트가 기본으로 쓰는 계정 | {0} · account the site uses by default |
-| SUMMARY_PART | {0} {1}곳 | {0} {1} |
-| SUMMARY | 연결 {0} | Connected: {0} |
-| TITLE | 연결된 사이트 · WalletConnect | Connected sites · WalletConnect |
-| HELP | 연결된 사이트는 아래 계정의 주소를 볼 수 있고, EVM 사이트는 잔액과 거래 기록도 읽을 수 있습니다. 서명과 전송은 매번 이 앱의 확인 창에서 따로 승인합니다. | Connected sites can see the addresses of the accounts below, and EVM sites can also read balances and transaction history. Every signature and transfer is approved separately in this app's confirmation window. |
-| NONE | 연결된 사이트가 없습니다 | No connected sites |
-| NONE_HELP | dApp 사이트에서 '지갑 연결'을 누르고 이 앱의 연결 창에서 승인하면 여기에 표시됩니다. | Press 'Connect wallet' on a dApp site and approve it in this app's connect window; the site then appears here. |
-| LOCAL_HTTP | 로컬 개발 사이트(http) | Local development site (http) |
-| NETWORK | 네트워크 | Network |
-| CONNECTED_AT | 연결 시각 | Connected at |
-| RIGHTS | 권한 | Permissions |
-| DISCONNECT_ALL | 모든 사이트 연결 해제 | Disconnect all sites |
-| PENDING_MORE |  외 {0}건 |  and {0} more |
-| PENDING | 잠금 해제를 기다리는 요청 {0}건: {1} | Requests waiting for unlock ({0}): {1} |
-
-<!-- catalogue: yw_app::ui::screens_sol::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| RAW_FINALIZED | {0} 원시 단위 · decimals {1} · RPC finalized 기준(참고) | {0} raw units · decimals {1} · RPC finalized (reference) |
-| BALANCE_UNKNOWN | 잔액 알 수 없음 | Balance unknown |
-| NOT_READ | 아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요. | Not read yet. Check the RPC connection and refresh. |
-| NO_ATA | 이 계정에는 아직 {0} 토큰 계정(ATA)이 없습니다. 받으면 보내는 쪽이 만듭니다. | This account has no {0} token account (ATA) yet. The sender creates it when you receive. |
-| FROZEN | {0} — 토큰 발행자가 이 토큰 계정을 동결해 보내거나 받을 수 없습니다. | {0} — the token issuer froze this token account, so it cannot send or receive. |
-| CANNOT_CHECK | 확인할 수 없음 | Cannot check |
-| INVALID_ACCOUNT | RPC가 돌려준 계정이 이 토큰의 토큰 계정 형식과 달라 잔액을 표시하지 않습니다. | The account the RPC returned is not in this token's token account format, so no balance is shown. |
-| STATUS_SUCCEEDED | 성공 | Succeeded |
-| STATUS_FAILED | 실패 | Failed |
-| STATUS_EXPIRED | 만료 (전송되지 않음) | Expired (not sent) |
-| STATUS_ENDED | 종결 | Ended |
-| TAB_EVM | EVM (이더리움 등) | EVM (Ethereum etc.) |
-| DEVNET_PILL | 테스트넷 — 실제 자산이 아닙니다 | Testnet — not real assets |
-| DEVNET_BANNER | Solana devnet (테스트) — 실제 자산이 아닙니다 | Solana devnet (test) — not real assets |
-| NETWORK | 네트워크 | Network |
-| JOURNAL_DAMAGED | 거래 저널의 Solana 기록이 손상되어 Solana 보내기를 멈췄습니다. (E-VLT-006) | The Solana records of the transaction journal are damaged, so Solana sending is stopped. (E-VLT-006) |
-| RPC_NONE | RPC 주소 없음 (E-KEY-005) | No RPC address (E-KEY-005) |
-| RPC_CONNECTED | 연결됨 (genesis 확인) | Connected (genesis verified) |
-| RPC_UNCHECKED | 확인 전 | Not checked yet |
-| LAMPORTS_FINALIZED | {0} lamports · RPC finalized 기준(참고) | {0} lamports · RPC finalized (reference) |
-| LAMPORTS_FINALIZED_READ | {0} lamports · RPC finalized 기준(참고) · {1} | {0} lamports · RPC finalized (reference) · {1} |
-| BALANCE_DASH | 잔액 — | Balance — |
-| TOKEN_UNCHECKED | {0} 확인할 수 없음 | {0} cannot be checked |
-| TOKENS | 토큰: {0} | Tokens: {0} |
-| SEND | 보내기 | Send |
-| RECEIVE | 받기 | Receive |
-| RPC_SETUP | RPC 설정하기 | Set up RPC |
-| REFRESH | 새로고침 | Refresh |
-| MY_ACCOUNTS | 내 Solana 계정 | My Solana accounts |
-| CREATING | Solana 계정을 만드는 중… | Creating a Solana account… |
-| NO_ACCOUNTS | Solana 계정이 없습니다. | There is no Solana account. |
-| SAVE | 저장 | Save |
-| CANCEL | 취소 | Cancel |
-| RENAME | 이름 바꾸기 | Rename |
-| HIDE | 숨기기 | Hide |
-| REVEAL_KEY | 개인키 보기 | Show private key |
-| DELETE | 삭제 | Delete |
-| IMPORT_KEY | 개인키 가져오기 | Import private key |
-| ADD_ACCOUNT | 계정 추가 | Add account |
-| SCAN | 다른 경로 스캔 | Scan other paths |
-| SCAN_HINT | 안 보이는 계정은 '다른 경로 스캔'으로 찾습니다. | Find accounts that are not shown with 'Scan other paths'. |
-| SENT_TXS | 보낸 거래 | Sent transactions |
-| TO_RAW | 받는 주소 {0} | Recipient {0} |
-| NO_SENT | 아직 보낸 거래가 없습니다. | No sent transactions yet. |
-| TO_LINE | 받는 주소 | Recipient |
-| TO_LINE_BOOK | 받는 주소 → 주소록: {0} | Recipient → address book: {0} |
-| TO_LINE_OWN | 받는 주소 → 내 계정: {0} | Recipient → my account: {0} |
-| TOKENS_TITLE | 토큰 | Tokens |
-| ALLOWLIST_ONLY | 허용 목록 토큰만 표시합니다 ({0}). 다른 토큰·NFT는 보이지 않고 보낼 수 없습니다. | Only allowlisted tokens are shown ({0}). Other tokens·NFTs are not shown and cannot be sent. |
-| NO_VISIBLE_TOKENS | 보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다. | No visible tokens. Hidden tokens can be shown again below. |
-| HIDDEN_COLLAPSE | 숨긴 토큰 {0}개 접기 ▾ | Collapse hidden tokens ({0}) ▾ |
-| HIDDEN_SHOW | 숨긴 토큰 {0}개 보기 ▸ | Show hidden tokens ({0}) ▸ |
-| HIDE_NOTE | 숨기기는 이 카드에서만 감춥니다. 보내기 화면의 자산 선택, 승인 창의 확인, 활동 기록은 그대로입니다. | Hiding applies to this card only. The asset choice on the send screen, the checks in the approval window and the activity stay the same. |
-| HIDDEN | 숨김 | Hidden |
-| UNHIDE | 다시 보이기 | Show again |
-| SEND_TITLE | 보내기 — {0} | Send — {0} |
-| PENDING_SEND | 이 계정의 이전 전송을 확인 중입니다. 확정된 뒤 보낼 수 있습니다. | A previous send from this account is being confirmed. You can send once it is final. |
-| FROM_ACCOUNT | 보내는 계정 | From account |
-| PATH_BALANCE | {0} · 잔액 {1} (RPC 참고) | {0} · balance {1} (RPC, reference) |
-| RECIPIENT_CARD | 받는 사람 | Recipient |
-| MOVE_NOTE | 비표준 경로 계정의 자금을 내 표준 계정으로 옮깁니다. 받는 주소와 '보내기 최대'는 바꿀 수 없습니다. | Moves the funds of a non-standard path account to your standard account. The recipient and 'Send max' cannot be changed. |
-| PICK_BOOK | 주소록에서 선택 | Choose from address book |
-| ADDRESS_HINT | Solana 주소 (base58) | Solana address (base58) |
-| TOKEN_ADDRESS_HINT | {0}을(를) 받을 사람의 지갑 주소를 넣으세요 ({0} 토큰 계정(ATA) 주소가 아닙니다). | Enter the wallet address of the person receiving {0} (not a {0} token account (ATA) address). |
-| CHECK_WHOLE | 강조된 앞뒤 4자만 보지 말고 가운데까지 주소 전체를 확인하세요. | Do not check only the highlighted first and last 4 characters — check the whole address, the middle too. |
-| LOOKALIKE_BOOK | 주소록 '{0}' | address book '{0}' |
-| LOOKALIKE_OWN | 내 계정 '{0}' | my account '{0}' |
-| LOOKALIKE_SENT | 보낸 내역의 주소 | an address in your send history |
-| LOOKALIKE | {0}와(과) 앞 3자 또는 뒤 3자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다. (승인 창 고위험 L03) | Same first 3 or last 3 characters as {0}, but a different address. This may be an address poisoning attack. (approval window high risk L03) |
-| OFF_CURVE | 일반 지갑이 아님: 프로그램 소유 주소(PDA)나 토큰 계정일 수 있음 (승인 창 고위험 L02) | Not a regular wallet: may be a program-owned address (PDA) or a token account (approval window high risk L02) |
-| REVIEW | 검토 | Review |
-| ASSET_CARD | 보낼 자산과 금액 | Asset and amount to send |
-| ASSET | 자산 | Asset |
-| SOL_HOLDING_UNREAD | SOL · 보유: 잔액을 아직 읽지 못했습니다 | SOL · held: balance not read yet |
-| SOL_HOLDING | SOL · 보유 {0} (RPC 참고) | SOL · held {0} (RPC, reference) |
-| SPL_HOLDING | {0} · SPL Token · 보유 {1} | {0} · SPL Token · held {1} |
-| MINT_PINNED | mint (허용 목록 고정) | mint (pinned in the allowlist) |
-| MAX | 최대 | Max |
-| AMOUNT | 금액 ({0}) | Amount ({0}) |
-| MAX_SOL | 최대: 잔액 − 최대 수수료를 보내고 SOL 잔액은 0이 됩니다(승인 창에서 확인). | Max: sends the balance − the max fee, and the SOL balance becomes 0 (confirmed in the approval window). |
-| MAX_SPL | 최대: {0} 전부를 보냅니다. 수수료(와 필요하면 받는 토큰 계정 생성비)는 SOL로 냅니다. | Max: sends all {0}. The fee (and the receiving token account's creation cost when needed) is paid in SOL. |
-| FEE_ESTIMATE | 예상 수수료 약 {0} (최대 {1}) — 최종 수수료는 승인 창에서 확인합니다. | Expected fee about {0} (max {1}) — the final fee is shown in the approval window. |
-| FEE_CALC | 계산: 기본 5,000 lamports + 우선 수수료(CU 한도 {0}), 상한 {1} lamports. | Calculation: base 5,000 lamports + priority fee (CU limit {0}), cap {1} lamports. |
-| FEE_HIDE | 수수료 계산 숨기기 ▾ | Hide fee calculation ▾ |
-| FEE_SHOW | 수수료 계산 보기 (lamports·CU) ▸ | Show fee calculation (lamports·CU) ▸ |
-| ATA_NOTE | 받는 사람에게 {0} 토큰 계정이 없으면 이 거래가 만들고, 생성 비용(rent)을 보내는 계정의 SOL로 냅니다. 금액은 승인 창에서 확인하세요. 보낸 뒤에도 SOL이 조금 남아야 합니다. | If the recipient has no {0} token account, this transaction creates it and the sending account pays its creation cost (rent) in SOL. Check the amount in the approval window. Some SOL must remain after sending. |
-| NO_MATCH | 일치하는 주소록·내 계정이 없습니다. | No matching address book entry·own account. |
-| RESULT_TITLE | 보내기 결과 | Send result |
-| RESULT_SENT | 서명하고 저널에 기록한 뒤 전송했습니다. | Signed, recorded in the journal, then sent. |
-| RESULT_ENDED | 종결 (활동 참고) | Ended (see activity) |
-| STATUS | 상태 | Status |
-| SIGNATURE | 서명(거래 ID) | Signature (transaction ID) |
-| COPY_HASH | 해시 복사 | Copy hash |
-| BACK_MAIN | 메인으로 | Back to main |
-| SCAN_BACK | 스캔 결과로 | Back to scan results |
-| SEND_AGAIN | 다시 보내기 | Send again |
-| SEND_AGAIN_NOTE | 같은 받는 주소·금액으로 보내기 화면을 다시 엽니다. 새로 검토하고 새로 승인해야 합니다(이전 승인은 쓰지 않음). | Opens the send screen again with the same recipient·amount. You review and approve again (the earlier approval is not used). |
-| SEND_NOW | 지금 다시 전송 | Resend now |
-| SEND_NOW_NOTE | 서명한 같은 거래를 바로 다시 보냅니다. 서명이 같아 한 번만 처리됩니다. 블록해시가 만료된 것이 RPC로 확인되면 새로 서명해 다시 보낼 수 있습니다. | Sends the same signed transaction again right away. The signature is the same, so it is processed only once. Once the RPC shows the blockhash expired, you can sign again and resend. |
-| RECEIVE_TITLE | 받기 — {0} | Receive — {0} |
-| BACKUP_PENDING | 백업 확인 전입니다. 확인을 마치기 전에는 큰 금액을 받지 마세요. | The backup is not confirmed yet. Do not receive large amounts until it is. |
-| DEVNET_ADDRESS | devnet(테스트) 주소입니다. 주소 자체는 mainnet과 같습니다. | This is a devnet (test) address. The address itself is the same as on mainnet. |
-| RECEIVE_ONLY | SOL과 허용 목록 토큰({0})만 받으세요. 다른 토큰은 이 지갑에 보이지 않고 보낼 수 없습니다. | Receive only SOL and allowlisted tokens ({0}). Other tokens are not shown in this wallet and cannot be sent. |
-| TOKEN_RECEIVE_NOTE | 토큰을 보내는 쪽에도 이 지갑 주소를 알려주면 됩니다(토큰 계정 주소는 상대 지갑이 계산합니다). | For tokens, give the sender this wallet address too (the sender's wallet computes the token account address). |
-| SETTINGS_TITLE | Solana 네트워크 | Solana network |
-| SETTINGS_HELP | 메인 화면 Solana 탭에서 쓸 네트워크입니다. devnet은 시험용이며 실제 자산이 아닙니다. | The network of the Solana tab on the main screen. devnet is for testing and holds no real assets. |
-| CLUSTER | 클러스터 | Cluster |
-| DEVNET_RADIO | devnet (테스트) | devnet (test) |
-| RPC_ROWS | RPC 주소는 '네트워크(RPC)' 구역의 solana:mainnet·solana:devnet 행에 있습니다. | The RPC addresses are in the solana:mainnet·solana:devnet rows of the 'Networks (RPC)' section. |
-| SCAN_SETTINGS_HELP | 다른 지갑(Ledger Live, solana-keygen 등)에서 쓰던 경로의 계정을 찾습니다. | Finds accounts on the paths other wallets use (Ledger Live, solana-keygen etc.). |
-| FEE_CAP_TITLE | Solana 수수료 상한 (고급) | Solana fee cap (advanced) |
-| FEE_CAP_HELP | 지갑이 계산한 수수료가 이 값을 넘으면 보내기를 막습니다. 보통은 바꿀 필요가 없습니다. | Sending is blocked when the fee the wallet computes exceeds this value. Usually there is no need to change it. |
-| FEE_CAP_LABEL | 수수료 상한 (lamports) | Fee cap (lamports) |
-| CU_CAP_LABEL | CU 가격 상한 (micro-lamports/CU) | CU price cap (micro-lamports/CU) |
-| DEFAULTS | 기본값으로 | Defaults |
-| FEE_RANGE_HELP | 수수료 상한 10,000–10,000,000, CU 가격 상한 0–100,000,000. 우선 수수료 가격은 최근 값의 p75와 두 상한 중 작은 값입니다. | Fee cap 10,000–10,000,000, CU price cap 0–100,000,000. The priority fee price is the smaller of the recent p75 and the two caps. |
-| SCAN_TITLE | 다른 경로 스캔 — {0} | Scan other paths — {0} |
-| SCAN_NOTICE | 다른 지갑(Ledger Live, solana-keygen 등)의 경로 m/44'/501'/i', m/44'/501', BIP39 seed[0..32]와 표준 경로 m/44'/501'/i'/0'의 계정 0–49를 조회합니다(연속 5개가 비면 중단). 읽기 전용이며 서명하지 않습니다. | Looks up accounts 0–49 on the paths of other wallets (Ledger Live, solana-keygen etc.) m/44'/501'/i', m/44'/501', BIP39 seed[0..32] and the standard path m/44'/501'/i'/0' (stops after 5 empty in a row). Read only; nothing is signed. |
-| SCAN_PRIVACY | 조회하는 모든 주소가 RPC 공급자(설정한 {0} 엔드포인트의 운영자)에 전달되어 서로 연결될 수 있습니다. | Every address looked up goes to the RPC provider (the operator of the {0} endpoint you set) and can be linked together. |
-| SCAN_START | 알겠습니다 — 스캔 시작 | Understood — start scan |
-| SCANNING | 조회하는 중… | Looking up… |
-| SCAN_EMPTY | 잔액이 있는 다른 경로 계정이나 추가할 표준 계정이 없습니다. | There is no other-path account with a balance and no standard account to add. |
-| MOVE_TARGET_LABEL | 옮겨 받을 계정 | Receiving account |
-| RPC_REFERENCE | (RPC 참고) | (RPC, reference) |
-| MOVE_TO_STANDARD | 표준 계정으로 이동 | Move to standard account |
-| SCAN_MOVE_NOTE | 비표준 경로 자금은 주 복구 단어의 표준 계정으로 '보내기 최대'만 할 수 있습니다(승인 창 L07). 자산마다 한 번씩 옮기며, 이 결과는 클러스터를 바꾸거나 잠글 때까지 남습니다. 다른 표준 계정으로 받으려면 Solana 탭에서 그 계정을 고르세요. | Non-standard path funds can only go to a standard account of the primary recovery phrase with 'Send max' (approval window L07). Each asset moves once, and these results stay until you change the cluster or lock. To receive on another standard account, choose it in the Solana tab. |
-| SCAN_AGAIN | 다시 스캔 | Scan again |
-
-<!-- catalogue: yw_app::ui::screens_walletconnect::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| WC_SETUP_INTRO | 확장 프로그램 없이 dApp에 연결하려면(EVM) Reown Project ID를 한 번 저장하세요. dashboard.reown.com에서 무료 프로젝트를 만들면 받는 32자리 값이고 비밀값이 아닙니다. 프로젝트의 허용 출처(allowlist)는 비워 둡니다. | To connect to dApps without the extension (EVM), save a Reown Project ID once. It is the 32-character value you get by creating a free project at dashboard.reown.com, and it is not a secret. Leave the project's allowed origins (allowlist) empty. |
-| WC_INTRO | 확장 프로그램 대신 WalletConnect로 dApp에 연결합니다(EVM). 연결과 서명은 확장과 같은 이 앱의 승인 창에서 확인합니다. | Connects to dApps with WalletConnect instead of the extension (EVM). Connections and signatures are checked in this app's approval window, as with the extension. |
-| WC_STEP_1 | 1. dApp의 WalletConnect 창에서 '링크 복사'를 누르거나, QR을 Win+Shift+S로 캡처합니다. | 1. Press 'Copy link' in the dApp's WalletConnect window, or capture the QR code with Win+Shift+S. |
-| WC_STEP_2 | 2. '클립보드에서 연결'을 누릅니다. 클립보드는 이 버튼을 누를 때만 읽습니다. | 2. Press 'Connect from clipboard'. The clipboard is read only when you press this button. |
-| CARD_CONNECT | WalletConnect 연결 | WalletConnect connection |
-| CLIPBOARD_CONNECT | 클립보드에서 연결 | Connect from clipboard |
-| URI_LABEL | 또는 연결 주소 (wc:…) | Or link (wc:…) |
-| PAIR | 연결 | Connect |
-| FILE_FOLD | 다른 방법 (이미지 파일) 접기 ▾ | Other way (image file): hide ▾ |
-| FILE_OPEN | 다른 방법 (이미지 파일) ▸ | Other way (image file) ▸ |
-| FILE_LABEL | 이미지 파일 경로 | Image file path |
-| FILE_QR | 이미지 파일에서 QR 읽기 | Read QR from image file |
-| RELAY | 릴레이 | Relay |
-| PROJECT_FOLD | Project ID 바꾸기 접기 ▾ | Change Project ID: hide ▾ |
-| PROJECT_OPEN | Project ID 바꾸기 ▸ | Change Project ID ▸ |
-| CARD_SETUP | WalletConnect (선택) — 꺼져 있음 | WalletConnect (optional) — off |
-| SAVE | 저장 | Save |
-| REOWN_COPY | dashboard.reown.com 주소 복사 | Copy dashboard.reown.com address |
-| PROJECT_HELP | dashboard.reown.com에서 무료 프로젝트를 만들고 그 Project ID(32자리)를 넣습니다. 비밀값이 아닙니다. 프로젝트의 허용 출처(allowlist)는 비워 두세요. 비우고 저장하면 WalletConnect가 꺼집니다. | Create a free project at dashboard.reown.com and enter its Project ID (32 characters). It is not a secret. Leave the project's allowed origins (allowlist) empty. Saving it empty turns WalletConnect off. |
-| SESSION_TITLE | {0}  ·  WalletConnect 세션 | {0}  ·  WalletConnect session |
-| SITE_URL | 사이트 주소 | Site address |
-| STATUS | 상태 | Status |
-| UNACKNOWLEDGED | 연결 확인 중 — dApp의 확인을 기다리는 중입니다. 몇 분 안에 확인되지 않으면 자동으로 끊습니다. | Confirming the connection — waiting for the dApp to confirm. It is disconnected automatically if not confirmed within a few minutes. |
-| NETWORK | 네트워크 | Network |
-| CREATED | 연결 시각 | Connected at |
-| EXPIRY | 만료 | Expires |
-| DISCONNECT | 연결 해제 | Disconnect |
-| DISCONNECT_ALL | 모든 WalletConnect 세션 끊기 | Disconnect all WalletConnect sessions |
-
-<!-- catalogue: yw_app::ui::screens_yubikey::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| BTN_CANCEL | 취소 | Cancel |
-| BTN_NEXT | 다음 | Next |
-| BTN_RETRY | 다시 시도 | Try again |
-| BTN_FINISH | 완료 | Done |
-| BTN_READ_AGAIN | 다시 읽기 | Read again |
-| BTN_CHOOSE_AGAIN | ← 다시 고르기 | ← Choose again |
-| BTN_NEXT_CONFIRM | 다음 (확인) | Next (confirm) |
-| BTN_NEXT_WORDS | 다음 (복구 단어 입력) | Next (enter recovery words) |
-| BTN_SET_PIN | PIN 설정 | Set PIN |
-| BTN_SET_PIN_NOW | PIN 설정하기 | Set PIN now |
-| STEP_CONFIRM | 확인 | Confirm |
-| STEP_RESULT | 결과 | Result |
-| CHECKING | 확인 중… | Checking… |
-| FIELD_PATH | 경로 | Path |
-| FIELD_POLICY | 정책 | Policy |
-| FIELD_FIRMWARE | 펌웨어 | Firmware |
-| FIELD_RELATION | 관계 | Relation |
-| FIELD_PIV_MANAGEMENT | PIV 관리 키 | PIV management key |
-| PATH_LINE | 경로: {0} | Path: {0} |
-| LABEL_TOUCH | 터치 | Touch |
-| LABEL_ZEC_NETWORK | Zcash 네트워크 | Zcash network |
-| LABEL_ADDRESS_TYPE | 주소 형식 ({0}) | Address type ({0}) |
-| LABEL_ACCOUNT_INDEX | 계정 인덱스 (0–{0}) | Account index (0–{0}) |
-| LABEL_ADDRESS_INDEX | 주소 인덱스 (0–{0}) | Address index (0–{0}) |
-| TYPE_WORD | 확인: '{0}' 입력 | Confirm: type '{0}' |
-| SHARED_ACK | 이해했습니다: 공유 키는 두 체인의 신원을 연결할 수 있습니다 | I understand: the shared key can link my identities on the two chains |
-| RUNNING_KEEP | YubiKey를 빼지 마세요. 몇 초 걸립니다(터치는 필요 없습니다). | Do not remove the YubiKey. It takes a few seconds (no touch needed). |
-| NO_SIGN_BEFORE_PIN | PIN을 설정하기 전에는 이 YubiKey로 서명하지 않습니다. | This YubiKey does not sign until its PIN is set. |
-| BACKUP_COPY | 백업 복사본 | Backup copy |
-| TOUCH_NEVER | 터치 없음 | No touch |
-| TOUCH_ALWAYS | 항상 | Always |
-| TOUCH_CACHED | 15초 유지 | Cached 15 s |
-| TOUCH_ALWAYS_FIXED | 항상(고정) | Always (fixed) |
-| TOUCH_CACHED_FIXED | 15초 유지(고정) | Cached 15 s (fixed) |
-| POLICY_TOUCH | 터치: {0} | Touch: {0} |
-| POLICY_TOUCH_SESSION | 터치: {0} · PIN: 세션마다 | Touch: {0} · PIN: once per session |
-| POLICY_TOUCH_EVERY | 터치: {0} · PIN: 서명마다 | Touch: {0} · PIN: every signature |
-| KIND_NONE | 없음 | None |
-| KIND_EVM | EVM 계정 | EVM account |
-| KIND_BTC | Bitcoin 주소 | Bitcoin address |
-| KIND_SHARED | EVM 공유 키 | EVM shared key |
-| KIND_ZEC | Zcash 주소 | Zcash address |
-| ZEC_MAINNET | 메인넷 (t1…) | Mainnet (t1…) |
-| ZEC_TESTNET | 테스트넷 (tm…) | Testnet (tm…) |
-| YK_PINS_FIRST | YubiKey 지갑은 PIN 설정을 마쳐야 끝납니다. 공장 기본 PIN(123456 / 12345678)으로는 서명하지 않습니다 — 아래 'PIN 설정하기'로 PIN을 바꾸세요. | The YubiKey wallet is finished only after the PIN setup. It does not sign with the factory default PINs (123456 / 12345678) — change the PIN with 'Set PIN now' below. |
-| YK_PIN_NEEDED | 이 YubiKey는 공장 기본 PIN을 쓰고 있어 서명하지 않았습니다. PIN을 설정한 뒤 다시 서명하세요. | This YubiKey uses its factory default PIN, so it did not sign. Set the PIN, then sign again. |
-| YK_LIST | YubiKey 계정은 복구 단어에서 만든 키를 YubiKey에 넣어 두고, 서명할 때마다 YubiKey에서 PIN과 터치로 서명합니다. 이 PC에는 공개키·주소·슬롯 표만 있습니다. 같은 키를 여러 YubiKey에 넣어 서로의 백업으로 쓸 수 있습니다(최대 8개). | YubiKey accounts keep keys made from recovery words on the YubiKey, and every signature is made on the YubiKey with the PIN and a touch. This PC holds only public keys, addresses and the slot table. The same keys can go on several YubiKeys as backups of each other (up to 8). |
-| YK_MNEMONIC_WALLET | 이 지갑의 복구 단어로 등록하면 그 단어가 이 PC에도 있으므로 보안 이득이 없습니다. 다른 복구 단어로 등록하거나, 키를 PC 밖에 두려면 첫 화면의 'YubiKey 지갑'(복구 단어를 저장하지 않는 지갑)을 새로 만드세요. | Enrolling with this wallet's recovery words adds no security, because those words are also on this PC. Enrol with other recovery words, or to keep the keys off the PC, create a new 'YubiKey wallet' (a wallet that does not store recovery words) from the first screen. |
-| PIN_GUIDE_PW1 | OpenPGP PIN: EVM·Bitcoin 서명할 때마다 입력 (기본 123456, 6자 이상) | OpenPGP PIN: entered for every EVM and Bitcoin signature (default 123456, 6 or more characters) |
-| PIN_GUIDE_PW3 | OpenPGP 관리자 PIN: 키를 넣을 때, OpenPGP PIN이 잠겼을 때 (기본 12345678, 8자 이상) | OpenPGP admin PIN: when importing keys and when the OpenPGP PIN is locked (default 12345678, 8 or more characters) |
-| PIN_GUIDE_PIV_PIN | PIV PIN: Solana 서명할 때 (기본 123456, 6–8자) | PIV PIN: for Solana signatures (default 123456, 6–8 characters) |
-| PIN_GUIDE_PUK | PIV PUK: PIV PIN이 잠겼을 때 풀기 (기본 12345678, 6–8자) | PIV PUK: unlocks a locked PIV PIN (default 12345678, 6–8 characters) |
-| PIN_GUIDE_MANAGEMENT | PIV 관리 키: 앱이 자동으로 만들어 PIN으로 잠가 보관 (입력할 필요 없음) | PIV management key: made by the app and kept locked with the PIN (nothing to enter) |
-| YK_PIN_LOCKS | 각각 3번 틀리면 따로 잠깁니다. 하나가 잠겨도 다른 쪽(OpenPGP/PIV)은 그대로이고, FIDO2·패스키 로그인은 이 중 어느 것과도 관계없습니다. | Each locks on its own after 3 wrong tries. If one locks, the other side (OpenPGP/PIV) stays as it is, and FIDO2/passkey sign-in is unrelated to all of them. |
-| YK_PIN_EASY | 편하게 쓰려면: 8자리 하나로 통일하세요 (네 개 모두 같은 값). 기본값 그대로 두면 YubiKey를 가진 사람이 서명할 수 있습니다. | For ease of use: use one 8-character PIN (the same value for all four). If you keep the defaults, anyone holding the YubiKey can sign. |
-| YK_PIN_TRADEOFF | 순서: PIV PIN → PIV PUK → PIV 관리 키(새로 만들어 PIN으로 보호) → OpenPGP 관리자 PIN → OpenPGP PIN. 하나로 통일하면 잠기기 전까지 맞혀 볼 기회가 늘고(네 곳 각 3번), 서명 PIN을 아는 사람이 관리자 권한도 갖습니다. 개인용으로는 괜찮은 선택입니다. | Order: PIV PIN → PIV PUK → PIV management key (made new and protected with the PIN) → OpenPGP admin PIN → OpenPGP PIN. One PIN for all gives more guesses before everything locks (3 at each of four places), and whoever knows the signing PIN also has admin rights. For personal use it is a reasonable choice. |
-| YK_PROTECT_MGMT | PIV 관리 키 자동 보호: 새 관리 키를 이 PC에서 무작위로 만들어 YubiKey에 PIN으로 잠가 둡니다('ykman piv access change-management-key --generate --protect'와 같음). 현재 PIV PIN만 묻고, 관리 키는 보여 주지도 묻지도 않습니다. | Protect PIV management key: a new management key is made at random on this PC and locked on the YubiKey with the PIN (the same as 'ykman piv access change-management-key --generate --protect'). Only the current PIV PIN is asked; the management key is never shown or asked. |
-| YK_IMPORT | 복구 단어에서 고른 키를 YubiKey에 씁니다. 그 슬롯에 이번에 넣을 키가 아닌 다른 키가 있으면 위의 확인을 마친 뒤에만 덮어씁니다. | Writes the chosen keys from the recovery words to the YubiKey. If a slot holds a key other than the one being imported, it is overwritten only after the confirmation above. |
-| YK_ADOPT | YubiKey에 이미 같은 복구 단어의 키가 들어 있을 때 씁니다. 카드에는 아무것도 쓰지 않고, 카드의 공개키가 복구 단어와 맞는지만 확인해 지갑에 연결합니다(재설치·새 PC·지갑 초기화 후). | Use this when the YubiKey already holds keys of the same recovery words. Nothing is written to the card; the wallet only checks that the card's public keys match the recovery words and connects them (after a reinstall, a new PC or a wallet reset). |
-| STEP_PLAN | 키·슬롯 고르기 | Choose keys and slots |
-| STEP_CREDENTIALS | 자격 정보 | Credentials |
-| STEP_CONNECT_READ | YubiKey 읽기·키 고르기 | Read YubiKey and choose keys |
-| STEP_CONNECT_ADDRESSES | 주소 확인 | Check addresses |
-| STEP_RESLOT_CHOOSE | 새 구성 고르기 | Choose new layout |
-| TITLE_YK_WALLET | YubiKey 지갑 만들기 | Create a YubiKey wallet |
-| BEFORE_START | 시작하기 전에 | Before you start |
-| INTRO_PAPER | · 종이와 펜, YubiKey를 준비하세요. 새 복구 단어 24개를 한 번 보여 드립니다. | · Have paper, a pen and the YubiKey ready. The 24 new recovery words are shown once. |
-| INTRO_NOT_STORED | · 복구 단어는 이 PC에 저장하지 않습니다. 적은 종이가 이 지갑의 유일한 백업입니다. | · The recovery words are not stored on this PC. The paper you write them on is this wallet's only backup. |
-| INTRO_CHECK | · 단어 4개로 바르게 적었는지 확인한 뒤, YubiKey에 넣을 키를 고르고 가져옵니다. | · After checking 4 words to see that you wrote them correctly, you choose the keys for the YubiKey and import them. |
-| INTRO_BACKUP | · 같은 단어로 백업 YubiKey를 바로 더 등록할 수 있습니다(마칠 때까지 메모리에만 있음). | · You can enrol backup YubiKeys with the same words right away (they stay only in memory until you finish). |
-| INTRO_ADMIN_PIN | · OpenPGP 관리자 PIN(새 카드는 12345678)이 필요합니다. | · The OpenPGP admin PIN is needed (12345678 on a new card). |
-| INTRO_TIME | · 10분쯤 걸리고, 중간에 유휴 한도(기본 10분) 넘게 입력이 없으면 처음부터 다시 합니다. | · It takes about 10 minutes; with no input for longer than the idle limit (10 minutes by default), you start over. |
-| INTRO_WARN | 복구 단어를 아는 사람은 누구든 YubiKey 없이 자산을 옮길 수 있습니다. 사진·클라우드에 남기지 마세요. | Anyone who knows the recovery words can move the assets without the YubiKey. Do not keep them in photos or the cloud. |
-| BTN_START | 시작하기 | Start |
-| CARD_YK_ACCOUNTS | YubiKey 계정 | YubiKey accounts |
-| BTN_ENROL | YubiKey 등록 | Enrol YubiKey |
-| BTN_CONNECT | YubiKey 연결하기 (복구 단어 없이) | Connect YubiKey (without recovery words) |
-| UNLOCK_TO_USE | 잠금을 해제하면 쓸 수 있습니다. | Available after unlocking. |
-| FACTORY_BAND | PIN: 공장 기본값 — 서명 안 됨 | PIN: factory default — cannot sign |
-| FIELD_SLOTS | 슬롯 | Slots |
-| COUNT | {0}개 | {0} |
-| BTN_PINS_CLOSE | PIN 설정 닫기 | Close PIN setup |
-| BTN_PINS_CHANGE | PIN 설정 / 기본값 변경 (PIN 안내) | Set PIN / change defaults (PIN guide) |
-| BTN_RESLOT | 슬롯 구성 바꾸기 | Change slot layout |
-| DANGER | 위험한 작업 | Dangerous actions |
-| BTN_REMOVE_RECORD | 지갑에서 기록 지우기 (카드는 그대로) | Remove record from wallet (card unchanged) |
-| BTN_ERASE_KEYS | YubiKey의 키 지우기… | Erase keys on the YubiKey… |
-| LAST_KEY | 이 지갑의 마지막 키라 기록을 지울 수 없습니다(지갑 초기화로만 가능). | This is the wallet's last key, so its record cannot be removed (only by resetting the wallet). |
-| CARD_PER_ACCOUNT | 계정별 YubiKey | YubiKeys per account |
-| BTN_RENAME_CARD | 이름 바꾸기 | Rename |
-| BTN_CLEAR_CARD_NAME | 이름 지우기 | Clear name |
-| CARD_NAME_HELP | 이 YubiKey를 구별할 이름입니다(예: 메인, 백업). 일련번호는 이름 옆에 늘 함께 보입니다. 비우고 저장하면 이름을 지웁니다. | A name to tell this YubiKey apart (for example Main or Backup). The serial is always shown next to the name. Save it empty to clear the name. |
-| HOLDER_BACKUP | {0} {1}(백업) | {0} {1} (backup) |
-| WIZARD_DONE | YubiKey 등록이 끝났습니다. | YubiKey enrolment has finished. |
-| STEP_4_OF_5 | 4/5단계 · YubiKey에 넣기 | Step 4/5 · Put on YubiKey |
-| TITLE_NEW_WALLET_ENROL | YubiKey 지갑 만들기 — YubiKey 등록 | Create a YubiKey wallet — enrol YubiKey |
-| RUNNING_IMPORT | YubiKey에 키를 넣는 중입니다 | Putting keys on the YubiKey |
-| LABEL_KEY | 넣을 키 | Key |
-| GAP_LIMIT | 주소 인덱스가 20 이상이면 다른 지갑으로 복구할 때 gap limit을 늘려야 합니다. | With an address index of 20 or more, other wallets need a larger gap limit to recover it. |
-| FIXED_TOUCH | '고정'을 고르면 관리자 PIN을 아는 프로그램도 터치를 끌 수 없지만, 나중에 바꾸려면 OpenPGP 초기화와 재등록이 필요합니다. | With 'fixed', even a program that knows the admin PIN cannot turn the touch off, but changing it later needs an OpenPGP reset and a new enrolment. |
-| CHECK_BACKUP | 백업 YubiKey 만들기 (같은 키 복사) | Make a backup YubiKey (copy the same keys) |
-| BACKUP_HELP | 같은 키를 다른 YubiKey에도 넣어 예비용으로 씁니다. 이미 등록한 YubiKey의 슬롯 구성을 그대로 따릅니다. 다른 구성(예: 같은 EVM 키 + 새 Zcash 키)은 이 체크를 끄고 아래에서 슬롯을 직접 고르세요 — 다른 YubiKey에 이미 있는 키는 확인 화면에 표시만 하고 그대로 넣습니다. | Puts the same keys on another YubiKey as a spare, following the slot layout of the enrolled YubiKey. For another layout (e.g. the same EVM key + a new Zcash key), untick this and choose the slots below — keys already on another YubiKey are only marked on the confirmation screen and put on as they are. |
-| LABEL_COPY_FROM | 복사할 YubiKey | YubiKey to copy |
-| BACKUP_OPTION | {0} (슬롯 {1}개) | {0} ({1} slots) |
-| SKIPPED_UNKNOWN | 복구 단어 없이 연결한 키는 복사하지 않습니다: {0} | Keys connected without recovery words are not copied: {0} |
-| BACKUP_SAME | 같은 슬롯·같은 경로·같은 정책으로 이 YubiKey에 넣습니다. 같은 복구 단어(+ passphrase)를 입력해야 합니다. | They go onto this YubiKey with the same slots, paths and policies. Enter the same recovery words (+ passphrase). |
-| WORDS_CHECKED | 복구 단어 확인을 마쳤습니다. 이제 YubiKey에 넣을 키를 고르세요. 첫 YubiKey를 가져오면 지갑이 만들어집니다. | The recovery words are checked. Now choose the keys for the YubiKey. The wallet is created when the first YubiKey is imported. |
-| FIRST_DEFAULTS | 처음이면 기본 선택 그대로 다음을 눌러도 됩니다(SIG: EVM 계정 0 · AUT: {0} 네이티브 세그윗 주소 0 · PIV: Solana 계정 1개(인덱스 0부터) · 터치: 항상). | The first time, you can keep the default choices and press Next (SIG: EVM account 0 · AUT: {0} Native SegWit address 0 · PIV: 1 Solana account (from index 0) · Touch: always). |
-| CARD_PIV_SOL | PIV — Solana 계정 | PIV — Solana accounts |
-| LABEL_SOL_COUNT | Solana 계정 수 (0–20) | Number of Solana accounts (0–20) |
-| LABEL_FIRST_INDEX | 첫 계정 인덱스 | First account index |
-| PIV_HELP | PIV 보관 슬롯 82부터 차례로 Solana 계정 m/44'/501'/i'/0'을 넣습니다. Solana를 쓰지 않으면 0으로 두세요. | Solana accounts m/44'/501'/i'/0' go into the PIV retired slots from 82 on. If you do not use Solana, leave it at 0. |
-| COMPUTING | 복구 단어에서 고른 키의 경로와 주소를 계산하고 있습니다(YubiKey와 통신하지 않음). | Computing the paths and addresses of the chosen keys from the recovery words (no YubiKey communication). |
-| BTN_BACK_SLOTS | ← 슬롯 다시 고르기 | ← Choose slots again |
-| SAME_ACK | 이해했습니다. 그래도 이 복구 단어로 등록합니다 | I understand. Enrol with these recovery words anyway |
-| CARD_CHECK_IMPORT | 가져오기 전에 확인하세요 | Check before importing |
-| CONFIRM_TEXT | 아래 경로와 주소는 입력한 복구 단어에서 이 PC가 계산한 값입니다(YubiKey와는 아직 통신하지 않았습니다). 쓰려는 주소와 전체가 같은지 확인하세요. | The paths and addresses below were computed by this PC from the recovery words you entered (no YubiKey communication yet). Check that each address matches the one you intend to use in full. |
-| RELATION_NEW | 새 키 | New key |
-| RELATION | {0} — 같은 경로를 가진 YubiKey: {1} | {0} — YubiKeys with the same path: {1} |
-| RELATION_ALREADY | 이미 다른 YubiKey에 있음 (이 YubiKey에도 같은 키를 넣습니다) | Already on another YubiKey (the same key also goes on this YubiKey) |
-| CARD_LINE | YubiKey {0} (펌웨어 {1}) — 이 YubiKey에만 씁니다. | YubiKey {0} (firmware {1}) — only this YubiKey is written. |
-| READING_CARD | 연결한 YubiKey를 읽는 중… | Reading the connected YubiKey… |
-| CONNECTED_CARD | 연결한 YubiKey | Connected YubiKey |
-| READING_SLOTS | 고른 슬롯에 이미 있는 키를 읽는 중… (PIN 없이 읽기만) | Reading the keys already in the chosen slots… (read only, no PIN) |
-| SLOTS_UNREADABLE | 고른 슬롯을 읽지 못했습니다: {0} 가져오기는 다른 키가 있으면 아무것도 쓰기 전에 멈춥니다. | Could not read the chosen slots: {0} The import stops before writing anything if another key is there. |
-| OCCUPANT_SECP | secp256k1 키 (EVM · Bitcoin P2WPKH로 본 주소) | secp256k1 key (addresses as EVM · Bitcoin P2WPKH) |
-| OCCUPANT_ED | Ed25519 키 (Solana 주소) | Ed25519 key (Solana address) |
-| OCCUPANT_UNKNOWN | 이 지갑이 읽지 못하는 키 (RSA 등 — GPG 키일 수 있음) | A key this wallet cannot read (RSA, … — may be a GPG key) |
-| CARD_CREDENTIALS | YubiKey 자격 정보 | YubiKey credentials |
-| CREDENTIALS_TEXT | YubiKey를 하나만 연결하세요. PIN·관리 키는 이 작업에만 쓰고 바로 지웁니다(저장하지 않음). | Connect only one YubiKey. The PIN and management key are used for this task only and wiped right away (not stored). |
-| CREDENTIALS_PW3 | 관리자 PIN(PW3)을 다음 창에서 입력합니다 (공장 기본값 12345678). | The admin PIN (PW3) is entered in the next window (factory default 12345678). |
-| MANAGEMENT_PROTECTED | 관리 키: PIN으로 보호됨 — PIV PIN만 입력 | Management key: PIN-protected — enter only the PIV PIN |
-| MANAGEMENT_DEFAULT | 기본 관리 키 사용 | Use the default management key |
-| MANAGEMENT_CUSTOM | 관리 키 직접 입력 (16진수 48자리) | Enter the management key (48 hex digits) |
-| MANAGEMENT_UNREAD | 연결한 YubiKey의 관리 키 설정을 아직 읽지 못했습니다. ykman으로 PIN 보호(--protect)를 해 둔 YubiKey라면 연결한 뒤 '← 이전' → '다음'으로 다시 읽으세요. | The connected YubiKey's management key setting has not been read yet. If the YubiKey was PIN-protected with ykman (--protect), connect it and read again with '← Back' → 'Next'. |
-| CARD_HOW | 어떻게 등록할까요? | How should it be enrolled? |
-| BTN_IMPORT | 복구 단어에서 키를 넣기 (처음 등록) | Put keys from the recovery words (first enrolment) |
-| BTN_ADOPT | 이미 넣은 키 연결하기 (가져오기 없이 등록) | Connect keys already on it (enrol without import) |
-| BTN_BACK | ← 이전 | ← Back |
-| ADOPTED | YubiKey {0}을(를) 가져오기 없이 등록했습니다 (카드에 쓰지 않음, 슬롯 {1}개). | YubiKey {0} enrolled without import (nothing written to the card, {1} slots). |
-| IMPORTED | YubiKey {0}에 키를 가져왔습니다 (슬롯 {1}개). | Keys imported to YubiKey {0} ({1} slots). |
-| CREATED_CONNECTED | YubiKey 지갑을 만들었습니다. 복구 단어 없이 카드의 공개키로 연결했으므로 이 PC에는 개인키도 복구 단어도 없습니다 — 카드를 잃었을 때를 대비해 원래 백업(복구 단어 등)이 있는지 확인하세요. | The YubiKey wallet was created. It was connected through the card's public keys without recovery words, so this PC has neither private keys nor recovery words — check that you have the original backup (recovery words, …) in case the card is lost. |
-| CREATED | YubiKey 지갑을 만들었습니다. 복구 단어는 이 PC에 저장하지 않았습니다 — 적은 종이를 안전하게 보관하세요. 백업 YubiKey를 지금 더 등록할 수 있습니다. | The YubiKey wallet was created. The recovery words were not stored on this PC — keep the paper safe. You can enrol more backup YubiKeys now. |
-| DETAILS_CLOSED | 슬롯·주소 자세히 ▸ | Slot and address details ▸ |
-| DETAILS_OPEN | 슬롯·주소 자세히 ▾ | Slot and address details ▾ |
-| REREAD | YubiKey에서 다시 읽은 공개키와 그 주소입니다. | The public keys read back from the YubiKey and their addresses. |
-| BTN_RECHECK | 다시 확인 | Check again |
-| BTN_ANOTHER_CONNECT | 다른 YubiKey 연결 | Connect another YubiKey |
-| BTN_ANOTHER_ENROL | 다른 YubiKey 등록(백업) | Enrol another YubiKey (backup) |
-| PIN_CARD_TITLE | 기본값 변경 / PIN 설정 — YubiKey {0} | Change defaults / set PIN — YubiKey {0} |
-| STEP_5_OF_5 | 5/5단계 · PIN 정하기 | Step 5/5 · Choose PIN |
-| FACTORY_SEEN | 공장 기본값: {0} — {1} | Factory defaults: {0} — {1} |
-| FACTORY_SEPARATE | 아래 '공장값 — 바꿔야 함' 버튼으로 하나씩 바꿉니다. | Change them one by one with the 'factory value — change it' buttons below. |
-| FACTORY_UNIFIED | 아래 “PIN 설정하기” 한 번으로 모두 바꿉니다. | One “Set PIN now” below changes them all. |
-| LABEL_MODE | 방식 | Mode |
-| MODE_UNIFIED | 8자리 하나로 통일 (권장) | One 8-character PIN (recommended) |
-| MODE_SEPARATE | 하나씩 따로 | One at a time |
-| FACTORY_MARK | {0} (공장값 — 바꿔야 함) | {0} (factory value — change it) |
-| BTN_PROTECT_MANAGEMENT | PIV 관리 키 자동 보호 | Protect PIV management key |
-| BTN_SET_PINS | PIN 설정하기 (8자리 하나) | Set PIN now (one 8-character PIN) |
-| PIN_GUIDE_CLOSED | PIN 안내 ▸ | PIN guide ▸ |
-| PIN_GUIDE_OPEN | PIN 안내 ▾ | PIN guide ▾ |
-| REMOVE_SELECTED | 선택한 YubiKey 기록을 지웁니다. | Removes the selected YubiKey record. |
-| REMOVE_TEXT | YubiKey {0}의 기록을 이 지갑에서 지웁니다. YubiKey 안의 키는 지우지 않습니다. 계속하려면 비밀번호를 입력하세요. | Removes the record of YubiKey {0} from this wallet. The keys on the YubiKey are not erased. Enter your password to continue. |
-| REMOVE_ACCOUNTS | YubiKey {0}의 계정 | Accounts of YubiKey {0} |
-| BACK_UNKNOWN | 이 지갑에서 서명 불가 — 카드를 'YubiKey 연결하기 (복구 단어 없이)'로 다시 연결하면 돌아옵니다(이 카드를 잃거나 키를 지우면 영구히 사라집니다) | Cannot sign in this wallet — it comes back if you connect the card again with 'Connect YubiKey (without recovery words)' (lost for good if this card is lost or its keys erased) |
-| BACK_WORDS | 이 지갑에서 서명 불가 — 같은 복구 단어로 다시 등록하면 돌아옵니다 | Cannot sign in this wallet — it comes back if you enrol again with the same recovery words |
-| LOST_CARD | 잃어버린 YubiKey라면: 기록을 지워도 카드의 키는 그대로입니다 — 백업 YubiKey나 복구 단어로 새 카드를 등록해 자산을 옮기세요. | If the YubiKey is lost: removing the record leaves the card's keys as they are — enrol a new card with a backup YubiKey or the recovery words and move the assets. |
-| TITLE_NEW_WALLET_CONNECT | YubiKey 지갑 만들기 — YubiKey 연결하기 | Create a YubiKey wallet — connect YubiKey |
-| CONNECT_RUNNING | YubiKey를 다시 읽고 저장하는 중입니다 | Reading the YubiKey again and saving |
-| CONNECT_RUNNING_KEEP | YubiKey를 빼지 마세요. 카드에는 아무것도 쓰지 않습니다. | Do not remove the YubiKey. Nothing is written to the card. |
-| SCANNING | 연결한 YubiKey를 읽는 중… (PIN 없음, 쓰기 없음) | Reading the connected YubiKey… (no PIN, no writes) |
-| SERIAL_FIRMWARE | {0} (펌웨어 {1}) | {0} (firmware {1}) |
-| NO_READABLE_KEYS | PIN 없이 읽을 수 있는 키(OpenPGP SIG·AUT의 secp256k1, PIV의 Ed25519)가 없습니다. 키가 든 YubiKey인지 확인하세요. | There are no keys readable without a PIN (secp256k1 in OpenPGP SIG/AUT, Ed25519 in PIV). Check that the YubiKey holds keys. |
-| LABEL_THIS_KEY | 이 키는 | This key is |
-| NETWORK_LINE | 네트워크: {0} | Network: {0} |
-| FORMAT_HELP | 같은 키라도 형식에 따라 주소가 다릅니다. 이전 지갑에서 쓰던 주소가 나오는 형식을 고르세요. | The same key gives different addresses in different formats. Choose the format that shows the address you used in your previous wallet. |
-| CHECK_BEFORE_SAVE | 저장하기 전에 확인하세요 — YubiKey {0} | Check before saving — YubiKey {0} |
-| CONNECT_CONFIRM_TEXT | 아래 주소는 YubiKey에서 읽은 공개키로 이 PC가 계산한 값입니다. 쓰려는 주소와 전체가 같은지 확인하세요. | The addresses below were computed by this PC from the public keys read from the YubiKey. Check that each matches the address you intend to use in full. |
-| SAME_KEY_HOLDERS | 같은 키를 가진 YubiKey: {0} — 그 계정에 이 YubiKey를 더합니다 | YubiKeys with the same key: {0} — this YubiKey is added to that account |
-| PIN_OWNERSHIP | PIN으로 소유 확인 (선택) | Check ownership with PIN (optional) |
-| PIV_FACTORY | 이 YubiKey의 PIV PIN이 공장 기본값(123456)입니다. 연결한 뒤 'PIN 설정'으로 바꾸기 전에는 이 지갑이 서명하지 않습니다. | This YubiKey's PIV PIN is the factory default (123456). This wallet does not sign until you change it with 'Set PIN' after connecting. |
-| SIGN_HELP | 서명할 때는 지금처럼 YubiKey에 PIN을 입력하고 터치합니다(공장 기본 PIN으로는 서명하지 않음). | To sign, you enter the PIN and touch the YubiKey as before (it does not sign with a factory default PIN). |
-| BTN_SAVE | 저장 | Save |
-| LOST_LINE | {0} — {1} (복구 단어 없음) | {0} — {1} (no recovery words) |
-| RESLOT_TITLE | 슬롯 구성 바꾸기 — YubiKey {0} | Change slot layout — YubiKey {0} |
-| RESLOT_RUNNING | YubiKey에 새 키를 넣는 중입니다 | Putting the new keys on the YubiKey |
-| LABEL_CHAIN | 체인 | Chain |
-| CARD_CURRENT_SLOTS | 지금 이 YubiKey의 슬롯 | Current slots of this YubiKey |
-| RESLOT_ONLY_PGP | OpenPGP 서명(SIG)·인증(AUT) 두 슬롯만 바꿉니다. PIV(Solana) 슬롯은 그대로입니다. | Only the two OpenPGP slots, signature (SIG) and authentication (AUT), change. The PIV (Solana) slots stay. |
-| RESLOT_UNKNOWN_CARD | 복구 단어 없이 연결한 YubiKey입니다. 바꾸면 SIG·AUT에 입력할 복구 단어의 키가 들어가고 이 YubiKey는 그 복구 단어의 카드가 됩니다. 지금 그 슬롯의 키는 다른 YubiKey에 없으면 영구히 사라집니다(다음 화면에서 확인). | This YubiKey was connected without recovery words. After the change, SIG and AUT hold keys of the recovery words you enter, and this YubiKey becomes a card of those recovery words. The keys now in those slots are lost for good unless another YubiKey holds them (checked on the next screen). |
-| CARD_NEW_LAYOUT | 새 구성 | New layout |
-| LABEL_PRESET | 조합 | Combination |
-| STANDARD_PATHS | 표준 경로만 씁니다: EVM m/44'/60'/0'/0/i, Bitcoin m/{44\|49\|84}'/{0\|1}'/0'/0/i, Zcash m/44'/{133\|1}'/0'/0/i. 터치 정책은 슬롯의 지금 값을 그대로 씁니다. | Only standard paths are used: EVM m/44'/60'/0'/0/i, Bitcoin m/{44\|49\|84}'/{0\|1}'/0'/0/i, Zcash m/44'/{133\|1}'/0'/0/i. The touch policy keeps the slot's current value. |
-| ADVANCED | 고급: EVM 공유 키도 고를 수 있게 하기 | Advanced: also offer the EVM shared key |
-| COMPUTING_RESLOT | 복구 단어에서 새 키의 경로와 주소를 계산하고 있습니다(YubiKey와 통신하지 않음). | Computing the paths and addresses of the new keys from the recovery words (no YubiKey communication). |
-| SAME_ACK_RESLOT | 이해했습니다. 그래도 이 복구 단어의 키를 넣습니다 | I understand. Put the keys of these recovery words anyway |
-| AFTER_CHANGE | 바꾼 뒤 YubiKey {0} | YubiKey {0} after the change |
-| RESLOT_CONFIRM_TEXT | 아래 경로와 주소는 입력한 복구 단어에서 이 PC가 계산한 값입니다(YubiKey와는 아직 통신하지 않았습니다). | The paths and addresses below were computed by this PC from the recovery words you entered (no YubiKey communication yet). |
-| RELATION_UNCHANGED | 그대로 (지금과 같은 키) | Unchanged (the same key as now) |
-| RELATION_PUT | 새로 넣음 | Newly put |
-| RELATION_PUT_BACKUP | 새로 넣음 — 같은 키를 가진 YubiKey: {0} (백업 복사본) | Newly put — YubiKeys with the same key: {0} (backup copy) |
-| CARD_DROPPED | 이 YubiKey에서 빠지는 계정 | Accounts leaving this YubiKey |
-| DROP_NOT_ELSEWHERE | 다른 YubiKey에 없음 — 바꾼 뒤에는 이 지갑에서 서명할 수 없습니다 | Not on another YubiKey — after the change it cannot be signed in this wallet |
-| DROP_LOST | 복구 단어 없음·다른 YubiKey에도 없음 — 바꾸면 이 키는 영구히 사라집니다 | No recovery words and not on another YubiKey — the change loses this key for good |
-| DROP_KEPT | {0}에 남아 있음 — 그 YubiKey로 계속 서명할 수 있습니다 | Still on {0} — that YubiKey can keep signing |
-| ZEC_UNUSABLE_CHANGE | Zcash 계정 {0} — 이 YubiKey의 이 슬롯에만 있는 키입니다. 바꾼 뒤에는 Zcash 탭에서 이 주소로 보낼 수 없습니다(잔액이 있으면 먼저 옮기세요). | Zcash account {0} — its key is only in this slot of this YubiKey. After the change, the Zcash tab cannot send from this address (if there is a balance, move it first). |
-| ZEC_UNUSABLE_ERASE | Zcash 계정 {0} — 이 YubiKey의 이 슬롯에만 있는 키입니다. 지운 뒤에는 Zcash 탭에서 이 주소로 보낼 수 없습니다(잔액이 있으면 먼저 옮기세요). | Zcash account {0} — its key is only in this slot of this YubiKey. After erasing, the Zcash tab cannot send from this address (if there is a balance, move it first). |
-| REMOVED_ACK | 이해했습니다: 빠지는 체인은 이 YubiKey로 서명할 수 없습니다 | I understand: chains leaving this YubiKey can no longer be signed with it |
-| ADMIN_NEXT | 다음 창에서 OpenPGP 관리자 PIN을 묻습니다(공장 기본값 12345678). 바뀌는 슬롯의 키는 덮어쓰고, 넣은 뒤 YubiKey에서 공개키를 다시 읽어 위 값과 비교합니다. | The next window asks for the OpenPGP admin PIN (factory default 12345678). The keys of changed slots are overwritten, and after the import the public keys are read back from the YubiKey and compared with the values above. |
-| RESLOT_DONE | YubiKey {0}의 슬롯 구성을 바꿨습니다. YubiKey에서 다시 읽은 공개키가 복구 단어에서 만든 키와 같습니다. | The slot layout of YubiKey {0} was changed. The public keys read back from the YubiKey match the keys made from the recovery words. |
-| CARD_APPLY_BACKUP | 백업 YubiKey에도 같은 구성 적용 | Apply the same layout to backup YubiKeys |
-| APPLY_HELP | 복구 단어는 이 작업을 마칠 때까지만 메모리에 있으므로 다시 묻지 않습니다. 그 YubiKey를 연결하고 고르세요. | The recovery words stay in memory until this task ends, so they are not asked again. Connect that YubiKey and choose it. |
-| APPLY_TO_SHARED | {0}에 같은 구성 적용 (백업: 같은 키 {1}개) | Apply the same layout to {0} (backup: {1} same keys) |
-| APPLY_TO | {0}에 같은 구성 적용 | Apply the same layout to {0} |
-| BTN_DONE_WIPE | 완료 (복구 단어 지우기) | Done (wipe recovery words) |
-| LABEL_METHOD | 방법 | Method |
-| RESET_IRREVERSIBLE | 되돌릴 수 없습니다: 초기화는 그 기능의 다른 키(GPG·PIV 인증서 등 이 지갑이 쓰지 않은 것 포함)도 모두 지우고 PIN을 공장 기본값으로 되돌립니다. | This cannot be undone: a reset also erases every other key of that function (including GPG keys, PIV certificates and others this wallet did not use) and returns the PINs to the factory defaults. |
-| CLEAR_TITLE | YubiKey의 키 지우기 — YubiKey {0} | Erase keys on the YubiKey — YubiKey {0} |
-| CLEAR_RUNNING | YubiKey의 키를 지우는 중입니다 | Erasing keys on the YubiKey |
-| DONT_REMOVE | YubiKey를 빼지 마세요. | Do not remove the YubiKey. |
-| CARD_WHAT_TO_ERASE | 무엇을 지울까요? | What should be erased? |
-| PGP_KEYS | OpenPGP 지갑 키 (SIG/AUT: EVM·Bitcoin·Zcash, {0}개) | OpenPGP wallet keys (SIG/AUT: EVM, Bitcoin, Zcash; {0}) |
-| PGP_OURS | 이 지갑의 키만 지우기 (권장) | Erase only this wallet's keys (recommended) |
-| PGP_RESET | OpenPGP 전체 초기화 — 다른 키도 지움 | Reset all of OpenPGP — erases other keys too |
-| PIV_SLOTS | PIV Solana 슬롯 ({0}개) | PIV Solana slots ({0}) |
-| PIV_OURS | Solana 키만 지우기 (권장) | Erase only the Solana keys (recommended) |
-| PIV_RESET | PIV 전체 초기화 — 인증서 등 다른 키도 지움 | Reset all of PIV — erases certificates and other keys too |
-| PIV_DELETE_FIRMWARE | 이 YubiKey의 등록 때 펌웨어는 {0}입니다. Yubico는 PIV 키 삭제를 5.7.4부터 문서화했습니다. 카드가 거부하면 'PIV 애플릿 초기화'를 쓰세요. | This YubiKey's firmware at enrolment is {0}. Yubico documents PIV key deletion from 5.7.4. If the card refuses, use 'Reset all of PIV'. |
-| HOW_CLOSED | 어떻게 지우나요 ▸ | How is it erased? ▸ |
-| HOW_OPEN | 어떻게 지우나요 ▾ | How is it erased? ▾ |
-| CARD_UNUSABLE | 이 YubiKey로 쓸 수 없게 되는 계정 | Accounts this YubiKey will no longer sign for |
-| CLEAR_LOST | 복구 단어 없음·다른 YubiKey에도 없음 — 지우면 이 키는 영구히 사라집니다 | No recovery words and not on another YubiKey — erasing loses this key for good |
-| CLEAR_NOT_ELSEWHERE | 다른 YubiKey에 없음 — 이 지갑의 계정 목록에서 빠집니다(같은 복구 단어로 다시 넣으면 돌아옵니다) | Not on another YubiKey — it leaves this wallet's account list (it comes back if the same recovery words are put on again) |
-| CLEAR_KEPT | {0}에도 있음 — 그 YubiKey로 계속 서명할 수 있습니다 | Also on {0} — that YubiKey can keep signing |
-| NO_SLOT_LEFT | 이 YubiKey에 지갑 슬롯이 하나도 남지 않으므로 이 YubiKey 기록을 지갑에서 지웁니다. | No wallet slot is left on this YubiKey, so its record is removed from the wallet. |
-| LAST_KEY_CLEAR | 이 YubiKey가 이 지갑의 마지막 키입니다. 모두 지우면 지갑에 남는 키가 없으므로 지울 수 없습니다. 다른 YubiKey를 먼저 등록하세요. | This YubiKey holds the wallet's last key. Erasing everything would leave the wallet without a key, so it cannot be erased. Enrol another YubiKey first. |
-| RESET_NO_PIN | 초기화는 PIN을 묻지 않습니다(PIN을 일부러 잠근 뒤 초기화합니다). | A reset does not ask for a PIN (it locks the PIN on purpose, then resets). |
-| ASKS | 다음 창에서 {0}을(를) 묻습니다. 이 작업에만 쓰고 바로 지웁니다. | The next window asks for the {0}. It is used for this task only and wiped right away. |
-| BTN_ERASE_THIS | 이 YubiKey의 키 지우기 | Erase this YubiKey's keys |
-| RESULT_OURS | {0}: 이 지갑의 키를 지웠습니다. | {0}: this wallet's keys were erased. |
-| RESULT_RESET | {0}: 전체를 공장 상태로 초기화했습니다 (PIN도 기본값). | {0}: fully reset to factory state (PINs back to defaults). |
-| RESULT_FAILED | {0}: 실패 — {1} | {0}: failed — {1} |
-| RESULT_SKIPPED | {0}: 앞 단계가 실패해 하지 않았습니다. | {0}: not done because an earlier step failed. |
-| RESULT_RECORD_REMOVED | 이 YubiKey에 지갑 슬롯이 남지 않아 기록을 지웠습니다. | No wallet slot is left on this YubiKey, so its record was removed. |
-| RESULT_SLOTS_REMOVED | 지운 슬롯을 이 지갑의 슬롯 표에서 뺐습니다. | The erased slots were taken out of this wallet's slot table. |
-| RESULT_VAULT_FAILED | YubiKey는 바뀌었지만 지갑의 슬롯 표를 고치지 못했습니다: {0} | The YubiKey changed, but the wallet's slot table could not be updated: {0} |
-| RESULT_RESET_PINS | 초기화한 애플릿의 PIN은 공장 기본값입니다(OpenPGP 123456 / 12345678, PIV 123456 / 12345678). 다시 쓰려면 등록한 뒤 'PIN 설정'에서 바꾸세요. | The PINs of a reset applet are the factory defaults (OpenPGP 123456 / 12345678, PIV 123456 / 12345678). To use it again, enrol it and change them in 'Set PIN'. |
-
-<!-- catalogue: yw_app::ui::screens_zec::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| OWN_CHANGE | 확인 대기 {0} (내 거래의 잔돈, 아직 쓸 수 없음) | Awaiting confirmation {0} (change of your own transaction, not spendable yet) |
-| UNCLASSIFIED | 미확정 출력 {0} (0 확인 — 입금인지 확인하지 않았습니다, 아직 쓸 수 없음) | Unconfirmed outputs {0} (0 confirmations — not checked as a deposit, not spendable yet) |
-| RECEIVE_NOTE | 일반(transparent) 주소입니다 — Zashi 등 비공개 주소로 받으려면 그 지갑에서 받으세요. | This is a transparent address — to receive on a shielded address (Zashi etc.), receive in that wallet. |
-| EVM_SHARED | EVM 계정과 같은 키를 쓰면 EVM 주소와 이 Zcash 주소가 같은 공개키라 누구나 두 주소를 한 사람의 것으로 묶을 수 있습니다. 같은 복구 단어를 다른 Zcash 지갑에 넣어도 이 주소는 나오지 않습니다(표준 경로가 아님). 정말 필요할 때만 쓰세요. | With the same key as an EVM account, the EVM address and this Zcash address share one public key, so anyone can link both addresses to one person. Putting the same recovery phrase into another Zcash wallet does not give this address (not the standard path). Use it only when you really need to. |
-| REVEAL_KEY | 개인키 보기 | Show private key |
-| DELETE | 삭제 | Delete |
-| IMPORT_HELP | 다른 지갑(zcashd 등)의 Zcash 일반 주소 개인키(압축 WIF 또는 16진수)를 가져와 이 네트워크의 계정으로 쓸 수 있습니다. 가져온 키는 복구 단어로 복구되지 않습니다. | You can import a Zcash transparent address private key (compressed WIF or hex) from another wallet (zcashd etc.) and use it as this network's account. An imported key is not restored by the recovery phrase. |
-| IMPORT_KEY | 개인키 가져오기 | Import private key |
-| DISABLED_TITLE | Zcash (일반 주소 전용) | Zcash (transparent addresses only) |
-| DISABLED_TEXT | Zcash 일반(transparent) 주소로 받고 보냅니다. 비공개(shielded) 전송은 지원하지 않습니다. | Receives and sends with a Zcash transparent address. Shielded transfers are not supported. |
-| DISABLED_HELP | 켜면 복구 단어에서 m/44'/133'/0'/0/0 (testnet m/44'/1'/0'/0/0) 주소 하나를 씁니다. 먼저 설정 → 네트워크(RPC)에서 그 네트워크의 Zcash RPC 주소(zcash:mainnet·zcash:testnet)를 넣으세요. | When on, one address m/44'/133'/0'/0/0 (testnet m/44'/1'/0'/0/0) of the recovery phrase is used. First enter that network's Zcash RPC address (zcash:mainnet·zcash:testnet) in Settings → Networks (RPC). |
-| ENABLE_MAINNET | Zcash mainnet 켜기 | Turn on Zcash mainnet |
-| ENABLE_TESTNET | Zcash testnet 켜기 (테스트) | Turn on Zcash testnet (test) |
-| RPC_SETUP | RPC 설정하기 | Set up RPC |
-| JOURNAL_DAMAGED | 거래 저널의 Zcash 기록이 손상되어 Zcash 보내기를 멈췄습니다. (E-VLT-006) | The Zcash records of the transaction journal are damaged, so Zcash sending is stopped. (E-VLT-006) |
-| NETWORK | 네트워크 | Network |
-| TESTNET_CHIP | Zcash testnet (테스트) | Zcash testnet (test) |
-| RPC_NONE | RPC 주소 없음 (E-KEY-005) — 설정 → 네트워크(RPC)에서 Zcash RPC 주소를 넣으세요 | No RPC address (E-KEY-005) — enter the Zcash RPC address in Settings → Networks (RPC) |
-| UPGRADE_UNKNOWN | 알 수 없음 | unknown |
-| RPC_CONNECTED | 연결됨 (genesis 확인) · 블록 {0} · 업그레이드 {1} | Connected (genesis verified) · block {0} · upgrade {1} |
-| RPC_CHECKING | 확인 중… | Checking… |
-| RPC_UNCHECKED | 확인 전 | Not checked yet |
-| UTXO_SOURCE | UTXO 원천 | UTXO source |
-| INDEXER_NODE | 노드 getaddressutxos | Node getaddressutxos |
-| DISABLE | Zcash 끄기 | Turn off Zcash |
-| ACCOUNT_TITLE | Zcash 계정 · {0} | Zcash account · {0} |
-| ACCOUNT_LOADING | Zcash 계정 키를 불러오는 중… (복구 단어가 없는 지갑은 YubiKey Zcash 슬롯만 쓸 수 있습니다) | Loading the Zcash account key… (a wallet without a recovery phrase can only use a YubiKey Zcash slot) |
-| KEY_SOURCE_LINE | 키 출처: {0} · {1} | Key source: {0} · {1} |
-| BALANCE_DASH | 잔액 — | Balance — |
-| CONFIRMED_BALANCE_NOTE | 확인된 잔액 {0} (서버 기준, 진행 중 거래의 입력 제외) | Confirmed balance {0} (per the server, inputs of transactions in progress excluded) |
-| REFRESH | 새로고침 | Refresh |
-| MY_ACCOUNTS | 내 Zcash 계정 | My Zcash accounts |
-| SOURCE_STANDARD | Zcash 표준 경로 (권장, 기본값) | Zcash standard path (recommended, default) |
-| EVM_PATH | EVM 경로 (비표준) | EVM path (non-standard) |
-| CARD_KEY | 카드 키 {0} (경로 모름) | Card key {0} (path unknown) |
-| CONFIRM_EVM | 정말 EVM 키 사용 | Really use the EVM key |
-| CANCEL | 취소 | Cancel |
-| RECEIVE | 받기 | Receive |
-| COPY_ADDRESS | 주소 복사 | Copy address |
-| QR_HIDE | QR 숨기기 | Hide QR |
-| QR_SHOW | QR 보기 | Show QR |
-| SEND | 보내기 | Send |
-| RECIPIENT_HELP | 받는 주소: t1…/t3… (testnet tm…/t2…), TEX(tex1…) 또는 일반 수신자가 있는 통합 주소(u1…). 비공개 주소(zs…)는 받지 않습니다. | Recipient: t1…/t3… (testnet tm…/t2…), TEX (tex1…) or a unified address with a transparent receiver (u1…). Shielded addresses (zs…) are not accepted. |
-| RECIPIENT | 받는 주소 | Recipient |
-| ADDRESS_ACK | 주소 전체를 직접 확인했습니다 | I checked the whole address myself |
-| CONFIRMED_UNREAD | 확인된 잔액: 아직 읽지 못했습니다 | Confirmed balance: not read yet |
-| CONFIRMED_BALANCE | 확인된 잔액 {0} | Confirmed balance {0} |
-| AMOUNT | 금액 (ZEC) | Amount (ZEC) |
-| MAX | 최대 | Max |
-| MAX_NOTE | 최대: 확인된 출력(최대 {0}개)의 합에서 수수료를 뺀 금액을 보냅니다(승인 창에서 확인). | Max: sends the sum of the confirmed outputs (up to {0}) minus the fee (confirmed in the approval window). |
-| FEE_NOTE | 수수료는 ZIP 317 기본값(입력·출력 수에 따라 0.0001 ZEC부터)입니다. 승인 창에서 받는 주소·금액·수수료·만료 높이를 확인하세요. | The fee is the ZIP 317 conventional fee (from 0.0001 ZEC, by the number of inputs·outputs). Check the recipient·amount·fee·expiry height in the approval window. |
-| SENT | 보냈습니다. txid {0} — 아래 활동에서 확인 상태를 봅니다. | Sent. txid {0} — see the confirmation status in the activity below. |
-| REVIEW | 검토 | Review |
-| COPY_HASH | 해시 복사 | Copy hash |
-| ACTIVITY | 활동 | Activity |
-| NO_ACTIVITY | 이 지갑에서 보낸 Zcash 거래가 없습니다. {0} | No Zcash transactions sent from this wallet. {0} |
-| CONFIRMED_AT | 확인됨 (블록 {0}) | Confirmed (block {0}) |
-| ROW | {0} · 보냄 {1} ZEC · {2} | {0} · sent {1} ZEC · {2} |
-| EXPIRY_HEIGHT | 만료 높이 {0} | Expiry height {0} |
-| TO_OWN | 받는 주소 → 내 계정: {0} | Recipient → my account: {0} |
-| TO_NONE | 받는 주소 - | Recipient - |
-| FEE | 수수료 {0} ZEC | Fee {0} ZEC |
-| UTXOS | 받은 출력 (UTXO, 서버 기준) | Received outputs (UTXO, per the server) |
-| UTXO_ERROR | 출력 목록을 불러오지 못했습니다: {0} | Could not load the output list: {0} |
-| NO_UTXOS | 이 주소에 사용 가능한 출력이 없습니다. | No spendable outputs on this address. |
-| IGNORED | 아주 작은 출력(먼지, {0} zats 이하)이나 한도({1}개)를 넘는 작은 출력 {2}개는 잔액과 보내기에서 제외했습니다. | {2} tiny outputs (dust, {0} zats or less) or small outputs over the limit ({1}) were left out of the balance and sending. |
-| UNCONFIRMED | 미확정 (0 확인) | Unconfirmed (0 confirmations) |
-| BLOCK | 블록 {0} | Block {0} |
 
 <!-- catalogue: display-fixed -->
 

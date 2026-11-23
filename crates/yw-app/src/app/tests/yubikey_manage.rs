@@ -4,6 +4,7 @@
 
 use yw_core::yubikey::mock::MockCard;
 use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey};
+use yw_engine::testkit::ScreenTestExt;
 
 use super::{
     ABOUT, EvmAccountPref, Harness, Purpose, YkSeen, about_wallet, all_text, card_harness, ctl,
@@ -11,10 +12,11 @@ use super::{
 };
 use crate::ui::screens_yubikey::ids as yk;
 use crate::ui::screens_yubikey::ids::pgp_id;
+use yw_engine::testkit::CLEAR_WORD;
 use yw_engine::testkit::WalletTestExt;
 use yw_engine::wallet::app_yubikey::PgpAction;
 use yw_engine::wallet::app_yubikey::YkPurpose;
-use yw_engine::wallet::app_yubikey::manage::{CLEAR_WORD, ClearStep, Preset, ReslotStep, YkManage};
+use yw_engine::wallet::app_yubikey::manage::{ClearStep, Preset, ReslotStep, YkManage};
 
 const ADMIN: &[u8] = b"12345678";
 const BIP84_0: &str = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
@@ -129,10 +131,7 @@ fn yubikey_reslot_switches_chains_and_applies_it_to_the_backup() {
     let items = h.app.items();
     unique_ids(&items);
     assert!(all_text(&items).contains(&zec_address), "current map");
-    assert!(has_text(
-        &items,
-        yw_engine::wallet::app_yubikey::manage::T_YK_RESLOT_WORDS
-    ));
+    assert!(has_text(&items, yw_engine::testkit::T_YK_RESLOT_WORDS));
     h.app.on_command(yk::preset_id(Preset::EvmBtc));
     h.app.on_command(yk::RESLOT_NEXT);
     h.submit(
@@ -301,10 +300,7 @@ fn yubikey_clear_our_slots_and_applet_resets() {
         shown.iter().any(|text| text == BIP84_0),
         "the account to lose: {shown:?}"
     );
-    assert!(has_text(
-        &items,
-        yw_engine::wallet::app_yubikey::manage::T_YK_CLEAR_FUNDS
-    ));
+    assert!(has_text(&items, yw_engine::testkit::T_YK_CLEAR_FUNDS));
     // The word must be typed exactly.
     h.app.yk_manage_set_text(
         yw_engine::form::EditField::YkClearConfirm,
@@ -473,6 +469,18 @@ fn assert_english(items: &[crate::ui::main_window::Item], screen: &str) {
 /// spec/14 (2026-11-14): with `Lang::En` the enrolment wizard (plan, confirmation, credentials,
 /// result), the `YubiKey` list, the PIN card and the two card actions draw no Hangul; Korean
 /// stays the catalogue's Korean.
+/// What a screen builder draws into an empty list, lowered (2026-11-24, spec/15 §11.4 S5-5: the
+/// builders are yw-engine's, reached through `testkit::ScreenTestExt`; before, `impl App` fns).
+fn drawn(
+    app: &crate::app::App,
+    draw: impl FnOnce(yw_engine::testkit::screen::Screen<'_>, &mut Vec<yw_engine::screen::model::Item>),
+) -> Vec<crate::ui::main_window::Item> {
+    let facts = app.facts();
+    let mut items = Vec::new();
+    draw(app.screen_view(&facts), &mut items);
+    crate::ui::lower::lowered(items)
+}
+
 #[test]
 fn english_yubikey_screens_have_no_korean() {
     use yw_core::lang::Lang;
@@ -482,23 +490,17 @@ fn english_yubikey_screens_have_no_korean() {
     h.app.settings.language = Lang::En;
     h.app.on_command(yk::SECTION_YUBIKEY);
     h.pump();
-    let mut items = Vec::new();
-    h.app.yk_settings_section(&mut items);
-    let items = crate::ui::lower::lowered(items);
+    let items = drawn(&h.app, |screen, items| screen.yk_settings_section(items));
     assert_english(&items, "list (empty)");
     h.app.on_command(yk::ENROL_START);
-    let mut items = Vec::new();
-    h.app.yk_wizard_screen(&mut items);
-    let items = crate::ui::lower::lowered(items);
+    let items = drawn(&h.app, |screen, items| screen.yk_wizard_screen(items));
     assert_english(&items, "plan");
     // The shared key and its warning, then back to Bitcoin.
     h.app.on_command(pgp_id(
         PgpKey::Aut,
         PgpAction::Kind(yw_engine::wallet::app_yubikey::PgpKind::Shared),
     ));
-    let mut items = Vec::new();
-    h.app.yk_wizard_screen(&mut items);
-    let items = crate::ui::lower::lowered(items);
+    let items = drawn(&h.app, |screen, items| screen.yk_wizard_screen(items));
     assert_english(&items, "plan (shared key)");
     assert!(super::has_text(
         &items,
@@ -511,62 +513,48 @@ fn english_yubikey_screens_have_no_korean() {
     h.app.on_command(yk::PLAN_NEXT);
     h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
     yk_pump(&mut h, &mut seen);
-    let mut items = Vec::new();
-    h.app.yk_wizard_screen(&mut items);
-    let items = crate::ui::lower::lowered(items);
+    let items = drawn(&h.app, |screen, items| screen.yk_wizard_screen(items));
     assert_english(&items, "confirm");
     assert!(all_text(&items).iter().any(|text| text == BIP84_0));
     h.app.on_command(yk::SAME_ACK);
     h.app.on_command(yk::CONFIRM_NEXT);
     yk_pump(&mut h, &mut seen);
-    let mut items = Vec::new();
-    h.app.yk_wizard_screen(&mut items);
-    let items = crate::ui::lower::lowered(items);
+    let items = drawn(&h.app, |screen, items| screen.yk_wizard_screen(items));
     assert_english(&items, "credentials");
     h.app.on_command(yk::IMPORT);
     h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[ADMIN]);
     yk_pump(&mut h, &mut seen);
     h.app.on_command(yk::RESULT_DETAILS);
     h.app.on_command(yk::PIN_GUIDE);
-    let mut items = Vec::new();
-    h.app.yk_wizard_screen(&mut items);
-    let items = crate::ui::lower::lowered(items);
+    let items = drawn(&h.app, |screen, items| screen.yk_wizard_screen(items));
     assert_english(&items, "result");
     h.app.on_command(yk::PINS_SEPARATE);
-    let mut items = Vec::new();
-    h.app.yk_pin_items(8_900_031, &mut items);
-    let items = crate::ui::lower::lowered(items);
+    let items = drawn(&h.app, |screen, items| {
+        screen.yk_pin_items(8_900_031, items);
+    });
     assert_english(&items, "PIN card (one at a time)");
     finish_result(&mut h, yk::FINISH);
     yk_pump(&mut h, &mut seen);
-    let mut items = Vec::new();
-    h.app.yk_settings_section(&mut items);
-    let items = crate::ui::lower::lowered(items);
+    let items = drawn(&h.app, |screen, items| screen.yk_settings_section(items));
     assert_english(&items, "list");
     assert!(super::has_text(
         &items,
-        crate::ui::screens_yubikey::text::YK_LIST.en
+        yw_engine::testkit::screen::yubikey::text::YK_LIST.en
     ));
     h.app.on_command(yk::RESLOT_BASE);
-    let mut items = Vec::new();
-    h.app.yk_settings_section(&mut items);
-    let items = crate::ui::lower::lowered(items);
+    let items = drawn(&h.app, |screen, items| screen.yk_settings_section(items));
     assert_english(&items, "re-slot");
     h.app.on_command(yk::MANAGE_CANCEL);
     h.app.on_command(yk::CLEAR_BASE);
-    let mut items = Vec::new();
-    h.app.yk_settings_section(&mut items);
-    let items = crate::ui::lower::lowered(items);
+    let items = drawn(&h.app, |screen, items| screen.yk_settings_section(items));
     assert_english(&items, "clear");
     h.app.on_command(yk::MANAGE_CANCEL);
     // Korean is the catalogue's Korean.
     h.app.settings.language = Lang::Ko;
-    let mut items = Vec::new();
-    h.app.yk_settings_section(&mut items);
-    let items = crate::ui::lower::lowered(items);
+    let items = drawn(&h.app, |screen, items| screen.yk_settings_section(items));
     assert!(super::has_text(
         &items,
-        crate::ui::screens_yubikey::text::YK_LIST.ko
+        yw_engine::testkit::screen::yubikey::text::YK_LIST.ko
     ));
 }
 
@@ -576,7 +564,10 @@ fn english_yubikey_screens_have_no_korean() {
 fn yubikey_app_catalogues_are_complete() {
     use yw_core::lang::{has_hangul, placeholders};
     for (name, all) in [
-        ("screens_yubikey", crate::ui::screens_yubikey::text::ALL),
+        (
+            "screens_yubikey",
+            yw_engine::testkit::screen::yubikey::text::ALL,
+        ),
         ("app_yubikey", yw_engine::wallet::app_yubikey::text::ALL),
         (
             "app_yubikey::connect",

@@ -8,13 +8,14 @@ use yw_core::lang::Lang;
 
 use super::{controls, ctl, has_text, unlocked_app};
 use crate::ui::main_window::Item;
-use crate::ui::screens_received::{dust_line, ids, text as recv_text};
+use crate::ui::screens_received::ids;
 use yw_engine::network::NetworkId;
 use yw_engine::received::{
     Cursor, Fetched, Found, Incoming, ReceivedEvent, ReceivedJob, RecvChain,
 };
 use yw_engine::screen::Tone;
 use yw_engine::testkit::WalletTestExt;
+use yw_engine::testkit::screen::received::{dust_line, text as recv_text};
 use yw_engine::workers::rpc::RpcJob;
 
 fn received(rx: &Receiver<RpcJob>) -> Vec<ReceivedJob> {
@@ -286,8 +287,8 @@ fn pending_rows_go_only_when_a_read_says_so() {
 /// keeps the banner, and a pending row elsewhere no longer hides it.
 #[test]
 fn bitcoin_pending_banner_follows_the_history_coverage() {
-    use crate::ui::screens_btc::pending_banner;
     use yw_core::bip32::path::BtcChain;
+    use yw_engine::testkit::screen::btc::pending_banner;
     use yw_engine::wallet::app_btc::{PENDING_INCOMING, PENDING_INCOMING_UNREAD};
     let at = [(BtcChain::Receive, 3)];
     assert_eq!(pending_banner(false, &[], true, None), None);
@@ -469,7 +470,7 @@ fn zcash_unconfirmed_deposits_on_the_card() {
     assert!(!has_text(&items, "· 미확인"));
     assert!(has_text(
         &items,
-        &crate::ui::screens_zec::unclassified_line(
+        &yw_engine::testkit::screen::zec::unclassified_line(
             yw_core::lang::Lang::Ko,
             "0.50000000 ZEC (50,000,000 zats)"
         )
@@ -541,7 +542,7 @@ fn zcash_unconfirmed_deposits_on_the_card() {
     let items = app.items();
     assert!(has_text(
         &items,
-        &crate::ui::screens_received::gone_line(Lang::Ko, 1)
+        &yw_engine::testkit::screen::received::gone_line(Lang::Ko, 1)
     ));
     assert!(!has_text(&items, "미확정 · 받음"));
     // The (older) snapshot still has it: neither line, the list counted it as gone.

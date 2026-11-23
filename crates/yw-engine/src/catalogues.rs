@@ -10,7 +10,12 @@
 //! in `yw_app::ui::{main_window, qr, screens_accounts}::text`. 2026-11-23, S4d E1: the wallet's
 //! catalogues `wallet::…::text`, before `yw_app::app_*::text` and the wallet's half of
 //! `yw_app::app::text`. 2026-11-24, S5-4: `screen::model::text`, the copy mark's texts, before in
-//! `yw_app::ui::main_window::text`.)
+//! `yw_app::ui::main_window::text`. 2026-11-24, S5-5: the screens' catalogues
+//! `screen::build::…::text`, before `yw_app::ui::screens*::text` and `yw_app::ui::removed::text`
+//! (`screens` became `core`), the `rpc.json` card's `screen::build::rpc_import::text` (before
+//! `yw_app::app_rpc_import::text`), S23's `screen::extension::text` (before
+//! `yw_app::app_extension::text`) and the receive note's `screen::qr::text` (before
+//! `yw_app::ui::qr::text`), moved with the builders.)
 
 use yw_core::lang::Entry;
 
@@ -60,9 +65,90 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
     ),
     ("yw_engine::rpc::text", crate::rpc::text::ALL),
     (
+        "yw_engine::screen::build::book::text",
+        crate::screen::build::book::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::btc::text",
+        crate::screen::build::btc::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::core::text",
+        crate::screen::build::core::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::evm::text",
+        crate::screen::build::evm::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::explorer::text",
+        crate::screen::build::explorer::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::hypercore::text",
+        crate::screen::build::hypercore::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::keys::text",
+        crate::screen::build::keys::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::links::text",
+        crate::screen::build::links::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::llm::text",
+        crate::screen::build::llm::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::mnemonics::text",
+        crate::screen::build::mnemonics::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::received::text",
+        crate::screen::build::received::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::removed::text",
+        crate::screen::build::removed::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::reset::text",
+        crate::screen::build::reset::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::rpc_import::text",
+        crate::screen::build::rpc_import::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::sites::text",
+        crate::screen::build::sites::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::sol::text",
+        crate::screen::build::sol::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::walletconnect::text",
+        crate::screen::build::walletconnect::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::yubikey::text",
+        crate::screen::build::yubikey::text::ALL,
+    ),
+    (
+        "yw_engine::screen::build::zec::text",
+        crate::screen::build::zec::text::ALL,
+    ),
+    (
+        "yw_engine::screen::extension::text",
+        crate::screen::extension::text::ALL,
+    ),
+    (
         "yw_engine::screen::model::text",
         crate::screen::model::text::ALL,
     ),
+    ("yw_engine::screen::qr::text", crate::screen::qr::text::ALL),
     ("yw_engine::screen::text", crate::screen::text::ALL),
     ("yw_engine::secret::text", crate::secret::text::ALL),
     ("yw_engine::settings::text", crate::settings::text::ALL),

@@ -273,7 +273,7 @@ fn zec_key_held(
 impl Wallet {
     /// The Zcash tab is selected.
     #[must_use]
-    pub fn zec_tab_active(&self) -> bool {
+    pub(crate) fn zec_tab_active(&self) -> bool {
         self.meta
             .as_ref()
             .is_some_and(|meta| meta.prefs.tab == crate::meta::Tab::Zec)
@@ -299,7 +299,7 @@ impl Wallet {
 
     /// The settings network.
     #[must_use]
-    pub const fn zec_network(&self) -> ZecNetwork {
+    pub(crate) const fn zec_network(&self) -> ZecNetwork {
         self.settings.zcash.network
     }
 
@@ -313,7 +313,7 @@ impl Wallet {
 
     /// ZEC journal records of the current network and account.
     #[must_use]
-    pub fn zec_records(&self) -> Vec<ZecRecord> {
+    pub(crate) fn zec_records(&self) -> Vec<ZecRecord> {
         let Some(account) = self.zec_account() else {
             return Vec::new();
         };
@@ -403,7 +403,7 @@ impl Wallet {
 
     /// A ZEC journal entry is undecodable (ZEC sending stops).
     #[must_use]
-    pub fn zec_journal_damaged(&self) -> bool {
+    pub(crate) fn zec_journal_damaged(&self) -> bool {
         self.evm
             .journal
             .as_ref()
@@ -462,7 +462,7 @@ impl Wallet {
     /// The hardware account check against the vault's card records (re-evaluated on every meta
     /// load and card record change, since both feed it).
     #[must_use]
-    pub fn zec_hw_state(&self) -> ZecHwState {
+    pub(crate) fn zec_hw_state(&self) -> ZecHwState {
         let Some(account) = self.zec_account() else {
             return ZecHwState::NotHardware;
         };
@@ -491,7 +491,7 @@ impl Wallet {
     /// of `slots`: clearing or re-slotting those slots orphans them (spec/10 §15). The `YubiKey`
     /// clear / slot-change screens warn with this before writing.
     #[must_use]
-    pub fn zec_accounts_using_card(
+    pub(crate) fn zec_accounts_using_card(
         &self,
         serial: u32,
         slots: &[yw_core::yubikey::plan::CardSlot],
@@ -517,14 +517,14 @@ impl Wallet {
     /// No approval is open and every Zcash record has ended: the key source may change (the
     /// account card's drop-down is disabled otherwise, 2026-11-15).
     #[must_use]
-    pub fn zec_all_terminal(&self) -> bool {
+    pub(crate) fn zec_all_terminal(&self) -> bool {
         !self.zec.busy && self.zec_records().iter().all(ZecRecord::is_terminal)
     }
 
     /// The account is on `source` (and, given, on `pubkey`): picking that drop-down item again
     /// changes nothing (2026-11-15).
     #[must_use]
-    pub fn zec_source_in_use(&self, source: ZecKeySource, pubkey: Option<[u8; 33]>) -> bool {
+    pub(crate) fn zec_source_in_use(&self, source: ZecKeySource, pubkey: Option<[u8; 33]>) -> bool {
         self.zec_account().is_some_and(|account| {
             account.source == source && pubkey.is_none_or(|key| key == account.pubkey)
         })
@@ -565,7 +565,7 @@ impl Wallet {
 
     /// Imported Zcash keys of the current network (vault tag 6, spec/12 §2.3), in vault order.
     #[must_use]
-    pub fn zec_imported_keys(&self) -> Vec<(yw_core::vault::RecordId, ZecKeyInfo)> {
+    pub(crate) fn zec_imported_keys(&self) -> Vec<(yw_core::vault::RecordId, ZecKeyInfo)> {
         let network = self.zec_network();
         self.keys
             .zec_keys
@@ -577,7 +577,7 @@ impl Wallet {
 
     /// The vault record of the current account when it is an imported key.
     #[must_use]
-    pub fn zec_selected_imported(&self) -> Option<yw_core::vault::RecordId> {
+    pub(crate) fn zec_selected_imported(&self) -> Option<yw_core::vault::RecordId> {
         let account = self
             .zec_account()
             .filter(|account| account.source == ZecKeySource::Imported)?;
@@ -616,7 +616,7 @@ impl Wallet {
     /// The key source's name; an added mnemonic's source names the mnemonic
     /// (`[니모닉 2] Zcash 표준 경로`).
     #[must_use]
-    pub fn zec_source_label(&self, source: ZecKeySource) -> String {
+    pub(crate) fn zec_source_label(&self, source: ZecKeySource) -> String {
         match source {
             ZecKeySource::Mnemonic {
                 mnemonic,
@@ -858,7 +858,7 @@ impl Wallet {
     /// The backup gate of the account's key source ([`Wallet::mn_backup_gate`]: an added phrase's
     /// standard path, or the primary phrase's derived or EVM-shared key).
     #[must_use]
-    pub fn zec_backup_gate(&self) -> Option<yw_core::vault::RecordId> {
+    pub(crate) fn zec_backup_gate(&self) -> Option<yw_core::vault::RecordId> {
         let account = self.zec_account()?;
         self.mn_backup_gate(
             account.source.mnemonic(),
@@ -1391,7 +1391,7 @@ impl Wallet {
 
 impl Wallet {
     /// The `YubiKey` Zcash slot indices of the current network (`KeyRole::Zec`).
-    pub fn zec_hw_slots(&self) -> Vec<u32> {
+    pub(crate) fn zec_hw_slots(&self) -> Vec<u32> {
         let network = self.zec_network();
         let mut out: Vec<u32> = Vec::new();
         for slot in self.card.records.iter().flat_map(|record| &record.slots) {
@@ -1409,7 +1409,7 @@ impl Wallet {
         out
     }
 
-    pub fn zec_evm_indices(&self) -> Vec<u32> {
+    pub(crate) fn zec_evm_indices(&self) -> Vec<u32> {
         self.meta.as_ref().map_or_else(Vec::new, |meta| {
             meta.evm_accounts
                 .iter()

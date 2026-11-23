@@ -102,7 +102,10 @@ impl Wallet {
 
     /// The user's override of a network, if any.
     #[must_use]
-    pub fn explorer_override(&self, network: impl Into<ExplorerNet>) -> Option<&ExplorerOverride> {
+    pub(crate) fn explorer_override(
+        &self,
+        network: impl Into<ExplorerNet>,
+    ) -> Option<&ExplorerOverride> {
         let net = network.into();
         self.settings
             .explorers
@@ -143,7 +146,7 @@ impl Wallet {
 
     /// The address page of `address`.
     #[must_use]
-    pub fn explorer_address_url(
+    pub(crate) fn explorer_address_url(
         &self,
         network: impl Into<ExplorerNet>,
         address: &str,
@@ -242,7 +245,7 @@ impl Wallet {
 
     /// The display name of a card row.
     #[must_use]
-    pub fn explorer_net_name(&self, net: ExplorerNet) -> String {
+    pub(crate) fn explorer_net_name(&self, net: ExplorerNet) -> String {
         match (net.network_id(), net) {
             (Some(id), _) => self.network_name(id),
             (None, ExplorerNet::HyperCore(network)) => format!(

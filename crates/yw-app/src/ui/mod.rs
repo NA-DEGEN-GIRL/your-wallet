@@ -1,8 +1,10 @@
 //! UI modules (spec/04 §1.8): the main window layout and screens, secret windows W01–W10, the
 //! approval window's input map, the receive QR and the theme. Since 2026-11-24 (spec/15 §11.4
 //! S5-2) also `lower`, the neutral screen model (`yw_engine::screen::model`) lowered into the main
-//! window's item list. The A01 window itself is
-//! `crate::app_approval`; the approval interaction/queue rules, the A01 content model, the text
+//! window's item list. Since 2026-11-24 (S5-5) the screens are built by yw-engine
+//! (`yw_engine::screen::build`); the `screens*` modules here keep their control ids (`ids`) and
+//! the tests that need an `App` (`removed` and `screens_accounts`, which had no ids, went). The
+//! A01 window itself is `crate::app_approval`; the approval interaction/queue rules, the A01 content model, the text
 //! layout and the secret input buffers are yw-engine's (below).
 //!
 //! (2026-11-17, spec/15 §11.4 S2: the approval queue and interaction rules, the approval texts,
@@ -18,9 +20,7 @@ pub mod command_ids;
 pub mod lower;
 pub mod main_window;
 pub mod qr;
-pub mod removed;
 pub mod screens;
-pub mod screens_accounts;
 pub mod screens_book;
 pub mod screens_btc;
 pub mod screens_evm;

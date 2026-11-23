@@ -2290,12 +2290,16 @@ mod tests {
         }
         for bump in [false, true] {
             let ids = screens_btc::ids::fee_ids(bump);
-            for (press, id_of_radio) in screens_btc::fee_presses(bump).into_iter().zip(ids) {
+            for (press, id_of_radio) in yw_engine::testkit::screen::btc::fee_presses(bump)
+                .into_iter()
+                .zip(ids)
+            {
                 assert_eq!(id(press.into()), id_of_radio, "{bump} {press:?}");
             }
         }
         for net in BtcNetwork::ALL {
-            let (edit, save, default, test) = screens_btc::esplora_controls(net);
+            let (edit, save, default, test) =
+                yw_engine::testkit::screen::btc::esplora_controls(net);
             let ids = screens_btc::ids::esplora_ids(net);
             assert_eq!(
                 (

@@ -91,7 +91,7 @@ impl Wallet {
 
     /// `잔액 0인 토큰 숨기기` (meta `token_view.hide_zero`).
     #[must_use]
-    pub fn evm_hide_zero(&self) -> bool {
+    pub(crate) fn evm_hide_zero(&self) -> bool {
         self.meta
             .as_ref()
             .is_some_and(|meta| meta.token_view.hide_zero)
@@ -185,7 +185,7 @@ impl Wallet {
 
     /// The label and contract of the user token awaiting the delete confirmation.
     #[must_use]
-    pub fn token_delete_target(&self) -> Option<(String, Address)> {
+    pub(crate) fn token_delete_target(&self) -> Option<(String, Address)> {
         let (chain_id, address) = self.evm.token_delete?;
         let entry = self
             .meta
@@ -232,7 +232,7 @@ impl Wallet {
 
     /// Whether the user hid this allowlisted token on the selected cluster.
     #[must_use]
-    pub fn sol_token_hidden(&self, entry: &SplAllowEntry) -> bool {
+    pub(crate) fn sol_token_hidden(&self, entry: &SplAllowEntry) -> bool {
         self.meta.as_ref().is_some_and(|meta| {
             meta.token_view
                 .is_hidden(&self.sol_token_network(), &entry.mint.to_base58())

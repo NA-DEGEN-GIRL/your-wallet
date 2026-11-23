@@ -64,7 +64,7 @@ yw_core::texts! {
 
     /// The account card (2026-11-15: `내 Bitcoin 계정`, the shared card; the subtitle
     /// `Bitcoin 계정` and the badges `가져온 키`, `EVM 계정 {0} 키` before, now the sources of
-    /// `ui::screens_accounts`).
+    /// `screen::build::accounts`).
     MY_ACCOUNTS = "내 Bitcoin 계정" / "My Bitcoin accounts";
     RENAME = "이름 바꾸기" / "Rename";
     HIDE = "숨기기" / "Hide";

@@ -9,19 +9,19 @@ use yw_core::zec::ZecNetwork;
 
 use super::text as t;
 use super::{script_label, slot_items, steps_item, zec_network_label};
-use crate::app::App;
-use yw_engine::cmd::{Row, YkManagePress};
-use yw_engine::form::EditField;
-use yw_engine::screen::Tone;
-use yw_engine::screen::model::{Ctl, Item};
-use yw_engine::wallet::app_yubikey::CARD_SCRIPTS;
-use yw_engine::wallet::app_yubikey::manage::ReslotAction;
-use yw_engine::wallet::app_yubikey::manage::text as mt;
-use yw_engine::wallet::app_yubikey::manage::{
+use crate::cmd::{Row, YkManagePress};
+use crate::form::EditField;
+use crate::screen::Tone;
+use crate::screen::build::Screen;
+use crate::screen::model::{Ctl, Item};
+use crate::wallet::app_yubikey::CARD_SCRIPTS;
+use crate::wallet::app_yubikey::manage::ReslotAction;
+use crate::wallet::app_yubikey::manage::text as mt;
+use crate::wallet::app_yubikey::manage::{
     Chain, ClearFlow, ClearStep, MAX_RESLOT_INDEX, Preset, ReslotFlow, ReslotStep, YkManage,
     lost_slots, preset_press, reslot_press,
 };
-use yw_engine::wallet::app_yubikey::text as yk;
+use crate::wallet::app_yubikey::text as yk;
 
 /// The steps of "슬롯 구성 바꾸기".
 pub const RESLOT_STEPS: [Text; 4] = [
@@ -83,7 +83,7 @@ fn record_items(lang: Lang, record: &HwKeyRecord, items: &mut Vec<Item>) {
     }
 }
 
-impl App {
+impl Screen<'_> {
     /// The open card action.
     pub(super) fn yk_manage_items(&self, manage: &YkManage, items: &mut Vec<Item>) {
         match manage {
@@ -331,7 +331,7 @@ impl App {
                         && slot.public == line.public
                 })
             });
-            let holders = yw_engine::yubikey::holders(&others, planned.role);
+            let holders = crate::yubikey::holders(&others, planned.role);
             let relation = match (unchanged, holders.is_empty()) {
                 (true, _) => t::RELATION_UNCHANGED.get(lang).to_owned(),
                 (false, true) => t::RELATION_PUT.get(lang).to_owned(),
@@ -349,7 +349,7 @@ impl App {
         if !dropped.is_empty() {
             items.push(Item::CardStart(Some(t::CARD_DROPPED.get(lang).to_owned())));
             // The "지워지는 계정" block (2026-11-10): addresses and last-read balances.
-            let accounts: Vec<yw_engine::screen::RemovedAccount> = dropped
+            let accounts: Vec<crate::screen::RemovedAccount> = dropped
                 .iter()
                 .map(|(slot, holders)| {
                     let mut account = self.card_removed(slot, &others, true);
@@ -363,7 +363,7 @@ impl App {
                     account
                 })
                 .collect();
-            let balances = crate::ui::removed::removed_items(lang, &accounts, items);
+            let balances = crate::screen::build::removed::removed_items(lang, &accounts, items);
             let changed: Vec<CardSlot> = dropped.iter().map(|(slot, _)| slot.slot).collect();
             self.yk_zec_unusable_items(flow.serial, &changed, t::ZEC_UNUSABLE_CHANGE, items);
             // "복구 단어로 언제든 복구" holds only for keys with a known path.
@@ -658,12 +658,12 @@ impl App {
             let others = self.yk_other_records(flow.serial);
             items.push(Item::CardStart(Some(t::CARD_UNUSABLE.get(lang).to_owned())));
             // The "지워지는 계정" block (2026-11-10): addresses and last-read balances.
-            let accounts: Vec<yw_engine::screen::RemovedAccount> = before
+            let accounts: Vec<crate::screen::RemovedAccount> = before
                 .slots
                 .iter()
                 .filter(|slot| plan.clears(slot.slot))
                 .map(|slot| {
-                    let holders = yw_engine::yubikey::holders(&others, slot.role);
+                    let holders = crate::yubikey::holders(&others, slot.role);
                     let mut account = self.card_removed(slot, &others, true);
                     account.label = format!("{} — {}", slot.slot.label_in(lang), account.label);
                     account.note = Some(if holders.is_empty() && !slot.path_known {
@@ -676,7 +676,7 @@ impl App {
                     account
                 })
                 .collect();
-            let balances = crate::ui::removed::removed_items(lang, &accounts, items);
+            let balances = crate::screen::build::removed::removed_items(lang, &accounts, items);
             let cleared: Vec<CardSlot> = before
                 .slots
                 .iter()
@@ -725,7 +725,7 @@ impl App {
         ));
         let mut asks: Vec<&str> = Vec::new();
         if plan.openpgp == Some(ClearMethod::OurSlots) {
-            asks.push(yw_engine::yubikey::PinKind::OpenPgpAdmin.name(lang));
+            asks.push(crate::yubikey::PinKind::OpenPgpAdmin.name(lang));
         }
         if plan.piv == Some(ClearMethod::OurSlots) {
             asks.push("PIV PIN");
@@ -755,7 +755,7 @@ impl App {
             // wrong one is named (spec/10 §9.1).
             let line =
                 |name: &str,
-                 pin: yw_engine::yubikey::PinKind,
+                 pin: crate::yubikey::PinKind,
                  asked: Option<ClearMethod>,
                  result: Option<Result<(), yw_core::yubikey::CardError>>| {
                     match (asked, result) {
@@ -780,13 +780,13 @@ impl App {
             for (text, tone) in [
                 line(
                     "OpenPGP",
-                    yw_engine::yubikey::PinKind::OpenPgpAdmin,
+                    crate::yubikey::PinKind::OpenPgpAdmin,
                     cleared.asked.openpgp,
                     cleared.report.openpgp,
                 ),
                 line(
                     "PIV",
-                    yw_engine::yubikey::PinKind::PivPin,
+                    crate::yubikey::PinKind::PivPin,
                     cleared.asked.piv,
                     cleared.report.piv,
                 ),
@@ -803,7 +803,7 @@ impl App {
                 Ok(()) => items.push(Item::Text(t::RESULT_SLOTS_REMOVED.get(lang).to_owned())),
                 Err(error) => items.push(Item::Banner(
                     t::RESULT_VAULT_FAILED
-                        .fill(lang, [&yw_engine::errors::vault_code(error).text_in(lang)]),
+                        .fill(lang, [&crate::errors::vault_code(error).text_in(lang)]),
                     Tone::Danger,
                 )),
             }

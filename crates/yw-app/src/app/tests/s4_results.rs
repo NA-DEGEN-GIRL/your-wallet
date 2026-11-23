@@ -2075,7 +2075,8 @@ const MUTATING: [&str; 26] = [
 
 /// The calls the executor makes into the wallet, each with its reason (2026-11-21, S4 W2): not
 /// followed, and allowed only from the fn named. Nothing else of the executor writes wallet
-/// state but the cells of [`EXECUTOR_CELL_WRITES`] (2026-11-21, S4 W2 review).
+/// state (2026-11-21, S4 W2 review: but the cells of `EXECUTOR_CELL_WRITES`; 2026-11-24, S5-5:
+/// none since the render builders left `impl App`).
 const EXECUTOR_WALLET_CALLS: [(&str, &str, &str); 3] = [
     (
         "clear_secret_clip",
@@ -2097,7 +2098,7 @@ const EXECUTOR_WALLET_CALLS: [(&str, &str, &str); 3] = [
 /// [`MUTATING`], so a `&mut self` method of a wallet part — `idle.input`, `wait.screen_changed`,
 /// a flow method — went unseen). Any other method called on a wallet field there fails. In a
 /// `&self` fn a call through a wallet field can write only through a cell ([`MUTATING`]'s
-/// `set`/`replace`/`take`/`swap`, and [`EXECUTOR_CELL_WRITES`]).
+/// `set`/`replace`/`take`/`swap`; 2026-11-24, S5-5: no cell is the executor's any more).
 const READ_ONLY_CALLS: [(&str, &str); 4] = [
     ("as_ref", "a shared view of an `Option`"),
     ("len", "a length"),
@@ -2109,19 +2110,26 @@ const READ_ONLY_CALLS: [(&str, &str); 4] = [
     ),
 ];
 
-/// The wallet cells the executor writes, each as (fn, the cell's receiver, reason) (2026-11-21,
-/// S4 W2 review: the check followed only `&mut self` fns, so these `&self` writes of the render
-/// builders went unseen and the docs called the clip notices the only exception). Every
-/// `borrow_mut()`/`try_borrow_mut()` in an executor fn, on any receiver (a local alias of a
-/// wallet field too), must be listed here, and every line here must be found.
-const EXECUTOR_CELL_WRITES: [(&str, &str, &str); 2] = [
+/// The wallet cells the screen builders write, each as (fn, the cell's receiver, reason). Every
+/// `borrow_mut()`/`try_borrow_mut()` in a builder fn of yw-engine's `screen/build/`, on any
+/// receiver (a local alias of a wallet field too), must be listed here, and every line here must
+/// be found ([`the_screen_writes_no_wallet_state`]).
+///
+/// 2026-11-24 (spec/15 §11.4 S5-5, S5 plan §3 "Notes"): was `EXECUTOR_CELL_WRITES`, the wallet
+/// cells the executor wrote (2026-11-21, S4 W2 review: the check followed only `&mut self` fns,
+/// so these `&self` writes of the render builders went unseen and the docs called the clip
+/// notices the only exception), because `render_main` reached the builders while they were
+/// `impl App`. They are yw-engine's `impl Screen<'_>` now, a read-only view (`&Wallet`) the
+/// executor reaches only as `Wallet::screen`'s one call; these two cells are the only state a
+/// builder writes, and that is checked here, scoped to `screen/build/`, instead.
+const SCREEN_CELL_WRITES: [(&str, &str, &str); 2] = [
     (
         "sites_page",
         "browser.site_rows.keys",
         "S13's drawn row → grant map (`BrowserUi.site_rows.keys`), cleared and refilled while \
-         `render_main` builds the page; the disconnect presses (`SitesPress`, a `Row`) read it. \
-         Not a W2 change (there before S4); it leaves the wallet — shell state, or an answer \
-         `Cmd` — before the render builders leave `impl App` (S5, D-21)",
+         the page is built; the disconnect presses (`SitesPress`, a `Row`) read it. There before \
+         S4; since S5-5 a builder of the engine (render code in the engine writing a wallet cell), \
+         no longer the executor's",
     ),
     (
         "wc_session_cards",
@@ -2132,15 +2140,16 @@ const EXECUTOR_CELL_WRITES: [(&str, &str, &str); 2] = [
 ];
 
 /// The executor fns [`the_executor_writes_no_wallet_state`] must reach (critique A-20). 2026-11-21
-/// (S4 W2 review): `items` and the two fns of [`EXECUTOR_CELL_WRITES`], the `&self` render
+/// (S4 W2 review): `items` and the two fns of `EXECUTOR_CELL_WRITES`, the `&self` render
 /// builders, which the check now follows too. 2026-11-24 (spec/15 §11.4 S5-1): without
 /// `make_display_window` and `show_display`, which became the `DisplayHost` impl `WinDisplayHost`
 /// (no `impl App` fn; it borrows shell fields only, checked in
-/// [`the_display_secret_moves_only_in_the_composition`]).
-const EXECUTOR_TARGETS: [&str; 22] = [
+/// [`the_display_secret_moves_only_in_the_composition`]). 2026-11-24 (S5-5): without
+/// `sites_page` and `wc_session_cards` (engine builders now, [`the_screen_writes_no_wallet_state`])
+/// and with `screen`, the wallet's `&self` entry `items` calls (`Wallet::screen`).
+const EXECUTOR_TARGETS: [&str; 21] = [
     "items",
-    "sites_page",
-    "wc_session_cards",
+    "screen",
     "apply",
     "apply_approval_effect",
     "open_approval_window",
@@ -2334,12 +2343,15 @@ fn cell_writes(body: &str) -> Vec<String> {
 
 /// What the executor fn `name` (its `body`, whether it takes `&mut self`) does to the wallet
 /// against the rules of [`the_executor_writes_no_wallet_state`]: the findings, and how many of
-/// [`EXECUTOR_CELL_WRITES`] it makes (2026-11-21, S4 W2 review).
+/// the listed cell writes `cells` it makes (2026-11-21, S4 W2 review). 2026-11-24 (S5-5): the
+/// list is a parameter — none for the executor, [`SCREEN_CELL_WRITES`] for the screen builders
+/// ([`the_screen_writes_no_wallet_state`]); before, `EXECUTOR_CELL_WRITES` for both.
 fn executor_findings(
     name: &str,
     body: &str,
     takes_mut: bool,
     fields: &BTreeSet<String>,
+    cells: &[(&str, &str, &str)],
 ) -> (Vec<String>, usize) {
     let mut findings: Vec<String> = wallet_writes(body, fields)
         .into_iter()
@@ -2359,7 +2371,7 @@ fn executor_findings(
     }
     let mut listed = 0;
     for receiver in cell_writes(body) {
-        if EXECUTOR_CELL_WRITES
+        if cells
             .iter()
             .any(|&(from, cell, _)| from == name && cell == receiver)
         {
@@ -2542,11 +2554,12 @@ fn typed_app_names(text: &str) -> BTreeSet<String> {
 /// `WinDisplayHost`, which borrows shell fields only) — writes no wallet field
 /// ([`wallet_writes`]), takes no whole wallet
 /// ([`whole_wallet`]), calls only [`READ_ONLY_CALLS`] on a wallet field where it takes
-/// `&mut self` ([`wallet_calls`]), borrows no cell mutably but [`EXECUTOR_CELL_WRITES`]
-/// ([`cell_writes`]) and calls into the wallet's `impl App` fns only as
-/// [`EXECUTOR_WALLET_CALLS`] lists. So the executor's wallet writes are the clip notices of
-/// `clear_secret_clip` and the two drawn-row maps the render builders refill, each listed with
-/// its reason. 2026-11-21 (S4 W2 review): before, only `&mut self` fns were followed (the render
+/// `&mut self` ([`wallet_calls`]), borrows no cell mutably ([`cell_writes`]; 2026-11-24, S5-5:
+/// before, but `EXECUTOR_CELL_WRITES`, now [`SCREEN_CELL_WRITES`] of the engine's builders)
+/// and calls into the wallet's `impl App` fns only as [`EXECUTOR_WALLET_CALLS`] lists. So the
+/// executor's wallet writes are the clip notices of `clear_secret_clip`, listed with its reason
+/// (2026-11-24, S5-5: and, until then, the two drawn-row maps the `impl App` render builders
+/// refilled). 2026-11-21 (S4 W2 review): before, only `&mut self` fns were followed (the render
 /// builders `render_main` reaches were taken to change nothing, and those two cell writes went
 /// unseen), and only [`MUTATING`] calls, assignments and `&mut` borrows through `self.` counted
 /// (a `&mut self.wallet` alias, a `Self { wallet: … }` pattern or `self.idle.input(..)` passed).
@@ -2623,7 +2636,9 @@ fn the_executor_writes_no_wallet_state() {
             "fn {name} of impl App or impl Wallet found"
         );
         for (file, body, takes_mut) in bodies.into_iter().flatten() {
-            let (findings, listed) = executor_findings(&name, body, *takes_mut, &fields);
+            // 2026-11-24 (S5-5): no cell write is the executor's any more (the render builders
+            // that refilled the two drawn-row maps are the engine's, `SCREEN_CELL_WRITES`).
+            let (findings, listed) = executor_findings(&name, body, *takes_mut, &fields, &[]);
             assert!(
                 findings.is_empty(),
                 "{file}: the executor's fn {name} changes wallet state: {findings:?}"
@@ -2648,11 +2663,7 @@ fn the_executor_writes_no_wallet_state() {
             }
         }
     }
-    assert_eq!(
-        cells,
-        EXECUTOR_CELL_WRITES.len(),
-        "every listed cell write found once"
-    );
+    assert_eq!(cells, 0, "the executor writes no wallet cell");
     for composition in [
         "open_display_composed",
         "open_display_window",
@@ -2675,8 +2686,175 @@ fn the_executor_writes_no_wallet_state() {
     the_display_secret_moves_only_in_the_composition(&files);
 }
 
+/// `the_screen_writes_no_wallet_state` (2026-11-24, spec/15 §11.2–§11.3, §11.4 S5-5; S5 plan §3
+/// "Notes", §6 S5-5 Sec): the screen builders are yw-engine's `impl Screen<'_>` fns and the free
+/// fns of `screen/build/` (all but `mod.rs`, which defines the view), and a `Screen` holds the
+/// wallet as `&Wallet`, so the compiler refuses a write of a wallet field there. What it allows is
+/// a write through a cell: every fn of those files (of another type's impl, its cell writes only)
+/// is scanned as the executor's are
+/// ([`executor_findings`] with [`SCREEN_CELL_WRITES`]; a `&self` fn: no assignment, `&mut` or
+/// [`MUTATING`] call through a wallet field, no whole wallet, every `borrow_mut`/
+/// `try_borrow_mut` listed), each listed cell write is found once, and no builder file names a
+/// lock or an atomic write (`Mutex`, `RwLock`, `.lock(`, `.store(`, `fetch_`), which would be a
+/// way to write shared state. Before S5-5 the builders were `impl App` and the executor's check
+/// followed them from `render_main` (with the two cells listed in its `EXECUTOR_CELL_WRITES`).
+#[test]
+fn the_screen_writes_no_wallet_state() {
+    let files = production_code();
+    let fields = wallet_fields(&app_and_wallet(&files));
+    assert!(fields.contains("browser") && fields.contains("wc"));
+    let builders: Vec<&Src> = files
+        .iter()
+        .filter(|src| is_render_file(&src.file) && !src.file.ends_with("/build/mod.rs"))
+        .collect();
+    assert!(
+        builders.len() >= 25,
+        "{} builder files found",
+        builders.len()
+    );
+    let mut findings = Vec::new();
+    let mut fns = 0_usize;
+    let mut cells = 0_usize;
+    for src in &builders {
+        for word in ["Mutex", "RwLock", "Atomic"] {
+            if has_word(&src.code, word) || src.code.contains(&format!("{word}<")) {
+                findings.push(format!("{}: names {word}", src.file));
+            }
+        }
+        for call in [".lock(", ".store(", ".fetch_"] {
+            if src
+                .code
+                .split_whitespace()
+                .collect::<String>()
+                .contains(call)
+            {
+                findings.push(format!("{}: calls {call}", src.file));
+            }
+        }
+        for block in &src.blocks {
+            let fn_head = head(&src.code, block.open);
+            if !has_word(fn_head, "fn") {
+                continue;
+            }
+            // The outermost fn only (a closure's or a nested fn's body is in it), and whether
+            // its `self` is a `Screen` (a fn of another type's impl, the S13 page's `Page`, has a
+            // `self` of its own: only its cell writes count).
+            let mut parent = block.parent;
+            let mut nested = false;
+            let mut on_screen = false;
+            while let Some(outer) = parent {
+                let outer_head = head(&src.code, src.blocks[outer].open);
+                if has_word(outer_head, "fn") {
+                    nested = true;
+                    break;
+                }
+                if has_word(outer_head, "impl") {
+                    on_screen = outer_head
+                        .split_whitespace()
+                        .collect::<String>()
+                        .ends_with("Screen<'_>");
+                }
+                parent = src.blocks[outer].parent;
+            }
+            if nested {
+                continue;
+            }
+            let Some((_, after)) = fn_head.rsplit_once("fn ") else {
+                continue;
+            };
+            let name: String = after
+                .trim_start()
+                .chars()
+                .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+                .collect();
+            let body = &src.code[block.open..=block.close];
+            let none = BTreeSet::new();
+            let (found, listed) = executor_findings(
+                &name,
+                body,
+                false,
+                if on_screen { &fields } else { &none },
+                &SCREEN_CELL_WRITES,
+            );
+            findings.extend(
+                found
+                    .into_iter()
+                    .map(|finding| format!("{}: {name} {finding}", src.file)),
+            );
+            cells += listed;
+            fns += 1;
+        }
+    }
+    assert!(fns > 200, "{fns} builder fns scanned");
+    assert!(
+        findings.is_empty(),
+        "a screen builder writes wallet state: {findings:#?}"
+    );
+    assert_eq!(
+        cells,
+        SCREEN_CELL_WRITES.len(),
+        "every listed cell write found once"
+    );
+}
+
+/// spec/15 §11.4 S5-5 (2026-11-24; S5 plan critic C15): yw-app's test builds compile yw-engine
+/// without `cfg(test)`, so a `#[cfg(test)]` item of the screen builders' code would be left out of
+/// every census and tour run silently. In yw-engine's `screen/` (the model, the facts, the
+/// builders) every `#[cfg(test)]` stands on a `mod`: the test modules only (the test seams of the
+/// Windows facts stay yw-app's, `screen_facts.rs`).
+#[test]
+fn the_screen_module_has_no_test_only_code() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../yw-engine/src/screen");
+    let mut stack = vec![root];
+    let mut files = 0_usize;
+    let mut test_mods = 0_usize;
+    let mut findings = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            files += 1;
+            let code = code_only(&std::fs::read_to_string(&path).unwrap());
+            for (at, _) in code.match_indices("#[cfg") {
+                let close = code[at..].find(']').map_or(code.len(), |n| at + n);
+                if !has_word(&code[at..close], "test") {
+                    continue;
+                }
+                // Skip the attribute and any attributes after it.
+                let mut after = code[(close + 1).min(code.len())..].trim_start();
+                while let Some(rest) = after.strip_prefix("#[") {
+                    after = rest[rest.find(']').map_or(rest.len(), |n| n + 1)..].trim_start();
+                }
+                if starts_with_word(after, "mod") {
+                    test_mods += 1;
+                } else {
+                    findings.push(format!(
+                        "{}: {} {}",
+                        path.display(),
+                        &code[at..=close.min(code.len() - 1)],
+                        after.chars().take(40).collect::<String>()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(files >= 30, "{files} screen files read");
+    assert!(test_mods >= 5, "{test_mods} test modules found");
+    assert!(findings.is_empty(), "{findings:#?}");
+}
+
 /// The scanners of [`the_executor_writes_no_wallet_state`] on made-up code: they can fail.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one made-up body per scanner rule; 2026-11-24 (S5-5) the cell list became a parameter"
+)]
 fn wallet_writes_and_self_calls_on_made_up_code() {
     let made_up: BTreeSet<String> = ["form", "evm", "banners"]
         .into_iter()
@@ -2711,8 +2889,9 @@ fn wallet_writes_and_self_calls_on_made_up_code() {
         .into_iter()
         .map(str::to_owned)
         .collect();
-    let findings =
-        |name: &str, body: &str, takes_mut: bool| executor_findings(name, body, takes_mut, &fields);
+    let findings = |name: &str, body: &str, takes_mut: bool| {
+        executor_findings(name, body, takes_mut, &fields, &SCREEN_CELL_WRITES)
+    };
     assert_eq!(
         findings(
             "arm",
@@ -3708,7 +3887,8 @@ fn wallet_chains(body: &str) -> Vec<(Vec<String>, bool)> {
 /// the wallet's state through `App` there; what the compiler allows — naming the wallet
 /// (`self.wallet.`) — is checked here. In every non-test `impl App` fn: no wallet field is written
 /// ([`wallet_writes`]), the whole wallet is never taken ([`whole_wallet`]), a wallet cell is
-/// borrowed mutably only as [`EXECUTOR_CELL_WRITES`] lists, a wallet fn that takes `&mut self`
+/// never borrowed mutably (2026-11-24, S5-5; before, only as `EXECUTOR_CELL_WRITES` listed: the
+/// render builders were `impl App`), a wallet fn that takes `&mut self`
 /// is called only as [`SHELL_WALLET_CALLS`] (and [`SHELL_WALLET_RPC_CALLS`]) list, and a method
 /// called on a wallet field named through `self.wallet.` is one of [`SHELL_WALLET_READS`]. Every
 /// listed call is found, with its reason (A-20). Before W15, `impl App` code wrote the wallet
@@ -3731,7 +3911,9 @@ fn the_shell_writes_wallet_state_only_through_entries() {
     );
     let fields = wallet_fields(app);
     let shell_fns = app_fns(&files);
-    assert!(shell_fns.len() > 300, "{} impl App fns", shell_fns.len());
+    // 2026-11-24 (S5-5): about 220 render builders left `impl App` for yw-engine's
+    // `impl Screen<'_>` (before, `> 300`).
+    assert!(shell_fns.len() > 100, "{} impl App fns", shell_fns.len());
     let wallet_fns = impl_fns(&files, "Wallet");
     let writers: BTreeSet<&str> = wallet_fns
         .iter()
@@ -3768,10 +3950,9 @@ fn the_shell_writes_wallet_state_only_through_entries() {
                     .split('.')
                     .next()
                     .unwrap_or_default();
-                let allowed = EXECUTOR_CELL_WRITES
-                    .iter()
-                    .any(|&(from, cell, _)| from == name && cell == receiver);
-                if fields.contains(first) && !allowed {
+                // 2026-11-24 (S5-5): no shell fn may (before, `EXECUTOR_CELL_WRITES`'s two
+                // render builders, `impl App` until then).
+                if fields.contains(first) {
                     findings.push(format!("{file}: {name} borrows {receiver} mutably"));
                 }
             }
@@ -4121,7 +4302,10 @@ fn wallet_chains_on_made_up_code() {
 /// `toggle_ai_panel` (`Step::AiExpand`), `hold_shown_ai_for_ack` (the AI body's paint) and the
 /// start steps `install_commit_read`, `wer_unprotected_noted`, `browser_attached`,
 /// `workers_attached`. Each is called from the shell only as [`SHELL_WALLET_CALLS`] lists.
-static WALLET_FNS: [(&str, &str); 989] = [
+/// S5-5 (2026-11-24, spec/15 §11.4 S5-5): `screen`, the screen's one entry (`&self`; the
+/// builders it calls are yw-engine's `impl Screen<'_>`, not `impl Wallet`), which yw-app's
+/// `App::items` calls (a read, so not a [`SHELL_WALLET_CALLS`] line).
+static WALLET_FNS: [(&str, &str); 990] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -5119,6 +5303,7 @@ static WALLET_FNS: [(&str, &str); 989] = [
     ("E1", "test_secret_serial"),
     ("E1", "test_import_held"),
     ("E1", "test_challenge"),
+    ("S5-5", "screen"),
 ];
 
 /// The `self.` field names `body` reads or writes: the first segment of each `self.` chain that
@@ -8133,38 +8318,26 @@ fn facade_uses_on_made_up_code() {
     );
 }
 
-/// Whether `file` (a `crate/src/path` of [`production_code`]) is render code (2026-11-24, spec/15
-/// §11.4 S5-3): `ui/screens*.rs` with their text and sub-modules, and `ui/removed.rs`.
+/// Whether `file` (a `crate/src/path` of [`production_code`]) is render code: yw-engine's screen
+/// builders `screen/build/` (2026-11-24, spec/15 §11.4 S5-5; from S5-3 until then, yw-app's
+/// `ui/screens*.rs` with their text and sub-modules and `ui/removed.rs`, [`is_ids_file`] now).
 fn is_render_file(file: &str) -> bool {
+    file.starts_with("yw-engine/src/screen/build/")
+}
+
+/// Whether `file` is one of yw-app's `ui/screens*.rs`, which since S5-5 (2026-11-24) hold only
+/// their control ids (`pub mod ids`) and test items.
+fn is_ids_file(file: &str) -> bool {
     file.strip_prefix("yw-app/src/ui/")
         .is_some_and(|rel| rel.starts_with("screens") || rel == "removed.rs")
 }
 
-/// The yw-app paths outside `crate::ui` that render code still names (2026-11-24, S5-3, S5 plan
-/// critic C7), each moving with the builders in S5-5: the `impl App` target, the shell
-/// catalogue's `T_PASSWORD_OLD_COPIES` (settings → 보안), S23's status type and the Chrome page
-/// address (`app_extension`), and the `rpc.json` card's texts (`app_rpc_import::text`). The data
-/// folder's reset prefix is the engine's (`yw_engine::wallet_files::FOLDER_PREFIX`, was
-/// `crate::store::reset`'s re-export).
-const RENDER_SHELL_PATHS: [&str; 4] = [
-    "crate::app::App",
-    "crate::app::T_PASSWORD_OLD_COPIES",
-    "crate::app_extension::{CHROME_EXTENSIONS_URL,ExtensionStatus}",
-    "crate::app_rpc_import::text",
-];
-
-/// The `crate::ui` modules other than the render files that render code names (2026-11-24, S5-3
-/// review): before, any `crate::ui::` path passed, a Windows-side module of `ui` too. Each is
-/// still named, so the list stays exact; a new one is reviewed here.
-///
-/// 2026-11-24 (S5-4): `cmd_table` left the list — the screens name presses and fields, and the
-/// copy mark and the open drop-down compare presses (`id_of` before).
-const RENDER_UI_MODULES: [&str; 2] = ["main_window", "qr"];
-
-/// The `impl App` fns defined outside the render files that render code calls (2026-11-24, S5-3
-/// review): only the facts. Before, a render builder's `self.<shell fn>(` was not seen, so a
-/// shell fn that reads `yw_win` or a file passed. Each is still called.
-const RENDER_SHELL_FNS: [&str; 1] = ["facts"];
+// 2026-11-24 (spec/15 §11.4 S5-5): `RENDER_SHELL_PATHS` (the four yw-app paths render code still
+// named at S5-3: `crate::app::App`, `crate::app::T_PASSWORD_OLD_COPIES`,
+// `crate::app_extension::{CHROME_EXTENSIONS_URL,ExtensionStatus}`, `crate::app_rpc_import::text`),
+// `RENDER_UI_MODULES` (`main_window`, `qr`) and `RENDER_SHELL_FNS` (`facts`) are gone: the
+// builders moved to yw-engine with those items (S5 plan critic C7), and the compiler refuses a
+// yw-app path, a yw-app `ui` module or an `impl App` fn there.
 
 /// Words render code never names (S5-3): the Windows crate, the shell's folders and pipe host,
 /// file and process probes. The facts are asked through `ScreenFacts` (`self.facts()`).
@@ -8327,19 +8500,22 @@ fn crate_path(tail: &str) -> String {
 
 /// spec/15 §11.4 S5-3 (2026-11-24; S5 plan §6 S5-3, critic C7): render code asks the shell only
 /// through `ScreenFacts`. In the render files ([`is_render_file`], production code only) nothing
-/// names `yw_win`, a `std` path, `env!`, the shell's `paths`/`pipe`/`PipeHost`, a file or process
-/// probe, or a yw-app path outside `crate::ui` but the [`RENDER_SHELL_PATHS`] (each still named,
-/// so the list stays exact); and the facts are asked (`self.facts()`). Before S5-3 the local
-/// times called `yw_win::time::local_wall_ms`, the data folder was `self.paths.data`, the
-/// `rpc.json` probe `rpc_json_path().is_some_and(|p| p.is_file())`, the extension folder
+/// names `yw_win`, a `std` path, `env!`, the shell's `paths`/`pipe`/`PipeHost`, or a file or
+/// process probe, and the facts are asked (`self.facts()`). Before S5-3 the local times called
+/// `yw_win::time::local_wall_ms`, the data folder was `self.paths.data`, the `rpc.json` probe
+/// `rpc_json_path().is_some_and(|p| p.is_file())`, the extension folder
 /// `app_extension::{extension_dir, expected_dir}`, the S10 status line read `self.pipe`, and the
 /// version line was `build_info::version_text`. 2026-11-24 (S5-3 review): also a `crate` alias,
-/// `$crate` and a spaced path are findings, a `crate::ui` module other than the render files is
-/// one of [`RENDER_UI_MODULES`], and an `impl App` fn defined only outside the render files that
-/// render code calls ([`app_calls`]) is one of [`RENDER_SHELL_FNS`]. Still not followed until
-/// S5-5 makes the boundary a compile-time one (the builders leave yw-app): a one-level `super::`
-/// path inside `ui`, and what a listed `crate::ui` module or a wallet fn reached through `Deref`
-/// does.
+/// `$crate` and a spaced path are findings.
+///
+/// 2026-11-24 (spec/15 §11.4 S5-5): the render files are yw-engine's `screen/build/`, where the
+/// compiler is the boundary S5-3's path rules stood in for (yw-engine depends on no yw-app or
+/// yw-win item, and its clippy bans files, processes, the wall clock and the environment): an
+/// engine `crate::` path is no finding there, every other finding of [`render_shell_reach`]
+/// still is. And yw-app's `ui/screens*.rs` ([`is_ids_file`]) hold no render code any more: their
+/// production code is their `pub mod ids` blocks and nothing else (no fn, impl, type, const,
+/// catalogue or `use` outside them). Before S5-5 the check read yw-app's 27 render files, which
+/// could name four listed yw-app paths, two `ui` modules and one `impl App` fn (`facts`).
 #[test]
 fn render_asks_the_shell_only_through_facts() {
     let files = production_code();
@@ -8349,63 +8525,39 @@ fn render_asks_the_shell_only_through_facts() {
         .collect();
     assert_eq!(
         render.len(),
-        27,
+        29,
         "the render files moved: review this check"
     );
-    // 2026-11-24 (S5-3 review): the `impl App` fns defined only outside the render files.
-    let shell_fns: BTreeSet<String> = app_fns(&files)
-        .into_iter()
-        .filter(|(_, defs)| defs.iter().all(|(file, _, _)| !is_render_file(file)))
-        .map(|(name, _)| name)
-        .collect();
     let mut findings = Vec::new();
-    let mut named = BTreeSet::new();
-    let mut ui_named = BTreeSet::new();
-    let mut fns_called = BTreeSet::new();
     let mut asks = 0_usize;
     for src in &render {
         for finding in render_shell_reach(&src.code) {
-            if let Some(path) = finding.strip_prefix("path ")
-                && RENDER_SHELL_PATHS.contains(&path)
-            {
-                named.insert(path.to_owned());
-            } else if let Some(module) = finding.strip_prefix("ui ")
-                && RENDER_UI_MODULES.contains(&module)
-            {
-                ui_named.insert(module.to_owned());
-            } else {
+            // An engine path: the compiler keeps it in yw-engine.
+            if !finding.starts_with("path crate::") {
                 findings.push(format!("{}: {finding}", src.file));
             }
         }
-        for name in app_calls(&src.code) {
-            if shell_fns.contains(&name) {
-                if RENDER_SHELL_FNS.contains(&name.as_str()) {
-                    fns_called.insert(name);
-                } else {
-                    findings.push(format!("{}: shell fn {name}", src.file));
-                }
-            }
-        }
         asks += src.code.matches("self.facts()").count();
+    }
+    let ids: Vec<&Src> = files.iter().filter(|src| is_ids_file(&src.file)).collect();
+    assert_eq!(ids.len(), 19, "yw-app's id files moved: review this check");
+    for src in &ids {
+        let rest = without_ids_module(src);
+        if !rest.trim().is_empty() {
+            findings.push(format!(
+                "{}: code outside `pub mod ids`: {}",
+                src.file,
+                rest.split_whitespace()
+                    .take(12)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
+        }
     }
     assert!(
         findings.is_empty(),
         "render code reaches the shell: {findings:#?}"
     );
-    for (seen, listed, what) in [
-        (&named, &RENDER_SHELL_PATHS[..], "path"),
-        (&ui_named, &RENDER_UI_MODULES[..], "ui module"),
-        (&fns_called, &RENDER_SHELL_FNS[..], "shell fn"),
-    ] {
-        assert_eq!(
-            *seen,
-            listed
-                .iter()
-                .map(|&name| name.to_owned())
-                .collect::<BTreeSet<_>>(),
-            "a listed {what} is no longer named: drop it"
-        );
-    }
     assert!(asks >= 20, "the facts are asked ({asks})");
 }
 
@@ -8469,8 +8621,8 @@ fn control_id_reach(code: &str) -> Vec<String> {
     found
 }
 
-/// `code` without its `pub mod ids { … }` block (the Windows control-id table each render file
-/// keeps until its builders leave yw-app, S5-5).
+/// `code` without its `pub mod ids { … }` block (the Windows control-id table each of yw-app's
+/// `ui/screens*.rs` keeps; since S5-5, 2026-11-24, all they hold).
 fn without_ids_module(src: &Src) -> String {
     let mut code = src.code.clone().into_bytes();
     for (at, _) in src.code.match_indices("pub mod ids") {
@@ -8489,14 +8641,16 @@ fn without_ids_module(src: &Src) -> String {
 }
 
 /// S5-4 (2026-11-24, spec/15 §11.3, §11.4 S5; S5 plan critic C8): the screen model and the code
-/// that builds it name no control id. In yw-engine's `screen/` and in yw-app's render files
-/// (`ui/screens*.rs`, `ui/removed.rs`, production code without their `ids` modules) there is no
+/// that builds it name no control id. In yw-engine's `screen/` (production code) there is no
 /// `ids::` path, no `Legacy` act, no id taken as a `u16` (`id: u16`, `From<u16> for Act`) and no
 /// `u16` id constant: a control names its press or field (`yw_engine::screen::model::Act`), and
 /// only the Windows lowering gives it an id (`ui::lower`, `cmd_table::id_of`). Before, the
 /// screens built the Windows list with control ids (until the first S5-4 commit) and then named
 /// them through the transitional `Act::Legacy(u16)` (until this commit). The scanner is tried on
-/// made-up code in [`control_id_reach_on_made_up_code`].
+/// made-up code in [`control_id_reach_on_made_up_code`]. 2026-11-24 (spec/15 §11.4 S5-5): the
+/// builders are part of `screen/` now (`screen/build/`), where the presses are counted; before,
+/// the check also read yw-app's 27 render files without their `ids` modules, which hold only
+/// those modules now ([`render_asks_the_shell_only_through_facts`]).
 #[test]
 fn the_screen_model_names_no_control_id() {
     let files = production_code();
@@ -8504,18 +8658,11 @@ fn the_screen_model_names_no_control_id() {
         .iter()
         .filter(|src| src.file.starts_with("yw-engine/src/screen/"))
         .collect();
-    let render: Vec<&Src> = files
-        .iter()
-        .filter(|src| is_render_file(&src.file))
-        .collect();
     assert!(
-        screen.len() >= 5 && screen.iter().any(|src| src.file.ends_with("/model.rs")),
+        screen.len() >= 30
+            && screen.iter().any(|src| src.file.ends_with("/model.rs"))
+            && screen.iter().any(|src| is_render_file(&src.file)),
         "the screen model moved: review this check"
-    );
-    assert_eq!(
-        render.len(),
-        27,
-        "the render files moved: review this check"
     );
     let mut findings = Vec::new();
     let mut presses = 0_usize;
@@ -8523,13 +8670,9 @@ fn the_screen_model_names_no_control_id() {
         for finding in control_id_reach(&src.code) {
             findings.push(format!("{}: {finding}", src.file));
         }
-    }
-    for src in &render {
-        let code = without_ids_module(src);
-        for finding in control_id_reach(&code) {
-            findings.push(format!("{}: {finding}", src.file));
+        if is_render_file(&src.file) {
+            presses += src.code.matches("Press::").count();
         }
-        presses += code.matches("Press::").count();
     }
     assert!(
         findings.is_empty(),
@@ -8633,5 +8776,176 @@ fn render_shell_reach_on_made_up_code() {
             "ui main_window",
             "ui cmd_table",
         ]
+    );
+}
+
+// ---- spec/15 §18 31 (ㄴ)(ㄷ): what of yw-engine's test-only `pub` surface stays (S5-5) --------
+
+/// What of spec/15 §18 31's residual surface stays `pub` in yw-engine, each as (file under
+/// `yw-engine/src/`, item, reason) (2026-11-24, spec/15 §11.4 S5-5, §18 31 (ㄴ)(ㄷ), S5 plan
+/// critic C5, O-14; 주인 상시 결정(2026-11-21): 권고안). (ㄴ): the debug builds' credential log,
+/// read by the shell. (ㄷ): what yw-app non-test code names, what a body frozen at F-A names (a
+/// narrowing must not change one, S5 freeze regime) and what a public testkit signature takes;
+/// the rest of (ㄷ) is crate-private ([`ENGINE_NARROWED_FOR_TESTS`]). Before S5-5 every item of
+/// (ㄷ) was `#[doc(hidden)] pub` for yw-app (the render builders and tests).
+const ENGINE_PUB_FOR_SHELL: [(&str, &str, &str); 8] = [
+    (
+        "wallet/mod.rs",
+        "cred_misses",
+        "(ㄴ) the debug builds' count of credential reads a press did not use, which yw-app's \
+         `#[cfg(debug_assertions)]` `App::cred_misses` reads (`app.rs`; the census asserts it 0)",
+    ),
+    (
+        "wallet/mod.rs",
+        "take_cred_log",
+        "(ㄴ) the debug builds' log of the credential fields a press took, which yw-app's \
+         `#[cfg(debug_assertions)]` shell check `cred_check` reads (`app.rs`; lengths and \
+         SHA-256 only)",
+    ),
+    (
+        "wallet/mod.rs",
+        "cred_fingerprint",
+        "(ㄴ) the length and SHA-256 that `cred_check` compares with the shadow read \
+         (`app.rs`, `#[cfg(debug_assertions)]`)",
+    ),
+    (
+        "wallet/app_card.rs",
+        "T_CARD_TOUCH",
+        "(ㄷ) named by the body of `approved_requests_go_to_the_key_worker_or_the_presign_check`, \
+         frozen at F-A (`frozen-tests.txt`); a narrowing changes no frozen body",
+    ),
+    (
+        "wallet/app_card.rs",
+        "touch_text",
+        "(ㄷ) the same frozen body",
+    ),
+    (
+        "wallet/app_card.rs",
+        "T_CARD_SITE_REVOKED",
+        "(ㄷ) named by the frozen bodies of `a_card_step_waiting_for_its_pin_ends_when_its_site_goes` \
+         and `a_refused_pin_after_the_site_went_ends_the_step_quietly`",
+    ),
+    (
+        "wallet/app_card.rs",
+        "T_CARD_SITE_GONE",
+        "(ㄷ) named by the frozen body of `a_card_step_waiting_for_its_pin_ends_when_its_site_goes`",
+    ),
+    (
+        "wallet/app_approval.rs",
+        "AfterOpen",
+        "(ㄷ) the type testkit's `WalletTestExt` steps take (`after_open_steps`, `keep_after_open`, \
+         `show_next_approval_then`, `after_pending_open`; the headless approval tests and \
+         yw-engine's `approval_flow` test build it): a crate-private type cannot stand in a \
+         public trait's signature",
+    ),
+];
+
+/// The items of spec/15 §18 31 (ㄷ) made crate-private in S5-5 (2026-11-24; before,
+/// `#[doc(hidden)] pub`), as (file under `yw-engine/src/`, item): yw-app's tests name each through
+/// `yw_engine::testkit` (a constant re-declared there, a fn wrapped), which production code never
+/// names.
+const ENGINE_NARROWED_FOR_TESTS: [(&str, &str); 20] = [
+    ("wallet/app_approval.rs", "network_badge"),
+    ("wallet/app_approval.rs", "order_badges"),
+    ("wallet/app_btc_commands.rs", "fee_choice"),
+    ("wallet/app_card.rs", "T_CARD_CANCELLED"),
+    ("wallet/app_sol.rs", "SOL_REVIEW_CHANGED_TEXT"),
+    ("wallet/app_sol.rs", "SOL_SAVING_TEXT"),
+    ("wallet/app_sol.rs", "SOL_SAVE_FAILED_TEXT"),
+    ("wallet/app_sol.rs", "SOL_SCAN_RECONFIRM_TEXT"),
+    ("wallet/app_sol.rs", "SOL_SCAN_NO_TARGET_TEXT"),
+    ("wallet/app_yubikey.rs", "T_YK_SAME"),
+    ("wallet/app_yubikey.rs", "T_YK_OCCUPIED"),
+    ("wallet/app_yubikey.rs", "T_YK_WALLET"),
+    ("wallet/app_yubikey.rs", "T_YK_WORDS_UNUSED"),
+    ("wallet/app_yubikey/connect.rs", "T_YK_UNKNOWN_PATH"),
+    ("wallet/app_yubikey/manage.rs", "CLEAR_WORD"),
+    ("wallet/app_yubikey/manage.rs", "LOSS_WORD"),
+    ("wallet/app_yubikey/manage.rs", "T_YK_RESLOT_WORDS"),
+    ("wallet/app_yubikey/manage.rs", "T_YK_KEY_LOST"),
+    ("wallet/app_yubikey/manage.rs", "T_YK_CLEAR_FUNDS"),
+    ("wallet/mod.rs", "quicknode_input"),
+];
+
+/// The visibility `item` is declared with in `code` (production code of one file): the words
+/// before `fn`/`const`/`enum`/`struct`/`type`/a field's `:` on the declaring line (`pub`,
+/// `pub(crate)`, `pub const`, …), `None` when it is not declared there.
+fn declared_visibility(code: &str, item: &str) -> Option<String> {
+    let bytes = code.as_bytes();
+    for (at, _) in code.match_indices(item) {
+        if (at > 0 && is_ident(bytes[at - 1]))
+            || bytes.get(at + item.len()).is_some_and(|&b| is_ident(b))
+        {
+            continue;
+        }
+        let line_start = code[..at].rfind('\n').map_or(0, |n| n + 1);
+        let before = code[line_start..at].trim();
+        let after = code[at + item.len()..].trim_start();
+        let declares = ["fn", "const", "enum", "struct", "type", "static"]
+            .iter()
+            .any(|kind| ends_with_word(before, kind))
+            || (before.starts_with("pub") && after.starts_with(':') && !after.starts_with("::"));
+        if declares {
+            return Some(
+                before
+                    .split_whitespace()
+                    .filter(|word| word.starts_with("pub"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+    }
+    None
+}
+
+/// spec/15 §18 31 (ㄴ)(ㄷ) pinned (2026-11-24, spec/15 §11.4 S5-5, S5 plan critic C5, O-14): each
+/// item of [`ENGINE_PUB_FOR_SHELL`] is declared `pub` in its yw-engine file, with a reason, and
+/// each of [`ENGINE_NARROWED_FOR_TESTS`] is declared `pub(crate)` there and named by testkit. So a
+/// later change that widens a narrowed item again, or narrows a listed one, updates the list and
+/// its reason here.
+#[test]
+fn item_31_surface_is_pinned() {
+    let files = production_code();
+    let engine = |rel: &str| src_of(&files, &format!("yw-engine/src/{rel}")).code.clone();
+    let testkit = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../yw-engine/src/testkit.rs"),
+    )
+    .unwrap();
+    let mut problems = Vec::new();
+    for (rel, item, reason) in ENGINE_PUB_FOR_SHELL {
+        if reason.is_empty() {
+            problems.push(format!("{item}: no reason"));
+        }
+        let visibility = declared_visibility(&engine(rel), item);
+        if visibility.as_deref() != Some("pub") {
+            problems.push(format!(
+                "{rel} {item}: declared {visibility:?}, listed as pub"
+            ));
+        }
+    }
+    for (rel, item) in ENGINE_NARROWED_FOR_TESTS {
+        let visibility = declared_visibility(&engine(rel), item);
+        if visibility.as_deref() != Some("pub(crate)") {
+            problems.push(format!(
+                "{rel} {item}: declared {visibility:?}, listed as pub(crate)"
+            ));
+        }
+        if !has_word(&testkit, item) {
+            problems.push(format!("{item}: not named by testkit"));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+    assert_eq!(
+        declared_visibility("struct A { pub(crate) x: u8, pub y: u8 }\n", "x"),
+        None,
+        "one line: the field is not at a line start"
+    );
+    assert_eq!(
+        declared_visibility("    pub(crate) const fn f() {}\n    pub g: u8,\n", "f").as_deref(),
+        Some("pub(crate)")
+    );
+    assert_eq!(
+        declared_visibility("    pub(crate) const fn f() {}\n    pub g: u8,\n", "g").as_deref(),
+        Some("pub")
     );
 }

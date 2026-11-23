@@ -7,6 +7,7 @@
 
 use yw_core::evm::address::{Address, parse_address};
 use yw_core::hypercore::{HcEvmLink, HcKind, HcNetwork, HcPerpState, HcSpotBalance, HcToken};
+use yw_engine::testkit::ScreenTestExt;
 
 use crate::app::{App, Paths};
 use crate::ui::main_window::{Ctl, Item};
@@ -109,9 +110,9 @@ fn form(app: &mut App, kind: HcFormKind, to: &str, amount: &str) {
 fn shown(app: &App, card: bool) -> Vec<Item> {
     let mut items = Vec::new();
     if card {
-        app.hc_card(&mut items);
+        app.screen_view(&app.facts()).hc_card(&mut items);
     } else {
-        app.hc_screen(&mut items);
+        app.screen_view(&app.facts()).hc_screen(&mut items);
     }
     crate::ui::lower::lowered(items)
 }

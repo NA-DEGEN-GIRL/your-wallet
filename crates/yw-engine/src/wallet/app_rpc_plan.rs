@@ -426,7 +426,7 @@ impl Wallet {
         self.refresh();
     }
 
-    pub fn push_rejected(&self, message: &mut String, plan: &ImportPlan) {
+    pub(crate) fn push_rejected(&self, message: &mut String, plan: &ImportPlan) {
         let lang = self.settings.language;
         if !plan.rejected.is_empty() {
             let names: Vec<String> = plan

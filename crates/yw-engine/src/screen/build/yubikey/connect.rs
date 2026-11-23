@@ -8,13 +8,13 @@ use yw_core::yubikey::plan::{CardSlot, address_texts};
 
 use super::text as t;
 use super::{grouped_address, slot_items, steps_item};
-use crate::app::App;
-use yw_engine::cmd::{YkConnectPress, YkPress};
-use yw_engine::screen::Tone;
-use yw_engine::screen::model::{Ctl, Item};
-use yw_engine::wallet::app_yubikey::connect::text as ct;
-use yw_engine::wallet::app_yubikey::connect::{Choice, ConnectForm, choice_press};
-use yw_engine::wallet::app_yubikey::{WizardOrigin, WizardStep, YkWizard};
+use crate::cmd::{YkConnectPress, YkPress};
+use crate::screen::Tone;
+use crate::screen::build::Screen;
+use crate::screen::model::{Ctl, Item};
+use crate::wallet::app_yubikey::connect::text as ct;
+use crate::wallet::app_yubikey::connect::{Choice, ConnectForm, choice_press};
+use crate::wallet::app_yubikey::{WizardOrigin, WizardStep, YkWizard};
 
 /// The connect flow's step labels.
 pub const CONNECT_STEPS: [Text; 3] = [
@@ -23,7 +23,7 @@ pub const CONNECT_STEPS: [Text; 3] = [
     t::STEP_RESULT,
 ];
 
-impl App {
+impl Screen<'_> {
     /// S21 in the connect flow.
     pub(super) fn yk_connect_screen(
         &self,
@@ -101,7 +101,7 @@ impl App {
                 [&self.card_name(scan.serial), &scan.firmware.to_string()],
             ),
         ));
-        let counters = yw_engine::yubikey::PinCounters {
+        let counters = crate::yubikey::PinCounters {
             serial: scan.serial,
             pw1: scan.pgp_pin_retries,
             pw3: None,
@@ -111,8 +111,8 @@ impl App {
         for line in counters.lines(
             lang,
             &[
-                yw_engine::yubikey::PinKind::OpenPgpUser,
-                yw_engine::yubikey::PinKind::PivPin,
+                crate::yubikey::PinKind::OpenPgpUser,
+                crate::yubikey::PinKind::PivPin,
             ],
         ) {
             items.push(Item::Help(line));
@@ -215,7 +215,7 @@ impl App {
                 &address_texts(slot.role, &slot.public).unwrap_or_default(),
                 items,
             );
-            let holders = yw_engine::yubikey::holders(&self.card.records, slot.role);
+            let holders = crate::yubikey::holders(&self.card.records, slot.role);
             if !holders.is_empty() {
                 items.push(Item::Field(
                     t::FIELD_RELATION.get(lang).to_owned(),
@@ -226,7 +226,7 @@ impl App {
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some(t::PIN_OWNERSHIP.get(lang).to_owned())));
         items.push(Item::Text(
-            yw_engine::secret::text::CARD_USER_PIN
+            crate::secret::text::CARD_USER_PIN
                 .get(self.settings.language)
                 .to_owned(),
         ));

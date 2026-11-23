@@ -70,15 +70,17 @@ pub fn lower(items: Vec<model::Item>) -> Lowered {
 
 impl App {
     /// The current screen as the Windows item list: the neutral screen model
-    /// ([`App::screen_model`], built by the screens) lowered here (2026-11-24, spec/15 §11.4
-    /// S5-4; before, the screens built this list themselves, `ui::screens`). A drawn press that
-    /// maps back to another control and a credential edit that came with text are counted in
-    /// `App::press_mismatch` (debug builds; the census asserts 0). (The first S5-4 commit turned
-    /// off an unverified passphrase's receive controls and marked the copy just made here, on
-    /// the lowered list by control id; since the second the screen model does both by press.)
+    /// (`Wallet::screen`, built by the engine's screen builders with this shell's facts,
+    /// [`App::facts`]) lowered here (2026-11-24, spec/15 §11.4 S5-4; before, the screens built this
+    /// list themselves, `ui::screens`; 2026-11-24 S5-5: the builders moved to yw-engine, before
+    /// `App::screen_model` built the model). A drawn press that maps back to another control and a
+    /// credential edit that came with text are counted in `App::press_mismatch` (debug builds; the
+    /// census asserts 0). (The first S5-4 commit turned off an unverified passphrase's receive
+    /// controls and marked the copy just made here, on the lowered list by control id; since the
+    /// second the screen model does both by press.)
     #[must_use]
     pub fn items(&self) -> Vec<Item> {
-        let lowered = lower(self.screen_model());
+        let lowered = lower(self.wallet.screen(&self.facts()));
         #[cfg(debug_assertions)]
         self.press_mismatch.set(
             self.press_mismatch

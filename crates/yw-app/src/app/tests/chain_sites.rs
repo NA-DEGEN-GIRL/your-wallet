@@ -5,6 +5,7 @@
 //! reaches the helpers as the inline tests did, so no item is widened.
 
 use super::*;
+use yw_engine::testkit::ScreenTestExt;
 
 #[test]
 fn connect_refusals_and_choices() {
@@ -631,7 +632,7 @@ fn site_rows_disconnect_the_grant_they_were_drawn_for_and_page() {
             .collect()
     };
     let mut items = Vec::new();
-    app.sites_screen(&mut items);
+    app.sites_screen(&app.facts(), &mut items);
     let items = crate::ui::lower::lowered(items);
     let drawn = keys(&app);
     assert_eq!(drawn.len(), ids::SITES_PAGE_ROWS);
@@ -696,15 +697,15 @@ fn site_rows_disconnect_the_grant_they_were_drawn_for_and_page() {
     );
     // Pages: every grant gets a button (no 256-row limit), 50 per page.
     assert!(app.on_sites_command(ids::SITES_NEXT));
-    app.sites_screen(&mut Vec::new());
+    app.sites_screen(&app.facts(), &mut Vec::new());
     assert_eq!(keys(&app)[0], "https://s52.example");
     assert!(app.on_sites_command(ids::SITES_NEXT));
     assert!(app.on_sites_command(ids::SITES_NEXT));
-    app.sites_screen(&mut Vec::new());
+    app.sites_screen(&app.facts(), &mut Vec::new());
     assert_eq!(keys(&app).len(), 18);
     assert_eq!(keys(&app).last().unwrap(), "https://s119.example");
     assert!(app.on_sites_command(ids::SITES_PREV));
-    app.sites_screen(&mut Vec::new());
+    app.sites_screen(&app.facts(), &mut Vec::new());
     assert_eq!(keys(&app)[0], "https://s52.example");
 }
 

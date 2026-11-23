@@ -619,7 +619,7 @@ impl Wallet {
     }
 
     /// The Solana and Bitcoin grants (empty while locked).
-    pub fn chain_grants(
+    pub(crate) fn chain_grants(
         &self,
     ) -> (
         Vec<yw_core::policy::SolGrant>,
@@ -1430,7 +1430,7 @@ impl Wallet {
 
     /// Origins waiting for the unlock (S07 T-UNLOCK-PENDING, at most 5 then "외 n건").
     #[must_use]
-    pub fn waiting_origins(&self) -> Vec<String> {
+    pub(crate) fn waiting_origins(&self) -> Vec<String> {
         let mut origins: Vec<String> = Vec::new();
         for item in self.evm.queue.waiting_payloads() {
             // A WalletConnect session shows its claimed origin label (spec/13 §7).

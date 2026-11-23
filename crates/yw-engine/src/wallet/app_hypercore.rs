@@ -340,7 +340,7 @@ impl Wallet {
 
     /// The card's network.
     #[must_use]
-    pub const fn hc_network(&self) -> HcNetwork {
+    pub(crate) const fn hc_network(&self) -> HcNetwork {
         self.settings.hypercore.network
     }
 
@@ -354,7 +354,7 @@ impl Wallet {
 
     /// Whether the card is shown (setting on, unlocked).
     #[must_use]
-    pub fn hc_visible(&self) -> bool {
+    pub(crate) fn hc_visible(&self) -> bool {
         self.settings.hypercore.enabled && matches!(self.mode, AppMode::Unlocked { .. })
     }
 
@@ -503,7 +503,7 @@ impl Wallet {
 
     /// Spot tokens with a balance and a `HyperEVM` link (the `HyperEVM으로 이동` choices).
     #[must_use]
-    pub fn hc_evm_tokens(&self) -> Vec<HcToken> {
+    pub(crate) fn hc_evm_tokens(&self) -> Vec<HcToken> {
         let network = self.hc_network();
         self.hc_spot_rows()
             .into_iter()
@@ -514,7 +514,7 @@ impl Wallet {
 
     /// Spot balances of the selected account: `(token index, coin, available text)`.
     #[must_use]
-    pub fn hc_spot_rows(&self) -> Vec<(u32, String, String)> {
+    pub(crate) fn hc_spot_rows(&self) -> Vec<(u32, String, String)> {
         let network = self.hc_network();
         let account = self.selected_account().map(|(account, ..)| account);
         let Some((net, owner, balances)) = self.hypercore.balances.as_ref() else {
@@ -533,7 +533,7 @@ impl Wallet {
 
     /// The current account's balances on the card network, if loaded.
     #[must_use]
-    pub fn hc_balances(&self) -> Option<&HcBalances> {
+    pub(crate) fn hc_balances(&self) -> Option<&HcBalances> {
         let account = self.selected_account().map(|(account, ..)| account)?;
         let (net, owner, balances) = self.hypercore.balances.as_ref()?;
         (*net == self.hc_network() && *owner == account).then_some(balances)
@@ -1095,7 +1095,7 @@ impl Wallet {
     /// chain is not one the card works with ([`HC_UNFOLDED_CHAINS`]) and no `HyperCore` action of
     /// the selected account is being signed or sent.
     #[must_use]
-    pub fn hc_foldable(&self) -> bool {
+    pub(crate) fn hc_foldable(&self) -> bool {
         let account = self.selected_account().map(|(account, ..)| account);
         let network = self.hc_network();
         !HC_UNFOLDED_CHAINS.contains(&self.settings.evm_chain_id)

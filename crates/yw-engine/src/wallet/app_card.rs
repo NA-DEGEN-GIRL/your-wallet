@@ -223,8 +223,7 @@ pub mod text {
 #[doc(hidden)]
 pub const T_CARD_TOUCH: &str = text::CARD_TOUCH.ko;
 /// The cancel note of the card step, Korean (tests).
-#[doc(hidden)]
-pub const T_CARD_CANCELLED: &str = text::CARD_CANCELLED.ko;
+pub(crate) const T_CARD_CANCELLED: &str = text::CARD_CANCELLED.ko;
 /// A dApp request waiting for its PIN whose site was disconnected, Korean (tests).
 #[doc(hidden)]
 pub const T_CARD_SITE_REVOKED: &str = text::CARD_SITE_REVOKED.ko;
@@ -589,13 +588,13 @@ impl Wallet {
 
     /// [`Wallet::card_name`] of each of `serials`, joined with `separator`.
     #[must_use]
-    pub fn card_name_list(&self, serials: &[u32], separator: &str) -> String {
+    pub(crate) fn card_name_list(&self, serials: &[u32], separator: &str) -> String {
         crate::yubikey::card_labels(self.card_names(), serials, separator)
     }
 
     /// [`crate::yubikey::PinContext::of`] with the cards' names.
     #[must_use]
-    pub fn pin_context(
+    pub(crate) fn pin_context(
         &self,
         serial: u32,
         kind: crate::yubikey::PinKind,
@@ -856,7 +855,7 @@ impl Wallet {
     }
 
     /// [`Self::card_on_defaults`] of an EVM key source.
-    pub fn evm_card_gate(&self, source: yw_core::vault::EvmKeySource) -> Option<u32> {
+    pub(crate) fn evm_card_gate(&self, source: yw_core::vault::EvmKeySource) -> Option<u32> {
         match source {
             yw_core::vault::EvmKeySource::Hardware(index) => {
                 self.card_on_defaults(KeyRole::Evm { index, btc: None })
@@ -881,7 +880,7 @@ impl Wallet {
     }
 
     /// [`Self::card_on_defaults`] of a Solana key source.
-    pub fn sol_card_gate(&self, source: yw_core::slip10::SolKeySource) -> Option<u32> {
+    pub(crate) fn sol_card_gate(&self, source: yw_core::slip10::SolKeySource) -> Option<u32> {
         match source {
             yw_core::slip10::SolKeySource::Hardware(index) => {
                 self.card_on_defaults(KeyRole::Sol { index })
@@ -901,7 +900,7 @@ impl Wallet {
     }
 
     /// [`Self::card_on_defaults`] of the selected Bitcoin account.
-    pub fn btc_selected_card_gate(&self) -> Option<u32> {
+    pub(crate) fn btc_selected_card_gate(&self) -> Option<u32> {
         let ctx = self.btc_ctx();
         let account = ctx.btc_meta().map(|meta| *meta.account())?;
         match account {
@@ -915,7 +914,7 @@ impl Wallet {
     }
 
     /// [`Self::card_on_defaults`] of the Zcash account of the shown network.
-    pub fn zec_card_gate(&self) -> Option<u32> {
+    pub(crate) fn zec_card_gate(&self) -> Option<u32> {
         let account = self.zec_account()?;
         match account.source {
             yw_core::zec::ZecKeySource::Hardware { index } => self.card_on_defaults(KeyRole::Zec {
@@ -1709,7 +1708,7 @@ impl Wallet {
     /// PIN window, the item is kept short), more than two as the first two + ` +N`. `YubiKey`
     /// alone when no card record holds it (or the role is not known).
     #[must_use]
-    pub fn card_source(&self, role: Option<KeyRole>) -> String {
+    pub(crate) fn card_source(&self, role: Option<KeyRole>) -> String {
         let lang = self.settings.language;
         let serials = role.map_or_else(Vec::new, |role| {
             crate::yubikey::holders(&self.card.records, role)

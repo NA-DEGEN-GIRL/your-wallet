@@ -234,7 +234,7 @@ impl Wallet {
 
     /// `개인키 가져오기` is available (unlocked, below the per-chain cap of 15).
     #[must_use]
-    pub fn can_import(&self, chain: ImportChain) -> bool {
+    pub(crate) fn can_import(&self, chain: ImportChain) -> bool {
         // A Bitcoin key also needs room in the Bitcoin account list (64 accounts, both networks),
         // and no open BTC approval (its account becomes the selected one, like `계정 추가`).
         let btc_room = chain != ImportChain::Btc
@@ -557,7 +557,7 @@ impl Wallet {
     /// key: its account name and address). Labels can repeat (a rename), so the address is
     /// always shown with it.
     #[must_use]
-    pub fn imported_target_text(&self) -> Option<(String, String)> {
+    pub(crate) fn imported_target_text(&self) -> Option<(String, String)> {
         let meta = self.meta.as_ref()?;
         if self.keys.btc_evm_target.is_some() {
             // The selected account of the Bitcoin list (the one `개인키 보기` was pressed for).
@@ -613,7 +613,7 @@ impl Wallet {
     /// The imported key of `Confirm::RemoveImported` as the "지워지는 계정" block shows it
     /// (2026-11-10): its chain, full address and last-read balance; lost for good with the key.
     #[must_use]
-    pub fn imported_removed(&self) -> Option<crate::screen::RemovedAccount> {
+    pub(crate) fn imported_removed(&self) -> Option<crate::screen::RemovedAccount> {
         let meta = self.meta.as_ref()?;
         let id = *self.keys.target?.as_bytes();
         if let Some(raw) = meta.evm_raw_accounts.iter().find(|raw| raw.record_id == id) {

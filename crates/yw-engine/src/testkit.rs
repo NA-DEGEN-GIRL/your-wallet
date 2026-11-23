@@ -1748,3 +1748,286 @@ pub fn pending_dapp_sign(
 ) -> PendingDappSign {
     PendingDappSign::new(ticket, approved, pin, origin)
 }
+
+// ---- The screen builders as yw-app tests reach them (2026-11-24, spec/15 §11.4 S5-5) ----------
+
+/// The screen builders' modules (`crate::screen::build`, crate-private): their `pub` helpers,
+/// constants and text catalogues as yw-app tests name them (2026-11-24, spec/15 §11.4 S5-5; before,
+/// `yw_app::ui::screens*` and `yw_app::ui::removed`, where the builders were `impl App`), and the
+/// read-only view [`Screen`](screen::Screen) whose `pub` builders a test calls through
+/// [`ScreenTestExt::screen_view`]. Production code reaches a screen only through
+/// [`Wallet::screen`].
+pub mod screen {
+    pub use crate::screen::build::{
+        Facts, Screen, accounts, book, btc, core, evm, explorer, hidden, hypercore, keys, links,
+        llm, mnemonics, received, removed, reset, rpc_import, sidecar, sites, sol, walletconnect,
+        yubikey, zec,
+    };
+
+    /// `Screen::reset_link`, crate-private (the S22 entry link under a screen's help line).
+    pub fn reset_link(
+        lang: yw_core::lang::Lang,
+        items: &mut Vec<crate::screen::model::Item>,
+        help: &str,
+    ) {
+        Screen::reset_link(lang, items, help);
+    }
+}
+
+/// The screen builders as the yw-app tests that draw one part of a screen call them
+/// (2026-11-24, spec/15 §11.4 S5-5; before, `impl App` builders the tests called on the `App`):
+/// a read-only view of this wallet with the test's facts, and the crate-private builders those
+/// tests call, each drawn into `items` with `facts`.
+pub trait ScreenTestExt {
+    /// The view of this wallet with `facts` (its `pub` builders).
+    fn screen_view<'a>(
+        &'a self,
+        facts: &'a dyn crate::screen::facts::ScreenFacts,
+    ) -> screen::Screen<'a>;
+    /// `Screen::mn_settings_section`.
+    fn mn_settings_section(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    );
+    /// `Screen::mn_pick_row`.
+    fn mn_pick_row(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    );
+    /// `Screen::wait_stalled`.
+    fn wait_stalled(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    );
+    /// `Screen::reset_screen`.
+    fn reset_screen(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    );
+    /// `Screen::extension_screen`.
+    fn extension_screen(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    );
+    /// `Screen::extension_link`.
+    fn extension_link(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    );
+    /// `Screen::journal_send_items`.
+    fn journal_send_items(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        chain: crate::wallet::app_sidecar::SendChain,
+        items: &mut Vec<crate::screen::model::Item>,
+    );
+    /// `Screen::journal_closed_items`.
+    fn journal_closed_items(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    );
+    /// `Screen::meta_overlay`.
+    fn meta_overlay(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    );
+    /// `Screen::journal_overlay`.
+    fn journal_overlay(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    );
+    /// `Screen::sites_screen`.
+    fn sites_screen(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    );
+    /// `Screen::unlock_pending_text`.
+    fn unlock_pending_text(&self, facts: &dyn crate::screen::facts::ScreenFacts) -> Option<String>;
+}
+
+impl ScreenTestExt for Wallet {
+    fn screen_view<'a>(
+        &'a self,
+        facts: &'a dyn crate::screen::facts::ScreenFacts,
+    ) -> screen::Screen<'a> {
+        screen::Screen::new(self, facts)
+    }
+
+    fn mn_settings_section(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    ) {
+        screen::Screen::new(self, facts).mn_settings_section(items);
+    }
+
+    fn mn_pick_row(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    ) {
+        screen::Screen::new(self, facts).mn_pick_row(items);
+    }
+
+    fn wait_stalled(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    ) {
+        screen::Screen::new(self, facts).wait_stalled(items);
+    }
+
+    fn reset_screen(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    ) {
+        screen::Screen::new(self, facts).reset_screen(items);
+    }
+
+    fn extension_screen(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    ) {
+        screen::Screen::new(self, facts).extension_screen(items);
+    }
+
+    fn extension_link(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    ) {
+        screen::Screen::new(self, facts).extension_link(items);
+    }
+
+    fn journal_send_items(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        chain: crate::wallet::app_sidecar::SendChain,
+        items: &mut Vec<crate::screen::model::Item>,
+    ) {
+        screen::Screen::new(self, facts).journal_send_items(chain, items);
+    }
+
+    fn journal_closed_items(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    ) {
+        screen::Screen::new(self, facts).journal_closed_items(items);
+    }
+
+    fn meta_overlay(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    ) {
+        screen::Screen::new(self, facts).meta_overlay(items);
+    }
+
+    fn journal_overlay(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    ) {
+        screen::Screen::new(self, facts).journal_overlay(items);
+    }
+
+    fn sites_screen(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+        items: &mut Vec<crate::screen::model::Item>,
+    ) {
+        screen::Screen::new(self, facts).sites_screen(items);
+    }
+
+    fn unlock_pending_text(&self, facts: &dyn crate::screen::facts::ScreenFacts) -> Option<String> {
+        screen::Screen::new(self, facts).unlock_pending_text()
+    }
+}
+
+// ---- The wallet's test texts and pure fns (2026-11-24, spec/15 §18 31 (ㄷ), §11.4 S5-5) --------
+// Crate-private in the wallet since S5-5 (before, `#[doc(hidden)] pub` there for these tests): the
+// yw-app tests name them here. What of item 31 stays `pub` is listed with its reason in yw-app's
+// `s4_results::ENGINE_PUB_FOR_SHELL`.
+
+/// `crate::wallet::app_card::T_CARD_CANCELLED`.
+pub const T_CARD_CANCELLED: &str = crate::wallet::app_card::T_CARD_CANCELLED;
+/// `crate::wallet::app_sol::SOL_REVIEW_CHANGED_TEXT`.
+pub const SOL_REVIEW_CHANGED_TEXT: &str = crate::wallet::app_sol::SOL_REVIEW_CHANGED_TEXT;
+/// `crate::wallet::app_sol::SOL_SAVING_TEXT`.
+pub const SOL_SAVING_TEXT: &str = crate::wallet::app_sol::SOL_SAVING_TEXT;
+/// `crate::wallet::app_sol::SOL_SAVE_FAILED_TEXT`.
+pub const SOL_SAVE_FAILED_TEXT: &str = crate::wallet::app_sol::SOL_SAVE_FAILED_TEXT;
+/// `crate::wallet::app_sol::SOL_SCAN_RECONFIRM_TEXT`.
+pub const SOL_SCAN_RECONFIRM_TEXT: &str = crate::wallet::app_sol::SOL_SCAN_RECONFIRM_TEXT;
+/// `crate::wallet::app_sol::SOL_SCAN_NO_TARGET_TEXT`.
+pub const SOL_SCAN_NO_TARGET_TEXT: &str = crate::wallet::app_sol::SOL_SCAN_NO_TARGET_TEXT;
+/// `crate::wallet::app_yubikey::T_YK_SAME`.
+pub const T_YK_SAME: &str = crate::wallet::app_yubikey::T_YK_SAME;
+/// `crate::wallet::app_yubikey::T_YK_OCCUPIED`.
+pub const T_YK_OCCUPIED: &str = crate::wallet::app_yubikey::T_YK_OCCUPIED;
+/// `crate::wallet::app_yubikey::T_YK_WALLET`.
+pub const T_YK_WALLET: &str = crate::wallet::app_yubikey::T_YK_WALLET;
+/// `crate::wallet::app_yubikey::T_YK_WORDS_UNUSED`.
+pub const T_YK_WORDS_UNUSED: &str = crate::wallet::app_yubikey::T_YK_WORDS_UNUSED;
+/// `crate::wallet::app_yubikey::connect::T_YK_UNKNOWN_PATH`.
+pub const T_YK_UNKNOWN_PATH: &str = crate::wallet::app_yubikey::connect::T_YK_UNKNOWN_PATH;
+/// `crate::wallet::app_yubikey::manage::CLEAR_WORD`.
+pub const CLEAR_WORD: &str = crate::wallet::app_yubikey::manage::CLEAR_WORD;
+/// `crate::wallet::app_yubikey::manage::LOSS_WORD`.
+pub const LOSS_WORD: &str = crate::wallet::app_yubikey::manage::LOSS_WORD;
+/// `crate::wallet::app_yubikey::manage::T_YK_RESLOT_WORDS`.
+pub const T_YK_RESLOT_WORDS: &str = crate::wallet::app_yubikey::manage::T_YK_RESLOT_WORDS;
+/// `crate::wallet::app_yubikey::manage::T_YK_KEY_LOST`.
+pub const T_YK_KEY_LOST: &str = crate::wallet::app_yubikey::manage::T_YK_KEY_LOST;
+/// `crate::wallet::app_yubikey::manage::T_YK_CLEAR_FUNDS`.
+pub const T_YK_CLEAR_FUNDS: &str = crate::wallet::app_yubikey::manage::T_YK_CLEAR_FUNDS;
+
+/// `crate::wallet::app_approval::network_badge` (the approval header's network badge).
+#[must_use]
+pub fn network_badge(
+    lang: Lang,
+    evm_chain: Option<u64>,
+    sol: Option<SolCluster>,
+) -> Option<(&'static str, bool)> {
+    crate::wallet::app_approval::network_badge(lang, evm_chain, sol)
+}
+
+/// `crate::wallet::quicknode_input` (S08's `QuickNode` name and token → the credential, or the
+/// E-KEY-002 text).
+///
+/// # Errors
+///
+/// As `quicknode_input`: the E-KEY-002 text naming the wrong field.
+pub fn quicknode_input(
+    lang: Lang,
+    name: &str,
+    token: &str,
+) -> Result<Option<(String, Zeroizing<String>)>, String> {
+    crate::wallet::quicknode_input(lang, name, token)
+}
+
+/// `crate::wallet::app_approval::order_badges`.
+pub fn order_badges(badges: &mut [String]) {
+    crate::wallet::app_approval::order_badges(badges);
+}
+
+/// `crate::wallet::app_btc_commands::fee_choice` (a fee radio's press → its choice).
+#[must_use]
+pub const fn fee_choice(
+    press: crate::cmd::BtcPress,
+) -> Option<(crate::wallet::app_btc::BtcFeeChoice, bool)> {
+    crate::wallet::app_btc_commands::fee_choice(press)
+}

@@ -6,6 +6,7 @@
 //! tests need `App`); it reaches nothing private there, so nothing was widened.
 
 use std::path::{Path, PathBuf};
+use yw_engine::testkit::ScreenTestExt;
 
 use crate::app::{App, Paths};
 use crate::explorer_launcher::Launcher;
@@ -371,9 +372,10 @@ fn english_explorer_chain_and_site_texts() {
         .push(user_chain(Some("https://scan.example")));
     let mut app = app(&dir, settings);
     let mut items = Vec::new();
-    app.explorer_settings_card(&mut items);
+    app.screen_view(&app.facts())
+        .explorer_settings_card(&mut items);
     app.open_chain_form(None);
-    app.chain_edit_screen(&mut items);
+    app.screen_view(&app.facts()).chain_edit_screen(&mut items);
     let items = crate::ui::lower::lowered(items);
     let mut texts = Vec::new();
     strings(&items, &mut texts);
@@ -401,15 +403,15 @@ fn english_explorer_chain_and_site_texts() {
         Lang::En,
         &yw_engine::wallet::app_book::Resembles::Sent("0x5290".to_owned()),
     ));
-    lines.push(crate::ui::screens_evm::browser_status_text(
+    lines.push(yw_engine::testkit::screen::evm::browser_status_text(
         Lang::En,
         None,
         yw_engine::screen::facts::PipeStatus::default(),
     ));
     lines.push(yw_engine::explorer::TemplateError::Placeholder(LinkKind::Tx).text_in(Lang::En));
-    lines.push(app.unlock_pending_text().unwrap_or_default());
+    lines.push(app.unlock_pending_text(&app.facts()).unwrap_or_default());
     lines.push(
-        crate::app_extension::ExtensionStatus::Never
+        yw_engine::screen::extension::ExtensionStatus::Never
             .text_in(Lang::En)
             .to_owned(),
     );
@@ -426,18 +428,18 @@ fn english_explorer_chain_and_site_texts() {
         yw_engine::wallet::app_chain_sites::text::ALL,
         yw_engine::wallet::app_evm::text::ALL,
         yw_engine::wallet::app_explorer::text::ALL,
-        crate::app_extension::text::ALL,
+        yw_engine::screen::extension::text::ALL,
         yw_engine::wallet::app_tokens::text::ALL,
         yw_engine::explorer::text::ALL,
         yw_engine::flow::evm::form::text::ALL,
         yw_engine::flow::evm::user_chain::text::ALL,
         yw_engine::received::evm::text::ALL,
-        crate::ui::screens_book::text::ALL,
-        crate::ui::screens_evm::text::ALL,
+        yw_engine::testkit::screen::book::text::ALL,
+        yw_engine::testkit::screen::evm::text::ALL,
     ];
     let more: [&[Entry]; 2] = [
-        crate::ui::screens_explorer::text::ALL,
-        crate::ui::screens_sites::text::ALL,
+        yw_engine::testkit::screen::explorer::text::ALL,
+        yw_engine::testkit::screen::sites::text::ALL,
     ];
     for entry in catalogues.into_iter().chain(more).flatten() {
         for template in [entry.ko, entry.en] {

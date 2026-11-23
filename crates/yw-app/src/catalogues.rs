@@ -11,7 +11,14 @@
 //! `yw_app::app::text`, are `yw_engine::wallet::…::text`. 2026-11-23, spec/15 §11.4 S5-0 (S5 plan
 //! critic C6, O-13): `yw_app::app::text` names the shell's own block `crate::app::text::ALL`;
 //! from E1 until S5-0 it named `yw_engine::wallet::text::ALL`, which the engine lists under its
-//! own name too, so the six shell texts were in no table.)
+//! own name too, so the six shell texts were in no table. 2026-11-24, spec/15 §11.4 S5-5: the
+//! screens' catalogues, before `yw_app::ui::screens*::text` and `yw_app::ui::removed::text`, are
+//! `yw_engine::screen::build::…::text` (`screens` became `core`), the `rpc.json` card's, before
+//! `yw_app::app_rpc_import::text`, `yw_engine::screen::build::rpc_import::text`, S23's, before
+//! `yw_app::app_extension::text`, `yw_engine::screen::extension::text`, and the receive note's,
+//! before `yw_app::ui::qr::text`, `yw_engine::screen::qr::text`: each moved with the builders that
+//! draw it, its wording unchanged; `T_PASSWORD_OLD_COPIES` left this crate's `app::text` for
+//! `yw_engine::screen::build::core::text`.)
 
 use yw_core::lang::Entry;
 
@@ -24,14 +31,6 @@ pub fn catalogues() -> Vec<(&'static str, &'static [Entry])> {
 const CATALOGUES: &[(&str, &[Entry])] = &[
     ("yw_app::app::text", crate::app::text::ALL),
     (
-        "yw_app::app_extension::text",
-        crate::app_extension::text::ALL,
-    ),
-    (
-        "yw_app::app_rpc_import::text",
-        crate::app_rpc_import::text::ALL,
-    ),
-    (
         "yw_app::build_info::start_text",
         crate::build_info::start_text::ALL,
     ),
@@ -40,72 +39,5 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
     (
         "yw_app::ui::main_window::text",
         crate::ui::main_window::text::ALL,
-    ),
-    ("yw_app::ui::qr::text", crate::ui::qr::text::ALL),
-    ("yw_app::ui::removed::text", crate::ui::removed::text::ALL),
-    ("yw_app::ui::screens::text", crate::ui::screens::text::ALL),
-    (
-        "yw_app::ui::screens_book::text",
-        crate::ui::screens_book::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_btc::text",
-        crate::ui::screens_btc::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_evm::text",
-        crate::ui::screens_evm::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_explorer::text",
-        crate::ui::screens_explorer::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_hypercore::text",
-        crate::ui::screens_hypercore::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_keys::text",
-        crate::ui::screens_keys::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_links::text",
-        crate::ui::screens_links::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_llm::text",
-        crate::ui::screens_llm::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_mnemonics::text",
-        crate::ui::screens_mnemonics::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_received::text",
-        crate::ui::screens_received::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_reset::text",
-        crate::ui::screens_reset::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_sites::text",
-        crate::ui::screens_sites::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_sol::text",
-        crate::ui::screens_sol::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_walletconnect::text",
-        crate::ui::screens_walletconnect::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_yubikey::text",
-        crate::ui::screens_yubikey::text::ALL,
-    ),
-    (
-        "yw_app::ui::screens_zec::text",
-        crate::ui::screens_zec::text::ALL,
     ),
 ];

@@ -172,17 +172,13 @@ pub mod text {
 }
 
 /// T-YK-SAME, Korean (tests).
-#[doc(hidden)]
-pub const T_YK_SAME: &str = text::YK_SAME.ko;
+pub(crate) const T_YK_SAME: &str = text::YK_SAME.ko;
 /// T-YK-OCCUPIED, Korean (tests).
-#[doc(hidden)]
-pub const T_YK_OCCUPIED: &str = text::YK_OCCUPIED.ko;
+pub(crate) const T_YK_OCCUPIED: &str = text::YK_OCCUPIED.ko;
 /// T-YK-WALLET, Korean (tests).
-#[doc(hidden)]
-pub const T_YK_WALLET: &str = text::YK_WALLET.ko;
+pub(crate) const T_YK_WALLET: &str = text::YK_WALLET.ko;
 /// T-YK-WORDS-UNUSED, Korean (tests).
-#[doc(hidden)]
-pub const T_YK_WORDS_UNUSED: &str = text::YK_WORDS_UNUSED.ko;
+pub(crate) const T_YK_WORDS_UNUSED: &str = text::YK_WORDS_UNUSED.ko;
 
 /// What an `OpenPGP` slot of the plan holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1420,7 +1416,7 @@ impl Wallet {
     /// The flags of the "PIN 설정" card of `serial` (the wizard's when it shows that card, else
     /// what a card action of this session saw).
     #[must_use]
-    pub fn yk_pin_defaults(&self, serial: u32) -> DefaultsSeen {
+    pub(crate) fn yk_pin_defaults(&self, serial: u32) -> DefaultsSeen {
         self.card
             .wizard
             .as_ref()
@@ -1675,7 +1671,7 @@ impl Wallet {
     /// Card `serial` is still on its factory PINs as the wallet knows it (`hw_accounts.defaults`,
     /// or the new wallet's card waiting for its meta): it does not sign (spec/10 §9.3).
     #[must_use]
-    pub fn yk_card_on_defaults(&self, serial: u32) -> bool {
+    pub(crate) fn yk_card_on_defaults(&self, serial: u32) -> bool {
         self.card.pending_default_is(serial)
             || self
                 .meta
@@ -2253,7 +2249,7 @@ impl Wallet {
 
     /// A record may be removed (a wallet without recovery words keeps its last key).
     #[must_use]
-    pub fn yk_can_remove(&self) -> bool {
+    pub(crate) fn yk_can_remove(&self) -> bool {
         self.keys.has_mnemonic || self.imported_count() > 0 || self.card.records.len() > 1
     }
 

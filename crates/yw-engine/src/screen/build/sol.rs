@@ -1,0 +1,1508 @@
+//! Solana screen contents (M7; spec/04 §2.6–§2.8, §2.10, §2.11, spec/07 §3.3, §12.3): the S10
+//! Solana tab (with the allowlisted-token card of v1.1), the SOL/SPL send form with its asset
+//! picker and its result, receive, the S15 Solana section, the recovery scan and the Solana part
+//! of the address book. Addresses are always shown in full, in 4-character groups (spec/07
+//! §12.3); activity addresses have no copy or select buttons (a transaction id, public data,
+//! has `해시 복사` like Bitcoin's and EVM's).
+//!
+//! 2026-11-24 (spec/15 §11.2, §11.4 S5-5): moved here from yw-app `ui/screens_sol.rs` with the
+//! bodies unchanged (`impl App` builders became `impl Screen<'_>`, yw-app paths engine paths); its
+//! control ids stay there (`ui::screens_sol::ids`).
+
+use core::fmt::Write as _;
+
+use yw_core::lang::Lang;
+use yw_core::sol::address::grouped;
+use yw_core::sol::recipient::KnownKind;
+use yw_core::sol::rent::{format_amount, format_raw};
+use yw_core::sol::template::spl_entries;
+use yw_core::sol::token::TokenHolding;
+use yw_core::sol::{SolAddress, SolAsset, SolCluster, SplAllowEntry};
+
+use super::Screen;
+use crate::badge::Badge;
+use crate::cmd::{
+    BookPress, BtcPress, CorePress, ExplorerPress, KeysPress, LinksPress, Press, Row, SolPress,
+    SolScanAction, ZecPress,
+};
+use crate::form::EditField;
+use crate::meta::{BookChain, Tab};
+use crate::screen::AccountSource;
+use crate::screen::Tone;
+use crate::screen::build::accounts::{AccountCard, AccountItem, SelectedLine};
+use crate::screen::model::{Ctl, Item};
+use crate::screen::rows;
+use crate::wallet::app_book::{BookTarget, PromptPlace};
+use crate::wallet::app_sol::SolAccountId;
+use crate::wallet::{AppMode, Wallet};
+
+/// Fixed texts of the Solana screens (spec/04 §2.6–§2.11, spec/07 §3.3, §12.3; English spec/14
+/// §5). Recipient notes shared with the approval come from `yw_core::sol::text`.
+pub mod text {
+    yw_core::texts! {
+        // ----- token holdings, activity status -------------------------------------------------
+        RAW_FINALIZED(2) = "{0} 원시 단위 · decimals {1} · RPC finalized 기준(참고)"
+            / "{0} raw units · decimals {1} · RPC finalized (reference)";
+        BALANCE_UNKNOWN = "잔액 알 수 없음" / "Balance unknown";
+        NOT_READ = "아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요."
+            / "Not read yet. Check the RPC connection and refresh.";
+        NO_ATA(1) = "이 계정에는 아직 {0} 토큰 계정(ATA)이 없습니다. 받으면 보내는 쪽이 만듭니다."
+            / "This account has no {0} token account (ATA) yet. The sender creates it when you receive.";
+        FROZEN(1) = "{0} — 토큰 발행자가 이 토큰 계정을 동결해 보내거나 받을 수 없습니다."
+            / "{0} — the token issuer froze this token account, so it cannot send or receive.";
+        CANNOT_CHECK = "확인할 수 없음" / "Cannot check";
+        INVALID_ACCOUNT = "RPC가 돌려준 계정이 이 토큰의 토큰 계정 형식과 달라 잔액을 표시하지 않습니다."
+            / "The account the RPC returned is not in this token's token account format, so no balance is shown.";
+        STATUS_SUCCEEDED = "성공" / "Succeeded";
+        STATUS_FAILED = "실패" / "Failed";
+        STATUS_EXPIRED = "만료 (전송되지 않음)" / "Expired (not sent)";
+        STATUS_ENDED = "종결" / "Ended";
+
+        // ----- S10 -----------------------------------------------------------------------------
+        TAB_EVM = "EVM (이더리움 등)" / "EVM (Ethereum etc.)";
+        DEVNET_PILL = "테스트넷 — 실제 자산이 아닙니다" / "Testnet — not real assets";
+        DEVNET_BANNER = "Solana devnet (테스트) — 실제 자산이 아닙니다"
+            / "Solana devnet (test) — not real assets";
+        NETWORK = "네트워크" / "Network";
+        JOURNAL_DAMAGED = "거래 저널의 Solana 기록이 손상되어 Solana 보내기를 멈췄습니다. (E-VLT-006)"
+            / "The Solana records of the transaction journal are damaged, so Solana sending is stopped. (E-VLT-006)";
+        RPC_NONE = "RPC 주소 없음 (E-KEY-005)" / "No RPC address (E-KEY-005)";
+        RPC_CONNECTED = "연결됨 (genesis 확인)" / "Connected (genesis verified)";
+        RPC_UNCHECKED = "확인 전" / "Not checked yet";
+        LAMPORTS_FINALIZED(1) = "{0} lamports · RPC finalized 기준(참고)"
+            / "{0} lamports · RPC finalized (reference)";
+        LAMPORTS_FINALIZED_READ(2) = "{0} lamports · RPC finalized 기준(참고) · {1}"
+            / "{0} lamports · RPC finalized (reference) · {1}";
+        BALANCE_DASH = "잔액 —" / "Balance —";
+        TOKEN_UNCHECKED(1) = "{0} 확인할 수 없음" / "{0} cannot be checked";
+        TOKENS(1) = "토큰: {0}" / "Tokens: {0}";
+        SEND = "보내기" / "Send";
+        RECEIVE = "받기" / "Receive";
+        RPC_SETUP = "RPC 설정하기" / "Set up RPC";
+        REFRESH = "새로고침" / "Refresh";
+        MY_ACCOUNTS = "내 Solana 계정" / "My Solana accounts";
+        CREATING = "Solana 계정을 만드는 중…" / "Creating a Solana account…";
+        NO_ACCOUNTS = "Solana 계정이 없습니다." / "There is no Solana account.";
+        SAVE = "저장" / "Save";
+        CANCEL = "취소" / "Cancel";
+        RENAME = "이름 바꾸기" / "Rename";
+        HIDE = "숨기기" / "Hide";
+        REVEAL_KEY = "개인키 보기" / "Show private key";
+        DELETE = "삭제" / "Delete";
+        IMPORT_KEY = "개인키 가져오기" / "Import private key";
+        ADD_ACCOUNT = "계정 추가" / "Add account";
+        SCAN = "다른 경로 스캔" / "Scan other paths";
+        SCAN_HINT = "안 보이는 계정은 '다른 경로 스캔'으로 찾습니다."
+            / "Find accounts that are not shown with 'Scan other paths'.";
+        SENT_TXS = "보낸 거래" / "Sent transactions";
+        TO_RAW(1) = "받는 주소 {0}" / "Recipient {0}";
+        NO_SENT = "아직 보낸 거래가 없습니다." / "No sent transactions yet.";
+        TO_LINE = "받는 주소" / "Recipient";
+        TO_LINE_BOOK(1) = "받는 주소 → 주소록: {0}" / "Recipient → address book: {0}";
+        TO_LINE_OWN(1) = "받는 주소 → 내 계정: {0}" / "Recipient → my account: {0}";
+
+        // ----- token card ----------------------------------------------------------------------
+        TOKENS_TITLE = "토큰" / "Tokens";
+        ALLOWLIST_ONLY(1) = "허용 목록 토큰만 표시합니다 ({0}). 다른 토큰·NFT는 보이지 않고 보낼 수 없습니다."
+            / "Only allowlisted tokens are shown ({0}). Other tokens·NFTs are not shown and cannot be sent.";
+        NO_VISIBLE_TOKENS = "보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다."
+            / "No visible tokens. Hidden tokens can be shown again below.";
+        HIDDEN_COLLAPSE(1) = "숨긴 토큰 {0}개 접기 ▾" / "Collapse hidden tokens ({0}) ▾";
+        HIDDEN_SHOW(1) = "숨긴 토큰 {0}개 보기 ▸" / "Show hidden tokens ({0}) ▸";
+        HIDE_NOTE = "숨기기는 이 카드에서만 감춥니다. 보내기 화면의 자산 선택, 승인 창의 확인, 활동 기록은 그대로입니다."
+            / "Hiding applies to this card only. The asset choice on the send screen, the checks in the approval window and the activity stay the same.";
+        HIDDEN = "숨김" / "Hidden";
+        UNHIDE = "다시 보이기" / "Show again";
+
+        // ----- send form -----------------------------------------------------------------------
+        SEND_TITLE(1) = "보내기 — {0}" / "Send — {0}";
+        PENDING_SEND = "이 계정의 이전 전송을 확인 중입니다. 확정된 뒤 보낼 수 있습니다."
+            / "A previous send from this account is being confirmed. You can send once it is final.";
+        FROM_ACCOUNT = "보내는 계정" / "From account";
+        PATH_BALANCE(2) = "{0} · 잔액 {1} (RPC 참고)" / "{0} · balance {1} (RPC, reference)";
+        RECIPIENT_CARD = "받는 사람" / "Recipient";
+        MOVE_NOTE = "비표준 경로 계정의 자금을 내 표준 계정으로 옮깁니다. 받는 주소와 '보내기 최대'는 바꿀 수 없습니다."
+            / "Moves the funds of a non-standard path account to your standard account. The recipient and 'Send max' cannot be changed.";
+        PICK_BOOK = "주소록에서 선택" / "Choose from address book";
+        ADDRESS_HINT = "Solana 주소 (base58)" / "Solana address (base58)";
+        TOKEN_ADDRESS_HINT(1) = "{0}을(를) 받을 사람의 지갑 주소를 넣으세요 ({0} 토큰 계정(ATA) 주소가 아닙니다)."
+            / "Enter the wallet address of the person receiving {0} (not a {0} token account (ATA) address).";
+        CHECK_WHOLE = "강조된 앞뒤 4자만 보지 말고 가운데까지 주소 전체를 확인하세요."
+            / "Do not check only the highlighted first and last 4 characters — check the whole address, the middle too.";
+        LOOKALIKE_BOOK(1) = "주소록 '{0}'" / "address book '{0}'";
+        LOOKALIKE_OWN(1) = "내 계정 '{0}'" / "my account '{0}'";
+        LOOKALIKE_SENT = "보낸 내역의 주소" / "an address in your send history";
+        LOOKALIKE(1) = "{0}와(과) 앞 3자 또는 뒤 3자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다. (승인 창 고위험 L03)"
+            / "Same first 3 or last 3 characters as {0}, but a different address. This may be an address poisoning attack. (approval window high risk L03)";
+        OFF_CURVE = "일반 지갑이 아님: 프로그램 소유 주소(PDA)나 토큰 계정일 수 있음 (승인 창 고위험 L02)"
+            / "Not a regular wallet: may be a program-owned address (PDA) or a token account (approval window high risk L02)";
+        REVIEW = "검토" / "Review";
+        ASSET_CARD = "보낼 자산과 금액" / "Asset and amount to send";
+        ASSET = "자산" / "Asset";
+        SOL_HOLDING_UNREAD = "SOL · 보유: 잔액을 아직 읽지 못했습니다" / "SOL · held: balance not read yet";
+        SOL_HOLDING(1) = "SOL · 보유 {0} (RPC 참고)" / "SOL · held {0} (RPC, reference)";
+        SPL_HOLDING(2) = "{0} · SPL Token · 보유 {1}" / "{0} · SPL Token · held {1}";
+        MINT_PINNED = "mint (허용 목록 고정)" / "mint (pinned in the allowlist)";
+        MAX = "최대" / "Max";
+        AMOUNT(1) = "금액 ({0})" / "Amount ({0})";
+        MAX_SOL = "최대: 잔액 − 최대 수수료를 보내고 SOL 잔액은 0이 됩니다(승인 창에서 확인)."
+            / "Max: sends the balance − the max fee, and the SOL balance becomes 0 (confirmed in the approval window).";
+        MAX_SPL(1) = "최대: {0} 전부를 보냅니다. 수수료(와 필요하면 받는 토큰 계정 생성비)는 SOL로 냅니다."
+            / "Max: sends all {0}. The fee (and the receiving token account's creation cost when needed) is paid in SOL.";
+        FEE_ESTIMATE(2) = "예상 수수료 약 {0} (최대 {1}) — 최종 수수료는 승인 창에서 확인합니다."
+            / "Expected fee about {0} (max {1}) — the final fee is shown in the approval window.";
+        FEE_CALC(2) = "계산: 기본 5,000 lamports + 우선 수수료(CU 한도 {0}), 상한 {1} lamports."
+            / "Calculation: base 5,000 lamports + priority fee (CU limit {0}), cap {1} lamports.";
+        FEE_HIDE = "수수료 계산 숨기기 ▾" / "Hide fee calculation ▾";
+        FEE_SHOW = "수수료 계산 보기 (lamports·CU) ▸" / "Show fee calculation (lamports·CU) ▸";
+        ATA_NOTE(1) = "받는 사람에게 {0} 토큰 계정이 없으면 이 거래가 만들고, 생성 비용(rent)을 보내는 계정의 SOL로 냅니다. 금액은 승인 창에서 확인하세요. 보낸 뒤에도 SOL이 조금 남아야 합니다."
+            / "If the recipient has no {0} token account, this transaction creates it and the sending account pays its creation cost (rent) in SOL. Check the amount in the approval window. Some SOL must remain after sending.";
+        NO_MATCH = "일치하는 주소록·내 계정이 없습니다." / "No matching address book entry·own account.";
+
+        // ----- result, resend ------------------------------------------------------------------
+        RESULT_TITLE = "보내기 결과" / "Send result";
+        RESULT_SENT = "서명하고 저널에 기록한 뒤 전송했습니다." / "Signed, recorded in the journal, then sent.";
+        RESULT_ENDED = "종결 (활동 참고)" / "Ended (see activity)";
+        STATUS = "상태" / "Status";
+        SIGNATURE = "서명(거래 ID)" / "Signature (transaction ID)";
+        COPY_HASH = "해시 복사" / "Copy hash";
+        BACK_MAIN = "메인으로" / "Back to main";
+        SCAN_BACK = "스캔 결과로" / "Back to scan results";
+        SEND_AGAIN = "다시 보내기" / "Send again";
+        SEND_AGAIN_NOTE = "같은 받는 주소·금액으로 보내기 화면을 다시 엽니다. 새로 검토하고 새로 승인해야 합니다(이전 승인은 쓰지 않음)."
+            / "Opens the send screen again with the same recipient·amount. You review and approve again (the earlier approval is not used).";
+        SEND_NOW = "지금 다시 전송" / "Resend now";
+        SEND_NOW_NOTE = "서명한 같은 거래를 바로 다시 보냅니다. 서명이 같아 한 번만 처리됩니다. 블록해시가 만료된 것이 RPC로 확인되면 새로 서명해 다시 보낼 수 있습니다."
+            / "Sends the same signed transaction again right away. The signature is the same, so it is processed only once. Once the RPC shows the blockhash expired, you can sign again and resend.";
+
+        // ----- receive -------------------------------------------------------------------------
+        RECEIVE_TITLE(1) = "받기 — {0}" / "Receive — {0}";
+        BACKUP_PENDING = "백업 확인 전입니다. 확인을 마치기 전에는 큰 금액을 받지 마세요."
+            / "The backup is not confirmed yet. Do not receive large amounts until it is.";
+        DEVNET_ADDRESS = "devnet(테스트) 주소입니다. 주소 자체는 mainnet과 같습니다."
+            / "This is a devnet (test) address. The address itself is the same as on mainnet.";
+        RECEIVE_ONLY(1) = "SOL과 허용 목록 토큰({0})만 받으세요. 다른 토큰은 이 지갑에 보이지 않고 보낼 수 없습니다."
+            / "Receive only SOL and allowlisted tokens ({0}). Other tokens are not shown in this wallet and cannot be sent.";
+        TOKEN_RECEIVE_NOTE = "토큰을 보내는 쪽에도 이 지갑 주소를 알려주면 됩니다(토큰 계정 주소는 상대 지갑이 계산합니다)."
+            / "For tokens, give the sender this wallet address too (the sender's wallet computes the token account address).";
+
+        // ----- S15 Solana section --------------------------------------------------------------
+        SETTINGS_TITLE = "Solana 네트워크" / "Solana network";
+        SETTINGS_HELP = "메인 화면 Solana 탭에서 쓸 네트워크입니다. devnet은 시험용이며 실제 자산이 아닙니다."
+            / "The network of the Solana tab on the main screen. devnet is for testing and holds no real assets.";
+        CLUSTER = "클러스터" / "Cluster";
+        DEVNET_RADIO = "devnet (테스트)" / "devnet (test)";
+        RPC_ROWS = "RPC 주소는 '네트워크(RPC)' 구역의 solana:mainnet·solana:devnet 행에 있습니다."
+            / "The RPC addresses are in the solana:mainnet·solana:devnet rows of the 'Networks (RPC)' section.";
+        SCAN_SETTINGS_HELP = "다른 지갑(Ledger Live, solana-keygen 등)에서 쓰던 경로의 계정을 찾습니다."
+            / "Finds accounts on the paths other wallets use (Ledger Live, solana-keygen etc.).";
+        FEE_CAP_TITLE = "Solana 수수료 상한 (고급)" / "Solana fee cap (advanced)";
+        FEE_CAP_HELP = "지갑이 계산한 수수료가 이 값을 넘으면 보내기를 막습니다. 보통은 바꿀 필요가 없습니다."
+            / "Sending is blocked when the fee the wallet computes exceeds this value. Usually there is no need to change it.";
+        FEE_CAP_LABEL = "수수료 상한 (lamports)" / "Fee cap (lamports)";
+        CU_CAP_LABEL = "CU 가격 상한 (micro-lamports/CU)" / "CU price cap (micro-lamports/CU)";
+        DEFAULTS = "기본값으로" / "Defaults";
+        FEE_RANGE_HELP = "수수료 상한 10,000–10,000,000, CU 가격 상한 0–100,000,000. 우선 수수료 가격은 최근 값의 p75와 두 상한 중 작은 값입니다."
+            / "Fee cap 10,000–10,000,000, CU price cap 0–100,000,000. The priority fee price is the smaller of the recent p75 and the two caps.";
+
+        // ----- recovery scan -------------------------------------------------------------------
+        SCAN_TITLE(1) = "다른 경로 스캔 — {0}" / "Scan other paths — {0}";
+        SCAN_NOTICE = "다른 지갑(Ledger Live, solana-keygen 등)의 경로 m/44'/501'/i', m/44'/501', BIP39 seed[0..32]와 표준 경로 m/44'/501'/i'/0'의 계정 0–49를 조회합니다(연속 5개가 비면 중단). 읽기 전용이며 서명하지 않습니다."
+            / "Looks up accounts 0–49 on the paths of other wallets (Ledger Live, solana-keygen etc.) m/44'/501'/i', m/44'/501', BIP39 seed[0..32] and the standard path m/44'/501'/i'/0' (stops after 5 empty in a row). Read only; nothing is signed.";
+        SCAN_PRIVACY(1) = "조회하는 모든 주소가 RPC 공급자(설정한 {0} 엔드포인트의 운영자)에 전달되어 서로 연결될 수 있습니다."
+            / "Every address looked up goes to the RPC provider (the operator of the {0} endpoint you set) and can be linked together.";
+        SCAN_START = "알겠습니다 — 스캔 시작" / "Understood — start scan";
+        SCANNING = "조회하는 중…" / "Looking up…";
+        SCAN_EMPTY = "잔액이 있는 다른 경로 계정이나 추가할 표준 계정이 없습니다."
+            / "There is no other-path account with a balance and no standard account to add.";
+        MOVE_TARGET_LABEL = "옮겨 받을 계정" / "Receiving account";
+        RPC_REFERENCE = "(RPC 참고)" / "(RPC, reference)";
+        MOVE_TO_STANDARD = "표준 계정으로 이동" / "Move to standard account";
+        SCAN_MOVE_NOTE = "비표준 경로 자금은 주 복구 단어의 표준 계정으로 '보내기 최대'만 할 수 있습니다(승인 창 L07). 자산마다 한 번씩 옮기며, 이 결과는 클러스터를 바꾸거나 잠글 때까지 남습니다. 다른 표준 계정으로 받으려면 Solana 탭에서 그 계정을 고르세요."
+            / "Non-standard path funds can only go to a standard account of the primary recovery phrase with 'Send max' (approval window L07). Each asset moves once, and these results stay until you change the cluster or lock. To receive on another standard account, choose it in the Solana tab.";
+        SCAN_AGAIN = "다시 스캔" / "Scan again";
+    }
+}
+
+fn local_time(facts: &dyn crate::screen::facts::ScreenFacts, unix_ms: u64) -> String {
+    let wall = facts.local_wall_ms(unix_ms);
+    let text = crate::logging::format_utc(wall.unwrap_or(unix_ms));
+    let short = text.get(..16).unwrap_or(&text).replace('T', " ");
+    if wall.is_some() {
+        short
+    } else {
+        format!("{short} UTC")
+    }
+}
+
+/// `(value, note)` of a token holding: the balance with the pinned decimals and symbol, and what
+/// it means (RPC reference; missing account; frozen; unreadable).
+fn token_holding_text(
+    lang: Lang,
+    entry: &SplAllowEntry,
+    holding: Option<TokenHolding>,
+) -> (String, String) {
+    let amount = |raw: u64| format_amount(raw, entry.decimals);
+    let raw =
+        |raw: u64| text::RAW_FINALIZED.fill(lang, [&format_raw(raw), &entry.decimals.to_string()]);
+    match holding {
+        None => (
+            text::BALANCE_UNKNOWN.get(lang).to_owned(),
+            text::NOT_READ.get(lang).to_owned(),
+        ),
+        Some(TokenHolding::Missing) => (amount(0), text::NO_ATA.fill(lang, [entry.symbol])),
+        Some(TokenHolding::Active(value)) => (amount(value), raw(value)),
+        Some(TokenHolding::Frozen(value)) => {
+            (amount(value), text::FROZEN.fill(lang, [&raw(value)]))
+        }
+        Some(TokenHolding::Invalid) => (
+            text::CANNOT_CHECK.get(lang).to_owned(),
+            text::INVALID_ACCOUNT.get(lang).to_owned(),
+        ),
+    }
+}
+
+fn status_word(lang: Lang, word: &str) -> &'static str {
+    match word {
+        "succeeded" => text::STATUS_SUCCEEDED,
+        "failed" => text::STATUS_FAILED,
+        "expired" => text::STATUS_EXPIRED,
+        _ => text::STATUS_ENDED,
+    }
+    .get(lang)
+}
+
+impl Screen<'_> {
+    /// The chain tab row of S10 (spec/04 §2.6).
+    pub fn tab_row(&self, items: &mut Vec<Item>) {
+        let tab = self.meta.as_ref().map_or(Tab::Evm, |meta| meta.prefs.tab);
+        let evm = format!("  {}  ", text::TAB_EVM.get(self.settings.language));
+        items.push(Item::Row(vec![
+            Ctl::tab(SolPress::TabEvm, &evm, tab == Tab::Evm).badge(Badge::family(BookChain::Evm)),
+            Ctl::tab(SolPress::TabSol, "  Solana  ", tab == Tab::Sol)
+                .badge(Badge::family(BookChain::Sol)),
+            Ctl::tab(BtcPress::TabBtc, "  Bitcoin  ", tab == Tab::Btc)
+                .badge(Badge::family(BookChain::Btc)),
+            Ctl::tab(ZecPress::TabZec, "  Zcash  ", tab == Tab::Zec)
+                .badge(Badge::zcash(self.settings.zcash.network)),
+        ]));
+    }
+
+    /// The cluster band: a full band on S11 (`pill == false`), a small tag after the S10
+    /// cluster chips (2026-11-11, like the EVM network card).
+    fn sol_cluster_banner(&self, items: &mut Vec<Item>, pill: bool) {
+        let lang = self.settings.language;
+        let (shown, tone) = if self.sol_cluster() == SolCluster::Devnet {
+            // The tag sits after the `Solana devnet (테스트)` chip: the EVM tag's words.
+            (
+                if pill {
+                    text::DEVNET_PILL
+                } else {
+                    text::DEVNET_BANNER
+                }
+                .get(lang)
+                .to_owned(),
+                Tone::Testnet,
+            )
+        } else {
+            // Like the EVM mainnets (2026-11-08): S10, S11 and S12 say real assets move.
+            (
+                crate::screen::build::core::T_MAINNET.get(lang).to_owned(),
+                Tone::BtcMainnet,
+            )
+        };
+        items.push(if pill {
+            Item::Pill(shown, tone)
+        } else {
+            Item::Banner(shown, tone)
+        });
+    }
+
+    /// The S10 Solana tab.
+    #[expect(clippy::too_many_lines, reason = "the S10 Solana sections in order")]
+    pub fn sol_main_screen(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
+        let cluster = self.sol_cluster();
+        items.push(Item::CardStart(None));
+        items.push(Item::LabeledRow(
+            text::NETWORK.get(lang).to_owned(),
+            vec![
+                Ctl::tab(
+                    SolPress::ClusterMainnet,
+                    "Solana mainnet",
+                    cluster == SolCluster::Mainnet,
+                )
+                .badge(Badge::solana(SolCluster::Mainnet)),
+                Ctl::tab(
+                    SolPress::ClusterDevnet,
+                    SolCluster::Devnet.display_name_in(lang),
+                    cluster == SolCluster::Devnet,
+                )
+                .badge(Badge::solana(SolCluster::Devnet)),
+            ],
+        ));
+        self.sol_cluster_banner(items, true);
+        if self.sol_journal_damaged() {
+            items.push(Item::Banner(
+                text::JOURNAL_DAMAGED.get(lang).to_owned(),
+                Tone::Blocked,
+            ));
+        }
+        let network = crate::network::NetworkId::Solana(self.settings.solana.cluster);
+        let no_endpoint = self.sol_endpoint(cluster).is_err();
+        let failure = (!no_endpoint)
+            .then(|| self.sol.balance_error.get(&cluster).copied())
+            .flatten();
+        // The failed read, said once with what to do (2026-11-10, like the EVM network card).
+        if let Some(code) = failure {
+            items.push(Item::Banner(
+                crate::screen::build::core::balance_failure_text(self.settings.language, code),
+                Tone::Danger,
+            ));
+            self.rpc_failure_buttons(network, CorePress::SolRpcTest, CorePress::SolRpcRow, items);
+        }
+        // The status line, unless the band above has just said the failure (2026-11-12).
+        if failure.is_none() {
+            let rpc = if no_endpoint {
+                text::RPC_NONE
+            } else if self.sol.balances.keys().any(|(known, _)| *known == cluster) {
+                text::RPC_CONNECTED
+            } else {
+                text::RPC_UNCHECKED
+            }
+            .get(lang);
+            items.push(Item::Help(format!("RPC ({network}): {rpc}")));
+        }
+        items.push(Item::CardEnd);
+        let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
+        let selected = self.sol_selected();
+        if selected.is_none() && self.key_only() && self.meta.is_some() {
+            self.no_accounts_card(yw_core::keyimport::ImportChain::Sol, items);
+            return;
+        }
+        if let Some((id, label, address)) = &selected {
+            items.push(Item::CardStart(None));
+            items.push(Item::Subtitle(self.sol_title(*id, label)));
+            items.push(Item::Help(id.path_text_in(lang)));
+            self.mn_signing_banner(
+                self.mn_backup_gate(
+                    id.mnemonic().map(yw_core::vault::RecordId::from_bytes),
+                    matches!(id, crate::wallet::app_sol::SolAccountId::Derived(_)),
+                ),
+                items,
+            );
+            self.card_pin_banner(
+                id.source().and_then(|source| self.sol_card_gate(source)),
+                items,
+            );
+            // Three states under the big balance (2026-11-10, like EVM): loading, read (with
+            // the time), or failed — explained once by the network card above.
+            match (self.sol_balance(address), failure) {
+                (Some(lamports), Some(_)) => {
+                    // The earlier value, dimmed, and since when (2026-11-12, like EVM).
+                    items.push(Item::DisplayMuted(Wallet::sol_text(lamports)));
+                    items.push(Item::Help(crate::screen::build::core::balance_stale_text(
+                        &self.facts(),
+                        self.settings.language,
+                        None,
+                        self.sol.balance_at.get(&cluster).copied(),
+                    )));
+                }
+                (Some(lamports), None) => {
+                    items.push(Item::Display(Wallet::sol_text(lamports)));
+                    let read = crate::screen::build::core::balance_read_text(
+                        &self.facts(),
+                        self.settings.language,
+                        None,
+                        self.sol.balance_at.get(&cluster).copied(),
+                    );
+                    items.push(Item::Help(if read.is_empty() {
+                        text::LAMPORTS_FINALIZED.fill(lang, [&format_raw(lamports)])
+                    } else {
+                        text::LAMPORTS_FINALIZED_READ.fill(lang, [&format_raw(lamports), &read])
+                    }));
+                }
+                (None, _) if no_endpoint => {
+                    items.push(Item::Display(text::BALANCE_DASH.get(lang).to_owned()));
+                    items.push(Item::Help(crate::screen::build::core::no_endpoint_text(
+                        self.settings.language,
+                        &self.network_name(network),
+                    )));
+                }
+                (None, Some(_)) => {
+                    items.push(Item::Display(text::BALANCE_DASH.get(lang).to_owned()));
+                    items.push(Item::Help(
+                        crate::screen::build::core::T_BALANCE_FAILED
+                            .get(lang)
+                            .to_owned(),
+                    ));
+                }
+                (None, None) => {
+                    items.push(Item::Display(text::BALANCE_DASH.get(lang).to_owned()));
+                    items.push(Item::Help(
+                        crate::screen::build::core::T_BALANCE_LOADING
+                            .get(lang)
+                            .to_owned(),
+                    ));
+                }
+            }
+            if let Some(holdings) = self.sol_token_holdings(address) {
+                let tokens: Vec<String> = holdings
+                    .iter()
+                    .filter(|(entry, _)| !self.sol_token_hidden(entry))
+                    .map(|(entry, holding)| {
+                        holding.balance().map_or_else(
+                            || text::TOKEN_UNCHECKED.fill(lang, [entry.symbol]),
+                            |raw| {
+                                format!("{} {}", format_amount(raw, entry.decimals), entry.symbol)
+                            },
+                        )
+                    })
+                    .collect();
+                if !tokens.is_empty() {
+                    items.push(Item::Help(text::TOKENS.fill(lang, [&tokens.join(" · ")])));
+                }
+            }
+            // The own address whole with its ends emphasized and `주소 복사` (2026-11-11).
+            let text = address.to_base58();
+            items.push(crate::screen::build::core::own_address_row(
+                self.settings.language,
+                &text,
+                crate::screen::address::AddressKind::Solana,
+                SolPress::CopyAddress,
+                true,
+                self.explorer_address_icon(
+                    crate::network::NetworkId::Solana(self.settings.solana.cluster),
+                    &text,
+                    ExplorerPress::CardSol,
+                ),
+            ));
+            let mut row = vec![
+                Ctl::primary(SolPress::SendOpen, text::SEND.get(lang)).enabled(unlocked),
+                Ctl::primary(SolPress::ReceiveOpen, text::RECEIVE.get(lang)),
+            ];
+            if no_endpoint {
+                // The same next step as every tab (2026-11-08): no refresh without an address;
+                // it opens this cluster's row with its field (2026-11-10).
+                row.push(Ctl::button(
+                    CorePress::SolRpcOpen,
+                    text::RPC_SETUP.get(lang),
+                ));
+            } else {
+                row.push(
+                    Ctl::link(SolPress::Refresh, text::REFRESH.get(lang))
+                        .tip(crate::screen::build::core::T_REFRESH_TIP.get(lang)),
+                );
+            }
+            items.push(Item::Row(row));
+            items.push(Item::CardEnd);
+        }
+        // The shared account card (2026-11-15, `screen::build::accounts`, as EVM's): items
+        // `label · source`, the selected account's actions under the drop-down (2026-11-12: its
+        // path, balance and address are the hero card's and are not said again here).
+        let selected = selected.map(|(id, ..)| id);
+        let removable = self.can_remove_imported();
+        let mut accounts = Vec::new();
+        let mut chosen = None;
+        for (row, (id, label, _)) in self
+            .sol_account_rows()
+            .into_iter()
+            .take(usize::from(rows::SOL_ACCOUNTS))
+            .enumerate()
+        {
+            let is_selected = selected == Some(id);
+            let source = match id {
+                SolAccountId::Imported(_) => AccountSource::Imported,
+                SolAccountId::Hardware(index) => {
+                    AccountSource::Card(crate::screen::sol_card_role(index))
+                }
+                SolAccountId::Derived(_) | SolAccountId::Mnemonic(..) => {
+                    AccountSource::Words(id.mnemonic())
+                }
+            };
+            if is_selected {
+                chosen = Some((id, label.clone()));
+            }
+            accounts.push(AccountItem {
+                press: SolPress::Account(Row(u16::try_from(row).unwrap_or(0))).into(),
+                label,
+                source,
+                selected: is_selected,
+                enabled: true,
+            });
+        }
+        let selected = chosen.map(|(id, label)| {
+            if self.sol.rename == Some(id) {
+                return SelectedLine::Rename {
+                    edit: EditField::SolRename,
+                    save: SolPress::RenameSave.into(),
+                    cancel: SolPress::RenameCancel.into(),
+                    label,
+                };
+            }
+            let mut buttons = vec![Ctl::button(SolPress::Rename, text::RENAME.get(lang)).compact()];
+            match id {
+                // No `숨기기` for a recovery phrase's first account (2026-11-12, as EVM).
+                SolAccountId::Derived(index) | SolAccountId::Mnemonic(_, index) => {
+                    if index != 0 {
+                        buttons.push(Ctl::button(SolPress::Hide, text::HIDE.get(lang)).compact());
+                    }
+                }
+                // A YubiKey account: no "개인키 보기" (the key is on the card only).
+                SolAccountId::Hardware(_) => {
+                    buttons.push(Ctl::button(SolPress::Hide, text::HIDE.get(lang)).compact());
+                }
+                SolAccountId::Imported(_) => {
+                    buttons.push(
+                        Ctl::button(KeysPress::SolReveal, text::REVEAL_KEY.get(lang))
+                            .compact()
+                            .enabled(unlocked),
+                    );
+                    buttons.push(
+                        Ctl::danger(KeysPress::SolRemove, text::DELETE.get(lang))
+                            .compact()
+                            .enabled(unlocked && removable),
+                    );
+                }
+            }
+            SelectedLine::Buttons(buttons)
+        });
+        let mut actions = Vec::new();
+        let mut footer = Vec::new();
+        if !self.key_only() {
+            actions.push(
+                Ctl::button(SolPress::AddAccount, text::ADD_ACCOUNT.get(lang))
+                    .compact()
+                    .enabled(
+                        !self.sol.creating
+                            && (self.several_mnemonics()
+                                || self
+                                    .meta
+                                    .as_ref()
+                                    .and_then(crate::meta::Meta::next_sol_index)
+                                    .is_some()),
+                    ),
+            );
+            actions.push(Ctl::button(SolPress::ScanOpen, text::SCAN.get(lang)).compact());
+            self.sol_pick_row(&mut footer);
+            footer.push(Item::Help(text::SCAN_HINT.get(lang).to_owned()));
+        }
+        actions.push(
+            Ctl::button(KeysPress::SolImport, text::IMPORT_KEY.get(lang))
+                .compact()
+                .enabled(self.can_import(yw_core::keyimport::ImportChain::Sol)),
+        );
+        // The recovery-words link as on the EVM card (2026-11-15; the Solana card had none).
+        actions.push(self.mnemonics_link());
+        self.push_account_card(
+            items,
+            AccountCard {
+                title: text::MY_ACCOUNTS.get(lang).to_owned(),
+                picker: LinksPress::PickerSol.into(),
+                accounts,
+                empty: Some(
+                    if self.sol.creating {
+                        text::CREATING
+                    } else {
+                        text::NO_ACCOUNTS
+                    }
+                    .get(lang)
+                    .to_owned(),
+                ),
+                locked: None,
+                selected,
+                details: Vec::new(),
+                hidden: Some(crate::wallet::app_hidden::Family::Sol),
+                actions,
+                footer,
+            },
+        );
+        if let Some((_, _, address)) = self.sol_selected() {
+            self.sol_token_card(items, &address, unlocked && !no_endpoint);
+        }
+        items.push(Item::CardStart(None));
+        items.push(Item::Badged(
+            Badge::solana(cluster),
+            Box::new(Item::Subtitle(text::SENT_TXS.get(lang).to_owned())),
+        ));
+        let mut shown = 0_usize;
+        let mut prompt_drawn = false;
+        let counterparties = self.sol_activity_counterparties();
+        for record in self.sol_records() {
+            if record.cluster != cluster {
+                continue;
+            }
+            let core = record.core();
+            // A dApp send (journal version 3) has no transfer of its own: its signer and the
+            // site (spec/07 §20.9).
+            let (from, title) = match (core, record.dapp.as_ref()) {
+                (Some(core), _) => (
+                    self.sol_label(&core.from.to_base58()),
+                    yw_core::sol::display::transfer_title_in(lang, record.cluster, &core),
+                ),
+                (None, Some(dapp)) => (
+                    self.sol_label(&SolAddress::from_bytes(dapp.public).to_base58()),
+                    crate::wallet::app_sol_dapp::dapp_record_title(lang, &record),
+                ),
+                (None, None) => (String::new(), String::new()),
+            };
+            // The status at the end of the first line (2026-11-12: a line of its own before).
+            items.push(Item::Text(format!(
+                "{} · {} · {} · {}",
+                local_time(&self.facts(), record.signed_at_ms),
+                from,
+                title,
+                self.sol_record_status(&record)
+            )));
+            if let Some(core) = core {
+                self.sol_recipient_items(shown, &core.to, &counterparties, items);
+            }
+            let tx_id = record.tx_id();
+            self.sol_activity_actions(shown, &tx_id, &counterparties, &mut prompt_drawn, items);
+            shown = shown.saturating_add(1);
+        }
+        if let Some(meta) = self.meta.as_ref() {
+            for entry in meta.activity_of(cluster.network_id()) {
+                if shown >= crate::wallet::app_sol::SOL_MAX_ACTIVITY_ROWS {
+                    break;
+                }
+                items.push(Item::Text(format!(
+                    "{} · {} · {} · {}",
+                    local_time(&self.facts(), entry.time_unix_ms),
+                    self.sol_label(&entry.account),
+                    entry.title,
+                    status_word(lang, &entry.status)
+                )));
+                match SolAddress::parse(&entry.counterparty) {
+                    Ok(address) => {
+                        self.sol_recipient_items(shown, &address, &counterparties, items);
+                    }
+                    Err(_) => {
+                        items.push(Item::Help(text::TO_RAW.fill(lang, [&entry.counterparty])));
+                    }
+                }
+                self.sol_activity_actions(
+                    shown,
+                    &entry.tx_id,
+                    &counterparties,
+                    &mut prompt_drawn,
+                    items,
+                );
+                shown = shown.saturating_add(1);
+            }
+        }
+        if shown == 0 {
+            items.push(Item::Help(text::NO_SENT.get(lang).to_owned()));
+        }
+        self.received_items(crate::received::RecvChain::Sol, items);
+        items.push(Item::CardEnd);
+    }
+
+    /// The recipient lines of activity row `row` (2026-11-10, like EVM's U11): "받는 주소" with,
+    /// display only, the address-book or own-account name, then the whole address (ends
+    /// emphasized) on its own copy line with `☆ 이 주소 저장` at its right end when offered
+    /// (2026-11-11: sent rows come only from the wallet's own signed journal, so their recipient
+    /// may be copied; the received history's senders never are, spec/07 §12.3).
+    fn sol_recipient_items(
+        &self,
+        row: usize,
+        address: &SolAddress,
+        counterparties: &[String],
+        items: &mut Vec<Item>,
+    ) {
+        let lang = self.settings.language;
+        let shown = address.to_base58();
+        let line = self
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.contact(BookChain::Sol, &shown))
+            .map(|contact| text::TO_LINE_BOOK.fill(lang, [&contact.label]))
+            .or_else(|| {
+                self.sol_account_rows()
+                    .into_iter()
+                    .find(|(_, _, known)| known == address)
+                    .map(|(id, label, _)| {
+                        text::TO_LINE_OWN.fill(lang, [&self.sol_title(id, &label)])
+                    })
+            })
+            .unwrap_or_else(|| text::TO_LINE.get(lang).to_owned());
+        items.push(Item::Help(line));
+        // The save icon only for the row's own counterparty (the list `이 주소 저장` reads).
+        let save = counterparties
+            .get(row)
+            .filter(|known| **known == shown && self.offer_save(BookChain::Sol, known))
+            .and(rows::row(row, rows::SOL_ACTIVITY_SAVES))
+            .map(|save_row| {
+                crate::screen::build::links::save_icon(
+                    self.settings.language,
+                    BookPress::SolActivitySave(save_row),
+                )
+            });
+        crate::screen::build::links::push_address_line(
+            items,
+            self.settings.language,
+            rows::row(row, rows::SOL_TO).map(|row| LinksPress::SolTo(row).into()),
+            &shown,
+            crate::screen::address::AddressKind::Solana,
+            save.into_iter().collect(),
+        );
+    }
+
+    /// The "토큰" card of S10 (spec/04 §2.6, spec/07 §8.3, §12.3): the allowlisted tokens of the
+    /// cluster for the selected account. Balances are read only from each token's derived ATA,
+    /// so other tokens and NFTs are never fetched or shown.
+    fn sol_token_card(&self, items: &mut Vec<Item>, address: &SolAddress, can_send: bool) {
+        let lang = self.settings.language;
+        let entries: Vec<&'static SplAllowEntry> = spl_entries(self.sol_cluster()).collect();
+        let symbols: Vec<&str> = entries.iter().map(|entry| entry.symbol).collect();
+        items.push(Item::CardStart(Some(
+            text::TOKENS_TITLE.get(lang).to_owned(),
+        )));
+        items.push(Item::Help(
+            text::ALLOWLIST_ONLY.fill(lang, [&symbols.join("·")]),
+        ));
+        let (hidden, shown): (Vec<_>, Vec<_>) = entries
+            .into_iter()
+            .enumerate()
+            .partition(|(_, entry)| self.sol_token_hidden(entry));
+        if shown.is_empty() {
+            items.push(Item::Help(text::NO_VISIBLE_TOKENS.get(lang).to_owned()));
+        }
+        // The EVM token card's list rows (2026-11-11): symbol and balance on one line, then
+        // the pinned mint whole (a click copies it) with `보내기`·`숨기기` at the right end.
+        // What the balance means is said only when it is not a plain one (2026-11-12: no
+        // token account yet, frozen, unreadable, not read) — the raw-unit line and the note
+        // "SPL Token · mint 허용 목록 고정" were the same on every row.
+        for (position, (index, entry)) in shown.into_iter().enumerate() {
+            if position > 0 {
+                items.push(Item::Rule);
+            }
+            let holding = self.sol_token_holding(address, entry);
+            let (value, note) = token_holding_text(lang, entry, holding);
+            items.push(Item::ListRow {
+                title: entry.symbol.to_owned(),
+                note: String::new(),
+                value,
+                dim: false,
+            });
+            if !matches!(holding, Some(TokenHolding::Active(_))) {
+                items.push(Item::Help(note));
+            }
+            let send = SolPress::TokenSend(Row(u16::try_from(index).unwrap_or(0)));
+            let mut row = vec![
+                Ctl::link(send, text::SEND.get(lang)).compact().enabled(
+                    can_send
+                        && holding
+                            .and_then(TokenHolding::balance)
+                            .is_some_and(|raw| raw > 0),
+                ),
+            ];
+            row.extend(Self::sol_token_hide_button(lang, index, false));
+            crate::screen::build::links::push_address_line(
+                items,
+                self.settings.language,
+                Self::sol_token_copy(index),
+                &entry.mint.to_base58(),
+                crate::screen::address::AddressKind::Solana,
+                row,
+            );
+        }
+        if !hidden.is_empty() {
+            let open = self.sol.show_hidden_tokens;
+            let count = hidden.len();
+            items.push(Item::Row(vec![Ctl::link(
+                SolPress::TokenHiddenToggle,
+                &if open {
+                    text::HIDDEN_COLLAPSE
+                } else {
+                    text::HIDDEN_SHOW
+                }
+                .fill(lang, [&count.to_string()]),
+            )]));
+            if open {
+                items.push(Item::Help(text::HIDE_NOTE.get(lang).to_owned()));
+                for (position, (index, entry)) in hidden.into_iter().enumerate() {
+                    if position > 0 {
+                        items.push(Item::Rule);
+                    }
+                    let (value, _) =
+                        token_holding_text(lang, entry, self.sol_token_holding(address, entry));
+                    items.push(Item::ListRow {
+                        title: entry.symbol.to_owned(),
+                        note: text::HIDDEN.get(lang).to_owned(),
+                        value,
+                        dim: true,
+                    });
+                    crate::screen::build::links::push_address_line(
+                        items,
+                        self.settings.language,
+                        Self::sol_token_copy(index),
+                        &entry.mint.to_base58(),
+                        crate::screen::address::AddressKind::Solana,
+                        Self::sol_token_hide_button(lang, index, true),
+                    );
+                }
+            }
+        }
+        items.push(Item::CardEnd);
+    }
+
+    /// The copy press of allowlist row `index`'s mint (none beyond the row bound; 2026-11-24
+    /// S5-4: its control id before).
+    fn sol_token_copy(index: usize) -> Option<Press> {
+        rows::row(index, rows::SOL_TOKEN_COPIES).map(|row| SolPress::TokenCopy(row).into())
+    }
+
+    /// `숨기기` / `다시 보이기` of allowlist row `index` (none beyond the id span).
+    fn sol_token_hide_button(lang: Lang, index: usize, hidden: bool) -> Vec<Ctl> {
+        rows::row(index, rows::SOL_TOKEN_HIDES)
+            .map(|row| {
+                Ctl::link(
+                    SolPress::TokenHide(row),
+                    if hidden { text::UNHIDE } else { text::HIDE }.get(lang),
+                )
+                .compact()
+            })
+            .into_iter()
+            .collect()
+    }
+
+    /// The SOL/SPL send form.
+    #[expect(clippy::too_many_lines, reason = "the send-form fields in order")]
+    pub fn sol_send_screen(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
+        let cluster = self.sol_cluster();
+        items.push(crate::screen::build::core::back_main(lang));
+        items.push(Item::Badged(
+            Badge::solana(cluster),
+            Box::new(Item::Title(
+                text::SEND_TITLE.fill(lang, [cluster.display_name_in(lang)]),
+            )),
+        ));
+        self.sol_cluster_banner(items, false);
+        let form = &self.sol.send;
+        if self.sol_journal_damaged() {
+            items.push(Item::Banner(
+                text::JOURNAL_DAMAGED.get(lang).to_owned(),
+                Tone::Blocked,
+            ));
+        }
+        let Some((source, from, label)) = self.sol_form_sender() else {
+            self.accounts_loading(items);
+            return;
+        };
+        if let Some(record) = self.sol_pending(cluster, &from) {
+            items.push(Item::Banner(
+                text::PENDING_SEND.get(lang).to_owned(),
+                Tone::Warn,
+            ));
+            items.push(Item::Help(self.sol_record_status(&record)));
+            items.push(Item::Mono(record.tx_id()));
+            self.sol_send_now_row(items);
+        }
+        items.push(Item::CardStart(Some(
+            text::FROM_ACCOUNT.get(lang).to_owned(),
+        )));
+        items.push(Item::Text(label));
+        items.push(Item::Mono(grouped(&from)));
+        let path = source.path_text_in(lang);
+        items.push(Item::Help(self.sol_balance(&from).map_or_else(
+            || path.clone(),
+            |lamports| text::PATH_BALANCE.fill(lang, [&path, &Wallet::sol_text(lamports)]),
+        )));
+        // U7: `검토` stays off while the phrase waits for its backup quiz, and while the
+        // YubiKey is still on its factory PINs (spec/10 §9.3).
+        self.mn_signing_banner(self.sol_backup_gate(source), items);
+        self.card_pin_banner(self.sol_card_gate(source), items);
+        items.push(Item::CardEnd);
+        items.push(Item::CardStart(Some(
+            text::RECIPIENT_CARD.get(lang).to_owned(),
+        )));
+        if form.moving.is_some() {
+            items.push(Item::Banner(
+                text::MOVE_NOTE.get(lang).to_owned(),
+                Tone::Warn,
+            ));
+        }
+        if form.moving.is_none() {
+            self.favorite_chip_items(BookTarget::Sol, items);
+        }
+        let mut to_edit = Ctl::edit(EditField::SolSendTo, &form.to_text, 430, false, 64);
+        let mut to_row = Vec::new();
+        if form.moving.is_some() {
+            to_edit = to_edit.readonly();
+            to_row.push(to_edit);
+        } else {
+            to_row.push(to_edit);
+            to_row.push(Ctl::button(SolPress::SendPick, text::PICK_BOOK.get(lang)));
+        }
+        items.push(Item::LabeledRow(text::TO_LINE.get(lang).to_owned(), to_row));
+        // The format hint only until the address is valid (2026-11-12); the reminder to check
+        // all of it then sits under the grouped address.
+        if form.check.is_none() {
+            items.push(Item::Help(form.token.map_or_else(
+                || text::ADDRESS_HINT.get(lang).to_owned(),
+                |entry| text::TOKEN_ADDRESS_HINT.fill(lang, [entry.symbol]),
+            )));
+        }
+        if form.picker && form.moving.is_none() {
+            self.sol_picker_rows(items);
+        }
+        if let Some(code) = form.recipient_error {
+            items.push(Item::Banner(code.text_in(lang), Tone::Danger));
+        }
+        if form.check.is_some() && !self.sol_move_target_ok() {
+            items.push(Item::Banner(
+                crate::wallet::app_sol::text::MOVE_TARGET
+                    .get(lang)
+                    .to_owned(),
+                Tone::Danger,
+            ));
+        }
+        if let Some(check) = &form.check {
+            use yw_core::sol::text as core_text;
+            items.push(Item::Mono(grouped(&check.to)));
+            items.push(Item::Help(text::CHECK_WHOLE.get(lang).to_owned()));
+            if let Some(exact) = &check.exact {
+                let label = exact.label.as_str();
+                let note = match exact.kind {
+                    KnownKind::Book { verified: true } => {
+                        core_text::RECIPIENT_BOOK_VERIFIED.fill(lang, [label])
+                    }
+                    KnownKind::Book { verified: false } => {
+                        core_text::RECIPIENT_BOOK.fill(lang, [label])
+                    }
+                    KnownKind::Own { index } => core_text::RECIPIENT_OWN
+                        .fill(lang, [&index.saturating_add(1).to_string(), label]),
+                    KnownKind::OwnImported => core_text::RECIPIENT_OWN_IMPORTED.fill(lang, [label]),
+                    KnownKind::OwnHardware => core_text::RECIPIENT_OWN_HARDWARE.fill(lang, [label]),
+                    KnownKind::OwnMnemonic => core_text::RECIPIENT_OWN_MNEMONIC.fill(lang, [label]),
+                    KnownKind::Sent | KnownKind::History => {
+                        core_text::RECIPIENT_SENT.get(lang).to_owned()
+                    }
+                };
+                items.push(Item::Banner(note, Tone::Info));
+            }
+            for lookalike in &check.lookalikes {
+                let name = match lookalike.kind {
+                    KnownKind::Book { .. } => text::LOOKALIKE_BOOK.fill(lang, [&lookalike.label]),
+                    KnownKind::Own { .. }
+                    | KnownKind::OwnImported
+                    | KnownKind::OwnHardware
+                    | KnownKind::OwnMnemonic => text::LOOKALIKE_OWN.fill(lang, [&lookalike.label]),
+                    KnownKind::Sent | KnownKind::History => {
+                        text::LOOKALIKE_SENT.get(lang).to_owned()
+                    }
+                };
+                items.push(Item::Banner(
+                    text::LOOKALIKE.fill(lang, [&name]),
+                    Tone::HighRisk,
+                ));
+                items.push(Item::Mono(grouped(&lookalike.address)));
+            }
+            if check.off_curve {
+                items.push(Item::Banner(
+                    text::OFF_CURVE.get(lang).to_owned(),
+                    Tone::HighRisk,
+                ));
+            }
+            if check.first_time {
+                items.push(Item::Banner(
+                    core_text::L06_TEXT.get(lang).to_owned(),
+                    Tone::Warn,
+                ));
+            }
+            if form.moving.is_none() {
+                self.recipient_save_items(BookTarget::Sol, items);
+            }
+        }
+        items.push(Item::CardEnd);
+        self.sol_asset_amount_card(items, &from);
+        // What `검토`, the approval or the signature ended with, next to the button.
+        if let Some(info) = &form.info {
+            items.push(Item::Banner(info.clone(), Tone::Warn));
+        }
+        self.journal_send_items(crate::wallet::app_sidecar::SendChain::Sol, items);
+        let blocker = self.sol_review_blocker();
+        items.push(Item::Row(vec![
+            Ctl::primary(SolPress::SendReview, text::REVIEW.get(lang)).enabled(blocker.is_none()),
+            Ctl::button(SolPress::SendCancel, text::CANCEL.get(lang)),
+        ]));
+        // What `검토` waits for, or that it sends nothing yet (2026-11-12).
+        items.push(Item::Help(
+            crate::wallet::app_sol::ReviewBlocker::line(lang, blocker).to_owned(),
+        ));
+    }
+
+    /// The "보낼 자산과 금액" card: asset radios (SOL and the cluster's allowlisted tokens), the
+    /// token's pinned facts and balance, the amount in the asset's decimals, send max and fees.
+    fn sol_asset_amount_card(&self, items: &mut Vec<Item>, from: &SolAddress) {
+        let lang = self.settings.language;
+        let form = &self.sol.send;
+        let asset = form.asset();
+        items.push(Item::CardStart(Some(text::ASSET_CARD.get(lang).to_owned())));
+        let radios: Vec<Ctl> = self
+            .sol_assets()
+            .into_iter()
+            .take(usize::from(rows::SOL_SEND_ASSETS))
+            .enumerate()
+            .map(|(index, choice)| {
+                Ctl::radio(
+                    SolPress::SendAsset(Row(u16::try_from(index).unwrap_or(0))),
+                    choice.symbol(),
+                    choice == asset,
+                    index == 0,
+                )
+            })
+            .collect();
+        items.push(Item::LabeledRow(text::ASSET.get(lang).to_owned(), radios));
+        // The SOL holding next to the amount like a token's (2026-11-12; only in the sender
+        // card before).
+        if asset == SolAsset::Sol {
+            items.push(Item::Help(self.sol_balance(from).map_or_else(
+                || text::SOL_HOLDING_UNREAD.get(lang).to_owned(),
+                |lamports| text::SOL_HOLDING.fill(lang, [&Wallet::sol_text(lamports)]),
+            )));
+        }
+        if let SolAsset::Spl(entry) = asset {
+            let (value, note) =
+                token_holding_text(lang, entry, self.sol_token_holding(from, entry));
+            items.push(Item::Help(
+                text::SPL_HOLDING.fill(lang, [entry.symbol, &value]),
+            ));
+            items.push(Item::Help(note));
+            items.push(Item::Help(text::MINT_PINNED.get(lang).to_owned()));
+            items.push(Item::Mono(grouped(&entry.mint)));
+        }
+        let mut amount_row = vec![
+            Ctl::edit(EditField::SolSendAmount, &form.amount_text, 260, false, 32)
+                .enabled(!form.send_max),
+        ];
+        if form.moving.is_none() {
+            // `최대` right after the field on every chain (2026-11-12: a check box here, a
+            // button on EVM); pressed while on.
+            amount_row.push(Ctl::tab(
+                SolPress::SendMax,
+                text::MAX.get(lang),
+                form.send_max,
+            ));
+        }
+        items.push(Item::LabeledRow(
+            text::AMOUNT.fill(lang, [asset.symbol()]),
+            amount_row,
+        ));
+        if form.send_max {
+            items.push(Item::Help(match asset {
+                SolAsset::Sol => text::MAX_SOL.get(lang).to_owned(),
+                SolAsset::Spl(entry) => text::MAX_SPL.fill(lang, [entry.symbol]),
+            }));
+        }
+        if let Some(code) = form.amount_error {
+            items.push(Item::Banner(code.text_in(lang), Tone::Danger));
+        }
+        // In SOL first (2026-11-08, like the EVM form's "예상 최대 수수료"); lamports and the CU
+        // limit behind `수수료 계산 보기`. The caps and the approval window are unchanged.
+        items.push(Item::Text(text::FEE_ESTIMATE.fill(
+            lang,
+            [
+                &Wallet::sol_text(5_000),
+                &Wallet::sol_text(self.settings.solana.max_fee_lamports),
+            ],
+        )));
+        if self.show_advanced {
+            items.push(Item::Help(text::FEE_CALC.fill(
+                lang,
+                [
+                    &format_raw(u64::from(yw_core::sol::fee::template_cu_limit(asset))),
+                    &format_raw(self.settings.solana.max_fee_lamports),
+                ],
+            )));
+        }
+        items.push(Item::Row(vec![Ctl::link(
+            CorePress::AdvancedToggle,
+            if self.show_advanced {
+                text::FEE_HIDE
+            } else {
+                text::FEE_SHOW
+            }
+            .get(lang),
+        )]));
+        if let SolAsset::Spl(entry) = asset {
+            items.push(Item::Help(text::ATA_NOTE.fill(lang, [entry.symbol])));
+        }
+        items.push(Item::CardEnd);
+    }
+
+    fn sol_picker_rows(&self, items: &mut Vec<Item>) {
+        let entries = self.sol_picker_entries();
+        if entries.is_empty() {
+            items.push(Item::Muted(
+                text::NO_MATCH.get(self.settings.language).to_owned(),
+            ));
+        }
+        for (index, (label, address)) in entries.into_iter().enumerate() {
+            items.push(Item::Row(vec![Ctl::button(
+                SolPress::SendPickRow(Row(u16::try_from(index).unwrap_or(0))),
+                &label,
+            )]));
+            items.push(Item::Mono(grouped(&address)));
+        }
+    }
+}
+
+impl Screen<'_> {
+    /// The SOL send result.
+    pub fn sol_send_result_screen(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
+        items.push(Item::Title(text::RESULT_TITLE.get(lang).to_owned()));
+        if let Some((cluster, signature)) = self.sol.sent {
+            items.push(Item::Banner(
+                text::RESULT_SENT.get(lang).to_owned(),
+                Tone::Success,
+            ));
+            items.push(Item::CardStart(None));
+            let status = self
+                .sol_records()
+                .iter()
+                .find(|record| record.signature() == signature)
+                .map_or_else(
+                    || text::RESULT_ENDED.get(lang).to_owned(),
+                    |record| self.sol_record_status(record),
+                );
+            items.push(Item::Badged(
+                Badge::solana(cluster),
+                Box::new(Item::Field(
+                    text::STATUS.get(lang).to_owned(),
+                    format!("{status} ({})", cluster.display_name_in(lang)),
+                )),
+            ));
+            items.push(Item::Field(
+                text::SIGNATURE.get(lang).to_owned(),
+                String::new(),
+            ));
+            items.push(Item::Mono(yw_core::codec::base58::base58_encode(
+                &signature,
+            )));
+            // For checking on an explorer: 88 characters are not retyped by hand.
+            let mut buttons = vec![Ctl::button(SolPress::ResultCopy, text::COPY_HASH.get(lang))];
+            buttons.extend(self.explorer_tx_buttons(
+                crate::network::NetworkId::Solana(crate::wallet::app_explorer::app_cluster(
+                    cluster,
+                )),
+                &yw_core::codec::base58::base58_encode(&signature),
+                Some((
+                    ExplorerPress::ResultSolOpen.into(),
+                    ExplorerPress::ResultSolCopy.into(),
+                )),
+            ));
+            items.push(Item::Row(buttons));
+            items.push(Item::CardEnd);
+            self.sol_send_now_row(items);
+            self.result_save_items(BookTarget::Sol, items);
+        }
+        let mut row = vec![Ctl::primary(CorePress::BackMain, text::BACK_MAIN.get(lang))];
+        // A scan move: the kept results, for the account's other assets (spec/07 §3.3).
+        let moved = self
+            .sol
+            .resend
+            .as_ref()
+            .is_some_and(|(form, _)| form.moving.is_some());
+        if moved && self.sol.scan.stage == crate::wallet::app_sol::ScanStage::Done {
+            row.push(Ctl::button(SolPress::ScanBack, text::SCAN_BACK.get(lang)));
+        }
+        if self.sol_can_resend() {
+            row.push(Ctl::button(SolPress::SendAgain, text::SEND_AGAIN.get(lang)));
+            items.push(Item::Help(text::SEND_AGAIN_NOTE.get(lang).to_owned()));
+        }
+        items.push(Item::Row(row));
+    }
+
+    /// "지금 다시 전송" for a pending transfer (spec/07 §14.3): the same signed bytes, so it can
+    /// land at most once; a new signature is only offered once the RPC shows the blockhash
+    /// expired (`Expired` → "다시 보내기").
+    fn sol_send_now_row(&self, items: &mut Vec<Item>) {
+        if self.sol_send_now_target().is_none() {
+            return;
+        }
+        let lang = self.settings.language;
+        items.push(Item::Row(vec![Ctl::button(
+            SolPress::SendNow,
+            text::SEND_NOW.get(lang),
+        )]));
+        items.push(Item::Help(text::SEND_NOW_NOTE.get(lang).to_owned()));
+    }
+
+    /// S12 for Solana: full address, QR = the base58 text, path, cluster.
+    pub fn sol_receive_screen(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
+        items.push(crate::screen::build::core::back_main(lang));
+        items.push(Item::Badged(
+            Badge::solana(self.sol_cluster()),
+            Box::new(Item::Title(
+                text::RECEIVE_TITLE.fill(lang, [self.sol_cluster().display_name_in(lang)]),
+            )),
+        ));
+        if self.mode == AppMode::BackupPending {
+            items.push(Item::Banner(
+                text::BACKUP_PENDING.get(lang).to_owned(),
+                Tone::Warn,
+            ));
+        }
+        let Some((index, label, address)) = self.sol_selected() else {
+            self.accounts_loading(items);
+            return;
+        };
+        items.push(Item::CardStart(None));
+        // The account only: the screen title above names the cluster (2026-11-12).
+        items.push(Item::Subtitle(self.sol_title(index, &label)));
+        if self.sol_cluster() == SolCluster::Devnet {
+            items.push(Item::Banner(
+                text::DEVNET_ADDRESS.get(lang).to_owned(),
+                Tone::Testnet,
+            ));
+        } else {
+            items.push(Item::Banner(
+                crate::screen::build::core::T_MAINNET.get(lang).to_owned(),
+                Tone::BtcMainnet,
+            ));
+        }
+        self.mn_receive_banner(
+            self.mn_backup_gate(
+                index.mnemonic().map(yw_core::vault::RecordId::from_bytes),
+                matches!(index, crate::wallet::app_sol::SolAccountId::Derived(_)),
+            ),
+            items,
+        );
+        let tokens: Vec<&str> = spl_entries(self.sol_cluster())
+            .map(|entry| entry.symbol)
+            .collect();
+        items.push(Item::Help(
+            text::RECEIVE_ONLY.fill(lang, [&tokens.join("·")]),
+        ));
+        // The address on its copy line, then the QR (2026-11-12, all chains: the notes that
+        // are not needed to copy follow the QR).
+        items.push(crate::screen::build::core::receive_address_row(
+            self.settings.language,
+            &grouped(&address),
+            SolPress::CopyAddress,
+            Vec::new(),
+        ));
+        items.push(Item::Qr(address.to_base58()));
+        items.push(Item::Help(text::TOKEN_RECEIVE_NOTE.get(lang).to_owned()));
+        items.push(Item::Help(index.path_text_in(lang)));
+        items.push(Item::CardEnd);
+    }
+
+    /// S15 Solana section (spec/07 §10, §3.3).
+    pub fn sol_settings_section(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
+        let solana = &self.settings.solana;
+        items.push(Item::CardStart(Some(
+            text::SETTINGS_TITLE.get(lang).to_owned(),
+        )));
+        items.push(Item::Help(text::SETTINGS_HELP.get(lang).to_owned()));
+        items.push(Item::LabeledRow(
+            text::CLUSTER.get(lang).to_owned(),
+            vec![
+                Ctl::radio(
+                    SolPress::SetMainnet,
+                    "mainnet",
+                    solana.cluster == crate::network::SolCluster::Mainnet,
+                    true,
+                ),
+                Ctl::radio(
+                    SolPress::SetDevnet,
+                    text::DEVNET_RADIO.get(lang),
+                    solana.cluster == crate::network::SolCluster::Devnet,
+                    false,
+                ),
+            ],
+        ));
+        items.push(Item::Help(text::RPC_ROWS.get(lang).to_owned()));
+        items.push(Item::Rule);
+        items.push(Item::Row(vec![Ctl::button(
+            SolPress::ScanOpen,
+            text::SCAN.get(lang),
+        )]));
+        items.push(Item::Help(text::SCAN_SETTINGS_HELP.get(lang).to_owned()));
+        items.push(Item::CardEnd);
+        if self.show_advanced {
+            items.push(Item::CardStart(Some(
+                text::FEE_CAP_TITLE.get(lang).to_owned(),
+            )));
+            items.push(Item::Help(text::FEE_CAP_HELP.get(lang).to_owned()));
+            items.push(Item::LabeledRow(
+                text::FEE_CAP_LABEL.get(lang).to_owned(),
+                vec![Ctl::edit(
+                    EditField::SolFeeCap,
+                    &solana.max_fee_lamports.to_string(),
+                    200,
+                    false,
+                    12,
+                )],
+            ));
+            items.push(Item::LabeledRow(
+                text::CU_CAP_LABEL.get(lang).to_owned(),
+                vec![Ctl::edit(
+                    EditField::SolCuPrice,
+                    &solana.max_cu_price_micro.to_string(),
+                    200,
+                    false,
+                    12,
+                )],
+            ));
+            items.push(Item::Row(vec![
+                Ctl::primary(SolPress::FeeSave, text::SAVE.get(lang)),
+                Ctl::button(SolPress::FeeDefault, text::DEFAULTS.get(lang)),
+            ]));
+            items.push(Item::Help(text::FEE_RANGE_HELP.get(lang).to_owned()));
+            items.push(Item::CardEnd);
+        }
+        self.advanced_toggle(items);
+    }
+
+    /// The recovery scan screen (spec/07 §3.3).
+    pub fn sol_scan_screen(&self, items: &mut Vec<Item>) {
+        use crate::wallet::app_sol::ScanStage;
+        let lang = self.settings.language;
+        items.push(crate::screen::build::core::back_main(lang));
+        items.push(Item::Title(
+            text::SCAN_TITLE.fill(lang, [self.sol_cluster().display_name_in(lang)]),
+        ));
+        let scan = &self.sol.scan;
+        if let Some(message) = &scan.message {
+            items.push(Item::Banner(message.clone(), Tone::Danger));
+        }
+        match scan.stage {
+            ScanStage::Notice => {
+                items.push(Item::Text(text::SCAN_NOTICE.get(lang).to_owned()));
+                items.push(Item::Banner(
+                    text::SCAN_PRIVACY.fill(lang, [self.sol_cluster().network_id()]),
+                    Tone::Warn,
+                ));
+                items.push(Item::Row(vec![
+                    Ctl::button(SolPress::ScanStart, text::SCAN_START.get(lang))
+                        .enabled(matches!(self.mode, AppMode::Unlocked { .. })),
+                ]));
+            }
+            ScanStage::Deriving | ScanStage::Running => {
+                items.push(Item::Muted(text::SCANNING.get(lang).to_owned()));
+            }
+            ScanStage::Done => {
+                let rows = self.sol_scan_rows();
+                if rows.is_empty() {
+                    items.push(Item::Muted(text::SCAN_EMPTY.get(lang).to_owned()));
+                }
+                // Where `표준 계정으로 이동` sends: only a standard account of the primary phrase
+                // passes the signing check (spec/07 §3.3, §13.1-6).
+                let target = self.sol_scan_target();
+                if rows.iter().any(|row| !row.source.is_standard()) {
+                    match &target {
+                        Some((id, label, _)) => items.push(Item::Field(
+                            text::MOVE_TARGET_LABEL.get(lang).to_owned(),
+                            format!("{label} · {}", id.path_text_in(lang)),
+                        )),
+                        None => items.push(Item::Banner(
+                            crate::wallet::app_sol::text::SCAN_NO_TARGET
+                                .get(lang)
+                                .to_owned(),
+                            Tone::Warn,
+                        )),
+                    }
+                }
+                let movable = target.is_some() && matches!(self.mode, AppMode::Unlocked { .. });
+                let shown = usize::from(rows::SOL_SCAN_ROWS);
+                for (index, row) in rows.iter().take(shown).enumerate() {
+                    let (balance, tokens) = self.sol_scan_balances(row);
+                    let mut line = format!(
+                        "{} · {}",
+                        row.source.path_text_in(lang),
+                        Wallet::sol_text(balance)
+                    );
+                    for (entry, holding) in &tokens {
+                        if let Some(raw) = holding.balance().filter(|raw| *raw > 0) {
+                            let _ = write!(
+                                line,
+                                " · {} {}",
+                                format_amount(raw, entry.decimals),
+                                entry.symbol
+                            );
+                        }
+                    }
+                    let _ = write!(line, " {}", text::RPC_REFERENCE.get(lang));
+                    items.push(Item::Text(line));
+                    items.push(Item::Mono(grouped(&row.address)));
+                    let scan_row = rows::row(index, rows::SOL_SCAN_ROWS);
+                    if row.source.is_standard() {
+                        if let Some(scan_row) = scan_row {
+                            items.push(Item::Row(vec![Ctl::button(
+                                SolPress::ScanRow(scan_row, SolScanAction::Add),
+                                text::ADD_ACCOUNT.get(lang),
+                            )]));
+                        }
+                    } else if let Some(scan_row) = scan_row {
+                        items.push(Item::Row(vec![
+                            Ctl::button(
+                                SolPress::ScanRow(scan_row, SolScanAction::Move),
+                                text::MOVE_TO_STANDARD.get(lang),
+                            )
+                            .enabled(movable),
+                        ]));
+                    }
+                }
+                items.push(Item::Muted(text::SCAN_MOVE_NOTE.get(lang).to_owned()));
+                items.push(Item::Row(vec![Ctl::button(
+                    SolPress::ScanAgain,
+                    text::SCAN_AGAIN.get(lang),
+                )]));
+            }
+        }
+    }
+}
+
+impl Screen<'_> {
+    /// The transaction id line of activity row `row` (2026-11-11): a click copies it (the
+    /// transaction id is public data, as on the other chains), `탐색기에서 열기` ↗ and
+    /// `탐색기 링크 복사` 🔗 at its right end when the cluster has a transaction page; then the
+    /// open `이 주소 저장` prompt of the row's recipient, if any.
+    fn sol_activity_actions(
+        &self,
+        row: usize,
+        tx_id: &str,
+        counterparties: &[String],
+        prompt_drawn: &mut bool,
+        items: &mut Vec<Item>,
+    ) {
+        crate::screen::build::links::push_hash_line(
+            items,
+            self.settings.language,
+            rows::row(row, rows::SOL_ACTIVITY_COPIES).map(|row| SolPress::ActivityCopy(row).into()),
+            tx_id,
+            self.explorer_tx_icons(
+                crate::network::NetworkId::Solana(self.settings.solana.cluster),
+                tx_id,
+                crate::screen::build::explorer::activity_links(
+                    ExplorerPress::SolActivity,
+                    row,
+                    rows::SOL_ACTIVITY_LINKS,
+                ),
+            ),
+        );
+        if let Some(address) = counterparties
+            .get(row)
+            .filter(|address| !address.is_empty())
+            && !*prompt_drawn
+        {
+            *prompt_drawn =
+                self.prompt_items(PromptPlace::Activity, BookChain::Sol, address, items);
+        }
+    }
+
+    /// Whether the main screen shows the Solana tab.
+    #[must_use]
+    pub fn sol_tab_active(&self) -> bool {
+        self.meta
+            .as_ref()
+            .is_some_and(|meta| meta.prefs.tab == Tab::Sol)
+    }
+}

@@ -557,8 +557,8 @@ pub struct Wallet {
     /// 2026-11-23 (S5-0, §18 31 (가)): `pub(crate)` (was `#[doc(hidden)] pub`); tests read it
     /// with `testkit::WalletTestExt::last_press`.
     pub(crate) last_press: Press,
-    pub mismatch_checked: bool,
-    pub overwrite_checked: bool,
+    pub(crate) mismatch_checked: bool,
+    pub(crate) overwrite_checked: bool,
     /// 고급 설정 보기 (technical settings and fee details shown).
     pub show_advanced: bool,
     pub rename: Option<EvmAccountPref>,
@@ -568,7 +568,7 @@ pub struct Wallet {
     /// Endpoint tests waiting or running (one at a time).
     pub rpc_tests: RpcTests,
     /// The completion band of a confirmed removal (a row's address, the credentials).
-    pub rpc_removed: Option<RpcRemoved>,
+    pub(crate) rpc_removed: Option<RpcRemoved>,
     pub(crate) passphrase_session: bool,
     /// `unlock` reported `PayloadCorrupt` (spec/02 §6.3): the header is intact, so a reload
     /// reports `Locked`; this keeps S09 (and `.prev` recovery) until a session opens.
@@ -580,7 +580,7 @@ pub struct Wallet {
     /// shown so the user can restore it by hand (docs/recovery-guide.ko.md).
     pub(crate) quarantined: Option<String>,
     /// `vault.ywv.prev` exists (checked at load and after a failed unlock).
-    pub prev_on_disk: bool,
+    pub(crate) prev_on_disk: bool,
     /// S08 follows an import (no backup check ran) rather than a backup confirmation.
     pub done_imported: bool,
     /// `숨긴 계정 n개 보기 ▸` is open (EVM and Solana `내 계정`, this run only).
@@ -591,7 +591,7 @@ pub struct Wallet {
     /// `ui::screens_links::ids::PICKER_*`).
     pub account_menu: Option<Press>,
     /// The EVM activity card shows every row, not only the latest ten (this run only).
-    pub activity_all: bool,
+    pub(crate) activity_all: bool,
     /// S08 follows a new `YubiKey` wallet (spec/04 §2.19): what its completion banner says.
     pub done_yubikey: Option<crate::wallet::app_yubikey::YkDone>,
     /// Settings → 네트워크(RPC) or S13 was opened from S08's '처음 설정' card: their back link is
@@ -978,8 +978,7 @@ fn key002_text(lang: Lang, item: &str) -> String {
 /// either field may hold the whole endpoint URL pasted from the dashboard
 /// ([`quicknode_credentials`]) — or the E-KEY-002 text naming the wrong field
 /// (`QuickNodeField::label`). 2026-11-23 (S4d E1): hidden `pub` for yw-app's table tests.
-#[doc(hidden)]
-pub fn quicknode_input(
+pub(crate) fn quicknode_input(
     lang: Lang,
     name: &str,
     token: &str,
@@ -4221,7 +4220,7 @@ impl Wallet {
 
     /// Whether the selected template's credentials are stored.
     #[must_use]
-    pub fn template_stored(&self) -> bool {
+    pub(crate) fn template_stored(&self) -> bool {
         self.template_key()
             .is_some_and(|name| self.apikeys.has(name))
     }
@@ -4838,6 +4837,25 @@ impl Wallet {
     #[must_use]
     pub fn next_effect(&mut self) -> Option<Effect> {
         self.outbox.pop_front()
+    }
+}
+
+// 2026-11-24 (spec/15 §11.2, §11.3, §11.4 S5-5): the screen's one entry. Before, yw-app's
+// `App::screen_model` (render code, `ui/screens.rs`) built it on `App`.
+
+impl Wallet {
+    /// The current screen as the neutral model (spec/15 §11.3), built by the screen builders
+    /// (`crate::screen::build`) from this wallet and the shell's `facts`, which they ask at the
+    /// points they draw them. Read-only: a builder writes no wallet state but the two drawn-row
+    /// maps of S13 and the `WalletConnect` panel (source check
+    /// `the_screen_writes_no_wallet_state`). A shell lowers the list into its own controls
+    /// (Windows: yw-app `App::items`, `ui::lower`).
+    #[must_use]
+    pub fn screen(
+        &self,
+        facts: &dyn crate::screen::facts::ScreenFacts,
+    ) -> Vec<crate::screen::model::Item> {
+        crate::screen::build::Screen::new(self, facts).screen_model()
     }
 }
 

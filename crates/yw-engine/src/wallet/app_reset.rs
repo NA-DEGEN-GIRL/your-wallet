@@ -233,7 +233,7 @@ impl Wallet {
     /// `HyperCore` actions posted without a final answer (`전송 중`, or no answer — Hyperliquid may
     /// still have processed them).
     #[must_use]
-    pub fn sends_in_flight(&self) -> bool {
+    pub(crate) fn sends_in_flight(&self) -> bool {
         use crate::wallet::app_hypercore::HcStatus;
         self.evm
             .records()

@@ -15,7 +15,7 @@ use crate::wallet::Wallet;
 impl Wallet {
     /// The EVM native balance of `address` on the selected network, as last read.
     #[must_use]
-    pub fn evm_last_balance(&self, address: &Address) -> LastBalance {
+    pub(crate) fn evm_last_balance(&self, address: &Address) -> LastBalance {
         let chain_id = self.settings.evm_chain_id;
         let network = self.network_label(chain_id);
         match self.native_balance(chain_id, address) {
@@ -30,7 +30,7 @@ impl Wallet {
 
     /// The SOL balance of `address` on the cluster shown now, as last read.
     #[must_use]
-    pub fn sol_last_balance(&self, address: &SolAddress) -> LastBalance {
+    pub(crate) fn sol_last_balance(&self, address: &SolAddress) -> LastBalance {
         let network = self
             .sol_cluster()
             .display_name_in(self.settings.language)
@@ -48,7 +48,7 @@ impl Wallet {
     /// The BTC balance of the account whose stable address is `address` on the settings
     /// network, as last read (`Unknown` until a refresh saw that network).
     #[must_use]
-    pub fn btc_last_balance(&self, address: &str) -> LastBalance {
+    pub(crate) fn btc_last_balance(&self, address: &str) -> LastBalance {
         let ctx = self.btc_ctx();
         let network = ctx.net().display_name_in(self.settings.language).to_owned();
         let meta = ctx.accounts().into_iter().find(|meta| {
@@ -77,7 +77,7 @@ impl Wallet {
     /// The ZEC balance of `address` when it is the account the shown network's last refresh
     /// read (`Unknown` otherwise).
     #[must_use]
-    pub fn zec_last_balance(&self, address: &str) -> LastBalance {
+    pub(crate) fn zec_last_balance(&self, address: &str) -> LastBalance {
         let network = self.zec_network();
         let read = self.zec.snapshot.as_ref().filter(|(net, snapshot)| {
             *net == network
@@ -106,7 +106,12 @@ impl Wallet {
 
     /// An EVM account about to be removed.
     #[must_use]
-    pub fn evm_removed(&self, label: String, address: &Address, lost: bool) -> RemovedAccount {
+    pub(crate) fn evm_removed(
+        &self,
+        label: String,
+        address: &Address,
+        lost: bool,
+    ) -> RemovedAccount {
         RemovedAccount {
             label,
             chain: "EVM",
@@ -120,7 +125,12 @@ impl Wallet {
 
     /// A Solana account about to be removed.
     #[must_use]
-    pub fn sol_removed(&self, label: String, address: &SolAddress, lost: bool) -> RemovedAccount {
+    pub(crate) fn sol_removed(
+        &self,
+        label: String,
+        address: &SolAddress,
+        lost: bool,
+    ) -> RemovedAccount {
         RemovedAccount {
             label,
             chain: "Solana",
@@ -134,7 +144,7 @@ impl Wallet {
 
     /// A Bitcoin account (its stable address) about to be removed.
     #[must_use]
-    pub fn btc_removed(&self, label: String, address: &str, lost: bool) -> RemovedAccount {
+    pub(crate) fn btc_removed(&self, label: String, address: &str, lost: bool) -> RemovedAccount {
         RemovedAccount {
             label,
             chain: "Bitcoin",
@@ -148,7 +158,7 @@ impl Wallet {
 
     /// A Zcash account about to be removed.
     #[must_use]
-    pub fn zec_removed(&self, label: String, address: &str, lost: bool) -> RemovedAccount {
+    pub(crate) fn zec_removed(&self, label: String, address: &str, lost: bool) -> RemovedAccount {
         RemovedAccount {
             label,
             chain: "Zcash",

@@ -112,20 +112,15 @@ pub mod text {
 }
 
 /// The typed clear word, Korean (tests).
-#[doc(hidden)]
-pub const CLEAR_WORD: &str = text::CLEAR_WORD.ko;
+pub(crate) const CLEAR_WORD: &str = text::CLEAR_WORD.ko;
 /// The typed loss word, Korean (tests).
-#[doc(hidden)]
-pub const LOSS_WORD: &str = text::LOSS_WORD.ko;
+pub(crate) const LOSS_WORD: &str = text::LOSS_WORD.ko;
 /// T-YK-RESLOT-WORDS, Korean (tests).
-#[doc(hidden)]
-pub const T_YK_RESLOT_WORDS: &str = text::YK_RESLOT_WORDS.ko;
+pub(crate) const T_YK_RESLOT_WORDS: &str = text::YK_RESLOT_WORDS.ko;
 /// T-YK-KEY-LOST, Korean (tests).
-#[doc(hidden)]
-pub const T_YK_KEY_LOST: &str = text::YK_KEY_LOST.ko;
+pub(crate) const T_YK_KEY_LOST: &str = text::YK_KEY_LOST.ko;
 /// T-YK-CLEAR-FUNDS, Korean (tests).
-#[doc(hidden)]
-pub const T_YK_CLEAR_FUNDS: &str = text::YK_CLEAR_FUNDS.ko;
+pub(crate) const T_YK_CLEAR_FUNDS: &str = text::YK_CLEAR_FUNDS.ko;
 
 /// A preset of the two `OpenPGP` slots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -769,7 +764,7 @@ impl Wallet {
 
     /// The other enrolled cards than `serial`.
     #[must_use]
-    pub fn yk_other_records(&self, serial: u32) -> Vec<HwKeyRecord> {
+    pub(crate) fn yk_other_records(&self, serial: u32) -> Vec<HwKeyRecord> {
         self.card
             .records
             .iter()
@@ -904,7 +899,7 @@ impl Wallet {
     /// Whether the clear of the flow is allowed by the slot map (a wallet without recovery words
     /// keeps its last key).
     #[must_use]
-    pub fn yk_clear_allowed(&self, flow: &ClearFlow) -> bool {
+    pub(crate) fn yk_clear_allowed(&self, flow: &ClearFlow) -> bool {
         let Some(before) = flow.before.as_ref() else {
             return false;
         };
@@ -917,7 +912,7 @@ impl Wallet {
     /// The cleared slots of `flow` whose key is lost for good (connected without recovery words,
     /// held by no other enrolled card: [`T_YK_KEY_LOST`]).
     #[must_use]
-    pub fn yk_clear_lost(&self, flow: &ClearFlow) -> Vec<RecordedSlot> {
+    pub(crate) fn yk_clear_lost(&self, flow: &ClearFlow) -> Vec<RecordedSlot> {
         let Some(before) = flow.before.as_ref() else {
             return Vec::new();
         };
@@ -934,7 +929,7 @@ impl Wallet {
 
     /// Whether `비우기` is enabled (the typed words are checked when it is pressed).
     #[must_use]
-    pub fn yk_clear_ready(&self, flow: &ClearFlow) -> bool {
+    pub(crate) fn yk_clear_ready(&self, flow: &ClearFlow) -> bool {
         flow.step == ClearStep::Choose
             && flow.plan().any()
             && self.yk_clear_allowed(flow)

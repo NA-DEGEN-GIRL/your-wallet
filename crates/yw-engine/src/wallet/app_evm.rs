@@ -605,7 +605,7 @@ impl Wallet {
 
     /// The active chain's runtime info.
     #[must_use]
-    pub fn active_chain(&self) -> Option<ChainInfo> {
+    pub(crate) fn active_chain(&self) -> Option<ChainInfo> {
         chain_info(&self.settings, self.settings.evm_chain_id)
     }
 
@@ -1271,7 +1271,7 @@ impl Wallet {
 
     /// Native balance of an account on a chain.
     #[must_use]
-    pub fn native_balance(&self, chain_id: u64, account: &Address) -> Option<U256> {
+    pub(crate) fn native_balance(&self, chain_id: u64, account: &Address) -> Option<U256> {
         self.evm
             .balances
             .get(&chain_id)?
@@ -1569,7 +1569,7 @@ impl Wallet {
 
     /// In-flight transaction of the selected account on the active chain (D20).
     #[must_use]
-    pub fn send_in_flight(&self) -> Option<EvmRecord> {
+    pub(crate) fn send_in_flight(&self) -> Option<EvmRecord> {
         let (account, ..) = self.selected_account()?;
         let chain_id = self.settings.evm_chain_id;
         let nonce = in_flight(self.evm.records(), chain_id, &account)?;
@@ -2642,7 +2642,7 @@ impl Wallet {
 
     /// The pinned genesis shown in the chain list (`None` = first connection pins it).
     #[must_use]
-    pub fn pinned_genesis(&self, chain_id: u64) -> Option<[u8; 32]> {
+    pub(crate) fn pinned_genesis(&self, chain_id: u64) -> Option<[u8; 32]> {
         chain_info(&self.settings, chain_id).and_then(|chain| match chain.genesis {
             GenesisRule::Fixed(hash) | GenesisRule::PinOnFirstUse(Some(hash)) => Some(hash),
             GenesisRule::PinOnFirstUse(None) => None,
@@ -2724,7 +2724,7 @@ impl Wallet {
 
     /// `X SYM` of a native amount on a chain.
     #[must_use]
-    pub fn native_text(&self, chain_id: u64, value: &U256) -> String {
+    pub(crate) fn native_text(&self, chain_id: u64, value: &U256) -> String {
         chain_info(&self.settings, chain_id).map_or_else(
             || value.to_decimal_string(),
             |chain| format_amount(value, chain.native_decimals, &chain.native_symbol),
@@ -2733,7 +2733,7 @@ impl Wallet {
 
     /// The masked endpoint text of a chain (S15).
     #[must_use]
-    pub fn endpoint_text(&self, chain_id: u64) -> String {
+    pub(crate) fn endpoint_text(&self, chain_id: u64) -> String {
         self.apikeys
             .rpc_url(NetworkId::Eip155(chain_id))
             .map_or_else(
@@ -2780,7 +2780,7 @@ pub const fn outcome_name(outcome: QueueOutcome) -> &'static str {
 
 impl Wallet {
     /// An account row's name with its recovery phrase while the wallet has several.
-    pub fn evm_pref_title(&self, pref: crate::meta::EvmAccountPref, label: &str) -> String {
+    pub(crate) fn evm_pref_title(&self, pref: crate::meta::EvmAccountPref, label: &str) -> String {
         match pref {
             crate::meta::EvmAccountPref::Index(_) => self.mnemonic_tagged(label, None),
             crate::meta::EvmAccountPref::Mnemonic(id, _) => self.mnemonic_tagged(label, Some(id)),
@@ -2800,7 +2800,7 @@ impl Wallet {
             )
     }
 
-    pub fn record_status(&self, record: &EvmRecord) -> String {
+    pub(crate) fn record_status(&self, record: &EvmRecord) -> String {
         let lang = self.settings.language;
         let note = self.evm.notes.get(&record.tx_hash).copied();
         match record.state {
@@ -2950,7 +2950,7 @@ impl Wallet {
 impl Wallet {
     /// Network radios with "(차단됨)".
     #[must_use]
-    pub fn network_label(&self, chain_id: u64) -> String {
+    pub(crate) fn network_label(&self, chain_id: u64) -> String {
         let mut name = self.network_name(NetworkId::Eip155(chain_id));
         if self
             .settings
@@ -2971,7 +2971,7 @@ impl Wallet {
 impl Wallet {
     /// The picker rows in display order: book entries and own accounts matching the filter of
     /// the rows on screen (`SendForm::picker_filter`), at most [`crate::app_evm::SEND_PICK_ROWS`].
-    pub fn picker_known(&self) -> Vec<crate::flow::evm::form::KnownAddress> {
+    pub(crate) fn picker_known(&self) -> Vec<crate::flow::evm::form::KnownAddress> {
         let filter = self.evm.send.picker_filter.trim().to_ascii_lowercase();
         self.known_addresses()
             .into_iter()

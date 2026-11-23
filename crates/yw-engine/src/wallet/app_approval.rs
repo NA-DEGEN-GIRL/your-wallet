@@ -142,9 +142,8 @@ fn explain_kind(item: &QueuedItem) -> Option<RequestKind> {
 /// Arbitrum One, Base, BNB Smart Chain, Robinhood Chain, Solana mainnet) say plainly that real assets move; Sepolia and Solana devnet are test
 /// networks. User chains have no testnet classification and get neither; Bitcoin has its own
 /// network banner. Returns the text and whether it is the testnet coloring.
-#[doc(hidden)]
 #[must_use]
-pub fn network_badge(
+pub(crate) fn network_badge(
     lang: Lang,
     evm_chain: Option<u64>,
     sol: Option<yw_core::sol::SolCluster>,
@@ -221,8 +220,7 @@ fn badge_rank(badge: &str) -> u8 {
 }
 
 /// Puts header badges in [`badge_rank`] order (stable within a rank).
-#[doc(hidden)]
-pub fn order_badges(badges: &mut [String]) {
+pub(crate) fn order_badges(badges: &mut [String]) {
     badges.sort_by_key(|badge| badge_rank(badge));
 }
 

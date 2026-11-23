@@ -52,8 +52,7 @@ pub mod text {
 }
 
 /// T-YK-UNKNOWN-PATH, Korean (tests).
-#[doc(hidden)]
-pub const T_YK_UNKNOWN_PATH: &str = text::YK_UNKNOWN_PATH.ko;
+pub(crate) const T_YK_UNKNOWN_PATH: &str = text::YK_UNKNOWN_PATH.ko;
 
 /// What the user says a found key is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,7 +194,7 @@ impl Wallet {
     /// The networks a connected Bitcoin / Zcash key is used on: the settings' Bitcoin network,
     /// and the Zcash network of the settings when Zcash is on (else the one matching Bitcoin).
     #[must_use]
-    pub fn yk_connect_networks(&self) -> (BtcNetwork, ZecNetwork) {
+    pub(crate) fn yk_connect_networks(&self) -> (BtcNetwork, ZecNetwork) {
         let btc = self.yk_network();
         let zec = if self.settings.zcash.enabled {
             self.settings.zcash.network

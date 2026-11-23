@@ -29,8 +29,16 @@
 //! (the receive QR's module matrix over `qrcodegen`, ECC Medium; was yw-app `ui::qr::encode`, so
 //! both platforms draw the same modules, spec/15 §4.1). The screens still build the Windows list
 //! until S5-4; the painting stays in the shell.
+//!
+//! 2026-11-24 (spec/15 §11.2, §11.3, §11.4 S5-5): the screen builders themselves moved here from
+//! yw-app's render files (`ui/screens*.rs`, `ui/removed.rs`): [`build`] (crate-private; the one
+//! entry is [`crate::wallet::Wallet::screen`]), with their text catalogues; and [`extension`],
+//! what S23 says about the Chrome extension and the Chrome page's address (was yw-app
+//! `app_extension`). The receive note moved into [`qr`]'s catalogue (was yw-app `ui::qr::text`).
 
 pub mod address;
+pub(crate) mod build;
+pub mod extension;
 pub mod facts;
 pub mod model;
 pub mod qr;

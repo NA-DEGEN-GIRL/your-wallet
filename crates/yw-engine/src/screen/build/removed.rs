@@ -6,7 +6,10 @@
 //! or the imported-key band). The confirmation overlays, typed words and holds are unchanged.
 //!
 //! 2026-11-22 (spec/15 §11.4 S4d E0a): the data of the block, `RemovedAccount` and `LastBalance`,
-//! moved to `yw_engine::screen` unchanged (the wallet builds them); the block is drawn here.
+//! moved to `crate::screen` unchanged (the wallet builds them); the block is drawn here.
+//!
+//! 2026-11-24 (spec/15 §11.2, §11.4 S5-5): moved here unchanged from yw-app `ui/removed.rs` (`impl
+//! App` builders became `impl Screen<'_>`, yw-app paths engine paths); it had no control ids.
 
 use yw_core::sol::SolAddress;
 use yw_core::yubikey::plan::KeyRole;
@@ -14,10 +17,10 @@ use yw_core::yubikey::record::{HwKeyRecord, RecordedSlot};
 
 use yw_core::lang::Lang;
 
-use crate::app::App;
-use yw_engine::screen::Tone;
-use yw_engine::screen::model::Item;
-use yw_engine::screen::{LastBalance, RemovedAccount};
+use super::Screen;
+use crate::screen::Tone;
+use crate::screen::model::Item;
+use crate::screen::{LastBalance, RemovedAccount};
 
 /// The fixed texts of the removal block (spec/14).
 pub mod text {
@@ -107,7 +110,7 @@ const fn role_chain(role: KeyRole) -> &'static str {
     }
 }
 
-impl App {
+impl Screen<'_> {
     /// A card key that leaves a card (a cleared or re-slotted slot, a removed record): its
     /// addresses and balance; lost when it has no recovery words and `others` hold none of it
     /// (`lose_key`: the key itself goes — false when only the record goes); the note says what
@@ -139,12 +142,12 @@ impl App {
             .iter()
             .map(|text| {
                 yw_core::evm::address::parse_address(text).map_or_else(
-                    |_| yw_engine::text::grouped(text),
+                    |_| crate::text::grouped(text),
                     |address| yw_core::evm::display::format_address(&address),
                 )
             })
             .collect();
-        let holders = yw_engine::yubikey::holders(others, slot.role);
+        let holders = crate::yubikey::holders(others, slot.role);
         let lang = self.settings.language;
         let note = if holders.is_empty() {
             text::CANNOT_SIGN.get(lang).to_owned()
@@ -152,7 +155,7 @@ impl App {
             let cards = self.card_name_list(&holders, "·");
             // The particle follows how the last digit is read (#…2 → 로, #…3 → 으로), or the
             // name before `(#serial)` of a named card (2026-11-15).
-            text::STILL_SIGNS.fill(lang, [&cards, yw_engine::text::direction_particle(&cards)])
+            text::STILL_SIGNS.fill(lang, [&cards, crate::text::direction_particle(&cards)])
         };
         RemovedAccount {
             label: format!("{} ({})", slot.role.title_in(lang), slot.path_text_in(lang)),
@@ -169,9 +172,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{LastBalance, RemovedAccount, T_BALANCE_SCOPE, T_BALANCE_UNKNOWN, removed_items};
+    use crate::screen::Tone;
+    use crate::screen::model::Item;
     use yw_core::lang::{Lang, has_hangul};
-    use yw_engine::screen::Tone;
-    use yw_engine::screen::model::Item;
 
     /// The English block: every text but the (data) label is free of Hangul.
     #[test]

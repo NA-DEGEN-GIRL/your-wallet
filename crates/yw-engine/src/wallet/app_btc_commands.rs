@@ -36,9 +36,8 @@ const fn esplora_field(net: BtcNetwork) -> EditField {
 
 /// The fee choice of a fee radio press, with whether it belongs to the fee-bump form (S3 C9:
 /// was `ui::screens_btc::fee_choice_of` of the control id, which keeps the radio order).
-#[doc(hidden)]
 #[must_use]
-pub const fn fee_choice(press: BtcPress) -> Option<(BtcFeeChoice, bool)> {
+pub(crate) const fn fee_choice(press: BtcPress) -> Option<(BtcFeeChoice, bool)> {
     Some(match press {
         BtcPress::FeeFast => (BtcFeeChoice::Fast, false),
         BtcPress::FeeNormal => (BtcFeeChoice::Normal, false),

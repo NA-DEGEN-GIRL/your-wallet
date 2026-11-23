@@ -1,6 +1,6 @@
 //! One account card for the chain tabs (2026-11-15, spec/04 §2.6): the EVM `내 EVM 계정`, the
 //! Solana `내 Solana 계정`, the Bitcoin `내 Bitcoin 계정` and the Zcash `내 Zcash 계정` cards are
-//! laid out by [`App::push_account_card`] from an [`AccountCard`] — title, the shared help
+//! laid out by [`Screen::push_account_card`] from an [`AccountCard`] — title, the shared help
 //! (`accounts_help`), the drop-down whose items read `label · source`, the selected account's line
 //! (its rename field or its buttons) and details, the hidden accounts, a rule and the card's
 //! actions. Zcash's items are its key sources (one account per network: no rename, no hide).
@@ -15,17 +15,21 @@
 //!
 //! 2026-11-22 (spec/15 §11.4 S4d E0a): `AccountSource`, the card roles (`evm_card_role`,
 //! `sol_card_role`, `btc_card_role`) and the source words `SOURCE_WORDS`, `SOURCE_IMPORTED`,
-//! `SOURCE_EVM_KEY` moved to `yw_engine::screen` unchanged (the wallet's Bitcoin and hidden-account
+//! `SOURCE_EVM_KEY` moved to `crate::screen` unchanged (the wallet's Bitcoin and hidden-account
 //! code names them); the card is drawn here.
+//!
+//! 2026-11-24 (spec/15 §11.2, §11.4 S5-5): moved here unchanged from yw-app
+//! `ui/screens_accounts.rs` (`impl App` builders became `impl Screen<'_>`, yw-app paths engine
+//! paths); it had no control ids.
 
-use crate::app::App;
-use crate::ui::screens_links::PickerEntry;
-use yw_engine::cmd::{MnPress, Press};
-use yw_engine::form::EditField;
-use yw_engine::screen::AccountSource;
-use yw_engine::screen::model::{Ctl, Item};
-use yw_engine::screen::text::{SOURCE_EVM_KEY, SOURCE_IMPORTED, SOURCE_WORDS};
-use yw_engine::wallet::app_hidden::Family;
+use super::Screen;
+use crate::cmd::{MnPress, Press};
+use crate::form::EditField;
+use crate::screen::AccountSource;
+use crate::screen::build::links::PickerEntry;
+use crate::screen::model::{Ctl, Item};
+use crate::screen::text::{SOURCE_EVM_KEY, SOURCE_IMPORTED, SOURCE_WORDS};
+use crate::wallet::app_hidden::Family;
 
 /// One account of the card's drop-down.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,7 +65,7 @@ pub enum SelectedLine {
     Buttons(Vec<Ctl>),
 }
 
-/// What one account card shows ([`App::push_account_card`] lays it out).
+/// What one account card shows ([`Screen::push_account_card`] lays it out).
 #[derive(Debug)]
 pub struct AccountCard {
     /// The card title (`내 EVM 계정`, `내 Solana 계정`).
@@ -89,10 +93,10 @@ pub struct AccountCard {
     pub footer: Vec<Item>,
 }
 
-impl App {
+impl Screen<'_> {
     /// Lays out an account card (2026-11-15, one layout for every tab): title, the help of
-    /// [`App::accounts_help`] judged from the accounts' sources, the drop-down (items
-    /// `label · source`, [`App::account_item_labels`]), the selected account's line, the hidden
+    /// [`Screen::accounts_help`] judged from the accounts' sources, the drop-down (items
+    /// `label · source`, [`Screen::account_item_labels`]), the selected account's line, the hidden
     /// accounts, a rule, the actions and the footer.
     pub fn push_account_card(&self, items: &mut Vec<Item>, card: AccountCard) {
         let lang = self.settings.language;
@@ -138,8 +142,8 @@ impl App {
                 label,
             }) => items.push(Item::Row(vec![
                 Ctl::edit(edit, &label, 260, false, 64),
-                Ctl::primary(save, crate::ui::screens::text::SAVE.get(lang)),
-                Ctl::button(cancel, crate::ui::screens::text::CANCEL.get(lang)),
+                Ctl::primary(save, crate::screen::build::core::text::SAVE.get(lang)),
+                Ctl::button(cancel, crate::screen::build::core::text::CANCEL.get(lang)),
             ])),
             Some(SelectedLine::Buttons(buttons)) => items.push(Item::Row(buttons)),
             None => {}
@@ -189,13 +193,13 @@ impl App {
     }
 }
 
-impl App {
+impl Screen<'_> {
     /// The `복구 단어 추가·관리` link of the account cards.
     #[must_use]
     pub fn mnemonics_link(&self) -> Ctl {
         Ctl::link(
             MnPress::MainLink,
-            crate::ui::screens::text::ADD_MANAGE_MNEMONICS.get(self.settings.language),
+            crate::screen::build::core::text::ADD_MANAGE_MNEMONICS.get(self.settings.language),
         )
         .compact()
     }

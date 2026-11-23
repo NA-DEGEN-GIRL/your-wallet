@@ -2814,7 +2814,7 @@ mod tests {
     use yw_core::sol::SolCluster;
 
     use super::{BarMetrics, bar_layout, layout_badges};
-    use yw_engine::wallet::app_approval::{network_badge, order_badges};
+    use yw_engine::testkit::{network_badge, order_badges};
 
     const MAINNET_BADGE: &str = yw_engine::approval::text::BADGE_MAINNET.ko;
     const T_ACK_FIRST: &str = yw_engine::approval::text::ACK_FIRST.ko;

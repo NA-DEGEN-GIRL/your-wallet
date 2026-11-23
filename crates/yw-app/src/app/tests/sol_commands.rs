@@ -8,6 +8,7 @@
 use yw_core::bip32::path::AccountIndex;
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::SolAddress;
+use yw_engine::testkit::ScreenTestExt;
 
 use crate::app::{App, Paths};
 use crate::ui::main_window::{Ctl, Item};
@@ -110,7 +111,7 @@ fn scan_rows_past_the_fortieth_keep_their_own_action() {
     let mut app = scanned_app();
     // Every rendered scan button maps back to its own row, never to an account radio.
     let mut items = Vec::new();
-    app.sol_scan_screen(&mut items);
+    app.screen_view(&app.facts()).sol_scan_screen(&mut items);
     let items = crate::ui::lower::lowered(items);
     let buttons: Vec<Ctl> = controls(&items)
         .into_iter()
@@ -161,7 +162,7 @@ fn scan_moves_go_to_a_primary_standard_account() {
     app.evm.journal = Some(yw_engine::events::JournalView::default());
     let hardware = hardware_selected(&mut app);
     let mut items = Vec::new();
-    app.sol_scan_screen(&mut items);
+    app.screen_view(&app.facts()).sol_scan_screen(&mut items);
     let items = crate::ui::lower::lowered(items);
     assert!(items.iter().any(|item| matches!(
         item,
@@ -190,9 +191,9 @@ fn scan_moves_go_to_a_primary_standard_account() {
     hardware_selected(&mut app);
     app.meta.as_mut().unwrap().sol_accounts.clear();
     let mut items = Vec::new();
-    app.sol_scan_screen(&mut items);
+    app.screen_view(&app.facts()).sol_scan_screen(&mut items);
     let items = crate::ui::lower::lowered(items);
-    let text = yw_engine::wallet::app_sol::SOL_SCAN_NO_TARGET_TEXT;
+    let text = yw_engine::testkit::SOL_SCAN_NO_TARGET_TEXT;
     assert!(
         items
             .iter()
@@ -218,13 +219,15 @@ fn english_sol_and_zec_screens_have_no_korean() {
     use yw_core::lang::{Lang, has_hangul};
     let render = |app: &App| {
         let mut items = Vec::new();
-        app.sol_main_screen(&mut items);
-        app.sol_send_screen(&mut items);
-        app.sol_send_result_screen(&mut items);
-        app.sol_receive_screen(&mut items);
-        app.sol_settings_section(&mut items);
-        app.sol_scan_screen(&mut items);
-        app.zec_main_screen(&mut items);
+        app.screen_view(&app.facts()).sol_main_screen(&mut items);
+        app.screen_view(&app.facts()).sol_send_screen(&mut items);
+        app.screen_view(&app.facts())
+            .sol_send_result_screen(&mut items);
+        app.screen_view(&app.facts()).sol_receive_screen(&mut items);
+        app.screen_view(&app.facts())
+            .sol_settings_section(&mut items);
+        app.screen_view(&app.facts()).sol_scan_screen(&mut items);
+        app.screen_view(&app.facts()).zec_main_screen(&mut items);
         crate::ui::lower::lowered(items)
     };
     let mut app = scanned_app();

@@ -7,7 +7,7 @@
 // them across the crate boundary (`yw_engine::testkit`).
 use std::cell::RefCell;
 use std::path::PathBuf;
-use yw_engine::testkit::WalletTestExt;
+use yw_engine::testkit::{ScreenTestExt, WalletTestExt};
 
 use yw_core::evm::address::{Address, parse_address};
 use yw_core::evm::amount::U256;
@@ -15,7 +15,7 @@ use yw_core::secret::Zeroizing;
 
 use super::{App, AppMode, Paths, Purpose, Screen};
 use crate::ui::main_window::{Ctl, Item};
-use crate::ui::screens::{RECEIVE_IDS, T_ACCOUNTS_BACKUP, T_ALT_PASS, T_DISCARD, T_MAINNET, ids};
+use crate::ui::screens::{RECEIVE_IDS, ids};
 use yw_engine::apikeys::ApiKeys;
 use yw_engine::approval::{QueueOutcome, QueueSource};
 use yw_engine::events::{BalanceSnapshot, KeyOutcome, KeyResult};
@@ -24,6 +24,7 @@ use yw_engine::meta::{EvmAccountPref, Meta, RawAccount, Tab};
 use yw_engine::screen::Tone;
 use yw_engine::secret::Submission;
 use yw_engine::settings::Settings;
+use yw_engine::testkit::screen::core::{T_ACCOUNTS_BACKUP, T_ALT_PASS, T_DISCARD, T_MAINNET};
 use yw_engine::wallet::app_evm::{AppApproval, BalanceState, QueuedItem};
 use yw_engine::wallet::lock::{IdleTracker, LockReason};
 use yw_engine::wallet::text::T_ALT_PASS_RECEIVE;
@@ -982,11 +983,11 @@ fn quicknode_fields_accept_a_pasted_endpoint_url() {
     const TOKEN: &str = "abcdef0123456789abcdef0123456789";
     let url = format!("https://My-Node.base-sepolia.quiknode.pro/{TOKEN}/");
     assert_eq!(
-        super::quicknode_input(yw_core::lang::Lang::Ko, "", ""),
+        yw_engine::testkit::quicknode_input(yw_core::lang::Lang::Ko, "", ""),
         Ok(None)
     );
     assert_eq!(
-        super::quicknode_input(yw_core::lang::Lang::Ko, "  ", " "),
+        yw_engine::testkit::quicknode_input(yw_core::lang::Lang::Ko, "  ", " "),
         Ok(None)
     );
     for (name, token) in [
@@ -997,13 +998,14 @@ fn quicknode_fields_accept_a_pasted_endpoint_url() {
         (url.as_str(), TOKEN),
     ] {
         let (parsed_name, parsed_token) =
-            super::quicknode_input(yw_core::lang::Lang::Ko, name, token)
+            yw_engine::testkit::quicknode_input(yw_core::lang::Lang::Ko, name, token)
                 .unwrap()
                 .expect("both fields filled");
         assert_eq!(parsed_name, "my-node");
         assert_eq!(parsed_token.as_str(), TOKEN);
     }
-    let name_error = super::quicknode_input(yw_core::lang::Lang::Ko, "my node", TOKEN).unwrap_err();
+    let name_error =
+        yw_engine::testkit::quicknode_input(yw_core::lang::Lang::Ko, "my node", TOKEN).unwrap_err();
     assert!(
         name_error.ends_with(&format!(
             " ({}) (E-KEY-002)",
@@ -1012,7 +1014,8 @@ fn quicknode_fields_accept_a_pasted_endpoint_url() {
         "{name_error}"
     );
     let token_error =
-        super::quicknode_input(yw_core::lang::Lang::Ko, "my-node", "short").unwrap_err();
+        yw_engine::testkit::quicknode_input(yw_core::lang::Lang::Ko, "my-node", "short")
+            .unwrap_err();
     assert!(
         token_error.ends_with(&format!(
             " ({}) (E-KEY-002)",
@@ -1022,7 +1025,8 @@ fn quicknode_fields_accept_a_pasted_endpoint_url() {
     );
     // A URL in one field and a different token in the other is the token field's error.
     let mismatch =
-        super::quicknode_input(yw_core::lang::Lang::Ko, &url, "zzzzzzzzzzzzzzzzzzzz").unwrap_err();
+        yw_engine::testkit::quicknode_input(yw_core::lang::Lang::Ko, &url, "zzzzzzzzzzzzzzzzzzzz")
+            .unwrap_err();
     assert!(
         mismatch.contains(QuickNodeField::Token.label(yw_core::lang::Lang::Ko)),
         "{mismatch}"
@@ -1168,9 +1172,9 @@ fn prune_dormant_entries_after_confirmation() {
 /// EIP-681, with the network note; the shared-address note is always shown.
 #[test]
 fn evm_receive_qr_toggles_to_the_plain_address() {
-    use crate::ui::qr::RECEIVE_SHARED_ADDRESS_NOTE;
     use crate::ui::screens_evm::ids as evm_ids;
     use yw_engine::screen::EvmQrKind;
+    use yw_engine::screen::qr::text::RECEIVE_SHARED_ADDRESS_NOTE;
     let (mut app, dir) = unlocked_app("receive-qr", false);
     let address = parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
     app.set_screen(Screen::Receive);
@@ -1240,10 +1244,11 @@ fn control_ids(items: &[Item]) -> Vec<u16> {
     reason = "one key-only wallet from S01 to removal"
 )]
 fn key_start_creates_a_key_only_wallet() {
-    use crate::ui::screens_keys::{self as keys_ui, ids as key_ids};
+    use crate::ui::screens_keys::ids as key_ids;
     use yw_core::bip32::path::BtcChain;
     use yw_core::btc::ScriptType;
     use yw_core::keyimport::{ImportChain, ImportSpec};
+    use yw_engine::testkit::screen::keys as keys_ui;
 
     let mut h = Harness::new("keystart");
     assert_eq!(h.app.screen, Screen::FirstRun);
@@ -1487,13 +1492,14 @@ fn imports_into_a_mnemonic_wallet() {
 )]
 fn key_start_with_a_bitcoin_key() {
     use crate::ui::screens_btc::ids as btc_ids;
-    use crate::ui::screens_keys::{self as keys_ui, ids as key_ids};
+    use crate::ui::screens_keys::ids as key_ids;
     use yw_core::btc::{BtcNetwork, ScriptType};
     use yw_core::keyimport::ImportChain;
     use yw_core::policy::ProviderError;
     use yw_engine::browser::envelope::{Correlation, Id16, Id32};
     use yw_engine::browser::{DappEvent, Reply, SiteKind, SiteRequest};
     use yw_engine::network::BtcNet;
+    use yw_engine::testkit::screen::keys as keys_ui;
     /// BIP49 test vector key (abandon `m/49'/1'/0'/0/0`), compressed testnet WIF (public).
     const BIP49_TEST_WIF: &str = "cULrpoZGXiuC19Uhvykx7NugygA3k86b3hmdCeyvHYQZSxojGyXJ";
 
@@ -2871,10 +2877,11 @@ fn token_balances_of_another_owner_are_unknown() {
 /// line without its band or actions; on `HyperEVM` (or unfolded) it is whole, band included.
 #[test]
 fn the_hypercore_card_folds_next_to_other_chains() {
-    use crate::ui::screens_hypercore::{ids as hc, text::HC_MAINNET};
+    use crate::ui::screens_hypercore::ids as hc;
     use crate::ui::screens_received::ids as received;
-    use crate::ui::screens_received::text::{RECEIVED_TOGGLE, RECEIVED_TOGGLE_HC};
     use yw_engine::received::RecvChain;
+    use yw_engine::testkit::screen::hypercore::text::HC_MAINNET;
+    use yw_engine::testkit::screen::received::text::{RECEIVED_TOGGLE, RECEIVED_TOGGLE_HC};
     // The tab's one `받은 내역도 보기` (2026-11-12): the EVM activity card's.
     let switch = |items: &[Item]| {
         assert!(ctl(items, received::toggle(RecvChain::Hc)).is_none());
@@ -2919,7 +2926,7 @@ fn walletconnect_panel_asks_for_the_project_id_first() {
     assert!(ctl(&items, wc::REOWN_COPY).is_some());
     assert!(has_text(
         &items,
-        crate::ui::screens_walletconnect::text::WC_SETUP_INTRO.ko
+        yw_engine::testkit::screen::walletconnect::text::WC_SETUP_INTRO.ko
     ));
     assert!(!has_text(&items, "단계"));
     assert!(
@@ -3321,9 +3328,9 @@ fn enter_presses_the_focused_button_or_the_form_primary() {
 /// balance stays, dimmed, with where it is from instead of "잔액을 읽지 못했습니다".
 #[test]
 fn rpc_failure_is_said_once() {
-    use crate::ui::screens::T_BALANCE_FAILED;
     use yw_engine::errors::ErrorCode;
     use yw_engine::network::NetworkId;
+    use yw_engine::testkit::screen::core::T_BALANCE_FAILED;
     let (mut app, dir) = unlocked_app("rpc-once", false);
     let chain = app.settings.evm_chain_id;
     let url = yw_platform::http::HttpsUrl::parse("https://rpc.example.test/").unwrap();
@@ -3490,7 +3497,7 @@ fn settings_sections_point_elsewhere_without_listing_their_cards() {
         let items = app.items();
         assert!(!has_text(&items, "이 구역"), "{section:?}");
         if let Some(elsewhere) =
-            crate::ui::screens::settings_elsewhere(yw_core::lang::Lang::Ko, section)
+            yw_engine::testkit::screen::core::settings_elsewhere(yw_core::lang::Lang::Ko, section)
         {
             assert!(has_text(&items, elsewhere), "{section:?}");
         }
@@ -4169,7 +4176,7 @@ fn evm_token_rows_hide_unhide_and_zero_balance() {
     ));
     assert!(has_text(
         &items,
-        crate::ui::screens_evm::text::TOKEN_HIDDEN_NOTE.ko
+        yw_engine::testkit::screen::evm::text::TOKEN_HIDDEN_NOTE.ko
     ));
     let again = ctl(
         &items,
@@ -4333,7 +4340,10 @@ fn user_token_delete_confirms_with_label_and_address() {
     app.on_command(token_row_id(TokenAction::Delete(scam)).unwrap());
     assert_eq!(app.screen, Screen::Confirm(Confirm::TokenDelete));
     let items = app.items();
-    assert!(has_text(&items, crate::ui::screens::T_TOKEN_DELETE.ko));
+    assert!(has_text(
+        &items,
+        yw_engine::testkit::screen::core::T_TOKEN_DELETE.ko
+    ));
     assert!(items.iter().any(
         |item| matches!(item, Item::Field(label, value) if label == "토큰" && value == "SCAM")
     ));
@@ -5214,7 +5224,7 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
     unique_ids(&items);
     assert!(has_text(
         &items,
-        crate::ui::screens_yubikey::T_YK_MNEMONIC_WALLET
+        yw_engine::testkit::screen::yubikey::text::YK_MNEMONIC_WALLET.ko
     ));
     h.app.on_command(yk::ENROL_START);
     assert_eq!(h.app.screen, Screen::YubiKey);
@@ -5264,7 +5274,7 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
     assert!(
         shown
             .iter()
-            .any(|text| text == yw_engine::wallet::app_yubikey::T_YK_SAME)
+            .any(|text| text == yw_engine::testkit::T_YK_SAME)
     );
     let evm2 = yw_core::bip32::preview_evm_address(
         ABOUT,
@@ -5523,10 +5533,7 @@ fn yubikey_import_shows_the_key_it_would_overwrite() {
     }
     let items = h.app.items();
     unique_ids(&items);
-    assert!(has_text(
-        &items,
-        yw_engine::wallet::app_yubikey::T_YK_OCCUPIED
-    ));
+    assert!(has_text(&items, yw_engine::testkit::T_YK_OCCUPIED));
     assert!(all_text(&items).contains(&foreign_evm), "the key's address");
     assert!(!ctl(&items, yk::IMPORT).unwrap().enabled);
     h.app.on_command(yk::OVERWRITE_ACK);
@@ -5890,10 +5897,7 @@ fn yubikey_only_wallet_from_the_first_run_screen() {
     let mut seen = YkSeen::default();
     assert_eq!(h.app.screen, Screen::FirstRun);
     let items = h.app.items();
-    assert!(has_text(
-        &items,
-        yw_engine::wallet::app_yubikey::T_YK_WALLET
-    ));
+    assert!(has_text(&items, yw_engine::testkit::T_YK_WALLET));
     // A lock in the middle wipes everything: the words are gone from the key worker.
     h.app.on_command(yk::NEW_WALLET);
     assert_eq!(h.app.screen, Screen::YubiKeyWalletIntro);
@@ -6065,7 +6069,8 @@ fn yubikey_only_wallet_from_the_first_run_screen() {
 fn yubikey_new_wallet_cancel_after_the_words_asks_first() {
     use crate::ui::screens_yubikey::ids as yk;
     use yw_engine::events::KeyJob;
-    use yw_engine::wallet::app_yubikey::{T_YK_WORDS_UNUSED, YkPurpose};
+    use yw_engine::testkit::T_YK_WORDS_UNUSED;
+    use yw_engine::wallet::app_yubikey::YkPurpose;
     use yw_engine::workers::key::yubikey::{YkJob, YkOutcome};
 
     let (mut h, _cards) = card_harness("yk-abandon", 8_800_041);
@@ -6241,7 +6246,7 @@ fn old_build_meta(address: &str) -> String {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one field report, step by step")]
 fn backup_pending_after_restart_shows_s04_and_receive() {
-    use crate::ui::screens_reset::T_WAIT_STALLED;
+    use yw_engine::testkit::screen::reset::T_WAIT_STALLED;
     use yw_engine::wallet::app_reset::WAIT_TIMEOUT_MS;
 
     let dir = temp_dir("bp-restart");
@@ -6367,8 +6372,9 @@ fn backup_pending_after_restart_shows_s04_and_receive() {
 /// snapshot); T-META-FAILED offers the next steps and `다시 불러오기` brings the real meta back.
 #[test]
 fn failed_meta_load_never_saves_a_default_over_the_real_meta() {
-    use crate::ui::screens_reset::{T_META_FAILED, ids as reset_ids};
+    use crate::ui::screens_reset::ids as reset_ids;
     use yw_core::error::{StorageError, VaultError};
+    use yw_engine::testkit::screen::reset::T_META_FAILED;
 
     let mut h = Harness::new("meta-fail");
     h.create_and_confirm();
@@ -6704,11 +6710,11 @@ fn yubikey_connect_without_words_from_the_first_run_screen() {
     use crate::ui::screens_yubikey::ids as yk;
     use yw_core::bip32::path::AccountIndex;
     use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot, address_texts};
+    use yw_engine::testkit::T_YK_UNKNOWN_PATH;
+    use yw_engine::testkit::{CLEAR_WORD, LOSS_WORD, T_YK_CLEAR_FUNDS, T_YK_KEY_LOST};
     use yw_engine::wallet::app_yubikey::YkPurpose;
-    use yw_engine::wallet::app_yubikey::connect::{Choice, T_YK_UNKNOWN_PATH};
-    use yw_engine::wallet::app_yubikey::manage::{
-        CLEAR_WORD, ClearStep, LOSS_WORD, T_YK_CLEAR_FUNDS, T_YK_KEY_LOST, YkManage,
-    };
+    use yw_engine::wallet::app_yubikey::connect::Choice;
+    use yw_engine::wallet::app_yubikey::manage::{ClearStep, YkManage};
 
     let (mut h, cards) = card_harness("yk-connect", 8_800_061);
     let mut seen = YkSeen::default();
@@ -7185,8 +7191,8 @@ fn english_core_screens_have_no_korean() {
     app.settings.language = Lang::En;
     app.meta = Some(Meta::new_in(Lang::En));
     let allowed = [
-        crate::ui::screens::LANGUAGE_TITLE,
-        crate::ui::screens::LANGUAGE_KOREAN,
+        yw_engine::testkit::screen::core::LANGUAGE_TITLE,
+        yw_engine::testkit::screen::core::LANGUAGE_KOREAN,
     ];
     let data = app.paths.data.display().to_string();
     let check = |app: &App, name: &str| {
@@ -7246,18 +7252,23 @@ fn english_core_screens_have_no_korean() {
     check(&app, "S09");
     // The helpers the chain screens share.
     for text in [
-        crate::ui::screens::balance_read_text(&app.facts(), Lang::En, Some(7), Some(0)),
-        crate::ui::screens::balance_stale_text(&app.facts(), Lang::En, Some(7), None),
-        crate::ui::screens::no_endpoint_text(Lang::En, "Base"),
+        yw_engine::testkit::screen::core::balance_read_text(
+            &app.facts(),
+            Lang::En,
+            Some(7),
+            Some(0),
+        ),
+        yw_engine::testkit::screen::core::balance_stale_text(&app.facts(), Lang::En, Some(7), None),
+        yw_engine::testkit::screen::core::no_endpoint_text(Lang::En, "Base"),
         yw_engine::secret::backup_retry_text(Lang::En, [1, 2, 3, 4], true),
         yw_engine::meta::rollback_text(Lang::En, 3, 2),
-        crate::ui::screens::vault_file_text(&app.facts(), Lang::En, 3, 0),
+        yw_engine::testkit::screen::core::vault_file_text(&app.facts(), Lang::En, 3, 0),
     ] {
         assert!(!has_hangul(&text), "{text}");
     }
     // Korean stays as it was.
     assert_eq!(
-        crate::ui::screens::balance_read_text(&app.facts(), Lang::Ko, Some(7), None),
+        yw_engine::testkit::screen::core::balance_read_text(&app.facts(), Lang::Ko, Some(7), None),
         "블록 7 기준"
     );
     let _ = std::fs::remove_dir_all(dir);
@@ -7354,7 +7365,7 @@ fn the_status_line_reads_the_pipe_host_through_the_facts() {
         site_rows: yw_engine::wallet::app_browser::SiteRows::default(),
     });
     let line = |app: &App| {
-        crate::ui::screens_evm::browser_status_text(
+        yw_engine::testkit::screen::evm::browser_status_text(
             Lang::En,
             app.browser.as_ref(),
             app.facts().pipe(),
@@ -7366,7 +7377,11 @@ fn the_status_line_reads_the_pipe_host_through_the_facts() {
         line(&app),
         STATUS_UNAVAILABLE.fill(Lang::En, ["E-PIPE-001"])
     );
-    assert!(app.evm_status_line().contains("E-PIPE-001"));
+    assert!(
+        app.screen_view(&app.facts())
+            .evm_status_line()
+            .contains("E-PIPE-001")
+    );
     for (error, code) in [
         (Some(ErrorCode::Pipe002), "E-PIPE-002"),
         (Some(ErrorCode::Pipe001), "E-PIPE-001"),
@@ -7390,7 +7405,7 @@ fn the_status_line_reads_the_pipe_host_through_the_facts() {
             STATUS_UNAVAILABLE.fill(Lang::En, [code]),
             "{error:?}"
         );
-        let status = app.evm_status_line();
+        let status = app.screen_view(&app.facts()).evm_status_line();
         assert!(status.contains(code), "{status}");
     }
     app.pipe = None;
@@ -7403,10 +7418,13 @@ fn the_status_line_reads_the_pipe_host_through_the_facts() {
 fn core_screen_catalogues_keep_their_invariants() {
     use yw_core::lang::{has_hangul, placeholders};
     for (name, entries) in [
-        ("screens", crate::ui::screens::text::ALL),
+        ("screens", yw_engine::testkit::screen::core::text::ALL),
         ("app", super::text::ALL),
         ("main_window", crate::ui::main_window::text::ALL),
-        ("screens_links", crate::ui::screens_links::text::ALL),
+        (
+            "screens_links",
+            yw_engine::testkit::screen::links::text::ALL,
+        ),
     ] {
         for entry in entries {
             let ko = placeholders(entry.ko);

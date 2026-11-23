@@ -4,6 +4,7 @@
 
 use yw_core::lang::{Lang, has_hangul};
 use yw_core::vault::{FileKind, MnemonicInfo, RecordId};
+use yw_engine::testkit::ScreenTestExt;
 
 use super::{Screen, app_at, controls, has_text, temp_dir, texts, unlocked_app};
 use crate::ui::main_window::Item;
@@ -44,24 +45,27 @@ fn english_key_start_screens() {
     ] {
         app.keys.start.chain = chain;
         let mut items = Vec::new();
-        app.key_start_intro(&mut items);
+        app.screen_view(&app.facts()).key_start_intro(&mut items);
         let items = crate::ui::lower::lowered(items);
         assert_english(&items, &[]);
         assert!(has_text(
             &items,
-            crate::ui::screens_keys::text::KEY_START_BACKUP.en
+            yw_engine::testkit::screen::keys::text::KEY_START_BACKUP.en
         ));
     }
     app.settings.language = Lang::Ko;
     let mut items = Vec::new();
-    app.key_start_intro(&mut items);
+    app.screen_view(&app.facts()).key_start_intro(&mut items);
     let items = crate::ui::lower::lowered(items);
     assert!(has_text(
         &items,
-        crate::ui::screens_keys::text::KEY_START_BACKUP.ko
+        yw_engine::testkit::screen::keys::text::KEY_START_BACKUP.ko
     ));
     assert_eq!(
-        crate::ui::screens_keys::no_accounts_text(Lang::En, yw_core::keyimport::ImportChain::Sol),
+        yw_engine::testkit::screen::keys::no_accounts_text(
+            Lang::En,
+            yw_core::keyimport::ImportChain::Sol
+        ),
         "This wallet has no Solana account."
     );
     let _ = std::fs::remove_dir_all(dir);
@@ -100,7 +104,7 @@ fn english_recovery_phrase_section() {
         );
     }
     let mut items = Vec::new();
-    app.mn_settings_section(&mut items);
+    app.mn_settings_section(&app.facts(), &mut items);
     let items = crate::ui::lower::lowered(items);
     assert_english(&items, &labels);
     assert!(has_text(
@@ -113,7 +117,7 @@ fn english_recovery_phrase_section() {
     ));
     app.mn.add_pick = true;
     let mut items = Vec::new();
-    app.mn_pick_row(&mut items);
+    app.mn_pick_row(&app.facts(), &mut items);
     let items = crate::ui::lower::lowered(items);
     assert_english(&items, &labels);
     let _ = std::fs::remove_dir_all(dir);
@@ -133,16 +137,20 @@ fn english_side_file_overlays_and_notices() {
             SidecarRefusal::PrevUnreadable,
         ));
         let mut items = Vec::new();
-        app.meta_overlay(&mut items);
-        app.journal_overlay(&mut items);
+        app.meta_overlay(&app.facts(), &mut items);
+        app.journal_overlay(&app.facts(), &mut items);
         let items = crate::ui::lower::lowered(items);
         assert_english(&items, &[]);
     }
     app.sidecar.journal_closed = true;
     app.screen = Screen::Main;
     let mut items = Vec::new();
-    app.journal_closed_items(&mut items);
-    app.journal_send_items(yw_engine::wallet::app_sidecar::SendChain::Sol, &mut items);
+    app.journal_closed_items(&app.facts(), &mut items);
+    app.journal_send_items(
+        &app.facts(),
+        yw_engine::wallet::app_sidecar::SendChain::Sol,
+        &mut items,
+    );
     let items = crate::ui::lower::lowered(items);
     assert_english(&items, &[]);
     assert!(has_text(

@@ -4095,7 +4095,7 @@ impl Wallet {
 
     /// Whether the Bitcoin tab is selected.
     #[must_use]
-    pub fn btc_tab_active(&self) -> bool {
+    pub(crate) fn btc_tab_active(&self) -> bool {
         self.meta
             .as_ref()
             .is_some_and(|meta| meta.prefs.tab == crate::meta::Tab::Btc)
@@ -4273,7 +4273,7 @@ impl Wallet {
     /// The selected account card's address ([`BtcUi::card_address`]), only while the tab is
     /// usable (the gate `받기` checks: unlocked, no network mismatch, …).
     #[must_use]
-    pub fn btc_card_address(&self) -> Option<String> {
+    pub(crate) fn btc_card_address(&self) -> Option<String> {
         let ctx = self.btc_ctx();
         ctx.gate().ok()?;
         ctx.btc_meta().and_then(BtcUi::card_address)

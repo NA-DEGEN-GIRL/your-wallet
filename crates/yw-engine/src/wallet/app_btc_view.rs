@@ -26,7 +26,7 @@ impl Wallet {
     /// The name of a Bitcoin account of the settings network (meta `btc_account_view`, default
     /// `Bitcoin N`).
     #[must_use]
-    pub fn btc_label_of(&self, account: &BtcMeta) -> String {
+    pub(crate) fn btc_label_of(&self, account: &BtcMeta) -> String {
         self.meta.as_ref().map_or_else(
             || crate::meta::BTC_ACCOUNT_LABEL.fill(self.settings.language, ["1"]),
             |meta| meta.btc_label(account.network(), account.id(), self.settings.language),
@@ -44,7 +44,7 @@ impl Wallet {
     /// The source part of a Bitcoin account's drop-down item (spec/04 §2.6): recovery words, an
     /// imported key, an EVM account's key or the `YubiKey` cards holding its key.
     #[must_use]
-    pub fn btc_source(account: &BtcAccountKey, network: BtcNetwork) -> AccountSource {
+    pub(crate) fn btc_source(account: &BtcAccountKey, network: BtcNetwork) -> AccountSource {
         match account.id() {
             BtcAccountId::Hd { mnemonic, .. } => {
                 AccountSource::Words(mnemonic.map(|id| *id.as_bytes()))
@@ -75,7 +75,7 @@ impl Wallet {
 
     /// The visible account rows of the settings network (the drop-down's entries, in order).
     #[must_use]
-    pub fn btc_visible_rows(&self) -> Vec<crate::wallet::app_btc::BtcAccountRow> {
+    pub(crate) fn btc_visible_rows(&self) -> Vec<crate::wallet::app_btc::BtcAccountRow> {
         let ctx = self.btc_ctx();
         self.btc
             .account_rows(&ctx)
@@ -87,7 +87,7 @@ impl Wallet {
     /// The `잔액 …` line of a hidden Bitcoin row (the available balance the account's last
     /// refresh left in meta).
     #[must_use]
-    pub fn btc_hidden_balance(&self, hidden: HiddenId) -> Option<String> {
+    pub(crate) fn btc_hidden_balance(&self, hidden: HiddenId) -> Option<String> {
         let HiddenId::Btc(_, account) = hidden else {
             return None;
         };
@@ -107,7 +107,7 @@ impl Wallet {
     /// Solana): not the first recovery words' BIP84 account 0 (the default account), not an
     /// imported key (it has `삭제`), and not the last visible account of the network.
     #[must_use]
-    pub fn btc_can_hide(&self, account: BtcAccountId) -> bool {
+    pub(crate) fn btc_can_hide(&self, account: BtcAccountId) -> bool {
         let kind_ok =
             !matches!(account, BtcAccountId::Imported { .. }) && account != BtcAccountId::PRIMARY;
         kind_ok && self.btc_visible_rows().iter().any(|row| row.id != account)

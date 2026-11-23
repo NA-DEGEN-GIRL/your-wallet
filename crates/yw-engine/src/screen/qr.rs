@@ -10,6 +10,18 @@
 
 use qrcodegen::{QrCode, QrCodeEcc};
 
+/// The fixed texts of the receive QR (spec/14). 2026-11-24 (spec/15 §11.4 S5-5): moved here
+/// unchanged from yw-app `ui::qr::text` with the receive screen's builder; the GDI layout and
+/// painting stay there.
+pub mod text {
+    yw_core::texts! {
+        /// Receive-screen note: one EVM address serves every EVM chain, but the screen shows only
+        /// the selected network's assets.
+        RECEIVE_SHARED_ADDRESS_NOTE = "이 주소는 다른 EVM 체인(예: Ethereum·Base·Arbitrum)에서도 같은 주소이지만, 여기에는 선택한 네트워크의 자산만 보입니다. 다른 체인으로 받은 자산은 그 체인을 추가·선택해야 보입니다."
+            / "This address is the same on other EVM chains (e.g. Ethereum, Base, Arbitrum), but only the selected network's assets are shown here. Assets received on another chain appear after you add and select that chain.";
+    }
+}
+
 /// The modules of one QR symbol, without its quiet zone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QrMatrix {

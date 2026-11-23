@@ -98,13 +98,11 @@ use yw_engine::wallet::Purpose;
 use yw_engine::wallet::Screen;
 #[cfg(debug_assertions)]
 use yw_engine::wallet::cred_fingerprint;
-#[cfg(test)]
-use yw_engine::wallet::quicknode_input;
 use yw_engine::wallet::text::T_CLIP_NOT_CLEARED;
 use yw_engine::wallet::{AppMode, Wallet};
 
+pub use text::PASTE_EDGE_SPACE;
 use text::{PASTE_CLEARED, T_CLIP_CLEARED_LATE};
-pub use text::{PASTE_EDGE_SPACE, T_PASSWORD_OLD_COPIES};
 const MAIN_TIMER_ID: usize = 1;
 const LOG_FLUSH_MS: u64 = 2_000;
 const SESSION_RETRY_MS: u64 = 1_000;
@@ -388,12 +386,9 @@ impl core::fmt::Debug for App {
     }
 }
 
-// The settings note on what a password change does and does not do (review L1) is
-// [`T_PASSWORD_OLD_COPIES`]. Before 2026-11-13 the data key (DEK) stayed the same, so an old copy
-// plus the old password opened the current file too; now every change rotates it (spec/02 §4.4),
-// and a change made with an older build is worth repeating. An old copy still opens with the old
-// password and reveals what it held then (a weak old password can be cracked offline later), so a
-// leak of both still means moving the funds to a new, separate wallet.
+// 2026-11-24 (spec/15 §11.4 S5-5): the settings note on what a password change does and does not
+// do (review L1), `T_PASSWORD_OLD_COPIES`, and its rationale moved to the screens' catalogue
+// `yw_engine::screen::build::core::text` with the security section's builder.
 
 /// The information line after an accepted paste: the edge-space notice first, then the
 /// clipboard note.
@@ -1231,6 +1226,14 @@ impl App {
             }
             EscTarget::Nothing => {}
         }
+    }
+
+    /// Whether a drop-down is open: what `Wallet::close_pickers` would return (2026-11-20, S4
+    /// P4: the shell's Esc resolution reads it before closing). 2026-11-24 (spec/15 §11.4 S5-5):
+    /// moved here from `ui/screens_links.rs`, whose builders moved to yw-engine (a shell read).
+    #[must_use]
+    pub(crate) const fn pickers_open(&self) -> bool {
+        self.wallet.account_menu.is_some() || self.wallet.evm.network_picker
     }
 
     /// What Esc stands for now (2026-11-10): an overlay's `취소`; else an open inline edit's

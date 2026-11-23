@@ -317,7 +317,7 @@ impl Wallet {
     /// The send form of `target` shows a W-ADDR-3 note for its recipient (`＋ 이 주소를 주소록에
     /// 저장` is not offered then: saving a suspected poison would make it pass for known).
     #[must_use]
-    pub fn send_look_alike(&self, target: BookTarget) -> bool {
+    pub(crate) fn send_look_alike(&self, target: BookTarget) -> bool {
         match target {
             BookTarget::Evm => self.evm.send.recipient.as_ref().is_some_and(|(_, notes)| {
                 notes
@@ -336,7 +336,7 @@ impl Wallet {
 
     /// The S14 rows in display order: each family's entries, favorites first.
     #[must_use]
-    pub fn book_rows(&self) -> Vec<Contact> {
+    pub(crate) fn book_rows(&self) -> Vec<Contact> {
         self.meta.as_ref().map_or_else(Vec::new, |meta| {
             BookChain::ALL
                 .iter()
@@ -359,7 +359,7 @@ impl Wallet {
 
     /// The favorite chips of a send form (at most [`FAVORITE_CHIPS`]).
     #[must_use]
-    pub fn favorite_contacts(&self, target: BookTarget) -> Vec<Contact> {
+    pub(crate) fn favorite_contacts(&self, target: BookTarget) -> Vec<Contact> {
         let Some(meta) = self.meta.as_ref() else {
             return Vec::new();
         };
@@ -372,7 +372,7 @@ impl Wallet {
 
     /// Whether `(chain, address)` is in the book.
     #[must_use]
-    pub fn in_book(&self, chain: BookChain, address: &str) -> bool {
+    pub(crate) fn in_book(&self, chain: BookChain, address: &str) -> bool {
         self.meta
             .as_ref()
             .is_some_and(|meta| meta.contact(chain, address).is_some())
@@ -391,7 +391,7 @@ impl Wallet {
 
     /// The canonical recipient a send form has accepted (parsed), if any.
     #[must_use]
-    pub fn send_recipient(&self, target: BookTarget) -> Option<String> {
+    pub(crate) fn send_recipient(&self, target: BookTarget) -> Option<String> {
         match target {
             BookTarget::Evm => self
                 .evm
@@ -415,7 +415,7 @@ impl Wallet {
 
     /// The recipient of the send shown on a result screen.
     #[must_use]
-    pub fn result_recipient(&self, target: BookTarget) -> Option<String> {
+    pub(crate) fn result_recipient(&self, target: BookTarget) -> Option<String> {
         match target {
             BookTarget::Evm => {
                 let sent = self.evm.sent?;
@@ -892,7 +892,7 @@ impl Wallet {
 
     /// The Bitcoin picker entries (book entries of the form's network, filtered by the text).
     #[must_use]
-    pub fn btc_picker_entries(&self, target: BookTarget) -> Vec<Contact> {
+    pub(crate) fn btc_picker_entries(&self, target: BookTarget) -> Vec<Contact> {
         let filter = self.btc.send.to_text.trim().to_ascii_lowercase();
         self.target_contacts(target)
             .into_iter()

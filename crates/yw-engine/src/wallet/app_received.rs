@@ -247,7 +247,10 @@ impl Wallet {
 
     /// The explorer network of `chain`'s current list (its `ListKey::network` text).
     #[must_use]
-    pub fn received_explorer_net(&self, chain: RecvChain) -> Option<crate::explorer::ExplorerNet> {
+    pub(crate) fn received_explorer_net(
+        &self,
+        chain: RecvChain,
+    ) -> Option<crate::explorer::ExplorerNet> {
         self.received_key(chain)
             .and_then(|key| crate::explorer::ExplorerNet::parse(&key.network))
     }
@@ -484,7 +487,7 @@ impl Wallet {
 
     /// `chain`'s current list while the switch is on.
     #[must_use]
-    pub fn received_list(&self, chain: RecvChain) -> Option<&RecvList> {
+    pub(crate) fn received_list(&self, chain: RecvChain) -> Option<&RecvList> {
         if !self.settings.received_history {
             return None;
         }

@@ -129,8 +129,9 @@ fn review_revalidates_and_refuses_an_edit_inside_the_debounce() {
     use yw_engine::flow::evm::form::Quote;
     use yw_engine::meta::{Account, Meta};
     use yw_engine::settings::Settings;
+    use yw_engine::testkit::SOL_REVIEW_CHANGED_TEXT;
     use yw_engine::wallet::AppMode;
-    use yw_engine::wallet::app_sol::{ReviewRefusal, SOL_REVIEW_CHANGED_TEXT};
+    use yw_engine::wallet::app_sol::ReviewRefusal;
 
     const TO_A: &str = "0x52908400098527886e0f7030069857d2e4169ee7";
     const TO_B: &str = "0xf278cf59f82edcf871d630f28ecc8056f25c1cdb";

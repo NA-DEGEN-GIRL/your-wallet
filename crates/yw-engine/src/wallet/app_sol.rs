@@ -218,8 +218,7 @@ pub mod text {
 }
 
 /// [`text::REVIEW_CHANGED`] in Korean (tests).
-#[doc(hidden)]
-pub const SOL_REVIEW_CHANGED_TEXT: &str = text::REVIEW_CHANGED.ko;
+pub(crate) const SOL_REVIEW_CHANGED_TEXT: &str = text::REVIEW_CHANGED.ko;
 
 /// Why `검토` did not queue an approval.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -312,12 +311,10 @@ impl ReviewInputs {
 pub const SOL_APPLY_RETRY_MS: u64 = 10_000;
 
 /// Fixed text while a final state is being written to the journal ([`text::SAVING`] in Korean).
-#[doc(hidden)]
-pub const SOL_SAVING_TEXT: &str = text::SAVING.ko;
+pub(crate) const SOL_SAVING_TEXT: &str = text::SAVING.ko;
 /// Fixed text after a final state could not be written to the journal (the loop retries;
 /// [`text::SAVE_FAILED`] in Korean).
-#[doc(hidden)]
-pub const SOL_SAVE_FAILED_TEXT: &str = text::SAVE_FAILED.ko;
+pub(crate) const SOL_SAVE_FAILED_TEXT: &str = text::SAVE_FAILED.ko;
 
 /// Why a record's loop is stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -394,13 +391,11 @@ pub enum ScanStage {
 
 /// Shown when the selected cluster is not the one whose scan notice was confirmed
 /// ([`text::SCAN_RECONFIRM`] in Korean).
-#[doc(hidden)]
-pub const SOL_SCAN_RECONFIRM_TEXT: &str = text::SCAN_RECONFIRM.ko;
+pub(crate) const SOL_SCAN_RECONFIRM_TEXT: &str = text::SCAN_RECONFIRM.ko;
 
 /// Shown when no standard account of the primary recovery phrase can receive a scan move
 /// ([`text::SCAN_NO_TARGET`] in Korean).
-#[doc(hidden)]
-pub const SOL_SCAN_NO_TARGET_TEXT: &str = text::SCAN_NO_TARGET.ko;
+pub(crate) const SOL_SCAN_NO_TARGET_TEXT: &str = text::SCAN_NO_TARGET.ko;
 
 /// Recovery scan state.
 #[derive(Clone, Debug, Default)]
@@ -578,7 +573,7 @@ impl Wallet {
     /// # Errors
     ///
     /// [`ErrorCode::Key005`].
-    pub fn sol_endpoint(&self, cluster: SolCluster) -> Result<SolEndpoint, ErrorCode> {
+    pub(crate) fn sol_endpoint(&self, cluster: SolCluster) -> Result<SolEndpoint, ErrorCode> {
         let url = self
             .apikeys
             .rpc_url(NetworkId::Solana(ui_cluster(cluster)))
@@ -685,7 +680,7 @@ impl Wallet {
 
     /// SOL sending is stopped by a damaged record (spec/07 §14.1).
     #[must_use]
-    pub fn sol_journal_damaged(&self) -> bool {
+    pub(crate) fn sol_journal_damaged(&self) -> bool {
         self.evm
             .journal
             .as_ref()
@@ -702,7 +697,7 @@ impl Wallet {
     /// The account label of an address (own accounts, with the recovery phrase while the wallet
     /// has several), or the address.
     #[must_use]
-    pub fn sol_label(&self, address: &str) -> String {
+    pub(crate) fn sol_label(&self, address: &str) -> String {
         self.sol_account_rows()
             .into_iter()
             .find(|(_, _, known)| known.to_base58() == address)
@@ -715,7 +710,7 @@ impl Wallet {
     /// An account's name with its recovery phrase while the wallet has several (`Solana 1
     /// [복구 단어 2]`, 2026-11-10: the selected-account card, S12 and the activity).
     #[must_use]
-    pub fn sol_title(&self, id: SolAccountId, label: &str) -> String {
+    pub(crate) fn sol_title(&self, id: SolAccountId, label: &str) -> String {
         if id.is_imported() || id.is_hardware() {
             label.to_owned()
         } else {
@@ -1232,7 +1227,7 @@ impl Wallet {
 
     /// The balance of an account on the selected cluster.
     #[must_use]
-    pub fn sol_balance(&self, address: &SolAddress) -> Option<u64> {
+    pub(crate) fn sol_balance(&self, address: &SolAddress) -> Option<u64> {
         self.sol
             .balances
             .get(&(self.sol_cluster(), *address))
@@ -1242,7 +1237,7 @@ impl Wallet {
     /// The allowlisted token holdings of an account on the selected cluster (allowlist order;
     /// `None` until the first balance refresh). Other tokens are never fetched or shown.
     #[must_use]
-    pub fn sol_token_holdings(
+    pub(crate) fn sol_token_holdings(
         &self,
         address: &SolAddress,
     ) -> Option<&[(&'static SplAllowEntry, TokenHolding)]> {
@@ -1254,7 +1249,7 @@ impl Wallet {
 
     /// The holding of one allowlisted token of an account on the selected cluster.
     #[must_use]
-    pub fn sol_token_holding(
+    pub(crate) fn sol_token_holding(
         &self,
         address: &SolAddress,
         entry: &SplAllowEntry,
@@ -1267,7 +1262,7 @@ impl Wallet {
 
     /// The assets of the selected cluster: SOL, then the allowlisted tokens in table order.
     #[must_use]
-    pub fn sol_assets(&self) -> Vec<SolAsset> {
+    pub(crate) fn sol_assets(&self) -> Vec<SolAsset> {
         let mut assets = vec![SolAsset::Sol];
         assets.extend(spl_entries(self.sol_cluster()).map(SolAsset::Spl));
         assets
@@ -1395,7 +1390,7 @@ impl Wallet {
     /// Whether the last sent transfer ended `Expired` / `FailedOnChain` and its inputs are kept
     /// ("다시 보내기", spec/07 §14.3).
     #[must_use]
-    pub fn sol_can_resend(&self) -> bool {
+    pub(crate) fn sol_can_resend(&self) -> bool {
         let Some((cluster, signature)) = self.sol.sent else {
             return false;
         };
@@ -1528,7 +1523,7 @@ impl Wallet {
     /// accepts no other (`non_standard_rule_ok`: `Standard(0..=999)` of the primary seed), so a
     /// `YubiKey`, imported or added-phrase account is never offered.
     #[must_use]
-    pub fn sol_scan_target(&self) -> Option<(SolAccountId, String, SolAddress)> {
+    pub(crate) fn sol_scan_target(&self) -> Option<(SolAccountId, String, SolAddress)> {
         let primary = |id: &SolAccountId| matches!(id, SolAccountId::Derived(_));
         self.sol_selected()
             .filter(|(id, ..)| primary(id))
@@ -2039,7 +2034,7 @@ impl Wallet {
     /// send form's sender's (spec/07 §14.3). `None` when it is not `Pending`, its loop is stopped
     /// (cluster mismatch, saving a final state) or the app is not tracking it.
     #[must_use]
-    pub fn sol_send_now_target(&self) -> Option<[u8; 64]> {
+    pub(crate) fn sol_send_now_target(&self) -> Option<[u8; 64]> {
         let records = self.sol_records();
         let pending = |signature: [u8; 64]| {
             records.iter().any(|record| {
@@ -2353,7 +2348,7 @@ impl Wallet {
     /// The balances of a scan row: fresh ones for a row moved from (refreshed with the accounts),
     /// else the scan's; both are RPC reference values.
     #[must_use]
-    pub fn sol_scan_balances(
+    pub(crate) fn sol_scan_balances(
         &self,
         row: &ScanRow,
     ) -> (u64, Vec<(&'static SplAllowEntry, TokenHolding)>) {
@@ -2396,7 +2391,7 @@ impl Wallet {
 
     /// Scan rows worth showing: funded accounts and standard accounts not yet added.
     #[must_use]
-    pub fn sol_scan_rows(&self) -> Vec<ScanRow> {
+    pub(crate) fn sol_scan_rows(&self) -> Vec<ScanRow> {
         let known: Vec<u32> = self
             .meta
             .as_ref()
@@ -2494,7 +2489,7 @@ impl Wallet {
 
     /// Lamports as `x.xxxxxxxxx SOL`.
     #[must_use]
-    pub fn sol_text(lamports: u64) -> String {
+    pub(crate) fn sol_text(lamports: u64) -> String {
         format!("{} SOL", format_amount(lamports, 9))
     }
 }
@@ -2505,7 +2500,7 @@ impl Wallet {
 impl Wallet {
     /// Picker entries: address book and own accounts only (spec/07 §12.3), filtered by the text.
     #[must_use]
-    pub fn sol_picker_entries(&self) -> Vec<(String, SolAddress)> {
+    pub(crate) fn sol_picker_entries(&self) -> Vec<(String, SolAddress)> {
         let lang = self.settings.language;
         let filter = self.sol.send.to_text.trim().to_owned();
         self.sol_known()
@@ -2566,7 +2561,7 @@ impl Wallet {
     /// the cluster's journal records, then its meta activity, at most `SOL_MAX_ACTIVITY_ROWS`
     /// after the records (as drawn).
     #[must_use]
-    pub fn sol_activity_counterparties(&self) -> Vec<String> {
+    pub(crate) fn sol_activity_counterparties(&self) -> Vec<String> {
         let cluster = self.sol_cluster();
         let mut out: Vec<String> = self
             .sol_records()

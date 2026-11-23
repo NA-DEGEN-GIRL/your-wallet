@@ -664,7 +664,7 @@ fn zcash_card_lists_every_key_source_and_card_b() {
     assert!(ctls.iter().any(|ctl| ctl.id == zec::IMPORT));
     assert!(has_text(
         &items,
-        crate::ui::screens_zec::text::IMPORT_HELP.ko
+        yw_engine::testkit::screen::zec::text::IMPORT_HELP.ko
     ));
     assert!(
         ctls.iter()
@@ -758,7 +758,7 @@ fn zcash_evm_key_still_needs_the_confirmation() {
     let items = app.items();
     assert!(has_text(
         &items,
-        crate::ui::screens_zec::text::EVM_SHARED.ko
+        yw_engine::testkit::screen::zec::text::EVM_SHARED.ko
     ));
     assert!(
         super::controls(&items)
