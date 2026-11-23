@@ -804,8 +804,8 @@ fn chain_message_windows_follow_each_other_after_a_rejection() {
             if shown.kind.is_signing() {
                 let draft = app.chain_sign_draft(&shown).unwrap();
                 assert_eq!(validate_for_display(&draft.display), Ok(()));
-                let request = app.evm.store.issue(draft, 0, 0).unwrap();
-                app.evm.store.reject(request.id);
+                let request = app.evm_store_mut().issue(draft, 0, 0).unwrap();
+                app.evm_store_mut().reject(request.id);
             }
             if let Some((done, outcome)) = app.evm.queue.finish_shown(QueueOutcome::Rejected) {
                 app.approval_finished(&done.payload, outcome);

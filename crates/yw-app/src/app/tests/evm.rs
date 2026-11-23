@@ -4,21 +4,46 @@
 //! access of the inline module, so no production item of that file was widened. 2026-11-22 (S4d
 //! E0c, spec/09 §2.1): a child of `app::tests` (that file moves to yw-engine at S4d E1 and these
 //! tests need `App`); what it reaches is `pub(crate)` now (test-only use): `Wallet::on_quote` and
-//! the shared helper `app_evm::tests::record` (its `tests` module too).
+//! the shared helper `app_evm::tests::record` (its `tests` module too). 2026-11-23 (S4d E1):
+//! `record` is a copy here (the inline module moved to yw-engine and is private again).
 
-use crate::app_evm::tests::record;
-use crate::app_evm::{SEND_DEBOUNCE_MS, SEND_QUICK_MS};
-use crate::app_sol::ReviewBlocker;
+use yw_engine::wallet::app_evm::{SEND_DEBOUNCE_MS, SEND_QUICK_MS};
+use yw_engine::wallet::app_sol::ReviewBlocker;
+
+const BESU_SIGNED: &str = "02f86e048203338301284d8301d97c828ae094000000000000000000000000000000000000aaaa8402933bc980c080a00f924cb68412c8f1cfd74d9b581c71eeaf94fff6abdde3e5b02ca6b2931dcf47a07dd1c50027c3e31f8b565e25ce68a5072110f61fce5eee81b195dd51273c2f83";
+
+/// A signed record of the shared Besu transaction with `flags` (2026-11-23, spec/15 §11.4 S4d E1:
+/// a copy of the inline test helper `app_evm::tests::record`, which moved to yw-engine as a
+/// private test item; `cfg(test)` does not cross crates).
+fn record(flags: u8) -> yw_core::journal::evm::EvmRecord {
+    let sender = yw_core::evm::address::parse_address("0xFE3B557E8Fb62b89F4916B721be55cEb828dBd73")
+        .unwrap_or(yw_core::evm::address::Address::from_bytes([0; 20]));
+    let mut record = yw_core::journal::evm::EvmRecord::new_signed(
+        4,
+        sender,
+        819,
+        yw_core::journal::evm::Role::Original,
+        1_790_000_000_000,
+        [7; 32],
+        "https://app.example",
+        "x",
+        yw_core::hex::decode(BESU_SIGNED).unwrap(),
+    )
+    .unwrap();
+    record.flags = flags;
+    record
+}
 
 /// Journal records (every chain) and EVM activity rows feed the look-alike history; book
 /// entries are not repeated and history is not offered by the picker.
 #[test]
 fn past_recipients_join_the_known_addresses_as_history() {
     use crate::apikeys::ApiKeys;
-    use crate::app::{App, AppMode, Paths};
+    use crate::app::{App, Paths};
     use crate::events::JournalView;
     use crate::meta::{ActivityEntry, BookEntry, Meta};
     use crate::settings::Settings;
+    use yw_engine::wallet::AppMode;
 
     let dir = std::env::temp_dir().join(format!("yw-app-evm-known-{}", std::process::id()));
     let mut app = App::new(
@@ -97,13 +122,14 @@ fn past_recipients_join_the_known_addresses_as_history() {
 #[test]
 fn review_revalidates_and_refuses_an_edit_inside_the_debounce() {
     use crate::apikeys::ApiKeys;
-    use crate::app::{App, AppMode, Paths};
-    use crate::app_sol::{ReviewRefusal, SOL_REVIEW_CHANGED_TEXT};
+    use crate::app::{App, Paths};
     use crate::events::JournalView;
     use crate::flow::evm::form::Quote;
     use crate::meta::{Account, Meta};
     use crate::settings::Settings;
     use yw_core::evm::amount::U256;
+    use yw_engine::wallet::AppMode;
+    use yw_engine::wallet::app_sol::{ReviewRefusal, SOL_REVIEW_CHANGED_TEXT};
 
     const TO_A: &str = "0x52908400098527886e0f7030069857d2e4169ee7";
     const TO_B: &str = "0xf278cf59f82edcf871d630f28ecc8056f25c1cdb";
@@ -194,13 +220,14 @@ fn review_revalidates_and_refuses_an_edit_inside_the_debounce() {
 #[test]
 fn max_with_a_failing_quote_asks_once() {
     use crate::apikeys::ApiKeys;
-    use crate::app::{App, AppMode, Paths};
+    use crate::app::{App, Paths};
     use crate::errors::ErrorCode;
     use crate::events::JournalView;
     use crate::meta::{Account, Meta};
     use crate::network::NetworkId;
     use crate::settings::Settings;
     use crate::workers::rpc::RpcJob;
+    use yw_engine::wallet::AppMode;
 
     let dir = std::env::temp_dir().join(format!("yw-app-evm-max-{}", std::process::id()));
     let mut app = App::new(
@@ -264,12 +291,13 @@ fn replacing_a_group_uses_the_account_key_or_refuses() {
     use yw_core::vault::EvmKeySource;
 
     use crate::apikeys::ApiKeys;
-    use crate::app::{App, AppMode, Paths};
-    use crate::app_evm::QueuedItem;
+    use crate::app::{App, Paths};
     use crate::events::JournalView;
     use crate::flow::evm::prepare::ReplaceMode;
     use crate::meta::{Account, Meta};
     use crate::settings::Settings;
+    use yw_engine::wallet::AppMode;
+    use yw_engine::wallet::app_evm::QueuedItem;
 
     let dir = std::env::temp_dir().join(format!("yw-app-evm-replace-{}", std::process::id()));
     let mut app = App::new(
@@ -297,7 +325,7 @@ fn replacing_a_group_uses_the_account_key_or_refuses() {
     assert!(
         app.banners
             .iter()
-            .any(|banner| banner.text == crate::app_evm::text::REPLACE_NO_KEY.ko)
+            .any(|banner| banner.text == yw_engine::wallet::app_evm::text::REPLACE_NO_KEY.ko)
     );
     // The sender is YubiKey EVM account 3.
     app.meta.as_mut().unwrap().hw_accounts.evm = vec![Account {

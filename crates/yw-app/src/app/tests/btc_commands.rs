@@ -13,8 +13,7 @@ use yw_engine::form::EditField;
 use yw_platform::http::HttpsUrl;
 
 use crate::apikeys::ApiKeys;
-use crate::app::{App, AppMode, Confirm, Paths, Screen};
-use crate::app_btc::{BtcAmountUnit, BtcConfirm, BtcFeeChoice, BtcSendForm};
+use crate::app::{App, Paths};
 use crate::btc::work::BtcRpcJob;
 use crate::errors::ErrorCode;
 use crate::events::{JournalView, KeyJob};
@@ -25,6 +24,8 @@ use crate::ui::screens_btc::ids;
 use crate::workers::journal::btc::BtcMetaOp;
 use crate::workers::rpc::RpcJob;
 use yw_engine::screen::SettingsSection;
+use yw_engine::wallet::app_btc::{BtcAmountUnit, BtcConfirm, BtcFeeChoice, BtcSendForm};
+use yw_engine::wallet::{AppMode, Confirm, Screen};
 
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("yw-app-{name}-{}", std::process::id()));
@@ -205,4 +206,22 @@ fn form_fields_and_buttons_reach_the_controller() {
         }
     )));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The fee radios dispatch to the choice they are drawn for (2026-11-18, S3 C7-C9 review):
+/// `fee_choice` of each radio's press equals `fee_choice_of` of its id, which pairs `fee_ids`
+/// with the drawing order `FEE_CHOICES`. 2026-11-23 (spec/15 §11.4 S4d E1): moved here unchanged
+/// from the inline tests of `app_btc_commands` (it maps control ids, which stay in the shell;
+/// `fee_choice` is `#[doc(hidden)] pub` for it).
+#[test]
+fn fee_presses_match_the_drawn_radio_order() {
+    use crate::ui::screens_btc::{fee_choice_of, fee_ids, ids};
+    use yw_engine::wallet::app_btc_commands::fee_choice;
+    for bump in [false, true] {
+        for id in fee_ids(bump) {
+            let press = ids::press_of(id).unwrap();
+            assert_eq!(fee_choice(press), fee_choice_of(id), "id {id}");
+            assert_eq!(fee_choice_of(id).map(|(_, b)| b), Some(bump), "id {id}");
+        }
+    }
 }

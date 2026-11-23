@@ -15,16 +15,17 @@ use yw_core::sol::recipient::KnownKind;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore};
 
 use crate::apikeys::ApiKeys;
-use crate::app::{App, AppMode, Paths, Screen};
-use crate::app_sol::{
-    ReviewRefusal, SOL_APPLY_RETRY_MS, SOL_REVIEW_CHANGED_TEXT, SOL_SAVE_FAILED_TEXT,
-    SOL_SAVING_TEXT, SOL_SCAN_RECONFIRM_TEXT, ScanStage, SolHalt,
-};
+use crate::app::{App, Paths};
 use crate::errors::ErrorCode;
 use crate::events::{JournalView, SolKeysPurpose};
 use crate::meta::{Account, ActivityEntry, Meta, Tab};
 use crate::settings::Settings;
 use crate::sol::flow::TrackResult;
+use yw_engine::wallet::app_sol::{
+    ReviewRefusal, SOL_APPLY_RETRY_MS, SOL_REVIEW_CHANGED_TEXT, SOL_SAVE_FAILED_TEXT,
+    SOL_SAVING_TEXT, SOL_SCAN_RECONFIRM_TEXT, ScanStage, SolHalt,
+};
+use yw_engine::wallet::{AppMode, Screen};
 
 const OWN: [u8; 32] = [200; 32];
 const TO_A: &str = "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb";
@@ -396,7 +397,7 @@ fn dapp_sends_are_tracked_together_and_do_not_hold_the_send_form() {
     );
     assert_ne!(
         app.sol_review_blocker(),
-        Some(crate::app_sol::ReviewBlocker::InFlight)
+        Some(yw_engine::wallet::app_sol::ReviewBlocker::InFlight)
     );
     // A wallet transfer of the account does hold it.
     let mut records = app.sol_records();
@@ -407,6 +408,6 @@ fn dapp_sends_are_tracked_together_and_do_not_hold_the_send_form() {
     });
     assert_eq!(
         app.sol_review_blocker(),
-        Some(crate::app_sol::ReviewBlocker::InFlight)
+        Some(yw_engine::wallet::app_sol::ReviewBlocker::InFlight)
     );
 }

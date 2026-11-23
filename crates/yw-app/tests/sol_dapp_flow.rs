@@ -20,7 +20,6 @@ mod common;
 use std::path::PathBuf;
 
 use common::{Answer, FakeClock, FakeRpc, url};
-use yw_app::app_chain_sites::{ChainAnswer, chain_answer_value};
 use yw_app::browser::params::{Validated, validate};
 use yw_app::events::{
     ChainMessageSigned, ChainSignature, KeyJob, KeyOutcome, SignTicket, SolDappSigned,
@@ -35,6 +34,7 @@ use yw_core::secret::Zeroizing;
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::dapp::{SolTxMode, SolTxRequest, build_sol_tx_request};
 use yw_core::sol::{SolAddress, SolCluster};
+use yw_engine::wallet::app_chain_sites::{ChainAnswer, chain_answer_value};
 use yw_json::{Limits, Value};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -474,10 +474,10 @@ fn program_failed() -> Answer {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one send from params to answer")]
 fn send_is_checked_journaled_and_answered_after_the_first_round() -> TestResult {
-    use yw_app::app_sol_dapp::{sol_round_failed, sol_send_answer};
     use yw_app::sol::flow::{PreSignError, TrackJob, pre_sign_dapp, track_round};
     use yw_app::sol::rpc::SendConfig;
     use yw_core::sol::broadcast::{LoopState, PendingTx};
+    use yw_engine::wallet::app_sol_dapp::{sol_round_failed, sol_send_answer};
 
     let dir = temp_dir("send")?;
     let (mut worker, wallet, _) = worker(&dir)?;

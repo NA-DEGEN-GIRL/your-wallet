@@ -27,12 +27,12 @@ use yw_win::file::read_limited_no_reparse;
 
 use crate::apikeys::KeyName;
 use crate::app::App;
-use crate::app_rpc_plan::{DeleteError, ImportError, ImportPlan, plan_from_bytes};
 use crate::network::NetworkId;
 use crate::settings::Settings;
 use crate::ui::main_window::{Ctl, Item};
 use yw_engine::cmd::RpcImportPress;
 use yw_engine::screen::Tone;
+use yw_engine::wallet::app_rpc_plan::{DeleteError, ImportError, ImportPlan, plan_from_bytes};
 
 /// Largest `rpc.json` (spec/01 §4.6).
 pub const RPC_JSON_MAX: u64 = 65_536;
@@ -340,9 +340,11 @@ impl App {
 mod tests {
     use crate::apikeys::{ApiKeys, KeyName};
     use crate::app::{App, Paths};
-    use crate::app_rpc_plan::{ImportError, Provider, apply_plan, check_url, plan_from_bytes};
     use crate::network::{BtcNet, NetworkId, SolCluster};
     use crate::settings::{RpcTemplate, Settings};
+    use yw_engine::wallet::app_rpc_plan::{
+        ImportError, Provider, apply_plan, check_url, plan_from_bytes,
+    };
 
     // Fake endpoint values only (never a real endpoint).
     const NAME: &str = "fake-node";
@@ -479,9 +481,9 @@ mod tests {
         for secret in [NAME, TOKEN, "quiknode"] {
             assert!(!entry_text.contains(secret), "{entry_text}");
         }
-        let state = crate::app_rpc_plan::RpcImportUi {
+        let state = yw_engine::wallet::app_rpc_plan::RpcImportUi {
             plan: Some(plan),
-            ..crate::app_rpc_plan::RpcImportUi::default()
+            ..yw_engine::wallet::app_rpc_plan::RpcImportUi::default()
         };
         let state_text = format!("{state:?}");
         for text in [text, state_text] {

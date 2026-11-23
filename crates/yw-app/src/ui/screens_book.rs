@@ -7,12 +7,12 @@ use yw_core::evm::address::parse_address;
 use yw_core::evm::display::format_address;
 
 use crate::app::App;
-use crate::app_book::{BookTarget, PromptPlace, short_address};
 use crate::meta::{BookChain, Contact};
 use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item};
 use yw_engine::screen::Tone;
 use yw_engine::text::grouped;
+use yw_engine::wallet::app_book::{BookTarget, PromptPlace, short_address};
 
 /// Command ids of the address book (14,000–15,699).
 pub mod ids {
@@ -59,7 +59,7 @@ pub mod ids {
     /// Bitcoin picker rows.
     pub const BTC_PICK_BASE: u16 = 14_030;
     /// Bitcoin picker span.
-    pub const BTC_PICK_SPAN: u16 = crate::app_book::BTC_PICK_ROWS;
+    pub const BTC_PICK_SPAN: u16 = yw_engine::wallet::app_book::BTC_PICK_ROWS;
     /// Solana activity `이 주소 저장` (one per row, ≤ `SOL_MAX_ACTIVITY_ROWS`).
     pub const SOL_ACTIVITY_BASE: u16 = 14_080;
     /// Solana activity span.
@@ -357,7 +357,7 @@ impl App {
                 let star = if favorite { "★ " } else { "" };
                 items.push(Item::Text(format!("{star}{}{verified}", entry.label)));
                 if chain == BookChain::Btc
-                    && let Some(net) = crate::app_book::btc_network_of(&entry.address)
+                    && let Some(net) = yw_engine::wallet::app_book::btc_network_of(&entry.address)
                 {
                     items.push(Item::Badged(
                         Badge::bitcoin(net),
@@ -608,7 +608,7 @@ impl App {
             BookChain::Sol => text::PROMPT_SOL.get(lang).to_owned(),
             BookChain::Btc => text::PROMPT_BTC.fill(
                 lang,
-                [crate::app_book::btc_network_of(address)
+                [yw_engine::wallet::app_book::btc_network_of(address)
                     .map_or("", |net| yw_core::btc::text::network_name(lang, net))],
             ),
         }));

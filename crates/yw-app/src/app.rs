@@ -23,9 +23,7 @@ use crate::apikeys::ApiKeys;
 use crate::app_store::WinAppStore;
 use crate::errors::ErrorCode;
 use crate::events::{KeyQueue, LockSignal};
-use crate::lock::LockReason;
 use crate::logging::{self, Field};
-use crate::secret_session::SecretAction;
 use crate::settings::Settings;
 use crate::shell_msg::{
     SystemAction, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT,
@@ -37,6 +35,8 @@ use crate::ui::secret::{
     CaptureDecision, FormAction, PASTE_MAX_UTF16_UNITS, SECRET_TIMER_ID, SECRET_TIMER_MS,
     SecretForm, capture_decision, window_size,
 };
+use yw_engine::wallet::lock::LockReason;
+use yw_engine::wallet::secret_session::SecretAction;
 // `IDOK`/`IDCANCEL`: the ids `IsDialogMessageW` sends for Enter and Esc (2026-11-18, S3 B2: they
 // were constants of this file).
 use crate::ui::cmd_table::{self, IDCANCEL, IDOK};
@@ -83,24 +83,29 @@ pub mod text;
 // 2026-11-18 (S4 A7): the secret-window test seams (`cfg(test)` only, `app::secret_seam`).
 #[cfg(test)]
 pub(crate) mod secret_seam;
-// 2026-11-23 (spec/15 §11.4 S4d E0b): the wallet half of this file (`Wallet`, its types and every
-// `impl Wallet` block that was here) is `app::wallet`, the file that moves to yw-engine at E1.
-// Transitional re-exports (preflight critic C5), so the `crate::app::…` and `yw_app::app::…` paths
-// of the staying code and the tests keep resolving; E1 removes them (but the test-path shims the
-// frozen tests need, preflight O-1).
-mod wallet;
+// 2026-11-23 (spec/15 §11.4 S4d E1): the wallet half of this file (`Wallet`, its types and every
+// `impl Wallet` block, which S4d E0b had split into the child module `app::wallet`) is
+// `yw_engine::wallet`; this file is the Windows shell. The E0b re-exports are gone; the frozen
+// tests' paths `crate::app::{AppMode, Purpose, Wallet}` and `yw_app::app::TestState` stay as
+// test-path shims until the S4 freeze ends (preflight O-1, spec/15 §18 28). (E0b had left a
+// doubled `#[cfg(debug_assertions)]` on the `cred_fingerprint` import, from the removed
+// `CredTaken` re-export; gone with it.)
+use yw_engine::wallet::DisplayCheck;
+use yw_engine::wallet::Screen;
+#[doc(hidden)]
+pub use yw_engine::wallet::TestState;
 #[cfg(debug_assertions)]
-#[cfg(debug_assertions)]
-use wallet::cred_fingerprint;
+use yw_engine::wallet::cred_fingerprint;
 #[cfg(test)]
-use wallet::quicknode_input;
-pub use wallet::{
-    AppMode, Banner, CREATE_STEPS, Confirm, IMPORT_STEPS, PasswordAction, Purpose, RpcRemoved,
-    RpcTests, Screen, TestState, Wallet, password_changed_text,
-};
+use yw_engine::wallet::quicknode_input;
+use yw_engine::wallet::text::T_CLIP_NOT_CLEARED;
+#[cfg(test)]
+pub(crate) use yw_engine::wallet::{AppMode, Purpose, Wallet};
+#[cfg(not(test))]
+use yw_engine::wallet::{AppMode, Wallet};
 
 use text::{PASTE_CLEARED, T_CLIP_CLEARED_LATE};
-pub use text::{PASTE_EDGE_SPACE, T_CLIP_NOT_CLEARED, T_PASSWORD_OLD_COPIES};
+pub use text::{PASTE_EDGE_SPACE, T_PASSWORD_OLD_COPIES};
 const MAIN_TIMER_ID: usize = 1;
 const LOG_FLUSH_MS: u64 = 2_000;
 const SESSION_RETRY_MS: u64 = 1_000;
@@ -719,7 +724,7 @@ impl App {
     /// shell's pipe end (2026-11-21, S4 W1: two parts; before, one `BrowserUi` held both).
     pub fn attach_browser(
         &mut self,
-        browser: crate::app_browser::BrowserUi,
+        browser: yw_engine::wallet::app_browser::BrowserUi,
         pipe: crate::browser::server::PipeHost,
     ) {
         // 2026-11-22 (S4c W15): the wallet's part (the failure's banner, the dispatcher) is
@@ -971,7 +976,7 @@ impl App {
                 Reply::Handled(0)
             }
             // The validation a send-form edit waits for (one shot, `Effect::StartTimer`).
-            Msg::Timer(crate::app_evm::SEND_TIMER_ID) => {
+            Msg::Timer(yw_engine::wallet::app_evm::SEND_TIMER_ID) => {
                 self.dispatch(Cmd::Timer(TimerId::SendCheck));
                 Reply::Handled(0)
             }
@@ -1267,7 +1272,7 @@ impl App {
         }
         // S20's `취소` too, but never once its new words were shown: it discards them, like the
         // YubiKey wizard's (both stay a click then).
-        if self.yk_words == crate::app_yubikey::YkWords::None
+        if self.yk_words == yw_engine::wallet::app_yubikey::YkWords::None
             && let Some(id) = self.shown_of(&logic_presses::ESC_NEW_WALLET_CANCEL)
         {
             return EscTarget::Press(id);
@@ -1864,10 +1869,7 @@ impl App {
                 topmost,
                 lang,
             } => {
-                let unshown = self
-                    .secret_session
-                    .as_ref()
-                    .is_some_and(|session| session.serial() == serial && !session.shown());
+                let unshown = self.secret_unshown(serial);
                 let outcome = if unshown {
                     self.open_input_window(serial, kind, step, topmost, lang)
                 } else {
@@ -1963,10 +1965,7 @@ impl App {
             timeout_note,
             lang,
         });
-        let unshown = self
-            .secret_session
-            .as_ref()
-            .is_some_and(|session| session.serial() == serial && !session.shown());
+        let unshown = self.secret_unshown(serial);
         let outcome = if unshown {
             self.display_window_handoff(serial, kind, step, timeout_note, lang)
         } else {
@@ -2008,7 +2007,10 @@ impl App {
         }
         match self.make_display_window(serial, kind, lang) {
             DisplayWindow::Verified(window) => {
-                let Some(display) = self.wallet.take_display_secret(serial) else {
+                let Some(display) = self
+                    .wallet
+                    .hand_display_secret(serial, DisplayCheck::Verified)
+                else {
                     drop(window);
                     return OpenOutcome::Refused(ErrorCode::Sec001);
                 };
@@ -2021,7 +2023,9 @@ impl App {
             // (2026-11-20, P7b review: before P7b, after the banner and the S04 change; it was
             // never shown and never held the secret).
             DisplayWindow::Unverified { outcome, window } => {
-                self.wallet.drop_display_secret(serial);
+                let _none = self
+                    .wallet
+                    .hand_display_secret(serial, DisplayCheck::Unverified);
                 drop(window);
                 outcome
             }

@@ -1244,7 +1244,7 @@ pub const APPROVAL_TTL_MS: u64 = 120_000;            // D23: 표시 후 120 s
 pub struct ApprovalStore { /* id → (ApprovalRequest, ApprovalState, deadline_ms: u64) */ }
 pub enum ApprovalState { Pending, Consumed, Rejected, Expired, Invalidated }
 pub struct Approved { /* private: id, digest, chain, account, signer, kind, payload — Clone/Copy 없음, 읽기 접근자만 */ }
-impl ApprovalStore {   // now_ms = yw-win time::monotonic_ms, now_unix_ms = 벽시계 ms (yw-app이 넘김; 2026-11-19부터 App의 주입 시계, 아래 "시각의 출처")
+impl ApprovalStore {   // now_ms = yw-win time::monotonic_ms, now_unix_ms = 벽시계 ms (yw-app이 넘김; 2026-11-19부터 App의 주입 시계, 아래 "시각의 출처"; 2026-11-23 [15] §11.4 S4d E1부터 yw-engine `wallet`의 승인 흐름이 지갑의 주입 시계 `Wallet::clock`으로 넘긴다 — Windows에서는 `GetTickCount64` 기반 `SystemClock`)
     pub fn issue(&mut self, d: ApprovalDraft, now_ms: u64, now_unix_ms: u64) -> Result<ApprovalRequest, ApprovalError>;
     pub fn replace(&mut self, id: ApprovalId, shown: [u8; 32], new: ApprovalDraft) -> Result<ApprovalRequest, ApprovalError>;
     pub fn consume(&mut self, id: ApprovalId, shown: [u8; 32], now_ms: u64) -> Result<Approved, ApprovalError>;
@@ -1253,7 +1253,7 @@ impl ApprovalStore {   // now_ms = yw-win time::monotonic_ms, now_unix_ms = 벽�
 }
 ```
 
-- `issue`: A01이 그 요청의 Ready 내용을 처음 표시할 때([04](04-app-ui.md) §3.5) yw-app이 호출한다. `created_unix_ms = now_unix_ms`, `expires_unix_ms = now_unix_ms + 120,000`, §11.4 `digest`를 계산하고 `deadline_ms = now_ms + APPROVAL_TTL_MS`(checked)로 저장한다. 같은 id가 있으면 오류. kind와 `simulation` 바인딩이 맞지 않으면(§11.1) `SimulationBindingMismatch`(`issue`·`replace` 공통). 반환값은 표시용 사본(비밀 없음). 다른 창이 열려 있는 동안 준비된 요청도 표시 전에는 시간이 흐르지 않는다.
+- `issue`: A01이 그 요청의 Ready 내용을 처음 표시할 때([04](04-app-ui.md) §3.5) yw-app이 호출한다(2026-11-23 [15] §11.4 S4d E1부터 yw-engine `wallet::app_approval`의 승인 흐름이 호출하고, `consume`도 그 흐름의 `consume_and_sign` 하나만 부른다 — `EvmUi.store`는 엔진 밖에서 닿지 않는다). `created_unix_ms = now_unix_ms`, `expires_unix_ms = now_unix_ms + 120,000`, §11.4 `digest`를 계산하고 `deadline_ms = now_ms + APPROVAL_TTL_MS`(checked)로 저장한다. 같은 id가 있으면 오류. kind와 `simulation` 바인딩이 맞지 않으면(§11.1) `SimulationBindingMismatch`(`issue`·`replace` 공통). 반환값은 표시용 사본(비밀 없음). 다른 창이 열려 있는 동안 준비된 요청도 표시 전에는 시간이 흐르지 않는다.
 - `consume`: `Pending`이고 `now_ms < deadline_ms`이고 `shown == digest`(상수 시간 비교, `subtle`)일 때만 `Consumed`로 바꾸고 `Approved`를 1회 반환한다. digest 불일치 → `Invalidated`. 그 밖 → 오류.
 - `consume`은 `risk == Blocked`인 요청에 `ApprovalError::Blocked`를 돌려준다(상태 유지, 방어 중복: 차단 요청은 승인 버튼이 없다).
 - `replace`(§6.6): `Pending`, `shown == 현재 digest`, `new.id == id`이고 kind·origin·chain·account·signer·표시 언어(`display.lang`, 2026-11-14)가 같을 때만 교체한다(payload·표시·바인딩은 바뀔 수 있다). `created_unix_ms`·`expires_unix_ms`·`deadline_ms`는 그대로 두고 digest만 다시 계산한다.

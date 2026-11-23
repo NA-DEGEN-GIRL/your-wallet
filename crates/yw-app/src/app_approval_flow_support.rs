@@ -54,12 +54,14 @@
 //! run; the prepare job is answered by the smoke harness's fixture transport), a card reader, a
 //! process, the clipboard or the registry, and writes only below its own temp folder.
 
+// 2026-11-23 (S4d E1): the approval flow's state as the tests read it across the crate boundary.
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use yw_engine::testkit::FlowTestExt;
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::evm::address::parse_address;
@@ -71,8 +73,7 @@ use yw_win::ui::{self, CaptureExclusion, ClassSpec, Msg};
 
 use super::{APPROVAL_CLASS, Focus, PANEL_CLASS};
 use crate::apikeys::ApiKeys;
-use crate::app::{App, AppMode, Paths};
-use crate::app_evm::AppApproval;
+use crate::app::{App, Paths};
 use crate::events::{EventQueue, JournalView, KeyJob, UiEvent};
 use crate::flow::evm::prepare::{PrepareJob, SendIntent, prepare};
 use crate::flow::evm::{ChainCache, Clock, SharedTransport};
@@ -80,6 +81,8 @@ use crate::network::NetworkId;
 use crate::settings::Settings;
 use crate::ui::interaction::InteractionEvent;
 use crate::workers::rpc::RpcJob;
+use yw_engine::wallet::AppMode;
+use yw_engine::wallet::app_evm::AppApproval;
 
 /// The fixture clock's first reading (ms): far from zero, so no "now - x" saturates.
 pub(crate) const START_MS: u64 = 1_000_000;
@@ -536,7 +539,7 @@ impl Fixture {
         let conn = core.open_connection(Box::new(sender));
         {
             let mut app = self.app();
-            app.browser = Some(crate::app_browser::BrowserUi {
+            app.browser = Some(yw_engine::wallet::app_browser::BrowserUi {
                 core,
                 reads: Arc::new(crate::browser::read::ReadContext::new(None)),
                 connections: 0,
@@ -546,8 +549,8 @@ impl Fixture {
                 dapp_unlock: false,
                 unlocked: false,
                 locking: false,
-                grant_write: crate::app_browser::GrantWrite::default(),
-                site_rows: crate::app_browser::SiteRows::default(),
+                grant_write: yw_engine::wallet::app_browser::GrantWrite::default(),
+                site_rows: yw_engine::wallet::app_browser::SiteRows::default(),
             });
             app.sync_browser();
         }

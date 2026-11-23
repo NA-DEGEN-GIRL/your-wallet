@@ -4,10 +4,11 @@
 
 use yw_core::lang::Text;
 
-use crate::app::{App, AppMode};
-use crate::app_mnemonics::text as mn_text;
+use crate::app::App;
 use crate::ui::main_window::{Ctl, Item};
 use yw_engine::screen::Tone;
+use yw_engine::wallet::AppMode;
+use yw_engine::wallet::app_mnemonics::text as mn_text;
 
 /// The recovery-phrase screen texts (spec/04 §2.24).
 pub mod text {
@@ -371,7 +372,10 @@ impl App {
                 && let Ok(address) = meta.address(yw_core::bip32::path::BtcChain::Receive, 0)
             {
                 accounts.push(self.btc_removed(
-                    crate::app_btc::account_label(self.settings.language, meta.account()),
+                    yw_engine::wallet::app_btc::account_label(
+                        self.settings.language,
+                        meta.account(),
+                    ),
                     address.as_str(),
                     false,
                 ));
@@ -418,7 +422,9 @@ impl App {
             let cards = self.card_name_list(&self.mn.preview_cards, ", ");
             items.push(Item::Text(text::YK_SAME.fill(lang, [&cards])));
             items.push(Item::Banner(
-                crate::app_yubikey::text::YK_SAME.get(lang).to_owned(),
+                yw_engine::wallet::app_yubikey::text::YK_SAME
+                    .get(lang)
+                    .to_owned(),
                 Tone::HighRisk,
             ));
             items.push(Item::Row(vec![Ctl::check(

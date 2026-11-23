@@ -12,15 +12,16 @@ use yw_core::yubikey::plan::{
 use yw_core::yubikey::record::HwKeyRecord;
 use yw_core::zec::ZecNetwork;
 
-use crate::app::{App, AppMode};
-use crate::app_yubikey::text as yk;
-use crate::app_yubikey::{
-    CARD_SCRIPTS, MAX_ACCOUNT_INDEX, PGP_TOUCH, PIV_TOUCH, PgpKind, WizardOrigin, WizardStep,
-    YkWizard,
-};
+use crate::app::App;
 use crate::ui::main_window::{Ctl, Item};
 use text as t;
 use yw_engine::screen::Tone;
+use yw_engine::wallet::AppMode;
+use yw_engine::wallet::app_yubikey::text as yk;
+use yw_engine::wallet::app_yubikey::{
+    CARD_SCRIPTS, MAX_ACCOUNT_INDEX, PGP_TOUCH, PIV_TOUCH, PgpKind, WizardOrigin, WizardStep,
+    YkWizard,
+};
 
 mod connect;
 mod manage;
@@ -33,8 +34,8 @@ pub mod ids {
     use yw_core::yubikey::plan::{PgpKey, TouchPolicy};
     use yw_core::zec::ZecNetwork;
 
-    use crate::app_yubikey::manage::{Chain, Preset, ReslotAction};
-    use crate::app_yubikey::{CARD_SCRIPTS, PGP_TOUCH, PgpAction, PgpKind};
+    use yw_engine::wallet::app_yubikey::manage::{Chain, Preset, ReslotAction};
+    use yw_engine::wallet::app_yubikey::{CARD_SCRIPTS, PGP_TOUCH, PgpAction, PgpKind};
 
     /// Settings tab `YubiKey`.
     pub const SECTION_YUBIKEY: u16 = 13_200;
@@ -420,19 +421,22 @@ pub mod ids {
     /// Span of the choice radios.
     pub const CONNECT_CHOICE_SPAN: u16 = CONNECT_CHOICE_STRIDE * CONNECT_CHOICE_ROWS;
     /// The columns of a choice row.
-    pub const CONNECT_CHOICES: [crate::app_yubikey::connect::Choice; 7] = [
-        crate::app_yubikey::connect::Choice::Evm,
-        crate::app_yubikey::connect::Choice::Btc(ScriptType::P2wpkh),
-        crate::app_yubikey::connect::Choice::Btc(ScriptType::P2shP2wpkh),
-        crate::app_yubikey::connect::Choice::Btc(ScriptType::P2pkh),
-        crate::app_yubikey::connect::Choice::Zec,
-        crate::app_yubikey::connect::Choice::Sol,
-        crate::app_yubikey::connect::Choice::Skip,
+    pub const CONNECT_CHOICES: [yw_engine::wallet::app_yubikey::connect::Choice; 7] = [
+        yw_engine::wallet::app_yubikey::connect::Choice::Evm,
+        yw_engine::wallet::app_yubikey::connect::Choice::Btc(ScriptType::P2wpkh),
+        yw_engine::wallet::app_yubikey::connect::Choice::Btc(ScriptType::P2shP2wpkh),
+        yw_engine::wallet::app_yubikey::connect::Choice::Btc(ScriptType::P2pkh),
+        yw_engine::wallet::app_yubikey::connect::Choice::Zec,
+        yw_engine::wallet::app_yubikey::connect::Choice::Sol,
+        yw_engine::wallet::app_yubikey::connect::Choice::Skip,
     ];
 
     /// The id of `choice` on row `row`.
     #[must_use]
-    pub fn connect_choice_id(row: usize, choice: crate::app_yubikey::connect::Choice) -> u16 {
+    pub fn connect_choice_id(
+        row: usize,
+        choice: yw_engine::wallet::app_yubikey::connect::Choice,
+    ) -> u16 {
         let column = CONNECT_CHOICES
             .iter()
             .position(|other| *other == choice)
@@ -446,7 +450,9 @@ pub mod ids {
 
     /// The row and choice of a choice radio id.
     #[must_use]
-    pub fn connect_choice(id: u16) -> Option<(usize, crate::app_yubikey::connect::Choice)> {
+    pub fn connect_choice(
+        id: u16,
+    ) -> Option<(usize, yw_engine::wallet::app_yubikey::connect::Choice)> {
         let offset = id
             .checked_sub(CONNECT_CHOICE_BASE)
             .filter(|offset| *offset < CONNECT_CHOICE_SPAN)?;
@@ -885,8 +891,8 @@ pub mod ids {
     /// eighth id of a row is no radio and stays unclaimed, as before).
     #[must_use]
     pub fn connect_press_of(id: u16) -> Option<yw_engine::cmd::YkConnectPress> {
-        use crate::app_yubikey::connect::Choice;
         use yw_engine::cmd::{Row, YkConnectPress};
+        use yw_engine::wallet::app_yubikey::connect::Choice;
         if let Some((row, choice)) = connect_choice(id) {
             let row = Row(u16::try_from(row).ok()?);
             return Some(match choice {
@@ -1059,7 +1065,11 @@ impl App {
     pub fn yk_wallet_intro(&self, items: &mut Vec<Item>) {
         let lang = self.settings.language;
         items.push(Item::Title(t::TITLE_YK_WALLET.get(lang).to_owned()));
-        items.push(steps_item(lang, &crate::app_yubikey::YK_WALLET_STEPS, 0));
+        items.push(steps_item(
+            lang,
+            &yw_engine::wallet::app_yubikey::YK_WALLET_STEPS,
+            0,
+        ));
         items.push(Item::CardStart(Some(t::BEFORE_START.get(lang).to_owned())));
         for line in [
             t::INTRO_PAPER,
@@ -1106,7 +1116,7 @@ impl App {
                 .enabled(unlocked && records.len() < MAX_CARDS),
         ]));
         items.push(Item::Help(
-            crate::app_yubikey::connect::text::YK_CONNECT
+            yw_engine::wallet::app_yubikey::connect::text::YK_CONNECT
                 .get(lang)
                 .to_owned(),
         ));
@@ -1314,7 +1324,7 @@ impl App {
         reason = "one card per enrolled YubiKey / slot form"
     )]
     fn yk_pgp_items(&self, wizard: &YkWizard, key: PgpKey, items: &mut Vec<Item>) {
-        use crate::app_yubikey::PgpAction;
+        use yw_engine::wallet::app_yubikey::PgpAction;
         let lang = self.settings.language;
         let form = wizard.pgp(key);
         items.push(Item::CardStart(Some(CardSlot::OpenPgp(key).label_in(lang))));
@@ -1739,7 +1749,7 @@ impl App {
                 items.push(Item::LabeledRow(
                     t::TYPE_WORD.fill(
                         lang,
-                        [crate::app_yubikey::manage::text::LOSS_WORD.get(lang)],
+                        [yw_engine::wallet::app_yubikey::manage::text::LOSS_WORD.get(lang)],
                     ),
                     vec![Ctl::edit(
                         ids::OVERWRITE_EDIT,
@@ -2172,7 +2182,7 @@ impl App {
         };
         let lang = self.settings.language;
         items.push(Item::Banner(
-            crate::app_card::text::PIN_BANNER.fill(lang, [&self.card_name(serial)]),
+            yw_engine::wallet::app_card::text::PIN_BANNER.fill(lang, [&self.card_name(serial)]),
             Tone::Warn,
         ));
         if let Some(row) = self
@@ -2185,7 +2195,7 @@ impl App {
         {
             items.push(Item::Row(vec![Ctl::button(
                 ids::PIN_GATE_BASE + row,
-                crate::app_card::text::SET_PIN.get(lang),
+                yw_engine::wallet::app_card::text::SET_PIN.get(lang),
             )]));
         }
     }

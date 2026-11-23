@@ -10,11 +10,11 @@ use yw_core::keyimport::ImportChain;
 use yw_core::lang::{Lang, Text};
 
 use crate::app::App;
-use crate::app_btc::BtcCtx;
-use crate::app_keys::{KEY_START_STEPS, KeyStartView};
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens::steps;
 use yw_engine::screen::Tone;
+use yw_engine::wallet::app_btc::BtcCtx;
+use yw_engine::wallet::app_keys::{KEY_START_STEPS, KeyStartView};
 
 /// Command ids (block 13,000–13,199, `ui::command_ids`).
 pub mod ids {
@@ -372,7 +372,7 @@ impl App {
             items.push(script_radios(lang, self.keys.btc_script));
             items.push(Item::Help(t(text::BTC_SCRIPT)));
         }
-        let unlocked = matches!(self.mode, crate::app::AppMode::Unlocked { .. });
+        let unlocked = matches!(self.mode, yw_engine::wallet::AppMode::Unlocked { .. });
         items.push(Item::Row(vec![
             Ctl::primary(import_id, text::IMPORT_KEY.get(lang)).enabled(self.can_import(chain)),
             Ctl::button(
@@ -388,8 +388,8 @@ impl App {
         ]));
         // Every account of the tab hidden (a `YubiKey` wallet): the way back is here too.
         let family = match chain {
-            ImportChain::Evm => Some(crate::app_hidden::Family::Evm),
-            ImportChain::Sol => Some(crate::app_hidden::Family::Sol),
+            ImportChain::Evm => Some(yw_engine::wallet::app_hidden::Family::Evm),
+            ImportChain::Sol => Some(yw_engine::wallet::app_hidden::Family::Sol),
             ImportChain::Btc | ImportChain::Zec => None,
         };
         if let Some(family) = family {
@@ -404,7 +404,7 @@ impl App {
     /// reminder under them (T-IMPORTED-KEY-BACKUP / T-KEY-ONLY-BACKUP, T-BTC-EVM-SHARED).
     #[must_use]
     pub fn btc_key_parts(&self, ctx: &BtcCtx<'_>) -> (Vec<Ctl>, Option<Item>) {
-        let unlocked = matches!(self.mode, crate::app::AppMode::Unlocked { .. });
+        let unlocked = matches!(self.mode, yw_engine::wallet::AppMode::Unlocked { .. });
         let lang = self.settings.language;
         if ctx.selected_imported().is_some() {
             let help = if self.key_only() {
@@ -434,7 +434,9 @@ impl App {
                         .enabled(unlocked),
                 ],
                 Some(Item::Help(
-                    crate::app_btc::T_BTC_EVM_SHARED.get(lang).to_owned(),
+                    yw_engine::wallet::app_btc::T_BTC_EVM_SHARED
+                        .get(lang)
+                        .to_owned(),
                 )),
             );
         }

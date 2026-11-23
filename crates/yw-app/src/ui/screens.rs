@@ -11,7 +11,7 @@ use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::display::format_address;
 
 use crate::apikeys::{KeyName, mask_url, template_entry};
-use crate::app::{App, AppMode, CREATE_STEPS, Confirm, IMPORT_STEPS, Screen, TestState};
+use crate::app::App;
 use crate::errors::ErrorCode;
 use crate::meta::EvmAccountPref;
 use crate::network::NetworkId;
@@ -23,6 +23,7 @@ use yw_core::lang::{Lang, Text};
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::SettingsSection;
 use yw_engine::screen::Tone;
+use yw_engine::wallet::{AppMode, CREATE_STEPS, Confirm, IMPORT_STEPS, Screen, TestState};
 
 pub mod text;
 
@@ -1208,9 +1209,10 @@ impl App {
             )
             .enabled(enabled),
         ]));
-        items.push(Item::Help(
-            text::FIRST_YK_WALLET_HELP.fill(lang, [crate::app_yubikey::text::YK_WALLET.get(lang)]),
-        ));
+        items.push(Item::Help(text::FIRST_YK_WALLET_HELP.fill(
+            lang,
+            [yw_engine::wallet::app_yubikey::text::YK_WALLET.get(lang)],
+        )));
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some(
             text::FIRST_EXISTING_TITLE.get(lang).to_owned(),
@@ -1294,7 +1296,9 @@ impl App {
         ));
         items.push(Item::Help(text::IMPORT_KEY_HINT.get(lang).to_owned()));
         items.push(Item::Help(
-            crate::app_btc::BTC_IMPORT_NOTE.get(lang).to_owned(),
+            yw_engine::wallet::app_btc::BTC_IMPORT_NOTE
+                .get(lang)
+                .to_owned(),
         ));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
@@ -1305,7 +1309,9 @@ impl App {
 
     fn import_address(lang: Lang, address: &str, items: &mut Vec<Item>) {
         items.push(Item::Title(
-            crate::app::text::STEP_FIRST_ADDRESS.get(lang).to_owned(),
+            yw_engine::wallet::text::STEP_FIRST_ADDRESS
+                .get(lang)
+                .to_owned(),
         ));
         items.push(steps(IMPORT_STEPS.map(|step| step.get(lang)), 3));
         items.push(Item::CardStart(None));
@@ -1387,11 +1393,11 @@ impl App {
         items.push(Item::Title(text::DONE_TITLE.get(lang).to_owned()));
         if let Some(done) = self.done_yubikey {
             let (banner, backup) = match done {
-                crate::app_yubikey::YkDone::Created(serial) => (
+                yw_engine::wallet::app_yubikey::YkDone::Created(serial) => (
                     text::DONE_YK_CREATED.fill(lang, [&self.card_name(serial)]),
                     text::DONE_YK_CREATED_BACKUP,
                 ),
-                crate::app_yubikey::YkDone::Connected(serial) => (
+                yw_engine::wallet::app_yubikey::YkDone::Connected(serial) => (
                     text::DONE_YK_CONNECTED.fill(lang, [&self.card_name(serial)]),
                     text::DONE_YK_CONNECTED_BACKUP,
                 ),
@@ -1999,7 +2005,7 @@ impl App {
                 locked: None,
                 selected,
                 details: Vec::new(),
-                hidden: Some(crate::app_hidden::Family::Evm),
+                hidden: Some(yw_engine::wallet::app_hidden::Family::Evm),
                 actions,
                 footer,
             },
@@ -2182,7 +2188,9 @@ impl App {
             items.push(Item::Text(vault_file_text(lang, generation, written)));
         }
         items.push(Item::Help(if self.guard.wer_unprotected {
-            crate::app::text::T_WER_UNPROTECTED.get(lang).to_owned()
+            yw_engine::wallet::text::T_WER_UNPROTECTED
+                .get(lang)
+                .to_owned()
         } else {
             text::WER_PROTECTED.get(lang).to_owned()
         }));
@@ -2292,7 +2300,7 @@ impl App {
             Ctl::button(ids::TPL_SAVE, text::TPL_SAVE.get(lang)).enabled(!manual),
             Ctl::danger(ids::TPL_DELETE, text::TPL_DELETE.get(lang)).enabled(!manual && stored),
         ]));
-        if self.rpc_removed == Some(crate::app::RpcRemoved::Template) {
+        if self.rpc_removed == Some(yw_engine::wallet::RpcRemoved::Template) {
             items.push(Item::Banner(
                 text::TPL_DELETED.get(lang).to_owned(),
                 Tone::Success,
@@ -2371,7 +2379,7 @@ impl App {
             if let Some((_, message, TestState::Failed)) = message {
                 items.push(Item::Banner(message.clone(), Tone::Danger));
             }
-            if self.rpc_removed == Some(crate::app::RpcRemoved::Url(network)) {
+            if self.rpc_removed == Some(yw_engine::wallet::RpcRemoved::Url(network)) {
                 items.push(Item::Banner(
                     text::RPC_URL_DELETED.get(lang).to_owned(),
                     Tone::Success,
@@ -2642,7 +2650,9 @@ impl App {
             ),
             Confirm::YkAbandon => (
                 text::C_YK_ABANDON_TITLE.get(lang),
-                crate::app_yubikey::text::YK_ABANDON.get(lang).to_owned(),
+                yw_engine::wallet::app_yubikey::text::YK_ABANDON
+                    .get(lang)
+                    .to_owned(),
                 text::C_YK_ABANDON_YES.get(lang),
             ),
             Confirm::YkPinLater => (

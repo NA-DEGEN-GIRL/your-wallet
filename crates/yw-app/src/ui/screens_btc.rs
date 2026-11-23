@@ -12,12 +12,7 @@ use yw_core::btc::{BtcMeta, BtcNetwork, FeeRate, Sats, Txid, encode_address};
 use yw_core::lang::{Lang, Text};
 
 use crate::apikeys::KeyName;
-use crate::app::{App, AppMode, Wallet};
-use crate::app_book::{BookTarget, PromptPlace};
-use crate::app_btc::{
-    BtcCtx, BtcFeeChoice, BtcFeeForm, BtcFlowStage, BtcGate, BtcUi, DISCOVERY_INCOMPLETE,
-    PENDING_INCOMING, PENDING_INCOMING_UNREAD, confirmations_text, record_status,
-};
+use crate::app::App;
 use crate::btc::work::FeeQuote;
 use crate::errors::ErrorCode;
 use crate::meta::BookChain;
@@ -26,6 +21,12 @@ use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item};
 use yw_engine::screen::Tone;
 use yw_engine::text::grouped;
+use yw_engine::wallet::app_book::{BookTarget, PromptPlace};
+use yw_engine::wallet::app_btc::{
+    BtcCtx, BtcFeeChoice, BtcFeeForm, BtcFlowStage, BtcGate, BtcUi, DISCOVERY_INCOMPLETE,
+    PENDING_INCOMING, PENDING_INCOMING_UNREAD, confirmations_text, record_status,
+};
+use yw_engine::wallet::{AppMode, Wallet};
 
 pub mod text;
 
@@ -680,7 +681,7 @@ fn active_detail(ctx: &BtcCtx<'_>) -> String {
         format!(
             "{} · {}",
             meta.account().node_text_in(ctx.lang, net),
-            crate::app_btc::account_type_text(ctx.lang, meta.account(), net)
+            yw_engine::wallet::app_btc::account_type_text(ctx.lang, meta.account(), net)
         )
     })
 }
@@ -939,7 +940,7 @@ impl App {
                 locked: None,
                 selected,
                 details,
-                hidden: Some(crate::app_hidden::Family::Btc),
+                hidden: Some(yw_engine::wallet::app_hidden::Family::Btc),
                 actions,
                 footer,
             },
@@ -961,7 +962,7 @@ impl App {
         items.push(Item::Row(vec![
             Ctl::radio(
                 ids::ADDRESS_MODE_SINGLE,
-                crate::app_btc::T_BTC_MODE_SINGLE.get(lang),
+                yw_engine::wallet::app_btc::T_BTC_MODE_SINGLE.get(lang),
                 fixed,
                 true,
             )
@@ -970,21 +971,23 @@ impl App {
         items.push(Item::Row(vec![
             Ctl::radio(
                 ids::ADDRESS_MODE_HD,
-                crate::app_btc::T_BTC_MODE_HD.get(lang),
+                yw_engine::wallet::app_btc::T_BTC_MODE_HD.get(lang),
                 !fixed,
                 false,
             )
             .enabled(usable),
         ]));
         items.push(Item::Help(
-            crate::app_btc::T_BTC_MODE_HELP.get(lang).to_owned(),
+            yw_engine::wallet::app_btc::T_BTC_MODE_HELP
+                .get(lang)
+                .to_owned(),
         ));
     }
 
     /// The add-account key source (spec/08 §3.5): the standard BTC path (default) or the key of
     /// an EVM account (warning and the EVM account radios; adding asks for confirmation).
     fn btc_add_source_items(&self, ctx: &BtcCtx<'_>, usable: bool, items: &mut Vec<Item>) {
-        let evm = self.btc.add_source == crate::app_btc::BtcAddSource::EvmShared;
+        let evm = self.btc.add_source == yw_engine::wallet::app_btc::BtcAddSource::EvmShared;
         let lang = ctx.lang;
         if self.several_mnemonics() {
             // Which recovery phrase the standard-path account comes from (spec/02 §8.6).
@@ -1010,21 +1013,21 @@ impl App {
         items.push(Item::Row(vec![
             Ctl::radio(
                 ids::ACCOUNT_SOURCE_STANDARD,
-                crate::app_btc::T_BTC_SOURCE_STANDARD.get(lang),
+                yw_engine::wallet::app_btc::T_BTC_SOURCE_STANDARD.get(lang),
                 !evm,
                 true,
             )
             .enabled(usable),
         ]));
         items.push(Item::Help(
-            crate::app_btc::T_BTC_SOURCE_STANDARD_HELP
+            yw_engine::wallet::app_btc::T_BTC_SOURCE_STANDARD_HELP
                 .get(lang)
                 .to_owned(),
         ));
         items.push(Item::Row(vec![
             Ctl::radio(
                 ids::ACCOUNT_SOURCE_EVM,
-                crate::app_btc::T_BTC_SOURCE_EVM.get(lang),
+                yw_engine::wallet::app_btc::T_BTC_SOURCE_EVM.get(lang),
                 evm,
                 false,
             )
@@ -1034,7 +1037,9 @@ impl App {
             return;
         }
         items.push(Item::Banner(
-            crate::app_btc::T_BTC_EVM_SHARED.get(lang).to_owned(),
+            yw_engine::wallet::app_btc::T_BTC_EVM_SHARED
+                .get(lang)
+                .to_owned(),
             Tone::Warn,
         ));
         let accounts = ctx.evm_accounts();
@@ -1049,7 +1054,7 @@ impl App {
             let id = ids::EVM_ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0));
             let text = format!(
                 "{label} · {} · m/44'/60'/0'/0/{index}",
-                crate::app_btc::short_address(address)
+                yw_engine::wallet::app_btc::short_address(address)
             );
             items.push(Item::Row(vec![
                 Ctl::radio(id, &text, self.btc.add_evm_index == *index, row == 0).enabled(usable),
@@ -1089,7 +1094,7 @@ impl App {
         // never in the balance above); the refresh's yes/no banner stays while that list does
         // not account for every address the refresh flagged.
         let list = self.received_list(crate::received::RecvChain::Btc);
-        let pending_sum = list.and_then(crate::app_received::RecvList::pending_sum);
+        let pending_sum = list.and_then(yw_engine::wallet::app_received::RecvList::pending_sum);
         if let Some(sats) = pending_sum {
             items.push(Item::Muted(pending_incoming_line(
                 lang,
@@ -1164,7 +1169,7 @@ impl App {
                 mark(text::UTXO_HINT);
             }
             if utxo.indexer_only {
-                mark(crate::app_btc::INDEXER_ONLY);
+                mark(yw_engine::wallet::app_btc::INDEXER_ONLY);
             }
             items.push(Item::Text(line));
             items.push(Item::Mono(utxo.outpoint.to_string()));
@@ -1204,7 +1209,7 @@ impl App {
         // Display-only names of the recipients (2026-11-10, like EVM's U11): an address-book
         // entry or one of the wallet's own accounts; earlier recipients are not named.
         let known = if rows.iter().any(|row| !row.counterparty.is_empty()) {
-            crate::app_btc::known_addresses_on(ctx, ctx.net())
+            yw_engine::wallet::app_btc::known_addresses_on(ctx, ctx.net())
         } else {
             Vec::new()
         };
@@ -1227,13 +1232,13 @@ impl App {
                 .iter()
                 .filter(|entry| entry.address == lower)
                 .find_map(|entry| match &entry.source {
-                    crate::app_btc::BtcKnownSource::Book { label, .. } => {
+                    yw_engine::wallet::app_btc::BtcKnownSource::Book { label, .. } => {
                         Some(format!(" {}", text::TO_BOOK.fill(lang, [label])))
                     }
-                    crate::app_btc::BtcKnownSource::Own { account } => {
+                    yw_engine::wallet::app_btc::BtcKnownSource::Own { account } => {
                         Some(format!(" {}", text::TO_OWN.fill(lang, [account])))
                     }
-                    crate::app_btc::BtcKnownSource::Sent => None,
+                    yw_engine::wallet::app_btc::BtcKnownSource::Sent => None,
                 })
                 .unwrap_or_default();
             if let Some(amount) = row.amount {
@@ -1780,7 +1785,7 @@ impl App {
                 )]));
                 if entry.as_ref().is_some_and(|entry| !entry.verified) {
                     items.push(Item::Help(
-                        crate::app_book::text::BOOK_VERIFY_HINT
+                        yw_engine::wallet::app_book::text::BOOK_VERIFY_HINT
                             .get(self.settings.language)
                             .to_owned(),
                     ));
@@ -1807,13 +1812,13 @@ impl App {
                 Ctl::radio(
                     ids::UNIT_BTC,
                     "BTC",
-                    form.unit == crate::app_btc::BtcAmountUnit::Btc,
+                    form.unit == yw_engine::wallet::app_btc::BtcAmountUnit::Btc,
                     true,
                 ),
                 Ctl::radio(
                     ids::UNIT_SATS,
                     "sats",
-                    form.unit == crate::app_btc::BtcAmountUnit::Sats,
+                    form.unit == yw_engine::wallet::app_btc::BtcAmountUnit::Sats,
                     false,
                 ),
             ],
@@ -1842,7 +1847,7 @@ impl App {
         {
             items.push(Item::Banner(
                 info.clone(),
-                if info.as_str() == crate::app_btc::BTC_PREPARING.get(lang) {
+                if info.as_str() == yw_engine::wallet::app_btc::BTC_PREPARING.get(lang) {
                     Tone::Info
                 } else {
                     Tone::Warn
@@ -1850,7 +1855,7 @@ impl App {
             ));
         }
         items.push(Item::CardEnd);
-        self.journal_send_items(crate::app_sidecar::SendChain::Btc, items);
+        self.journal_send_items(yw_engine::wallet::app_sidecar::SendChain::Btc, items);
         let blocker = self.btc_review_blocker();
         items.push(Item::Row(vec![
             Ctl::primary(ids::SEND_REVIEW, text::REVIEW.get(lang)).enabled(blocker.is_none()),
@@ -1858,7 +1863,8 @@ impl App {
         ]));
         // What `검토` waits for, or that it sends nothing yet (2026-11-12).
         items.push(Item::Help(
-            crate::app_sol::ReviewBlocker::line(self.settings.language, blocker).to_owned(),
+            yw_engine::wallet::app_sol::ReviewBlocker::line(self.settings.language, blocker)
+                .to_owned(),
         ));
     }
 
@@ -1873,15 +1879,15 @@ impl App {
     /// Why the send form's `검토` is off, `None` when it is on (2026-11-12: the line under the
     /// button).
     #[must_use]
-    pub fn btc_review_blocker(&self) -> Option<crate::app_sol::ReviewBlocker> {
+    pub fn btc_review_blocker(&self) -> Option<yw_engine::wallet::app_sol::ReviewBlocker> {
         let held = self.mn_send_blocked(self.btc_backup_gate())
             // spec/10 §9.3: the YubiKey is still on its factory PINs (the band says so).
             || self.btc_selected_card_gate().is_some()
             || self
-                .journal_hold(crate::app_sidecar::SendChain::Btc)
+                .journal_hold(yw_engine::wallet::app_sidecar::SendChain::Btc)
                 .is_some();
         if held {
-            return Some(crate::app_sol::ReviewBlocker::Held);
+            return Some(yw_engine::wallet::app_sol::ReviewBlocker::Held);
         }
         self.btc.review_blocker(&self.btc_ctx())
     }
@@ -2112,7 +2118,9 @@ impl App {
         if view.fixed && !view.single_key {
             // An HD account in fixed-address mode (spec/08 §3.5): said before the QR.
             items.push(Item::Banner(
-                crate::app_btc::T_BTC_FIXED_RECEIVE.get(lang).to_owned(),
+                yw_engine::wallet::app_btc::T_BTC_FIXED_RECEIVE
+                    .get(lang)
+                    .to_owned(),
                 Tone::Info,
             ));
         }
@@ -2273,9 +2281,7 @@ mod tests {
         T_BTC_ESPLORA_NOTE, fee_choice_of, fee_ids, grouped, ids, mismatch_labels, network_tone,
     };
     use crate::apikeys::ApiKeys;
-    use crate::app::{App, AppMode, Paths, Screen};
-    use crate::app_btc::{BTC_IMPORT_NOTE, BTC_MAX_ACTIVITY_ROWS, BtcFeeChoice};
-    use crate::app_sol::ReviewBlocker;
+    use crate::app::{App, Paths};
     use crate::errors::ErrorCode;
     use crate::events::JournalView;
     use crate::meta::{Meta, Tab};
@@ -2286,6 +2292,9 @@ mod tests {
     use yw_core::lang::Lang;
     use yw_engine::screen::SettingsSection;
     use yw_engine::screen::Tone;
+    use yw_engine::wallet::app_btc::{BTC_IMPORT_NOTE, BTC_MAX_ACTIVITY_ROWS, BtcFeeChoice};
+    use yw_engine::wallet::app_sol::ReviewBlocker;
+    use yw_engine::wallet::{AppMode, Screen};
 
     /// A compressed account public key (the `meta.rs` test value; never derived from here).
     const TESTNET_ACCOUNT: &str =
@@ -2550,18 +2559,24 @@ mod tests {
             assert_eq!(evm.text, "EVM 계정과 같은 키");
             assert_eq!(evm.checked, Some(false));
             assert!(control(&items, ids::EVM_ACCOUNT_BASE).is_none());
-            assert!(!has_text(&items, crate::app_btc::T_BTC_EVM_SHARED.ko));
-            app.btc.add_source = crate::app_btc::BtcAddSource::EvmShared;
+            assert!(!has_text(
+                &items,
+                yw_engine::wallet::app_btc::T_BTC_EVM_SHARED.ko
+            ));
+            app.btc.add_source = yw_engine::wallet::app_btc::BtcAddSource::EvmShared;
             let items = app.items();
             assert_eq!(
                 control(&items, ids::ACCOUNT_SOURCE_EVM).and_then(|ctl| ctl.checked),
                 Some(true)
             );
-            assert!(has_text(&items, crate::app_btc::T_BTC_EVM_SHARED.ko));
+            assert!(has_text(
+                &items,
+                yw_engine::wallet::app_btc::T_BTC_EVM_SHARED.ko
+            ));
             let first = control(&items, ids::EVM_ACCOUNT_BASE).expect("EVM account 0");
             assert!(first.text.ends_with("m/44'/60'/0'/0/0"), "{}", first.text);
             assert_eq!(first.checked, Some(true));
-            app.btc.add_source = crate::app_btc::BtcAddSource::Standard;
+            app.btc.add_source = yw_engine::wallet::app_btc::BtcAddSource::Standard;
         }
     }
 
@@ -2578,12 +2593,18 @@ mod tests {
         let hd = control(&items, ids::ADDRESS_MODE_HD).expect("hd radio");
         assert_eq!(hd.text, "받을 때마다 새 주소 (HD, 프라이버시↑)");
         assert_eq!(hd.checked, Some(false));
-        assert!(has_text(&items, crate::app_btc::T_BTC_MODE_HELP.ko));
+        assert!(has_text(
+            &items,
+            yw_engine::wallet::app_btc::T_BTC_MODE_HELP.ko
+        ));
         let meta = app.btc_ctx().btc_meta().cloned().unwrap();
-        app.btc.receive = crate::app_btc::BtcUi::receive_view(Lang::Ko, &meta, 0);
+        app.btc.receive = yw_engine::wallet::app_btc::BtcUi::receive_view(Lang::Ko, &meta, 0);
         app.screen = Screen::BtcReceive;
         let items = app.items();
-        assert!(has_text(&items, crate::app_btc::T_BTC_FIXED_RECEIVE.ko));
+        assert!(has_text(
+            &items,
+            yw_engine::wallet::app_btc::T_BTC_FIXED_RECEIVE.ko
+        ));
         assert!(has_text(&items, "m/84'/1'/0'/0/0"));
         assert!(control(&items, ids::NEW_ADDRESS).is_none());
         assert!(control(&items, ids::COPY_ADDRESS).is_some());
@@ -2593,9 +2614,12 @@ mod tests {
         if let Some(document) = app.meta.as_mut() {
             document.btc = Some(Box::new(hd_meta.clone()));
         }
-        app.btc.receive = crate::app_btc::BtcUi::receive_view(Lang::Ko, &hd_meta, 3);
+        app.btc.receive = yw_engine::wallet::app_btc::BtcUi::receive_view(Lang::Ko, &hd_meta, 3);
         let items = app.items();
-        assert!(!has_text(&items, crate::app_btc::T_BTC_FIXED_RECEIVE.ko));
+        assert!(!has_text(
+            &items,
+            yw_engine::wallet::app_btc::T_BTC_FIXED_RECEIVE.ko
+        ));
         assert!(has_text(&items, "m/84'/1'/0'/0/3"));
         assert!(control(&items, ids::NEW_ADDRESS).is_some());
         // The address is one copy line before the QR (2026-11-12), whole (§3.3), with
@@ -2840,7 +2864,7 @@ mod tests {
         use yw_core::lang::has_hangul;
         let korean: Vec<&str> = super::text::ALL
             .iter()
-            .chain(crate::app_btc::text::ALL)
+            .chain(yw_engine::wallet::app_btc::text::ALL)
             .chain(crate::btc::text::ALL)
             .map(|entry| entry.ko)
             .filter(|ko| has_hangul(ko) && ko.chars().count() >= 4 && !ko.contains("{0}"))
@@ -2891,7 +2915,7 @@ mod tests {
             check(&app.items(), &name);
         }
         let meta = app.btc_ctx().btc_meta().cloned().unwrap();
-        app.btc.receive = crate::app_btc::BtcUi::receive_view(Lang::En, &meta, 0);
+        app.btc.receive = yw_engine::wallet::app_btc::BtcUi::receive_view(Lang::En, &meta, 0);
         app.screen = Screen::BtcReceive;
         let items = app.items();
         check(&items, "receive");
@@ -2903,8 +2927,8 @@ mod tests {
     /// English are Hangul-free; the Korean ones keep their text.
     #[test]
     fn english_bitcoin_confirmations_and_statuses() {
-        use crate::app_btc::BtcConfirm;
         use yw_core::lang::has_hangul;
+        use yw_engine::wallet::app_btc::BtcConfirm;
         let txid = yw_core::btc::Txid::from_bytes([1; 32]);
         for confirm in [
             BtcConfirm::NetworkChange {
@@ -2943,16 +2967,18 @@ mod tests {
             assert!(!has_hangul(choice.label(Lang::En)));
         }
         for confirmations in [0, 1, 6] {
-            assert!(!has_hangul(&crate::app_btc::confirmations_text(
-                Lang::En,
-                confirmations
-            )));
+            assert!(!has_hangul(
+                &yw_engine::wallet::app_btc::confirmations_text(Lang::En, confirmations)
+            ));
         }
         assert_eq!(
-            crate::app_btc::ends_text(Lang::En, (4, 4)),
+            yw_engine::wallet::app_btc::ends_text(Lang::En, (4, 4)),
             "first 4 and last 4 characters"
         );
-        assert_eq!(crate::app_btc::ends_text(Lang::Ko, (0, 5)), "끝 5자");
+        assert_eq!(
+            yw_engine::wallet::app_btc::ends_text(Lang::Ko, (0, 5)),
+            "끝 5자"
+        );
     }
 
     /// spec/14: the screen catalogue keeps the catalogue invariants.
@@ -2961,7 +2987,7 @@ mod tests {
         use yw_core::lang::{has_hangul, placeholders};
         for entry in super::text::ALL
             .iter()
-            .chain(crate::app_btc::text::ALL)
+            .chain(yw_engine::wallet::app_btc::text::ALL)
             .chain(crate::btc::text::ALL)
             .chain(crate::received::btc::text::ALL)
             .chain(crate::workers::journal::btc::text::ALL)

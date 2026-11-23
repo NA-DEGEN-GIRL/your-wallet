@@ -11,7 +11,7 @@
 
 use yw_win::ui::Msg;
 
-use crate::lock::LockReason;
+use yw_engine::wallet::lock::LockReason;
 
 /// Event queue doorbell (`WM_APP + 1`).
 pub const WM_YW_EVENTS: u32 = 0x8001;
@@ -194,7 +194,7 @@ pub const fn system_action(msg: &Msg) -> Option<SystemAction> {
 #[cfg(test)]
 mod tests {
     use super::{SystemAction, system_action};
-    use crate::lock::LockReason;
+    use yw_engine::wallet::lock::LockReason;
     use yw_win::ui::Msg;
 
     /// LK-3 (2026-11-21, S4 W1: moved from `lock::tests` unchanged).

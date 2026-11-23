@@ -1116,7 +1116,7 @@ fn broadcast_outcomes() -> TestResult {
     assert_eq!(unverified.transition(hash, 3), None);
     assert!(unverified.resends_automatically());
     assert_eq!(
-        yw_app::app_browser::broadcast_answer(hash, unverified),
+        yw_engine::wallet::app_browser::broadcast_answer(hash, unverified),
         Ok(yw_json::Value::String(BESU_HASH.to_owned()))
     );
     for failed in [
@@ -1125,7 +1125,7 @@ fn broadcast_outcomes() -> TestResult {
         BroadcastOutcome::HashMismatch,
     ] {
         assert_eq!(
-            yw_app::app_browser::broadcast_answer(hash, failed),
+            yw_engine::wallet::app_browser::broadcast_answer(hash, failed),
             Err(yw_core::policy::ProviderError::BroadcastFailed)
         );
     }

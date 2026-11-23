@@ -21,9 +21,6 @@ use btc_support::{
     TIP, TestResult, Verb, account, address_json, healthy, params, path_address, xpub,
 };
 use yw_app::apikeys::ApiKeys;
-use yw_app::app_btc::{
-    BtcAction, BtcAmountUnit, BtcApprovalItem, BtcCtx, BtcFeeChoice, BtcGate, BtcScreen, BtcUi,
-};
 use yw_app::btc::Trigger;
 use yw_app::btc::chain::ChainInput;
 use yw_app::btc::flow::RefreshJob;
@@ -53,6 +50,9 @@ use yw_core::btc::{
 use yw_core::journal::btc::BtcTxState;
 use yw_core::keyimport::{ImportPreview, ImportSpec};
 use yw_core::secret::Zeroizing;
+use yw_engine::wallet::app_btc::{
+    BtcAction, BtcAmountUnit, BtcApprovalItem, BtcCtx, BtcFeeChoice, BtcGate, BtcScreen, BtcUi,
+};
 use yw_platform::http::HttpsUrl;
 
 const ABANDON: &str =
@@ -1520,7 +1520,10 @@ fn approval_view_shows_btc_money_rows() -> TestResult {
     Ok(())
 }
 
-fn view_of(harness: &Harness, txid: &Txid) -> TestResult<yw_app::app_btc::BtcActivityView> {
+fn view_of(
+    harness: &Harness,
+    txid: &Txid,
+) -> TestResult<yw_engine::wallet::app_btc::BtcActivityView> {
     harness
         .ui
         .activity_rows(&harness.ctx())

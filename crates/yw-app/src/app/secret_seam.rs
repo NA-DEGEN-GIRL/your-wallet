@@ -40,6 +40,9 @@ use std::cell::{Cell, RefCell};
 use yw_win::ui::UiError;
 
 use yw_engine::secret::SecretKind;
+// 2026-11-23 (S4d E1): the wallet's crate-private steps and buffers (`on_submit`, the held
+// flags) as the tests reach them across the crate boundary.
+use yw_engine::testkit::WalletTestExt;
 
 /// How `create_secret` refuses a window while a refusal is set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -286,38 +289,34 @@ impl super::App {
     /// The transient secret buffers that hold something now (names only).
     pub(crate) fn test_held(&self) -> Vec<&'static str> {
         let mut held = Vec::new();
-        if self.import.password.is_some() {
+        let (password, phrase) = self.import_held();
+        if password {
             held.push("import-password");
         }
-        if self.import.phrase.is_some() {
+        if phrase {
             held.push("import-phrase");
         }
-        if self.challenge.is_some() {
+        if self.challenge().is_some() {
             held.push("challenge");
         }
         if self.keys.start.holds_secret() {
             held.push("key-start");
         }
-        let (phrase, quiz) = self.mn.test_holds();
+        let (phrase, quiz) = self.mn_holds();
         if phrase {
             held.push("mn-phrase");
         }
         if quiz {
             held.push("mn-challenge");
         }
-        if self
-            .card
-            .wizard
-            .as_ref()
-            .is_some_and(crate::app_yubikey::YkWizard::test_holds_secret)
-        {
+        if self.yk_wizard_holds_secret() {
             held.push("yk-wizard");
         }
         if self
             .card
             .step
             .as_ref()
-            .is_some_and(|step| step.approved.is_some())
+            .is_some_and(yw_engine::wallet::app_card::CardStep::holds_approval)
         {
             held.push("card-approval");
         }
@@ -335,7 +334,7 @@ impl super::App {
         values: Vec<yw_core::secret::Zeroizing<Vec<u8>>>,
         checkbox: bool,
     ) {
-        self.on_submit(purpose, crate::ui::secret::Submission { values, checkbox });
+        self.on_submit(purpose, yw_engine::secret::Submission { values, checkbox });
     }
 
     /// Delivers `msg` for window `serial` to the real secret handler (`on_secret`, as the

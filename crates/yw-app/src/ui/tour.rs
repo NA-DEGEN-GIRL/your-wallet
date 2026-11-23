@@ -43,12 +43,9 @@ use yw_win::ui::{
 };
 
 use crate::apikeys::ApiKeys;
-use crate::app::{
-    App, AppMode, MAIN_CLASS, Paths, Purpose, SECRET_INPUT_CLASS, SECRET_VIEW_CLASS, Screen,
-};
+use crate::app::{App, MAIN_CLASS, Paths, SECRET_INPUT_CLASS, SECRET_VIEW_CLASS};
 use crate::app_approval::smoke::{FixtureClock, FixtureRpc, fixture};
 use crate::app_approval::{APPROVAL_CLASS, PANEL_CLASS};
-use crate::app_evm::{AppApproval, BalanceState};
 use crate::events::{BalanceSnapshot, JournalView};
 use crate::flow::evm::prepare::{SendIntent, prepare};
 use crate::flow::evm::{ChainCache, ChainCheck, SharedTransport};
@@ -58,6 +55,8 @@ use crate::settings::Settings;
 use crate::workers::rpc::RpcJob;
 use yw_engine::screen::SettingsSection;
 use yw_engine::secret::{DisplaySecret, SecretFormOp, SecretKind};
+use yw_engine::wallet::app_evm::{AppApproval, BalanceState};
+use yw_engine::wallet::{AppMode, Purpose, Screen};
 
 const TIMER_CLASS: &str = "YourWalletV3TourTimer";
 /// A made-up user token contract (shot 31, hidden like an unwanted airdrop).
@@ -421,7 +420,7 @@ fn tour_browser(state: &mut App) {
         error: None,
         threads: Vec::new(),
     });
-    state.browser = Some(crate::app_browser::BrowserUi {
+    state.browser = Some(yw_engine::wallet::app_browser::BrowserUi {
         core,
         reads: Arc::new(crate::browser::read::ReadContext::new(None)),
         connections: 1,
@@ -431,8 +430,8 @@ fn tour_browser(state: &mut App) {
         dapp_unlock: false,
         unlocked: false,
         locking: false,
-        grant_write: crate::app_browser::GrantWrite::default(),
-        site_rows: crate::app_browser::SiteRows::default(),
+        grant_write: yw_engine::wallet::app_browser::GrantWrite::default(),
+        site_rows: yw_engine::wallet::app_browser::SiteRows::default(),
     });
     let sites = [
         (
@@ -1122,11 +1121,14 @@ fn tour_llm_answer(request: &[u8]) -> Vec<u8> {
         String::from_utf8_lossy(request).contains("000000000000000000000000000000000000dead");
     let (from, to, summary) = if sample {
         (
-            crate::app_llm::SAMPLE_FROM.to_ascii_lowercase(),
-            crate::app_llm::SAMPLE_TO.to_owned(),
+            yw_engine::wallet::app_llm::SAMPLE_FROM.to_ascii_lowercase(),
+            yw_engine::wallet::app_llm::SAMPLE_TO.to_owned(),
             text::AI_SAMPLE.fill(
                 tour_lang(),
-                [crate::app_llm::SAMPLE_FROM, crate::app_llm::SAMPLE_TO],
+                [
+                    yw_engine::wallet::app_llm::SAMPLE_FROM,
+                    yw_engine::wallet::app_llm::SAMPLE_TO,
+                ],
             ),
         )
     } else {
@@ -1385,9 +1387,9 @@ fn wait_for_ai(app: &Rc<RefCell<App>>) {
 /// template network has an `*.example.test` placeholder address (never contacted) and made-up
 /// test results — Base failed (its row link), Zcash testnet still testing, the rest working.
 fn tour_first_setup(app: &Rc<RefCell<App>>) {
-    use crate::app::TestState;
     use crate::errors::ErrorCode;
     use crate::ui::screens::ids;
+    use yw_engine::wallet::TestState;
     {
         let mut state = entry(app);
         let networks = state.generation_plan().0;
@@ -1452,9 +1454,9 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
     use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot};
     use yw_core::yubikey::record::{HwKeyRecord, RecordedSlot};
 
-    use crate::app_yubikey::{WizardOrigin, WizardStep, YkPurpose, YkWizard};
     use crate::workers::key::yubikey::YkPreview;
     use yw_engine::secret::CardSecretKind;
+    use yw_engine::wallet::app_yubikey::{WizardOrigin, WizardStep, YkPurpose, YkWizard};
 
     let network = app.borrow().yk_network();
     let seed = *yw_core::bip39::Mnemonic::parse(&test_phrase_12())
@@ -1683,10 +1685,10 @@ fn screenshot_tour() {
     }
     set_screen(&app, AppMode::NoVault, Screen::KeyStartIntro);
     save(main_hwnd(&app), "24-key-start-bitcoin");
-    entry(&app).keys.start = crate::app_keys::KeyStartFlow::default();
+    entry(&app).keys.start = yw_engine::wallet::app_keys::KeyStartFlow::default();
     // The YubiKey wallet (spec/10 §7.1-1): S01 shows every way on its first view now
     // (2026-11-08), so scene 35 is where a new YubiKey wallet ends — S08 with the RPC step.
-    entry(&app).done_yubikey = Some(crate::app_yubikey::YkDone::Created(12_345_678));
+    entry(&app).done_yubikey = Some(yw_engine::wallet::app_yubikey::YkDone::Created(12_345_678));
     set_screen(&app, AppMode::NoVault, Screen::Done);
     save(main_hwnd(&app), "35-yubikey-done");
     entry(&app).done_yubikey = None;
@@ -1731,7 +1733,7 @@ fn screenshot_tour() {
         state.drain();
         state.controls.set_text(
             crate::ui::screens_reset::ids::RESET_PHRASE,
-            crate::app_reset::RESET_PHRASE.get(tour_lang()),
+            yw_engine::wallet::app_reset::RESET_PHRASE.get(tour_lang()),
         );
         state.reset.phrase_ok = true;
         state.refresh();
@@ -1780,7 +1782,7 @@ fn screenshot_tour() {
         state.set_rpc_message(
             NetworkId::Eip155(SEPOLIA),
             text::TESTING.get(tour_lang()).to_owned(),
-            crate::app::TestState::Testing,
+            yw_engine::wallet::TestState::Testing,
         );
         state.drain();
         state.refresh();
@@ -1967,11 +1969,11 @@ fn screenshot_tour() {
     save(main_hwnd(&app), "15-main-solana");
     {
         let mut state = entry(&app);
-        state.sol.send = crate::app_sol::SolSendForm {
+        state.sol.send = yw_engine::wallet::app_sol::SolSendForm {
             token: yw_core::sol::template::spl_entries(yw_core::sol::SolCluster::Devnet).next(),
             to_text: SOL_RECIPIENT.to_owned(),
             amount_text: "5".to_owned(),
-            ..crate::app_sol::SolSendForm::default()
+            ..yw_engine::wallet::app_sol::SolSendForm::default()
         };
         state.sol_validate_send();
         state.drain();
@@ -1983,7 +1985,7 @@ fn screenshot_tour() {
     entry(&app).tour_reject_approval();
     {
         let mut state = entry(&app);
-        state.sol.send = crate::app_sol::SolSendForm::default();
+        state.sol.send = yw_engine::wallet::app_sol::SolSendForm::default();
     }
     {
         let mut state = entry(&app);
@@ -2016,7 +2018,7 @@ fn screenshot_tour() {
     {
         // The explicit choice "EVM 계정과 같은 키": the warning and the EVM accounts.
         let mut state = entry(&app);
-        state.btc.add_source = crate::app_btc::BtcAddSource::EvmShared;
+        state.btc.add_source = yw_engine::wallet::app_btc::BtcAddSource::EvmShared;
         state.btc.add_evm_index = 0;
         state.scroll = 640;
         state.refresh();
@@ -2026,7 +2028,7 @@ fn screenshot_tour() {
     {
         let mut state = entry(&app);
         state.btc.add_account_open = false;
-        state.btc.add_source = crate::app_btc::BtcAddSource::Standard;
+        state.btc.add_source = yw_engine::wallet::app_btc::BtcAddSource::Standard;
         state.scroll = 0;
         // S12 of BIP84 account 0 in fixed-address mode: `m/84'/1'/0'/0/0` only.
         let primary = state
@@ -2034,8 +2036,8 @@ fn screenshot_tour() {
             .as_ref()
             .and_then(|meta| meta.btc.as_deref().cloned());
         let lang = state.settings.language;
-        state.btc.receive =
-            primary.and_then(|meta| crate::app_btc::BtcUi::receive_view(lang, &meta, 0));
+        state.btc.receive = primary
+            .and_then(|meta| yw_engine::wallet::app_btc::BtcUi::receive_view(lang, &meta, 0));
     }
     set_screen(&app, UNLOCKED, Screen::BtcReceive);
     save(main_hwnd(&app), "34-receive-bitcoin");
@@ -2073,7 +2075,7 @@ fn screenshot_tour() {
     save(main_hwnd(&app), "54-send-bitcoin-fee");
     {
         let mut state = entry(&app);
-        state.btc.send = crate::app_btc::BtcSendForm::default();
+        state.btc.send = yw_engine::wallet::app_btc::BtcSendForm::default();
         state.btc.fee_quote = None;
     }
     set_screen(&app, UNLOCKED, Screen::Main);

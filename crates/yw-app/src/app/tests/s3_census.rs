@@ -1062,14 +1062,14 @@ pub(crate) fn evm_quote(app: &mut App) {
         yw_core::evm::address::parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
     app.evm.balances.insert(
         chain,
-        crate::app_evm::BalanceState {
+        yw_engine::wallet::app_evm::BalanceState {
             snapshot: Some(crate::events::BalanceSnapshot {
                 block: 7,
                 native: vec![(owner, U256::from_u64(5_000_000_000_000_000))],
                 tokens: Vec::new(),
                 token_owner: owner,
             }),
-            ..crate::app_evm::BalanceState::default()
+            ..yw_engine::wallet::app_evm::BalanceState::default()
         },
     );
     app.evm.send.quote = Some(crate::flow::evm::form::Quote {
@@ -1098,9 +1098,9 @@ pub(crate) fn hc_withdraw(app: &mut App) {
             },
         },
     ));
-    app.hypercore.form = crate::app_hypercore::HcForm {
-        kind: crate::app_hypercore::HcFormKind::Withdraw,
-        ..crate::app_hypercore::HcForm::default()
+    app.hypercore.form = yw_engine::wallet::app_hypercore::HcForm {
+        kind: yw_engine::wallet::app_hypercore::HcFormKind::Withdraw,
+        ..yw_engine::wallet::app_hypercore::HcForm::default()
     };
     app.screen = Screen::HyperCore;
 }
@@ -1564,7 +1564,7 @@ fn fire(app: &mut App) {
 }
 
 fn reset_phrase() -> String {
-    crate::app_reset::RESET_PHRASE.ko.to_owned()
+    yw_engine::wallet::app_reset::RESET_PHRASE.ko.to_owned()
 }
 
 pub(crate) fn two_cards(app: &mut App) {
@@ -1795,10 +1795,10 @@ fn scenarios_golden() -> String {
 }
 
 /// A dispatcher with no pipe server and no read workers (as `app_browser`'s tests build it).
-fn headless_browser() -> crate::app_browser::BrowserUi {
+fn headless_browser() -> yw_engine::wallet::app_browser::BrowserUi {
     use std::sync::Arc;
     let events = Arc::new(crate::events::EventQueue::new(Box::new(|| {})));
-    crate::app_browser::BrowserUi {
+    yw_engine::wallet::app_browser::BrowserUi {
         core: crate::browser::BrowserCore::new(
             "abcdefghijklmnopabcdefghijklmnop",
             events as Arc<dyn crate::browser::DappSink>,
@@ -1812,8 +1812,8 @@ fn headless_browser() -> crate::app_browser::BrowserUi {
         dapp_unlock: false,
         unlocked: false,
         locking: false,
-        grant_write: crate::app_browser::GrantWrite::default(),
-        site_rows: crate::app_browser::SiteRows::default(),
+        grant_write: yw_engine::wallet::app_browser::GrantWrite::default(),
+        site_rows: yw_engine::wallet::app_browser::SiteRows::default(),
     }
 }
 

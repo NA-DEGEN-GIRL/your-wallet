@@ -22,7 +22,6 @@ mod llm {
     use super::common::{Answer, FakeClock};
     use yw_app::apikeys::ApiKeys;
     use yw_app::app::{App, Paths};
-    use yw_app::app_llm::transaction_input;
     use yw_app::events::EventQueue;
     use yw_app::explain::config::{ApiKey, ModelName, parse_endpoint};
     use yw_app::explain::input::RequestKind;
@@ -45,6 +44,7 @@ mod llm {
     use yw_core::evm::amount::U256;
     use yw_core::evm::chain::{SEPOLIA_GENESIS, SimulationSupport, sepolia};
     use yw_core::lang::Lang;
+    use yw_engine::wallet::app_llm::transaction_input;
     use yw_json::{Limits, Number, Object, Value};
 
     const KEY: &str = "test-key-01";

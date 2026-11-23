@@ -10,10 +10,13 @@
 //! `cargo test -p yw-app --lib app_approval::smoke -- --ignored --nocapture`
 //! (`YW_SMOKE_FIXTURE=S3` for a reverted simulation, default `S2`).
 
+// 2026-11-23 (S4d E1): the wallet's crate-private steps, buffers and flow state as the tests reach
+// them across the crate boundary (`yw_engine::testkit`).
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
+use yw_engine::testkit::FlowTestExt;
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::evm::address::parse_address;
@@ -29,8 +32,7 @@ use yw_win::ui::{
 
 use super::{APPROVAL_CLASS, PANEL_CLASS};
 use crate::apikeys::ApiKeys;
-use crate::app::{App, AppMode, Paths};
-use crate::app_evm::AppApproval;
+use crate::app::{App, Paths};
 use crate::events::JournalView;
 use crate::flow::evm::prepare::{SendIntent, prepare};
 use crate::flow::evm::{ChainCache, Clock, SharedTransport};
@@ -39,6 +41,8 @@ use crate::rpc::{HttpReply, Transport};
 use crate::settings::Settings;
 use crate::ui::interaction::{PrepareState, ReadyContent};
 use crate::workers::rpc::RpcJob;
+use yw_engine::wallet::AppMode;
+use yw_engine::wallet::app_evm::AppApproval;
 
 const TIMER_CLASS: &str = "YourWalletV3SmokeTimer";
 pub(crate) const S2_UNIX_MS: u64 = 0x6ac6_4ee0 * 1_000;
@@ -296,8 +300,16 @@ fn approval_window_renders_a_fixture_dry_run() {
         // layout is the shell's `ApprovalWin` (both were `EvmUi.window`).
         let paint = state.evm.approval.as_ref().expect("window open").paint();
         let win = state.approval_win.as_ref().expect("window open");
+        // 2026-11-23 (S4d E1): the paint's test facts come from `FlowTestExt::paint_test_facts`
+        // (were `cfg(test)` fields of `ApprovalPaint`, which do not cross crates).
+        let (prepare, _, _) = state
+            .evm
+            .approval
+            .as_ref()
+            .expect("window open")
+            .paint_test_facts();
         assert!(matches!(
-            paint.prepare,
+            prepare,
             PrepareState::Ready(ReadyContent::Signing(_))
         ));
         assert!(win.layout.is_some(), "the panel painted");
@@ -376,10 +388,15 @@ fn approval_hold_repaints_only_the_bottom_bar() {
         let (painted, panel, bar) = take_stats(&app);
         let state = app.borrow();
         let win = state.approval_win.as_ref().expect("window open");
-        let paint = state.evm.approval.as_ref().expect("window open").paint();
+        let (_, _, holding) = state
+            .evm
+            .approval
+            .as_ref()
+            .expect("window open")
+            .paint_test_facts();
         let held = win.bar.held_ms;
         println!("hold frame {frame}: held {held:?} window {painted:?} panel {panel:?}");
-        assert!(paint.holding, "the hold is under way");
+        assert!(holding, "the hold is under way");
         assert!(painted.count >= 2, "the progress repaints");
         assert!(within(painted.area, bar), "only the bottom bar repaints");
         assert_eq!(panel.count, 0, "the panel never repaints during a hold");
@@ -398,10 +415,15 @@ fn approval_hold_repaints_only_the_bottom_bar() {
     });
     {
         let state = app.borrow();
-        let paint = state.evm.approval.as_ref().expect("window open").paint();
-        assert!(!paint.holding);
+        let (_, interaction, holding) = state
+            .evm
+            .approval
+            .as_ref()
+            .expect("window open")
+            .paint_test_facts();
+        assert!(!holding);
         assert_eq!(
-            paint.interaction,
+            interaction,
             crate::ui::interaction::InteractionStatus::Pending
         );
     }

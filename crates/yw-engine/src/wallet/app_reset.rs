@@ -1,0 +1,552 @@
+//! Loading waits that end in a message instead of hanging (T-WAIT-STALLED), and S22
+//! `지갑 초기화` (spec/04 §2.20).
+//!
+//! Waits: a `Processing` screen and a requested meta (`KeyJob::LoadMeta`) are timed. After
+//! [`WAIT_TIMEOUT_MS`] the screen keeps waiting (a late result still lands) but shows what to do
+//! next: `다시 불러오기`, `잠금`, the log folder, and as a last resort `지갑 초기화`. A session
+//! screen that needs the account list while no meta was ever requested requests it (the 2026-11
+//! `BackupPending` hang: S04 never loaded the meta, so S12 waited forever).
+//!
+//! Reset: reachable from S07, S09, S04, S01 with T-LEFTOVER and settings → 보안, without
+//! unlocking. Typing [`RESET_PHRASE`] enables a 2 s hold area; completing the hold locks the app
+//! (closing every secret and approval window, like `잠금`), then the key worker drops the vault
+//! and moves the files (`store::reset`), and the app reloads into S01.
+
+use yw_core::lang::Lang;
+use yw_core::vault::FileKind;
+
+use crate::cmd::ResetPress;
+use crate::errors::ErrorCode;
+use crate::events::KeyJob;
+use crate::form::EditField;
+use crate::logging::{self, Field};
+use crate::secret::{BACKUP_ACK_HOLD_MS, HoldGate};
+use crate::wallet::lock::WalletLock;
+use crate::wallet::{AppMode, Screen, Wallet};
+use crate::wallet_files::{ResetError, ResetReport};
+
+/// A wait longer than this shows T-WAIT-STALLED.
+pub const WAIT_TIMEOUT_MS: u64 = 30_000;
+/// The fixed texts of S22's flow (spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// What the user types to enable the reset hold (in the app language, so it can be typed
+        /// with the keyboard layout of that language).
+        RESET_PHRASE = "초기화" / "reset";
+        /// T-RESET-DONE: {0} number of files, {1} the new folder.
+        RESET_DONE(2) = "지갑을 초기화했습니다. 지갑 파일 {0}개를 지우지 않고 {1} 폴더로 옮겼습니다. 그 지갑을 다시 쓰려면 복구 단어·원래 개인키, 또는 YubiKey(“YubiKey 연결하기 (복구 단어 없이)”)가 필요합니다. 옮긴 파일은 예전 비밀번호로 열립니다(되돌리는 방법: 복구 안내)."
+            / "The wallet was reset. {0} wallet files were moved, not deleted, to the folder {1}. To use that wallet again you need its recovery words or original private keys, or a YubiKey (“Connect a YubiKey (no recovery words)”). The moved files open with the old password (how to undo: recovery guide).";
+        /// T-RESET-DONE when nothing was there.
+        RESET_NOTHING = "옮길 지갑 파일이 없었습니다. 처음 화면입니다."
+            / "There were no wallet files to move. This is the first screen.";
+        /// The new folder could not be created.
+        RESET_FOLDER_FAILED = "지갑 파일을 옮길 폴더를 만들지 못했습니다. 아무 파일도 옮기지 않았습니다. 앱을 다시 실행한 뒤 다시 시도하거나, 앱을 종료하고 데이터 폴더의 파일을 직접 옮기세요(복구 안내)."
+            / "The folder for the wallet files could not be created. No file was moved. Restart the app and try again, or quit the app and move the files of the data folder yourself (recovery guide).";
+        /// A move failed: {0} the file, {1} number moved before, {2} the new folder.
+        RESET_MOVE_FAILED(3) = "{0} 파일을 옮기지 못했습니다. 먼저 옮긴 {1}개는 {2} 폴더에 있습니다. 다른 프로그램이 파일을 쓰고 있지 않은지 확인하고 다시 시도하세요."
+            / "The file {0} could not be moved. The {1} files moved before it are in the folder {2}. Check that no other program is using the files and try again.";
+        /// Added to T-RESET-DONE when sends were in flight (leading space).
+        RESET_IN_FLIGHT_AFTER = " 보내던 거래는 블록체인에서 계속 처리됩니다. 결과는 블록 탐색기에서 확인하세요."
+            / " Transactions that were being sent are still processed on the blockchain. Check their results in a block explorer.";
+        /// The processing screen while the files move.
+        MOVING = "지갑 파일을 옮기는 중…" / "Moving the wallet files…";
+        /// The processing screen while the files load.
+        LOADING = "불러오는 중…" / "Loading…";
+    }
+}
+
+pub use text::RESET_PHRASE;
+
+/// The timed waits (monotonic ms).
+#[derive(Debug, Default)]
+pub struct WaitWatch {
+    /// The current `Processing` screen was entered.
+    pub since: Option<u64>,
+    /// A meta load was requested and has not answered.
+    pub meta_since: Option<u64>,
+    /// A wait passed [`WAIT_TIMEOUT_MS`] (shown on `Processing` and the account-loading lines).
+    pub stalled: bool,
+    /// The last meta load failed: no meta is in memory, nothing writes the meta, the main timer
+    /// does not ask again, and T-META-FAILED offers the next steps (`다시 불러오기`, `잠금`, the
+    /// log folder). E-VLT-006 (the file did not open, or this build cannot read it) has its own
+    /// overlay first (`app_sidecar`); closed, the band says nothing was changed. The next
+    /// `request_meta` clears it; a meta is in memory again only after a load succeeds.
+    pub meta_failed: Option<ErrorCode>,
+}
+
+impl WaitWatch {
+    /// `set_screen` from `from` to `to`.
+    pub fn screen_changed(&mut self, from: &Screen, to: &Screen, now: u64) {
+        let was = matches!(from, Screen::Processing(_));
+        let is = matches!(to, Screen::Processing(_));
+        if is && !was {
+            self.since = Some(now);
+        } else if !is {
+            self.since = None;
+        }
+        if from != to {
+            self.stalled = false;
+        }
+    }
+
+    /// Whether a wait is over the limit at `now` (`meta_missing`: no meta in memory).
+    #[must_use]
+    pub fn over(&self, now: u64, meta_missing: bool) -> bool {
+        let over = |since: Option<u64>| {
+            since.is_some_and(|since| now.saturating_sub(since) >= WAIT_TIMEOUT_MS)
+        };
+        over(self.since) || (meta_missing && over(self.meta_since))
+    }
+}
+
+/// S22 state.
+#[derive(Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts of one screen"
+)]
+pub struct ResetUi {
+    /// Where `취소` returns to (the screen the reset was opened from).
+    pub back: Option<Screen>,
+    /// The confirmation field holds [`RESET_PHRASE`].
+    pub phrase_ok: bool,
+    /// `설정과 API 키도 함께 옮기기`.
+    pub include_settings: bool,
+    /// The 2 s hold of the hold area: active exactly while the area is held (2026-11-21, S4 W1:
+    /// the held area's control id `holding` left for the shell, `App::reset_hold`; before, it was
+    /// `Some` exactly while this gate was active).
+    pub gate: HoldGate,
+    /// Hold progress 0–1000 (drawn).
+    pub progress: u16,
+    /// The key worker is moving the files.
+    pub running: bool,
+    /// Sends were in flight when the reset started (logged, shown after).
+    pub warned_in_flight: bool,
+    /// The files that would move (listed when S22 opens and when the check box changes).
+    pub files: Vec<String>,
+}
+
+/// Whether the confirmation field's text is the phrase (surrounding spaces ignored).
+#[must_use]
+pub fn phrase_matches(lang: Lang, text: &str) -> bool {
+    text.trim() == RESET_PHRASE.get(lang)
+}
+
+/// T-RESET-DONE.
+#[must_use]
+pub fn reset_done_text(lang: Lang, report: &ResetReport) -> String {
+    match &report.folder {
+        Some(folder) => text::RESET_DONE.fill(
+            lang,
+            [
+                &report.moved.len().to_string(),
+                &folder.display().to_string(),
+            ],
+        ),
+        None => text::RESET_NOTHING.get(lang).to_owned(),
+    }
+}
+
+/// The text of a failed reset.
+#[must_use]
+pub fn reset_failed_text(lang: Lang, error: &ResetError) -> String {
+    match error {
+        ResetError::Folder(_) => text::RESET_FOLDER_FAILED.get(lang).to_owned(),
+        ResetError::Move {
+            folder,
+            moved,
+            failed,
+            ..
+        } => text::RESET_MOVE_FAILED.fill(
+            lang,
+            [
+                failed,
+                &moved.len().to_string(),
+                &folder.display().to_string(),
+            ],
+        ),
+    }
+}
+
+impl Wallet {
+    /// Queues `KeyJob::LoadMeta` and starts its wait clock (a failed load's T-META-FAILED
+    /// gives way to the loading line; no meta is in memory until the answer).
+    #[doc(hidden)]
+    pub fn request_meta(&mut self) {
+        self.wait.meta_failed = None;
+        self.key(KeyJob::LoadMeta);
+        if self.wait.meta_since.is_none() {
+            self.wait.meta_since = Some(self.clock.now_ms());
+        }
+    }
+
+    /// A screen of an open session that shows accounts.
+    fn needs_accounts(&self) -> bool {
+        matches!(self.mode, AppMode::BackupPending | AppMode::Unlocked { .. })
+            && matches!(
+                self.screen,
+                Screen::Main
+                    | Screen::BackupPending
+                    | Screen::Receive
+                    | Screen::SolReceive
+                    | Screen::BtcReceive
+            )
+    }
+
+    /// Main-timer part of the waits.
+    #[doc(hidden)]
+    pub fn wait_tick(&mut self, now: u64) {
+        if self.meta.is_none()
+            && self.wait.meta_since.is_none()
+            && self.wait.meta_failed.is_none()
+            && self.needs_accounts()
+        {
+            logging::warn("app", "wait.meta_requested", &[]);
+            self.request_meta();
+        }
+        let stalled = self.wait.over(now, self.meta.is_none());
+        if stalled != self.wait.stalled {
+            self.wait.stalled = stalled;
+            if stalled {
+                logging::warn(
+                    "app",
+                    "wait.timeout",
+                    &[("mode", Field::Word(self.mode.word()))],
+                );
+            }
+            self.refresh();
+        }
+    }
+
+    /// `다시 불러오기` of T-WAIT-STALLED.
+    pub(crate) fn wait_retry(&mut self) {
+        self.wait = WaitWatch::default();
+        if matches!(self.mode, AppMode::BackupPending | AppMode::Unlocked { .. }) {
+            self.request_meta();
+        }
+        if matches!(self.screen, Screen::Processing(_)) {
+            self.wait.since = Some(self.clock.now_ms());
+        }
+        self.refresh();
+    }
+
+    /// Sends that may still confirm (only known while unlocked): the EVM, Solana and Zcash
+    /// journal records not yet final (Zcash of every network and account), Bitcoin's, and
+    /// `HyperCore` actions posted without a final answer (`전송 중`, or no answer — Hyperliquid may
+    /// still have processed them).
+    #[must_use]
+    pub fn sends_in_flight(&self) -> bool {
+        use crate::wallet::app_hypercore::HcStatus;
+        self.evm
+            .records()
+            .iter()
+            .any(|record| !record.state.is_terminal())
+            || self
+                .sol_records()
+                .iter()
+                .any(|record| !record.state.is_terminal())
+            || self.btc_ctx().any_in_flight()
+            || self.evm.journal.as_ref().is_some_and(|journal| {
+                journal
+                    .zec_records
+                    .iter()
+                    .any(|record| !record.is_terminal())
+            })
+            || self
+                .hypercore
+                .activity
+                .iter()
+                .any(|row| matches!(row.status, HcStatus::Submitting | HcStatus::Unknown(_)))
+    }
+
+    /// `지갑 초기화…`: S22 over the current screen.
+    #[doc(hidden)]
+    pub fn open_reset(&mut self) {
+        if matches!(self.mode, AppMode::Starting | AppMode::ShuttingDown) || self.reset.running {
+            return;
+        }
+        let back = if self.screen == Screen::Reset {
+            self.reset.back.take()
+        } else {
+            Some(self.screen.clone())
+        };
+        self.replace_reset(ResetUi {
+            back,
+            ..ResetUi::default()
+        });
+        self.reset_list_files();
+        logging::info("app", "reset.opened", &[]);
+        self.set_screen(Screen::Reset);
+    }
+
+    /// `취소` on S22.
+    #[doc(hidden)]
+    pub fn cancel_reset(&mut self) {
+        let back = self.reset.back.take();
+        self.replace_reset(ResetUi::default());
+        let fallback = match self.mode {
+            AppMode::NoVault => Screen::FirstRun,
+            AppMode::BackupPending => Screen::BackupPending,
+            AppMode::Unlocked { .. } => Screen::Main,
+            AppMode::Corrupt { .. } | AppMode::MainMissing => Screen::Recovery,
+            _ => Screen::Locked,
+        };
+        self.set_screen(back.unwrap_or(fallback));
+    }
+
+    /// The confirmation field changed. 2026-11-21 (S4 F19, owner decision, spec/04 §2.20,
+    /// spec/15 §18 item 19): a hold still running when the phrase's match changes ends with
+    /// `Effect::ReleaseHold` before the repaint, so the shell lets the pointer go; before, only
+    /// the gate was cancelled and the main window kept the pointer capture (the later
+    /// `Cmd::HoldEnd` found no running gate).
+    #[doc(hidden)]
+    pub fn reset_phrase_changed(&mut self, text: &str) {
+        let ok = phrase_matches(self.settings.language, text);
+        if ok != self.reset.phrase_ok {
+            self.reset.phrase_ok = ok;
+            let held = self.reset.gate.active();
+            self.reset.gate.cancel();
+            if held {
+                self.emit(crate::effect::Effect::ReleaseHold);
+            }
+            self.refresh();
+        }
+    }
+
+    /// Replaces S22's state (open, cancel, the reset's start and end). 2026-11-21 (S4 F19, owner
+    /// decision, spec/04 §2.20, spec/15 §18 item 19): a hold still running ends with it through
+    /// `Effect::ReleaseHold`, emitted before anything the caller does next; before, the gate went
+    /// with the old state and the main window kept the pointer capture. With no hold running it
+    /// emits nothing, as before.
+    fn replace_reset(&mut self, state: ResetUi) {
+        let held = self.reset.gate.active();
+        self.reset = state;
+        if held {
+            self.emit(crate::effect::Effect::ReleaseHold);
+        }
+    }
+
+    /// The hold completed: lock, then move the files on the key worker.
+    #[doc(hidden)]
+    pub fn reset_execute(&mut self) {
+        if !self.reset.phrase_ok || self.reset.running || self.screen != Screen::Reset {
+            return;
+        }
+        let include_settings = self.reset.include_settings;
+        let in_flight = self.sends_in_flight();
+        logging::warn(
+            "app",
+            "reset.start",
+            &[
+                (
+                    "settings",
+                    Field::Word(if include_settings { "moved" } else { "kept" }),
+                ),
+                (
+                    "in_flight",
+                    Field::Word(if in_flight { "yes" } else { "no" }),
+                ),
+            ],
+        );
+        // The lock procedure first: secret and approval windows close, queued dApp items end,
+        // buffers are wiped, queued key jobs are cancelled.
+        self.lock_wallet(WalletLock::Manual);
+        // Unlike a lock, nothing waits for the next session: the approvals queued behind the
+        // shown one (sends of any chain, dApp requests) end now, so none of the old wallet's
+        // reappears for the next wallet.
+        let waiting = self
+            .evm
+            .queue
+            .drain_waiting_matching(|_| true, crate::approval::QueueOutcome::Rejected);
+        for (item, outcome) in waiting {
+            self.approval_finished(&item.payload, outcome);
+        }
+        // WalletConnect: the old wallet's sessions, relay key and connection end with it (the
+        // worker is restarted for the next wallet at its first unlock; spec/13 §8).
+        self.wc_shutdown();
+        self.wc = crate::wallet::app_walletconnect::WcUi::default();
+        // The lock above ended the hold (`hold_cancel`), so this emits nothing (F19).
+        self.replace_reset(ResetUi {
+            include_settings,
+            running: true,
+            warned_in_flight: in_flight,
+            ..ResetUi::default()
+        });
+        self.set_screen(Screen::Processing(text::MOVING.get(self.settings.language)));
+        self.key(KeyJob::ResetWallet {
+            stamp: crate::wallet_files::stamp(self.clock.now_unix_ms()),
+            include_settings,
+            lang: self.settings.language,
+        });
+    }
+
+    /// `KeyOutcome::WalletReset`.
+    #[doc(hidden)]
+    pub fn on_wallet_reset(&mut self, result: Result<ResetReport, ResetError>) {
+        let in_flight = self.reset.warned_in_flight;
+        self.replace_reset(ResetUi::default());
+        // Nothing of the old wallet's recovery-phrase flows (held words, preview, list) stays.
+        self.mn = crate::wallet::app_mnemonics::MnUi::default();
+        // `vault.ywv` moves first: once it moved, the next wallet is another one, and the old
+        // one's `HyperCore` activity of this run (amounts, recipients, unanswered posts that
+        // T-RESET-IN-FLIGHT counts) goes with it. The load-job counter stays monotonic.
+        let vault_moved = match &result {
+            Ok(_) => true,
+            Err(ResetError::Move { moved, .. }) => !moved.is_empty(),
+            Err(ResetError::Folder(_)) => false,
+        };
+        if vault_moved {
+            self.hypercore = crate::wallet::app_hypercore::HcUi {
+                job: self.hypercore.job,
+                ..crate::wallet::app_hypercore::HcUi::default()
+            };
+        }
+        match result {
+            Ok(report) => {
+                logging::warn(
+                    "app",
+                    "reset.done",
+                    &[(
+                        "files",
+                        Field::Num(u64::try_from(report.moved.len()).unwrap_or(0)),
+                    )],
+                );
+                if report.settings_moved {
+                    self.settings = crate::settings::Settings::default();
+                    self.apikeys = crate::apikeys::ApiKeys::default();
+                    // The test bands belonged to the addresses that moved.
+                    self.rpc_messages.clear();
+                    self.rpc_removed = None;
+                    logging::set_level(self.settings.log_level);
+                }
+                // The old wallet's snapshot and generation facts went with its meta.
+                self.guard.verified = false;
+                self.guard.pending = None;
+                self.guard.rollback = None;
+                self.guard.vault_file = None;
+                self.forget_vault_state();
+                let lang = self.settings.language;
+                let mut done = reset_done_text(lang, &report);
+                if in_flight {
+                    done.push_str(text::RESET_IN_FLIGHT_AFTER.get(lang));
+                }
+                self.info = Some(done);
+            }
+            Err(error) => {
+                logging::warn("app", "reset.failed", &[]);
+                self.banner(None, reset_failed_text(self.settings.language, &error));
+            }
+        }
+        // S01 (nothing left) or, after a partial move, whatever the files now say.
+        self.set_screen(Screen::Processing(
+            text::LOADING.get(self.settings.language),
+        ));
+        self.key(KeyJob::Load);
+    }
+
+    /// `KeyOutcome::Loaded` while the reset runs: only the facts, the screen stays.
+    pub(crate) fn reset_absorbs_load(&mut self, leftover: bool) -> bool {
+        if self.reset.running {
+            self.leftover = leftover;
+            return true;
+        }
+        false
+    }
+
+    /// `Cmd::HoldBegin`: the shell found the pointer pressed on S22's hold area (spec/04 §2.20).
+    /// The 2 s gate starts at `now`, the shell's clock read when the message arrived (an active
+    /// gate keeps its start). 2026-11-21 (S4 W1): the wallet half of the old `App::hold_down`,
+    /// whose hit test, held-area id and pointer capture are the shell's now (`App::hold_down`
+    /// in `app.rs`); its steps keep their order (the capture is taken after this returns, the
+    /// repaint is applied when the entry drains, as before).
+    pub(crate) fn reset_hold_begin(&mut self, now: u64) {
+        self.reset.gate.begin(now);
+        self.reset.progress = 0;
+        self.refresh();
+    }
+
+    /// Released (early), the pointer left the area (`Cmd::HoldEnd`), the screen changed or the
+    /// wallet locked. 2026-11-20 (S4 P4): the pointer capture is released by the shell,
+    /// `Effect::ReleaseHold` at the same point (before, `release_capture` was called here);
+    /// `lock` and the hold's tick reach it through this fn. 2026-11-21 (S4 W1): a hold is on
+    /// while the gate is active (before, while the area's id `ResetUi.holding` was set, which it
+    /// was exactly then).
+    pub(crate) fn hold_cancel(&mut self) {
+        if self.reset.gate.active() {
+            self.reset.gate.cancel();
+            self.reset.progress = 0;
+            self.emit(crate::effect::Effect::ReleaseHold);
+            self.refresh();
+        }
+    }
+
+    /// Main-timer part of the hold: progress, then the action after 2 s. 2026-11-21 (S4 W1): the
+    /// hold is the gate's (before, the held area's id `ResetUi.holding`, set exactly while the
+    /// gate was active); the action is the reset, the one hold area's (before, run only when that
+    /// id was `ui::screens_reset::ids::RESET_HOLD`, the only id `Placed::holds` ever held).
+    #[doc(hidden)]
+    pub fn reset_hold_tick(&mut self, now: u64) {
+        if !self.reset.gate.active() {
+            return;
+        }
+        if self.screen != Screen::Reset {
+            self.hold_cancel();
+            return;
+        }
+        if self.reset.gate.complete(now) {
+            self.hold_cancel();
+            self.reset_execute();
+            return;
+        }
+        let done = BACKUP_ACK_HOLD_MS.saturating_sub(self.reset.gate.remaining_ms(now));
+        self.reset.progress =
+            u16::try_from(done.saturating_mul(1_000) / BACKUP_ACK_HOLD_MS).unwrap_or(1_000);
+        self.refresh();
+    }
+
+    /// Presses of S22 and T-WAIT-STALLED (2026-11-18, S3 C5: a `ResetPress`, the check box
+    /// carrying its state; before, the control id and a read of the box here). The 2 s hold area
+    /// is not a press (`App::reset_hold_*`).
+    #[doc(hidden)]
+    pub fn on_reset(&mut self, press: ResetPress) {
+        match press {
+            ResetPress::Open => self.open_reset(),
+            ResetPress::Cancel => self.cancel_reset(),
+            ResetPress::SettingsCheck(checked) => {
+                self.reset.include_settings = checked.unwrap_or(!self.reset.include_settings);
+                self.reset_list_files();
+                self.refresh();
+            }
+            ResetPress::WaitRetry => self.wait_retry(),
+        }
+    }
+
+    /// `EN_CHANGE` of the S22 field: `text` is its text now (2026-11-18, S3 C5: from
+    /// `Cmd::Edit`; before, a read of the edit by id); `false` for other fields.
+    #[doc(hidden)]
+    pub fn on_reset_edit(&mut self, field: EditField, text: &str) -> bool {
+        if field != EditField::ResetPhrase {
+            return false;
+        }
+        self.reset_phrase_changed(text);
+        true
+    }
+
+    fn reset_list_files(&mut self) {
+        self.reset.files = self.store.reset_candidates(self.reset.include_settings);
+    }
+
+    /// After a reset the old wallet's per-file facts no longer apply.
+    fn forget_vault_state(&mut self) {
+        self.payload_damaged = false;
+        self.unlock_failed = false;
+        self.quarantined = None;
+        self.prev_on_disk = self.store.prev_exists(FileKind::Vault);
+        self.done_imported = false;
+        // S08's banner of the old wallet (a YubiKey wallet or a key start that never pressed
+        // `지갑 열기`) must not follow the next first-run path.
+        self.done_yubikey = None;
+        self.keys.done_start = false;
+        self.mismatch_checked = false;
+    }
+}

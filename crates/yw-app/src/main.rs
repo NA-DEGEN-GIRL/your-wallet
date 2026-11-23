@@ -16,7 +16,6 @@ use yw_app::app::{
     SECRET_VIEW_CLASS, load_apikeys, load_settings,
 };
 use yw_app::app_approval::{APPROVAL_CLASS, PANEL_CLASS};
-use yw_app::app_browser::BrowserUi;
 use yw_app::browser::server::PipeHost;
 use yw_app::build_info::start_text;
 use yw_app::errors::ErrorCode;
@@ -35,6 +34,7 @@ use yw_app::system_clock::ArcClock;
 use yw_app::workers::key::{KeyWorker, run as run_key_worker};
 use yw_app::workers::rpc::{RpcWorker, run as run_rpc_worker};
 use yw_core::lang::Lang;
+use yw_engine::wallet::app_browser::BrowserUi;
 use yw_win::clipboard::SecretClip;
 use yw_win::input::{is_down, is_down_in_message};
 use yw_win::process::{InstanceError, SingleInstance};

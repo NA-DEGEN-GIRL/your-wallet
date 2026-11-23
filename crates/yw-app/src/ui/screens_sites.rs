@@ -33,7 +33,7 @@ pub mod ids {
     pub const SITE_ROW_SPAN: u16 = 256;
     /// Cards per page. 2026-11-23 (S4d E0b): the wallet's `app_browser::SITES_PAGE_ROWS` (the S13
     /// handler pages with it), re-used here; before, defined here.
-    pub const SITES_PAGE_ROWS: usize = crate::app_browser::SITES_PAGE_ROWS;
+    pub const SITES_PAGE_ROWS: usize = yw_engine::wallet::app_browser::SITES_PAGE_ROWS;
     /// Every fixed id of this module.
     pub const FIXED: &[u16] = &[SITES_OPEN, SITES_REVOKE_ALL, SITES_PREV, SITES_NEXT];
 
@@ -193,8 +193,10 @@ impl App {
     /// page index and `total`.
     fn sites_page(&self, total: usize) -> (Page<'_>, usize, usize, usize) {
         let browser = self.browser.as_ref();
-        let (pages, shown) =
-            crate::app_browser::page_of(total, browser.map_or(0, |browser| browser.site_rows.page));
+        let (pages, shown) = yw_engine::wallet::app_browser::page_of(
+            total,
+            browser.map_or(0, |browser| browser.site_rows.page),
+        );
         let page = Page {
             start: shown * ids::SITES_PAGE_ROWS,
             end: (shown + 1) * ids::SITES_PAGE_ROWS,
@@ -250,10 +252,9 @@ impl App {
             if !page.shows(index) {
                 continue;
             }
-            items.push(Item::CardStart(Some(crate::app_browser::card_title(
-                &site.origin,
-                Family::Evm,
-            ))));
+            items.push(Item::CardStart(Some(
+                yw_engine::wallet::app_browser::card_title(&site.origin, Family::Evm),
+            )));
             if site.origin.is_http() {
                 items.push(Item::Banner(
                     text::LOCAL_HTTP.get(lang).to_owned(),
@@ -312,10 +313,9 @@ impl App {
             if !page.shows(first + offset) {
                 continue;
             }
-            items.push(Item::CardStart(Some(crate::app_browser::card_title(
-                &grant.origin,
-                Family::Solana,
-            ))));
+            items.push(Item::CardStart(Some(
+                yw_engine::wallet::app_browser::card_title(&grant.origin, Family::Solana),
+            )));
             items.push(Item::Badged(
                 crate::ui::badge::Badge::family(BookChain::Sol),
                 Box::new(Item::Field(
@@ -348,10 +348,9 @@ impl App {
             if !page.shows(first + sol_grants.len() + offset) {
                 continue;
             }
-            items.push(Item::CardStart(Some(crate::app_browser::card_title(
-                &grant.origin,
-                Family::Bitcoin,
-            ))));
+            items.push(Item::CardStart(Some(
+                yw_engine::wallet::app_browser::card_title(&grant.origin, Family::Bitcoin),
+            )));
             items.push(Item::Badged(
                 crate::ui::badge::Badge::bitcoin(grant.network),
                 Box::new(Item::Field(
@@ -386,7 +385,7 @@ impl App {
             .evm
             .queue
             .waiting_payloads()
-            .filter(|item| matches!(item, crate::app_evm::QueuedItem::Site(_)))
+            .filter(|item| matches!(item, yw_engine::wallet::app_evm::QueuedItem::Site(_)))
             .count();
         let shown: Vec<&str> = origins.iter().take(5).map(String::as_str).collect();
         let lang = self.settings.language;

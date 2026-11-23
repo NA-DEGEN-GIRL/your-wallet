@@ -9,11 +9,11 @@ use yw_core::yubikey::plan::{CardSlot, address_texts};
 use super::text as t;
 use super::{grouped_address, ids, slot_items, steps_item};
 use crate::app::App;
-use crate::app_yubikey::connect::text as ct;
-use crate::app_yubikey::connect::{Choice, ConnectForm};
-use crate::app_yubikey::{WizardOrigin, WizardStep, YkWizard};
 use crate::ui::main_window::{Ctl, Item};
 use yw_engine::screen::Tone;
+use yw_engine::wallet::app_yubikey::connect::text as ct;
+use yw_engine::wallet::app_yubikey::connect::{Choice, ConnectForm};
+use yw_engine::wallet::app_yubikey::{WizardOrigin, WizardStep, YkWizard};
 
 /// The connect flow's step labels.
 pub const CONNECT_STEPS: [Text; 3] = [

@@ -11,16 +11,16 @@ use super::ids;
 use super::text as t;
 use super::{script_label, slot_items, steps_item, zec_network_label};
 use crate::app::App;
-use crate::app_yubikey::CARD_SCRIPTS;
-use crate::app_yubikey::manage::ReslotAction;
-use crate::app_yubikey::manage::text as mt;
-use crate::app_yubikey::manage::{
+use crate::ui::main_window::{Ctl, Item};
+use yw_engine::screen::Tone;
+use yw_engine::wallet::app_yubikey::CARD_SCRIPTS;
+use yw_engine::wallet::app_yubikey::manage::ReslotAction;
+use yw_engine::wallet::app_yubikey::manage::text as mt;
+use yw_engine::wallet::app_yubikey::manage::{
     Chain, ClearFlow, ClearStep, MAX_RESLOT_INDEX, Preset, ReslotFlow, ReslotStep, YkManage,
     lost_slots,
 };
-use crate::app_yubikey::text as yk;
-use crate::ui::main_window::{Ctl, Item};
-use yw_engine::screen::Tone;
+use yw_engine::wallet::app_yubikey::text as yk;
 
 /// The steps of "슬롯 구성 바꾸기".
 pub const RESLOT_STEPS: [Text; 4] = [

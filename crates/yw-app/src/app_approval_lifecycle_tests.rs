@@ -31,8 +31,11 @@
 //! (PowerShell): `$env:YW_S4_FLOW_OUT='<folder>'; cargo test -p yw-app --lib --locked --offline
 //! -- --ignored --test-threads=1 app_approval::flow_tests::lifecycle::print`.
 
+// 2026-11-23 (S4d E1): the wallet's crate-private steps, buffers and flow state as the tests reach
+// them across the crate boundary (`yw_engine::testkit`).
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use yw_engine::testkit::{FlowTestExt, WalletTestExt};
 
 use yw_core::evm::address::parse_address;
 use yw_core::policy::{BrowserOrigin, ConnectedSite};
@@ -43,15 +46,15 @@ use super::{
     ACCOUNT_A, ACCOUNT_B, Rec, SOL_KEY, app_send, approve_by_risk, at, click, ev, fixture, origin,
     personal_sign, request, spare_window,
 };
-use crate::app_browser::SignWaiter;
 use crate::events::{
     ChainMessageSigned, ChainSignature, EvmSigned, KeyJob, KeyOutcome, KeyResult, MessageSigned,
     RpcEvent, SignFailure, SignTicket, SignedSummary, UiEvent,
 };
-use crate::lock::LockReason;
 use crate::shell_msg::{WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT};
 use crate::ui::interaction::InteractionEvent;
 use crate::workers::rpc::RpcJob;
+use yw_engine::wallet::app_browser::SignWaiter;
+use yw_engine::wallet::lock::LockReason;
 
 /// The committed golden.
 const GOLDEN: &str = include_str!("app/tests/s4_flow/lifecycle.txt");
@@ -584,7 +587,7 @@ fn shown_id(fx: &Fixture) -> Option<yw_core::approval::ApprovalId> {
 /// column follows the request shown after it, A6 review) and the approval windows left.
 fn entry_fact(fx: &Fixture, id: Option<yw_core::approval::ApprovalId>) -> String {
     let state = id
-        .and_then(|id| fx.app.borrow().evm.store.state(id))
+        .and_then(|id| fx.app.borrow().evm_store().state(id))
         .map_or_else(|| "-".to_owned(), |state| format!("{state:?}"));
     format!(
         "store of the request shown before={state} approval windows={}",
@@ -1038,7 +1041,7 @@ fn card_fact(fx: &Fixture) -> String {
     let app = fx.app.borrow();
     match app.card.step.as_ref() {
         None => "card step none".to_owned(),
-        Some(step) if step.approved.is_some() => "card step waiting for its PIN".to_owned(),
+        Some(step) if step.holds_approval() => "card step waiting for its PIN".to_owned(),
         Some(_) => "card step past its PIN".to_owned(),
     }
 }
@@ -1189,23 +1192,27 @@ fn devnet(fx: &Fixture) {
 }
 
 /// The app's SOL transfer of 0.001 SOL from account 0 to a synthetic address.
-fn sol_transfer() -> crate::app_evm::QueuedItem {
+fn sol_transfer() -> yw_engine::wallet::app_evm::QueuedItem {
     use yw_core::sol::recipient::RecipientCheck;
-    crate::app_evm::QueuedItem::Sol(Box::new(crate::app_sol::SolApprovalItem {
-        cluster: yw_core::sol::SolCluster::Devnet,
-        source: yw_core::slip10::SolKeySource::Standard(yw_core::bip32::path::AccountIndex::ZERO),
-        from: yw_core::sol::SolAddress::from_bytes(sol_public()),
-        label: "SOL 1".to_owned(),
-        recipient: RecipientCheck {
-            to: yw_core::sol::SolAddress::from_bytes([0x55; 32]),
-            exact: None,
-            off_curve: false,
-            lookalikes: Vec::new(),
-            first_time: true,
+    yw_engine::wallet::app_evm::QueuedItem::Sol(Box::new(
+        yw_engine::wallet::app_sol::SolApprovalItem {
+            cluster: yw_core::sol::SolCluster::Devnet,
+            source: yw_core::slip10::SolKeySource::Standard(
+                yw_core::bip32::path::AccountIndex::ZERO,
+            ),
+            from: yw_core::sol::SolAddress::from_bytes(sol_public()),
+            label: "SOL 1".to_owned(),
+            recipient: RecipientCheck {
+                to: yw_core::sol::SolAddress::from_bytes([0x55; 32]),
+                exact: None,
+                off_curve: false,
+                lookalikes: Vec::new(),
+                first_time: true,
+            },
+            asset: yw_core::sol::SolAsset::Sol,
+            amount: Some(1_000_000),
         },
-        asset: yw_core::sol::SolAsset::Sol,
-        amount: Some(1_000_000),
-    }))
+    ))
 }
 
 /// The RPC worker's preview of `job`: ready, 10 SOL balance, no simulation result, no blocks.
@@ -1620,13 +1627,19 @@ fn rpc_import_on_temp_data() -> Vec<String> {
     let key = |fx: &Fixture| -> &'static str {
         let app = fx.app.borrow();
         let lang = app.settings.language;
-        let imported = crate::app_rpc_plan::text::IMPORTED.fill(lang, ["1"]);
+        let imported = yw_engine::wallet::app_rpc_plan::text::IMPORTED.fill(lang, ["1"]);
         match app.info.as_deref() {
             None => "-",
             Some(info) if info.starts_with(&imported) => "IMPORTED",
-            Some(info) if info == crate::app_rpc_plan::text::DELETED.get(lang) => "DELETED",
-            Some(info) if info == crate::app_rpc_plan::text::UNREADABLE.get(lang) => "UNREADABLE",
-            Some(info) if info == crate::app_rpc_plan::text::FORMAT.get(lang) => "FORMAT",
+            Some(info) if info == yw_engine::wallet::app_rpc_plan::text::DELETED.get(lang) => {
+                "DELETED"
+            }
+            Some(info) if info == yw_engine::wallet::app_rpc_plan::text::UNREADABLE.get(lang) => {
+                "UNREADABLE"
+            }
+            Some(info) if info == yw_engine::wallet::app_rpc_plan::text::FORMAT.get(lang) => {
+                "FORMAT"
+            }
             Some(_) => "other",
         }
     };
@@ -1714,7 +1727,7 @@ fn polling_while_hidden() -> Vec<String> {
         let mut app = fx.app();
         app.settings.evm_chain_id = 11_155_111;
         app.settings.received_history = true;
-        app.screen = crate::app::Screen::Main;
+        app.screen = yw_engine::wallet::Screen::Main;
     }
     let mut rec = Rec::new("polling_while_hidden", &fx, None);
     for hidden in [false, true] {

@@ -7,7 +7,9 @@
 //! `WalletConnect` worker and key/journal worker texts. 2026-11-20, S4 P7a1: the secret windows'
 //! texts `secret::text`, before `yw_app::ui::secret_text`. 2026-11-22, S4d E0a: `screen::text`, the
 //! banner tags, receive QR choices and source words the wallet code shares with the shell, before
-//! in `yw_app::ui::{main_window, qr, screens_accounts}::text`.)
+//! in `yw_app::ui::{main_window, qr, screens_accounts}::text`. 2026-11-23, S4d E1: the wallet's
+//! catalogues `wallet::…::text`, before `yw_app::app_*::text` and the wallet's half of
+//! `yw_app::app::text`.)
 
 use yw_core::lang::Entry;
 
@@ -59,6 +61,103 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
     ("yw_engine::screen::text", crate::screen::text::ALL),
     ("yw_engine::secret::text", crate::secret::text::ALL),
     ("yw_engine::settings::text", crate::settings::text::ALL),
+    (
+        "yw_engine::wallet::app_book::text",
+        crate::wallet::app_book::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_browser::text",
+        crate::wallet::app_browser::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_btc::text",
+        crate::wallet::app_btc::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_card::text",
+        crate::wallet::app_card::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_chain_sites::text",
+        crate::wallet::app_chain_sites::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_evm::text",
+        crate::wallet::app_evm::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_explorer::text",
+        crate::wallet::app_explorer::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_hidden::text",
+        crate::wallet::app_hidden::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_hypercore::text",
+        crate::wallet::app_hypercore::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_keys::text",
+        crate::wallet::app_keys::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_llm::text",
+        crate::wallet::app_llm::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_mnemonics::text",
+        crate::wallet::app_mnemonics::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_reset::text",
+        crate::wallet::app_reset::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_rpc_plan::text",
+        crate::wallet::app_rpc_plan::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_sidecar::text",
+        crate::wallet::app_sidecar::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_sol::text",
+        crate::wallet::app_sol::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_sol_commands::text",
+        crate::wallet::app_sol_commands::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_sol_dapp::text",
+        crate::wallet::app_sol_dapp::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_tokens::text",
+        crate::wallet::app_tokens::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_walletconnect::text",
+        crate::wallet::app_walletconnect::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_yubikey::text",
+        crate::wallet::app_yubikey::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_yubikey::connect::text",
+        crate::wallet::app_yubikey::connect::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_yubikey::manage::text",
+        crate::wallet::app_yubikey::manage::text::ALL,
+    ),
+    (
+        "yw_engine::wallet::app_zec::text",
+        crate::wallet::app_zec::text::ALL,
+    ),
+    ("yw_engine::wallet::text", crate::wallet::text::ALL),
     (
         "yw_engine::walletconnect::text",
         crate::walletconnect::text::ALL,

@@ -69,22 +69,23 @@ use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::vault::{BackupChallenge, EvmKeySource, RecordId};
 use yw_win::ui::{Handler, Msg, Reply, Window, WindowKind, WindowSpec, create_window};
 
+use crate::app::App;
 use crate::app::secret_seam::{self, Op, Refuse};
 use crate::app::tests::s3_census::Census;
 use crate::app::tests::s4_secret::host;
-use crate::app::{App, AppMode, PasswordAction, Purpose};
 use crate::app_approval::flow_support::{Fixture, HostMode, Outlet, START_MS};
 use crate::app_approval::headless_host::{self, OpenAnswer};
-use crate::app_mnemonics::MnPurpose;
-use crate::app_yubikey::YkPurpose;
 use crate::events::{KeyJob, KeyOutcome, KeyResult, RevealWhat};
 use crate::explorer_launcher::Launcher;
-use crate::lock::LockReason;
 use crate::ui::secret::SECRET_TIMER_ID;
 use crate::workers::key::mnemonics::MnOutcome;
 use crate::workers::key::yubikey::YkOutcome;
 use crate::workers::rpc::RpcJob;
 use yw_engine::secret::{CardSecretKind, DisplaySecret, SecretKind};
+use yw_engine::wallet::app_mnemonics::MnPurpose;
+use yw_engine::wallet::app_yubikey::YkPurpose;
+use yw_engine::wallet::lock::LockReason;
+use yw_engine::wallet::{AppMode, PasswordAction, Purpose};
 
 pub(crate) const SECRET_GOLDEN: &str = include_str!("../app/tests/s4_secret/secret.txt");
 pub(crate) const LOCK_GOLDEN: &str = include_str!("../app/tests/s4_secret/lock.txt");
@@ -531,7 +532,7 @@ fn purpose_name(purpose: Purpose) -> String {
 }
 
 /// The screen's variant; one that carries text is named with a hash of its `Debug`.
-fn screen_name(screen: &crate::app::Screen) -> String {
+fn screen_name(screen: &yw_engine::wallet::Screen) -> String {
     let debug = format!("{screen:?}");
     if debug.contains(['"', ':', '{', '(']) {
         let name: String = debug
@@ -558,7 +559,7 @@ fn banner_codes(app: &App) -> String {
 fn info_name(app: &App) -> String {
     match app.info.as_deref() {
         None => "-".to_owned(),
-        Some(info) if info == crate::app::text::TIMED_OUT.get(app.settings.language) => {
+        Some(info) if info == yw_engine::wallet::text::TIMED_OUT.get(app.settings.language) => {
             "T-TIMED-OUT".to_owned()
         }
         Some(info) => format!("#{}", hash8(info)),
@@ -569,7 +570,7 @@ fn info_name(app: &App) -> String {
 fn card_fact(app: &App) -> &'static str {
     match app.card.step.as_ref() {
         None => "-",
-        Some(step) if step.approved.is_some() => "waiting-for-pin",
+        Some(step) if step.holds_approval() => "waiting-for-pin",
         Some(_) => "past-pin",
     }
 }
@@ -1096,9 +1097,11 @@ fn card_tick_expired() -> Vec<String> {
     let now = env.fx.clock.peek();
     env.fx
         .app()
-        .card_tick(now + crate::app_card::CARD_STEP_MS - 1);
+        .card_tick(now + yw_engine::wallet::app_card::CARD_STEP_MS - 1);
     env.snap("tick-before-bound");
-    env.fx.app().card_tick(now + crate::app_card::CARD_STEP_MS);
+    env.fx
+        .app()
+        .card_tick(now + yw_engine::wallet::app_card::CARD_STEP_MS);
     env.snap("tick-at-bound");
     std::mem::take(&mut env.lines)
 }

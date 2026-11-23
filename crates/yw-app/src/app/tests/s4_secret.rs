@@ -55,10 +55,13 @@
 pub(crate) mod host {
     use std::cell::RefCell;
 
+    use yw_engine::testkit::WalletTestExt;
+
     use yw_core::lang::Lang;
     use yw_engine::approval::flow::OpenOutcome;
     use yw_engine::cmd::Cmd;
     use yw_engine::secret::{SecretEffect, SecretFormOp, SecretKind, SecretStep};
+    use yw_engine::wallet::DisplayCheck;
     #[cfg(debug_assertions)]
     use yw_win::ui::{Msg, Reply};
 
@@ -197,7 +200,7 @@ pub(crate) mod host {
     /// The session's and the held form's `Debug` (each recorded line of the headless run).
     #[cfg(debug_assertions)]
     pub(crate) fn note_state(app: &App) {
-        note(format!("{:?}", app.secret_session));
+        note(format!("{:?}", app.secret_session()));
         let form = HOST
             .try_with(|slot| {
                 slot.borrow()
@@ -296,7 +299,10 @@ pub(crate) mod host {
         App::log_capture(kind, made);
         let outcome = match capture_decision(kind, excluded) {
             CaptureDecision::Show { warning: false } => {
-                let Some(display) = app.wallet.take_display_secret(serial) else {
+                let Some(display) = app
+                    .wallet
+                    .hand_display_secret(serial, DisplayCheck::Verified)
+                else {
                     return Some(answered(OpenOutcome::Refused(ErrorCode::Sec001)));
                 };
                 note(format!("{display:?}"));
@@ -309,11 +315,15 @@ pub(crate) mod host {
                 }
             }
             CaptureDecision::Show { warning: true } => {
-                app.wallet.drop_display_secret(serial);
+                let _none = app
+                    .wallet
+                    .hand_display_secret(serial, DisplayCheck::Unverified);
                 OpenOutcome::Refused(ErrorCode::Sec001)
             }
             CaptureDecision::Refuse(code) => {
-                app.wallet.drop_display_secret(serial);
+                let _none = app
+                    .wallet
+                    .hand_display_secret(serial, DisplayCheck::Unverified);
                 OpenOutcome::Refused(code)
             }
         };
@@ -458,7 +468,7 @@ pub(crate) mod host {
 
     /// The held window as facts (no value), for `App::test_secret`.
     #[cfg(debug_assertions)]
-    pub(crate) fn facts(purpose: crate::app::Purpose) -> Option<secret_seam::SecretFacts> {
+    pub(crate) fn facts(purpose: yw_engine::wallet::Purpose) -> Option<secret_seam::SecretFacts> {
         HOST.try_with(|slot| {
             slot.borrow()
                 .as_ref()
@@ -491,6 +501,7 @@ pub(crate) mod host {
 
 #[cfg(debug_assertions)]
 use crate::ui::tour_secrets::{self, Scenario};
+use yw_engine::testkit::WalletTestExt;
 
 /// Every scenario of `table` headless, each on a thread of its own (as `ui::tour_secrets`'s
 /// `record`), as one golden text, and the `Debug` texts the host noted on the way.
@@ -629,9 +640,10 @@ fn a_made_but_unexcluded_display_window_drops_its_secret() {
     use yw_engine::approval::flow::OpenOutcome;
     use yw_engine::secret::SecretKind;
 
-    use crate::app::{AppMode, Purpose, Screen, secret_seam};
+    use crate::app::secret_seam;
     use crate::errors::ErrorCode;
     use yw_engine::secret::DisplaySecret;
+    use yw_engine::wallet::{AppMode, Purpose, Screen};
 
     let dir = super::temp_dir("p8-not-excluded");
     let mut app = super::app_at(&dir);
@@ -663,7 +675,7 @@ fn a_made_but_unexcluded_display_window_drops_its_secret() {
         [OpenOutcome::Refused(ErrorCode::Sec001)]
     );
     assert!(!host::holds_window(), "no window");
-    assert!(app.secret_session.is_none(), "the session ended");
+    assert!(app.secret_session().is_none(), "the session ended");
     assert!(
         app.banners
             .iter()
@@ -797,7 +809,10 @@ fn the_headless_secret_host_mirrors_the_shell() {
         // the shell's two halves `make_display_window` and `show_display`; before, one shell fn
         // `open_display_window` held all of it, in this order. 2026-11-22 (S4c W15): the take and
         // the drop are named on the wallet (`self.wallet.`; non-test builds have no `DerefMut`),
-        // and the host spells them the same way.
+        // and the host spells them the same way. 2026-11-23 (S4d E1, preflight O-3): the take and
+        // the drop are the engine's one hand-off `hand_display_secret` with the shell's check
+        // (`DisplayCheck::Verified` / `Unverified`); `take_display_secret`/`drop_display_secret`
+        // are crate-private in yw-engine.
         (
             "display_window_handoff",
             &[
@@ -805,12 +820,14 @@ fn the_headless_secret_host_mirrors_the_shell() {
                  serial, kind, step, timeout_note, lang) { return outcome; }",
                 "match self.make_display_window(serial, kind, lang) { \
                  DisplayWindow::Verified(window) => { let Some(display) = \
-                 self.wallet.take_display_secret(serial) else { drop(window); return \
+                 self.wallet.hand_display_secret(serial, DisplayCheck::Verified) else { \
+                 drop(window); return \
                  OpenOutcome::Refused(ErrorCode::Sec001); }; self.show_display(serial, window, \
                  kind, display, step, timeout_note, lang); OpenOutcome::Shown { \
                  capture_excluded: true, } }",
                 "DisplayWindow::Unverified { outcome, window } => { \
-                 self.wallet.drop_display_secret(serial); drop(window); outcome }",
+                 let _none = self.wallet.hand_display_secret(serial, DisplayCheck::Unverified); \
+                 drop(window); outcome }",
             ],
         ),
         (
@@ -892,8 +909,7 @@ fn the_headless_secret_host_mirrors_the_shell() {
             "apply_secret_effect",
             &[
                 "#[cfg(test)] tests::s4_secret::host::saw(&effect);",
-                "let unshown = self.secret_session.as_ref().is_some_and(|session| \
-                 session.serial() == serial && !session.shown()); let outcome = if unshown { \
+                "let unshown = self.secret_unshown(serial); let outcome = if unshown { \
                  self.open_input_window(serial, kind, step, topmost, lang) } else { \
                  OpenOutcome::Refused(ErrorCode::Sec001) };",
             ],
@@ -905,8 +921,7 @@ fn the_headless_secret_host_mirrors_the_shell() {
             &[
                 "#[cfg(test)] tests::s4_secret::host::saw(&SecretEffect::OpenDisplay { serial, \
                  kind, step, timeout_note, lang, });",
-                "let unshown = self.secret_session.as_ref().is_some_and(|session| \
-                 session.serial() == serial && !session.shown()); let outcome = if unshown { \
+                "let unshown = self.secret_unshown(serial); let outcome = if unshown { \
                  self.display_window_handoff(serial, kind, step, timeout_note, lang) } else { \
                  OpenOutcome::Refused(ErrorCode::Sec001) };",
                 "#[cfg(test)] tests::s4_secret::host::saw_cmd(&answer);",
@@ -954,10 +969,12 @@ fn the_headless_secret_host_mirrors_the_shell() {
             "display_window_handoff",
             "open_display",
             &[
-                "let Some(display) = self.wallet.take_display_secret(serial) else {",
+                "let Some(display) = self.wallet.hand_display_secret(serial, \
+                 DisplayCheck::Verified) else {",
                 "OpenOutcome::Refused(ErrorCode::Sec001)",
                 "OpenOutcome::Shown { capture_excluded: true, }",
-                "self.wallet.drop_display_secret(serial);",
+                "let _none = self.wallet.hand_display_secret(serial, \
+                 DisplayCheck::Unverified);",
             ],
         ),
         (
@@ -1080,7 +1097,8 @@ fn the_secret_entry_drains_and_its_headless_twin_mirrors_it() {
     use yw_engine::secret::SecretKind;
     use yw_win::ui::{Msg, Reply};
 
-    use crate::app::{AppMode, Purpose, secret_seam};
+    use crate::app::secret_seam;
+    use yw_engine::wallet::{AppMode, Purpose};
 
     let source = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs"),
@@ -1139,9 +1157,8 @@ fn the_secret_entry_drains_and_its_headless_twin_mirrors_it() {
         app.drain();
         assert_eq!(ops(secret_seam::take_log()), ["create:W02", "show:W02"]);
         let serial = app
-            .secret_session
-            .as_ref()
-            .map(crate::secret_session::SecretSession::serial);
+            .secret_session()
+            .map(yw_engine::wallet::secret_session::SecretSession::serial);
         let serial = serial.unwrap_or_default();
         assert!(host::holds_window(), "W02 open");
         let reply = app.test_secret_entry_headless(serial, &msg);
@@ -1153,7 +1170,7 @@ fn the_secret_entry_drains_and_its_headless_twin_mirrors_it() {
             "{msg:?}"
         );
         assert!(!host::holds_window(), "{msg:?}: the window closed");
-        assert!(app.secret_session.is_none(), "{msg:?}: the session ended");
+        assert!(app.secret_session().is_none(), "{msg:?}: the session ended");
     }
     secret_seam::stop();
     host::remove();

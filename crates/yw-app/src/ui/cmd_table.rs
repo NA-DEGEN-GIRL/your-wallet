@@ -41,6 +41,7 @@ use yw_engine::cmd::Press;
 use yw_engine::form::{ClipInput, CredField, CredUnits, EditField, ImageInput, PressInput};
 use yw_win::ui::Window;
 
+use crate::app_rpc_import;
 use crate::ui::main_window::ControlSet;
 use crate::ui::{
     screens, screens_book, screens_btc, screens_evm, screens_explorer, screens_hidden,
@@ -48,7 +49,7 @@ use crate::ui::{
     screens_received, screens_reset, screens_sidecar, screens_sites, screens_sol,
     screens_walletconnect, screens_yubikey, screens_zec,
 };
-use crate::{app_rpc_import, app_walletconnect};
+use yw_engine::wallet::app_walletconnect;
 
 /// The command id `IsDialogMessageW` sends for Enter (no control uses it, `ui::command_ids`).
 pub const IDOK: u16 = 1;
@@ -398,6 +399,24 @@ fn clip_link(units: &[u16]) -> Option<Zeroizing<String>> {
         .then(|| Zeroizing::new(String::from_utf16_lossy(units)))
 }
 
+/// The chain whose card a `새로고침` id belongs to (2026-11-18, S3 D3: test-only — the
+/// table test that `Press::refresh_chain` names the same chains; before, the legacy chain's
+/// observer `App::received_observe` read it for ids not converted to a press yet). 2026-11-23
+/// (spec/15 §11.4 S4d E1): moved here from `app_received` (it maps control ids, which stay in
+/// the shell).
+#[cfg(test)]
+fn refresh_chain(id: u16) -> Option<yw_engine::received::RecvChain> {
+    use yw_engine::received::RecvChain;
+    Some(match id {
+        crate::ui::screens_evm::ids::REFRESH => RecvChain::Evm,
+        crate::ui::screens_sol::ids::REFRESH => RecvChain::Sol,
+        crate::ui::screens_btc::ids::REFRESH => RecvChain::Btc,
+        crate::ui::screens_hypercore::ids::REFRESH => RecvChain::Hc,
+        crate::ui::screens_zec::ids::REFRESH => RecvChain::Zec,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,11 +531,7 @@ mod tests {
                 screens::RECEIVE_IDS.contains(&id),
                 "{id}"
             );
-            assert_eq!(
-                press.refresh_chain(),
-                crate::app_received::refresh_chain(id),
-                "{id}"
-            );
+            assert_eq!(press.refresh_chain(), refresh_chain(id), "{id}");
         }
         assert!(families > 0);
     }
@@ -1273,26 +1288,26 @@ mod tests {
             match press_of(id, &controls) {
                 Some(Press::Yk(press)) => {
                     assert_eq!(
-                        crate::app_yubikey::pgp_of(press),
+                        yw_engine::wallet::app_yubikey::pgp_of(press),
                         ids::pgp_action(id),
                         "{id}"
                     );
                 }
                 Some(Press::YkManage(press)) => {
                     assert_eq!(
-                        crate::app_yubikey::manage::reslot_of(press),
+                        yw_engine::wallet::app_yubikey::manage::reslot_of(press),
                         ids::reslot_action(id),
                         "{id}"
                     );
                     assert_eq!(
-                        crate::app_yubikey::manage::preset_of(press),
+                        yw_engine::wallet::app_yubikey::manage::preset_of(press),
                         ids::preset(id),
                         "{id}"
                     );
                 }
                 Some(Press::YkConnect(press)) => {
                     assert_eq!(
-                        crate::app_yubikey::connect::choice_of(press),
+                        yw_engine::wallet::app_yubikey::connect::choice_of(press),
                         ids::connect_choice(id),
                         "{id}"
                     );
@@ -1674,7 +1689,7 @@ mod tests {
             let none = press_of(id, &controls).is_none();
             assert_eq!(none, unclaimed, "{id}");
             if none {
-                assert_eq!(crate::app_received::refresh_chain(id), None, "{id}");
+                assert_eq!(refresh_chain(id), None, "{id}");
                 assert!(!screens::RECEIVE_IDS.contains(&id), "{id}");
             }
         }

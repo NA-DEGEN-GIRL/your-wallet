@@ -3,28 +3,32 @@
 //! Key jobs run on this thread one at a time through `workers::key::step`, and their results
 //! reach `App::on_key_result` as the UI thread would receive them.
 
+// 2026-11-23 (S4d E1): the wallet's crate-private steps, buffers and flow state as the tests reach
+// them across the crate boundary (`yw_engine::testkit`).
 use std::cell::RefCell;
 use std::path::PathBuf;
+use yw_engine::testkit::{SessionTestExt, WalletTestExt};
 
 use yw_core::evm::address::{Address, parse_address};
 use yw_core::evm::amount::U256;
 use yw_core::secret::Zeroizing;
 
-use super::{App, AppMode, Confirm, PasswordAction, Paths, Purpose, Screen};
+use super::{App, AppMode, Paths, Purpose, Screen};
 use crate::apikeys::ApiKeys;
-use crate::app::text::T_ALT_PASS_RECEIVE;
-use crate::app_evm::{AppApproval, BalanceState, QueuedItem};
 use crate::events::{BalanceSnapshot, KeyOutcome, KeyResult};
 use crate::flow::evm::prepare::SendIntent;
-use crate::lock::{IdleTracker, LockReason};
 use crate::meta::{EvmAccountPref, Meta, RawAccount, Tab};
 use crate::settings::Settings;
 use crate::ui::approval::{QueueOutcome, QueueSource};
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens::{RECEIVE_IDS, T_ACCOUNTS_BACKUP, T_ALT_PASS, T_DISCARD, T_MAINNET, ids};
-use crate::ui::secret::Submission;
 use crate::workers::key::{KeyWorker, step};
 use yw_engine::screen::Tone;
+use yw_engine::secret::Submission;
+use yw_engine::wallet::app_evm::{AppApproval, BalanceState, QueuedItem};
+use yw_engine::wallet::lock::{IdleTracker, LockReason};
+use yw_engine::wallet::text::T_ALT_PASS_RECEIVE;
+use yw_engine::wallet::{Confirm, PasswordAction};
 
 const WALLET_PW: &[u8] = b"app-state-test password";
 const WRONG: &[u8] = b"not the wallet password";
@@ -169,7 +173,7 @@ impl Harness {
         let address = self.address.unwrap().to_lower_hex();
         self.app.key(crate::events::KeyJob::BackupChallenge);
         self.pump();
-        let challenge = self.app.challenge.unwrap();
+        let challenge = self.app.challenge().unwrap();
         let words: Vec<&str> = phrase.split(' ').collect();
         let mut values: Vec<&[u8]> = challenge
             .positions
@@ -518,9 +522,9 @@ fn unverified_passphrase_blocks_receive_and_shows_the_banner_everywhere() {
 /// password only after its words were held to the end (W08) and `백업 없이 지우기` was typed.
 #[test]
 fn unconfirmed_added_phrase_receive_banner_and_guarded_removal() {
-    use crate::app_mnemonics::{MnPurpose, text as mn_text};
     use crate::ui::screens_mnemonics::ids as mn;
     use yw_core::vault::{MnemonicInfo, RecordId};
+    use yw_engine::wallet::app_mnemonics::{MnPurpose, text as mn_text};
     let (mut app, dir) = unlocked_app("mn-unconfirmed", false);
     let id = RecordId::from_bytes([4; 16]);
     let info = |id: RecordId, primary: bool, backup_confirmed: bool| MnemonicInfo {
@@ -604,8 +608,8 @@ fn two_phrase_app(tag: &str, added_confirmed: bool) -> (App, PathBuf, yw_core::v
 /// (`MnRemoveTyped`), not the label edit's field — and `지우기` then asks for the password.
 #[test]
 fn removal_phrase_typed_in_the_edit_reaches_the_removal() {
-    use crate::app_mnemonics::{MnPurpose, text as mn_text};
     use crate::ui::screens_mnemonics::ids as mn;
+    use yw_engine::wallet::app_mnemonics::{MnPurpose, text as mn_text};
     let (mut app, dir, id) = two_phrase_app("mn-remove-typed", false);
     app.on_command(mn::REMOVE_BASE + 1);
     assert_eq!(app.mn.confirm_remove, Some(id));
@@ -617,20 +621,20 @@ fn removal_phrase_typed_in_the_edit_reaches_the_removal() {
     app.controls.type_text(mn::RENAME_EDIT, "label text");
     app.on_edit_notify(mn::RENAME_EDIT);
     assert_eq!(app.mn.remove_typed, "");
-    let serial = app.secret_serial;
+    let serial = app.secret_serial();
     app.on_command(mn::REMOVE_CONFIRM);
     assert!(app.mn.remove_error.is_some(), "nothing typed yet");
-    assert_eq!(app.secret_serial, serial);
+    assert_eq!(app.secret_serial(), serial);
     let word = mn_text::REMOVE_WORD.get(app.settings.language);
     app.controls.type_text(mn::REMOVE_TYPED_EDIT, word);
     app.on_edit_notify(mn::REMOVE_TYPED_EDIT);
     assert_eq!(app.mn.remove_typed, word);
     assert!(ctl(&app.items(), mn::REMOVE_CONFIRM).unwrap().enabled);
     // `지우기` opens the password window (headless: the attempt, `create_secret`, counts).
-    let serial = app.secret_serial;
+    let serial = app.secret_serial();
     app.on_command(mn::REMOVE_CONFIRM);
     assert!(app.mn.remove_error.is_none());
-    assert_eq!(app.secret_serial, serial + 1);
+    assert_eq!(app.secret_serial(), serial + 1);
     #[cfg(debug_assertions)]
     assert_eq!((app.form_mismatch.get(), app.cred_misses()), (0, 0));
     let _ = std::fs::remove_dir_all(dir);
@@ -736,36 +740,41 @@ fn idle_lock_pauses_while_an_approval_is_shown() {
 /// clock, and its end does not restart the count.
 #[test]
 fn idle_lock_pauses_while_a_display_window_is_shown() {
-    use crate::secret_session::SecretSession;
     use yw_engine::secret::SecretKind;
     const DISPLAY: u64 = 1 << 63;
     let (mut app, dir) = unlocked_app("idle-display", false);
     app.settings.auto_lock_minutes = 1;
     app.idle = IdleTracker::new(0);
     assert_eq!(app.idle_window(), None);
-    app.secret_session = Some(SecretSession::new(
+    *app.secret_session_mut() = Some(yw_engine::testkit::secret_session(
         7,
         SecretKind::Unlock,
         Purpose::Unlock,
         false,
     ));
-    let _ = app.secret_session.as_mut().map(SecretSession::mark_shown);
+    let _ = app
+        .secret_session_mut()
+        .as_mut()
+        .map(SessionTestExt::mark_shown);
     assert_eq!(app.idle_window(), None, "an input window pauses nothing");
-    app.secret_session = Some(SecretSession::new(
+    *app.secret_session_mut() = Some(yw_engine::testkit::secret_session(
         8,
         SecretKind::ShowKey,
         Purpose::ShowForBackup,
         false,
     ));
     assert_eq!(app.idle_window(), None, "not shown yet");
-    let _ = app.secret_session.as_mut().map(SecretSession::mark_shown);
+    let _ = app
+        .secret_session_mut()
+        .as_mut()
+        .map(SessionTestExt::mark_shown);
     assert_eq!(app.idle_window(), Some(DISPLAY | 8));
     // Five idle minutes with the display window open: no lock.
     app.idle_tick(300_000);
     assert!(matches!(app.mode, AppMode::Unlocked { .. }));
     assert!(app.key_queue.is_empty());
     // It closed by itself (no input): the count is not restarted, the wallet locks.
-    app.secret_session = None;
+    *app.secret_session_mut() = None;
     app.idle_tick(300_000);
     assert_eq!(app.mode, AppMode::Locked);
     let _ = std::fs::remove_dir_all(dir);
@@ -1719,7 +1728,7 @@ fn idle_first_run_import_is_discarded() {
     h.app.idle_tick(start + minutes * 60_000);
     h.pump();
     assert_eq!(h.app.screen, Screen::FirstRun);
-    assert!(h.app.import.password.is_none() && h.app.import.phrase.is_none());
+    assert!(h.app.import_held() == (false, false));
     // The key worker no longer holds the import: `맞습니다` now commits nothing.
     h.app.key(crate::events::KeyJob::CommitImport);
     h.pump();
@@ -1774,7 +1783,7 @@ fn llm_key_is_bound_to_the_saved_endpoint_host() {
     assert_eq!(reloaded.llm_host(), Some("api.example.org"));
     let config = crate::explain::LlmConfig::from_settings(
         &app.settings.llm_explain,
-        crate::app_llm::stored_llm_key(&app.apikeys),
+        yw_engine::wallet::app_llm::stored_llm_key(&app.apikeys),
     )
     .unwrap();
     assert!(config.api_key().is_some() && !config.key_withheld());
@@ -1784,7 +1793,7 @@ fn llm_key_is_bound_to_the_saved_endpoint_host() {
     assert!(app.llm_key_withheld());
     let config = crate::explain::LlmConfig::from_settings(
         &app.settings.llm_explain,
-        crate::app_llm::stored_llm_key(&app.apikeys),
+        yw_engine::wallet::app_llm::stored_llm_key(&app.apikeys),
     )
     .unwrap();
     assert!(config.api_key().is_none() && config.key_withheld());
@@ -1796,9 +1805,11 @@ fn llm_key_is_bound_to_the_saved_endpoint_host() {
         model: "m".to_owned(),
         ..crate::settings::LlmSettings::default()
     };
-    let config =
-        crate::explain::LlmConfig::from_settings(&on_port, crate::app_llm::stored_llm_key(&keys))
-            .unwrap();
+    let config = crate::explain::LlmConfig::from_settings(
+        &on_port,
+        yw_engine::wallet::app_llm::stored_llm_key(&keys),
+    )
+    .unwrap();
     assert!(config.key_withheld());
 
     // The connection test fails without sending anything.
@@ -2939,10 +2950,10 @@ fn walletconnect_panel_asks_for_the_project_id_first() {
 /// link goes to `wc_pair` (a malformed one here: no worker, no network).
 #[test]
 fn walletconnect_clipboard_presses_take_the_press_input() {
-    use crate::app_walletconnect::text as t;
     use crate::ui::screens_walletconnect::ids as wc;
     use yw_engine::cmd::{Cmd, Press, WcPress};
     use yw_engine::form::{ClipInput, PressInput};
+    use yw_engine::wallet::app_walletconnect::text as t;
     let (mut app, dir) = unlocked_app("wc-clip", false);
     "0123456789abcdef0123456789abcdef".clone_into(&mut app.settings.walletconnect_project);
     app.screen = Screen::Sites;
@@ -3015,10 +3026,10 @@ fn walletconnect_clipboard_presses_take_the_press_input() {
 /// in the test's own temp folder.
 #[test]
 fn walletconnect_file_press_takes_the_shell_image() {
-    use crate::app_walletconnect::text as t;
     use crate::ui::screens_walletconnect::ids as wc;
     use yw_engine::cmd::{Cmd, Press, WcPress};
     use yw_engine::form::{ImageInput, PressInput};
+    use yw_engine::wallet::app_walletconnect::text as t;
     let (mut app, dir) = unlocked_app("wc-file", false);
     "0123456789abcdef0123456789abcdef".clone_into(&mut app.settings.walletconnect_project);
     app.screen = Screen::Sites;
@@ -3254,10 +3265,10 @@ fn drop_downs_close_on_escape_and_other_commands() {
     app.on_command(super::IDCANCEL);
     assert_eq!(app.screen, Screen::FirstRun);
     app.set_screen(Screen::YubiKeyWalletIntro);
-    app.yk_words = crate::app_yubikey::YkWords::Shown;
+    app.yk_words = yw_engine::wallet::app_yubikey::YkWords::Shown;
     app.on_command(super::IDCANCEL);
     assert_eq!(app.screen, Screen::YubiKeyWalletIntro, "shown words stay");
-    app.yk_words = crate::app_yubikey::YkWords::None;
+    app.yk_words = yw_engine::wallet::app_yubikey::YkWords::None;
     app.on_command(super::IDCANCEL);
     assert_eq!(app.screen, Screen::FirstRun);
     let _ = std::fs::remove_dir_all(dir);
@@ -3542,9 +3553,9 @@ fn ctl(items: &[Item], id: u16) -> Option<Ctl> {
 /// leaving the screen (S12's `주소 복사` has the account card's id).
 #[test]
 fn copy_is_answered_at_its_control_and_expires() {
-    use crate::app_evm::Copied;
     use crate::ui::main_window::{Face, T_COPIED_ADDRESS};
     use crate::ui::screens_evm::ids::COPY_ADDRESS;
+    use yw_engine::wallet::app_evm::Copied;
     let (mut app, dir) = unlocked_app("copied-mark", false);
     app.meta.as_mut().unwrap().prefs.tab = Tab::Evm;
     let face = |app: &App| ctl(&app.items(), COPY_ADDRESS).and_then(|ctl| ctl.face);
@@ -3595,8 +3606,8 @@ fn copy_is_answered_at_its_control_and_expires() {
 /// id is gone (the last press is the last command), so such an id only clears the copy mark.
 #[test]
 fn an_id_that_is_no_press_only_clears_the_copy_mark() {
-    use crate::app_evm::Copied;
     use crate::ui::screens_evm::ids::COPY_ADDRESS;
+    use yw_engine::wallet::app_evm::Copied;
     let (mut app, dir) = unlocked_app("no-press", false);
     app.on_command(COPY_ADDRESS);
     let last = app.last_press;
@@ -3695,11 +3706,11 @@ fn edits_route_to_the_one_handler_that_claims_them() {
 /// is the E-SEC-002 band, and a later success takes that band away.
 #[test]
 fn a_late_copy_result_marks_the_control_of_its_mark() {
-    use crate::app_evm::Copied;
     use crate::errors::ErrorCode;
     use crate::ui::cmd_table::press_of;
     use crate::ui::screens_evm::ids::{COPY_ADDRESS, REFRESH};
     use yw_engine::cmd::{Cmd, CopyMark};
+    use yw_engine::wallet::app_evm::Copied;
     let (mut app, dir) = unlocked_app("copy-late", false);
     // Headless: the copy emits its effect (logged) and nothing answers it.
     app.on_command(COPY_ADDRESS);
@@ -3752,9 +3763,9 @@ fn setup_copies_answer_with_the_band_in_their_mark() {
     // A stand-in folder for `경로 복사` (never read: only its text is copied).
     crate::app_extension::TOUR_EXTENSION_DIR
         .with(|kept| *kept.borrow_mut() = Some(dir.join("extension")));
-    let path = crate::app_evm::text::PATH_COPIED.ko;
-    let url = crate::app_evm::text::URL_COPIED.ko;
-    let reown = crate::app_evm::text::REOWN_COPIED.ko;
+    let path = yw_engine::wallet::app_evm::text::PATH_COPIED.ko;
+    let url = yw_engine::wallet::app_evm::text::URL_COPIED.ko;
+    let reown = yw_engine::wallet::app_evm::text::REOWN_COPIED.ko;
     let failed = ErrorCode::Sec002.text_in(app.settings.language);
     let copy_path = "copy len=<path> address=false";
     let copy_url = "copy len=19 address=false";
@@ -3834,10 +3845,10 @@ fn setup_copies_answer_with_the_band_in_their_mark() {
 #[test]
 fn a_late_band_result_keeps_a_newer_mark() {
     use crate::app_effects::TEST_COPY_ANSWER;
-    use crate::app_evm::Copied;
     use crate::ui::cmd_table::press_of;
     use crate::ui::screens_evm::ids::COPY_ADDRESS;
     use yw_engine::cmd::{Cmd, CopyBand, CopyMark, ExtPress, Press, WcPress};
+    use yw_engine::wallet::app_evm::Copied;
     let (mut app, dir) = unlocked_app("copy-band-late", false);
     TEST_COPY_ANSWER.with(|kept| kept.set(Some(true)));
     app.on_command(COPY_ADDRESS);
@@ -3851,8 +3862,8 @@ fn a_late_band_result_keeps_a_newer_mark() {
             ..
         }) if Some(anchor) == press_of(COPY_ADDRESS, &app.controls)
     ));
-    let url = crate::app_evm::text::URL_COPIED.ko;
-    let reown = crate::app_evm::text::REOWN_COPIED.ko;
+    let url = yw_engine::wallet::app_evm::text::URL_COPIED.ko;
+    let reown = yw_engine::wallet::app_evm::text::REOWN_COPIED.ko;
     let _ = app.controls.take_shell_log();
     app.dispatch(Cmd::CopyDone {
         ok: true,
@@ -3885,8 +3896,6 @@ fn a_late_band_result_keeps_a_newer_mark() {
 /// opened for; a result launches nothing.
 #[test]
 fn links_and_folders_open_through_effects_answered_in_the_same_borrow() {
-    use crate::app::text::T_EXT_MISSING;
-    use crate::app_explorer::text;
     use crate::app_extension::TOUR_EXTENSION_DIR;
     use crate::explorer::ExplorerNet;
     use crate::explorer_launcher::Launcher;
@@ -3894,6 +3903,8 @@ fn links_and_folders_open_through_effects_answered_in_the_same_borrow() {
     use crate::ui::screens::ids::{OPEN_DATA_FOLDER, OPEN_LOG_FOLDER};
     use crate::ui::screens_reset::ids::EXT_OPEN_FOLDER;
     use yw_engine::cmd::{Cmd, LinkTarget};
+    use yw_engine::wallet::app_explorer::text;
+    use yw_engine::wallet::text::T_EXT_MISSING;
     const HASH: &str = "0x7a329aaf9f457ef8516d5a51631fe5a75e3c12d7d71b6a73a38ce42ad352de2d";
     let (mut app, dir) = unlocked_app("open-effects", false);
     let recorded = |app: &App| {
@@ -4223,8 +4234,8 @@ fn evm_token_rows_hide_unhide_and_zero_balance() {
 /// hidden token is always shown; zero-balance tokens stay; radio ids never renumber.
 #[test]
 fn send_picker_tucks_hidden_tokens_away() {
-    use crate::app_evm::SendAsset;
     use crate::ui::screens_evm::ids::{SEND_ASSET_BASE, SEND_HIDDEN_TOGGLE};
+    use yw_engine::wallet::app_evm::SendAsset;
     let (mut app, dir) = token_app("token-send");
     let chain = 11_155_111;
     let tokens = app.chain_tokens(chain);
@@ -4286,7 +4297,7 @@ fn send_picker_tucks_hidden_tokens_away() {
 /// asset with no amount (not a transfer to that address with guessed decimals).
 #[test]
 fn send_form_drops_a_token_of_another_network() {
-    use crate::app_evm::SendAsset;
+    use yw_engine::wallet::app_evm::SendAsset;
     let (mut app, dir) = token_app("send-other-network");
     let tokens = app.chain_tokens(11_155_111);
     let token = tokens[tokens.len() - 2].0;
@@ -4496,9 +4507,9 @@ fn yubikey_accounts_and_the_card_step() {
     use yw_core::journal::evm::Role;
     use yw_core::vault::EvmKeySource;
 
-    use crate::app_browser::SignWaiter;
-    use crate::app_sol::SolAccountId;
     use crate::events::{KeyJob, SignInfo};
+    use yw_engine::wallet::app_browser::SignWaiter;
+    use yw_engine::wallet::app_sol::SolAccountId;
 
     let (worker, cards, dir, _) =
         yw_engine::testkit::yubikey_wallet(temp_dir("yk-app"), file_deps());
@@ -4838,24 +4849,25 @@ fn yubikey_accounts_and_the_card_step() {
     {
         use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PlannedSlot};
         *cards.lock().unwrap() = vec![yw_core::yubikey::mock::MockCard::new(7_700_013)];
-        h.app.enrol_yubikey(crate::app_card::EnrolRequest {
-            phrase: Zeroizing::new(format!("{} about", ["abandon"; 11].join(" ")).into_bytes()),
-            passphrase: None,
-            slots: vec![PlannedSlot::recommended(
-                CardSlot::OpenPgp(PgpKey::Sig),
-                KeyRole::Evm {
-                    index: AccountIndex::new(2).unwrap(),
-                    btc: None,
-                },
-            )],
-            admin_pin: Zeroizing::new(b"12345678".to_vec()),
-            management_key: Zeroizing::new(Vec::new()),
-        });
+        h.app
+            .enrol_yubikey(yw_engine::wallet::app_card::EnrolRequest {
+                phrase: Zeroizing::new(format!("{} about", ["abandon"; 11].join(" ")).into_bytes()),
+                passphrase: None,
+                slots: vec![PlannedSlot::recommended(
+                    CardSlot::OpenPgp(PgpKey::Sig),
+                    KeyRole::Evm {
+                        index: AccountIndex::new(2).unwrap(),
+                        btc: None,
+                    },
+                )],
+                admin_pin: Zeroizing::new(b"12345678".to_vec()),
+                management_key: Zeroizing::new(Vec::new()),
+            });
         h.pump();
     }
     assert!(matches!(
         &h.app.card.enrol,
-        Some(crate::app_card::EnrolState::Done {
+        Some(yw_engine::wallet::app_card::EnrolState::Done {
             serial: 7_700_013,
             slots: 1,
             defaults,
@@ -4973,7 +4985,7 @@ fn unique_ids(items: &[Item]) {
     }
 }
 
-fn wizard_step(h: &Harness) -> Option<crate::app_yubikey::WizardStep> {
+fn wizard_step(h: &Harness) -> Option<yw_engine::wallet::app_yubikey::WizardStep> {
     h.app.card.wizard.as_ref().map(|wizard| wizard.step)
 }
 
@@ -5061,9 +5073,9 @@ fn the_touch_prompt_is_gone_once_the_card_answers() {
     use yw_core::journal::evm::Role;
     use yw_core::vault::EvmKeySource;
 
-    use crate::app_browser::SignWaiter;
-    use crate::app_card::T_CARD_TOUCH;
     use crate::events::{KeyJob, SignInfo};
+    use yw_engine::wallet::app_browser::SignWaiter;
+    use yw_engine::wallet::app_card::T_CARD_TOUCH;
 
     let (worker, cards, dir, _) =
         yw_engine::testkit::yubikey_wallet(temp_dir("yk-touch"), file_deps());
@@ -5178,10 +5190,10 @@ fn the_touch_prompt_is_gone_once_the_card_answers() {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one wizard walk-through")]
 fn yubikey_wizard_enrols_an_existing_wallet() {
-    use crate::app_sol::SolAccountId;
-    use crate::app_yubikey::{WizardStep, YkPurpose};
     use crate::ui::screens_yubikey::ids as yk;
     use crate::yubikey::PinTarget;
+    use yw_engine::wallet::app_sol::SolAccountId;
+    use yw_engine::wallet::app_yubikey::{WizardStep, YkPurpose};
 
     let (mut h, cards) = card_harness("yk-wizard", 8_800_001);
     let mut seen = YkSeen::default();
@@ -5246,7 +5258,7 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
     assert!(
         shown
             .iter()
-            .any(|text| text == crate::app_yubikey::T_YK_SAME)
+            .any(|text| text == yw_engine::wallet::app_yubikey::T_YK_SAME)
     );
     let evm2 = yw_core::bip32::preview_evm_address(
         ABOUT,
@@ -5404,10 +5416,10 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
 /// key worker wipes the held 64-byte seed.
 #[test]
 fn yubikey_leaving_the_wizard_wipes_the_seed() {
-    use crate::app_yubikey::YkPurpose;
     use crate::events::KeyJob;
     use crate::ui::screens_yubikey::ids as yk;
     use crate::workers::key::yubikey::{YkJob, YkOutcome};
+    use yw_engine::wallet::app_yubikey::YkPurpose;
 
     let (mut h, _cards) = card_harness("yk-leave", 8_800_031);
     let mut seen = YkSeen::default();
@@ -5450,7 +5462,7 @@ fn yubikey_leaving_the_wizard_wipes_the_seed() {
     h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
     assert_eq!(
         wizard_step(&h),
-        Some(crate::app_yubikey::WizardStep::Running)
+        Some(yw_engine::wallet::app_yubikey::WizardStep::Running)
     );
     h.app.set_screen(Screen::Main);
     assert!(
@@ -5469,9 +5481,9 @@ fn yubikey_leaving_the_wizard_wipes_the_seed() {
 /// the typed `영구 삭제`, and only then overwrites that key.
 #[test]
 fn yubikey_import_shows_the_key_it_would_overwrite() {
-    use crate::app_yubikey::{WizardStep, YkPurpose};
     use crate::ui::screens_yubikey::ids as yk;
     use yw_core::yubikey::plan::{CardSlot, PgpKey};
+    use yw_engine::wallet::app_yubikey::{WizardStep, YkPurpose};
 
     let (mut h, cards) = card_harness("yk-occupied", 8_800_041);
     let mut seen = YkSeen::default();
@@ -5505,7 +5517,10 @@ fn yubikey_import_shows_the_key_it_would_overwrite() {
     }
     let items = h.app.items();
     unique_ids(&items);
-    assert!(has_text(&items, crate::app_yubikey::T_YK_OCCUPIED));
+    assert!(has_text(
+        &items,
+        yw_engine::wallet::app_yubikey::T_YK_OCCUPIED
+    ));
     assert!(all_text(&items).contains(&foreign_evm), "the key's address");
     assert!(!ctl(&items, yk::IMPORT).unwrap().enabled);
     h.app.on_command(yk::OVERWRITE_ACK);
@@ -5538,9 +5553,9 @@ fn yubikey_import_shows_the_key_it_would_overwrite() {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one multi-card scenario")]
 fn yubikey_backup_copy_removal_and_management_key() {
-    use crate::app_yubikey::{WizardStep, YkPurpose};
     use crate::ui::screens_yubikey::ids as yk;
     use yw_core::yubikey::mock::MockCard;
+    use yw_engine::wallet::app_yubikey::{WizardStep, YkPurpose};
 
     let (mut h, cards) = card_harness("yk-backup", 8_800_011);
     let mut seen = YkSeen::default();
@@ -5551,7 +5566,9 @@ fn yubikey_backup_copy_removal_and_management_key() {
     // Card A: SIG = EVM 0, AUT = none, no PIV.
     h.app.on_command(crate::ui::screens_yubikey::ids::pgp_id(
         yw_core::yubikey::plan::PgpKey::Aut,
-        crate::app_yubikey::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
+        yw_engine::wallet::app_yubikey::PgpAction::Kind(
+            yw_engine::wallet::app_yubikey::PgpKind::None,
+        ),
     ));
     h.app
         .yk_set_text(yw_engine::form::EditField::YkSolCount, "0".to_owned());
@@ -5667,7 +5684,7 @@ fn yubikey_backup_copy_removal_and_management_key() {
     h.app.on_command(yk::CARD_NAME_SAVE);
     assert_eq!(
         h.app.info.as_deref(),
-        Some(crate::app_yubikey::text::CARD_NAME_INVALID.ko)
+        Some(yw_engine::wallet::app_yubikey::text::CARD_NAME_INVALID.ko)
     );
     assert!(h.app.meta.as_ref().unwrap().hw_card_names.is_empty());
     h.app.controls.type_text(yk::CARD_NAME_EDIT, " 백업 ");
@@ -5742,11 +5759,15 @@ fn yubikey_backup_copy_removal_and_management_key() {
     h.app.on_command(yk::ENROL_START);
     h.app.on_command(crate::ui::screens_yubikey::ids::pgp_id(
         yw_core::yubikey::plan::PgpKey::Sig,
-        crate::app_yubikey::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
+        yw_engine::wallet::app_yubikey::PgpAction::Kind(
+            yw_engine::wallet::app_yubikey::PgpKind::None,
+        ),
     ));
     h.app.on_command(crate::ui::screens_yubikey::ids::pgp_id(
         yw_core::yubikey::plan::PgpKey::Aut,
-        crate::app_yubikey::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
+        yw_engine::wallet::app_yubikey::PgpAction::Kind(
+            yw_engine::wallet::app_yubikey::PgpKind::None,
+        ),
     ));
     h.app.on_command(yk::PLAN_NEXT);
     h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
@@ -5855,15 +5876,18 @@ fn yubikey_backup_copy_removal_and_management_key() {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one wallet-creation scenario")]
 fn yubikey_only_wallet_from_the_first_run_screen() {
-    use crate::app_yubikey::{WizardStep, YkPurpose};
     use crate::ui::screens_yubikey::ids as yk;
     use crate::workers::key::yubikey::{YkJob, YkOutcome};
+    use yw_engine::wallet::app_yubikey::{WizardStep, YkPurpose};
 
     let (mut h, cards) = card_harness("yk-wallet", 8_800_021);
     let mut seen = YkSeen::default();
     assert_eq!(h.app.screen, Screen::FirstRun);
     let items = h.app.items();
-    assert!(has_text(&items, crate::app_yubikey::T_YK_WALLET));
+    assert!(has_text(
+        &items,
+        yw_engine::wallet::app_yubikey::T_YK_WALLET
+    ));
     // A lock in the middle wipes everything: the words are gone from the key worker.
     h.app.on_command(yk::NEW_WALLET);
     assert_eq!(h.app.screen, Screen::YubiKeyWalletIntro);
@@ -6032,10 +6056,10 @@ fn yubikey_only_wallet_from_the_first_run_screen() {
 /// belongs to no wallet.
 #[test]
 fn yubikey_new_wallet_cancel_after_the_words_asks_first() {
-    use crate::app_yubikey::{T_YK_WORDS_UNUSED, YkPurpose};
     use crate::events::KeyJob;
     use crate::ui::screens_yubikey::ids as yk;
     use crate::workers::key::yubikey::{YkJob, YkOutcome};
+    use yw_engine::wallet::app_yubikey::{T_YK_WORDS_UNUSED, YkPurpose};
 
     let (mut h, _cards) = card_harness("yk-abandon", 8_800_041);
     let mut seen = YkSeen::default();
@@ -6099,6 +6123,7 @@ fn yubikey_badge_is_chrome_and_the_solana_note() {
     use yw_core::bip32::path::AccountIndex;
     use yw_core::vault::EvmKeySource;
     use yw_core::yubikey::plan::KeyRole;
+    use yw_engine::wallet::app_card::card_badge;
 
     let (mut worker, _cards, dir, _) =
         yw_engine::testkit::yubikey_wallet(temp_dir("yk-badge"), file_deps());
@@ -6113,21 +6138,21 @@ fn yubikey_badge_is_chrome_and_the_solana_note() {
         btc: None,
     };
     assert_eq!(
-        crate::app_card::card_badge(yw_core::lang::Lang::Ko, (&records, &[]), role, 1),
+        card_badge(yw_core::lang::Lang::Ko, (&records, &[]), role, 1),
         "YubiKey로 서명 · #7700011 · 터치 1회"
     );
     assert_eq!(
-        crate::app_card::card_badge(yw_core::lang::Lang::Ko, (&[], &[]), role, 3),
+        card_badge(yw_core::lang::Lang::Ko, (&[], &[]), role, 3),
         "YubiKey로 서명 · 터치 3회"
     );
     // A named card (2026-11-15): its name with the serial — still chrome, outside the digest.
     let names = [(7_700_011, "메인".to_owned())];
     assert_eq!(
-        crate::app_card::card_badge(yw_core::lang::Lang::Ko, (&records, &names), role, 1),
+        card_badge(yw_core::lang::Lang::Ko, (&records, &names), role, 1),
         "YubiKey로 서명 · 메인 (#7700011) · 터치 1회"
     );
     assert_eq!(
-        crate::app_card::card_badge(yw_core::lang::Lang::En, (&records, &names), role, 2),
+        card_badge(yw_core::lang::Lang::En, (&records, &names), role, 2),
         "Signed with YubiKey · 메인 (#7700011) · 2 touch(es)"
     );
     let chain = yw_core::evm::chain::sepolia();
@@ -6209,8 +6234,8 @@ fn old_build_meta(address: &str) -> String {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one field report, step by step")]
 fn backup_pending_after_restart_shows_s04_and_receive() {
-    use crate::app_reset::WAIT_TIMEOUT_MS;
     use crate::ui::screens_reset::T_WAIT_STALLED;
+    use yw_engine::wallet::app_reset::WAIT_TIMEOUT_MS;
 
     let dir = temp_dir("bp-restart");
     {
@@ -6291,7 +6316,7 @@ fn backup_pending_after_restart_shows_s04_and_receive() {
     // The meta answer never comes (simulated): the wait times out to T-WAIT-STALLED with the
     // next steps instead of hanging; the self-heal requests a meta when none was requested.
     again.app.meta = None;
-    again.app.wait = crate::app_reset::WaitWatch::default();
+    again.app.wait = yw_engine::wallet::app_reset::WaitWatch::default();
     again.app.set_screen(Screen::Receive);
     let now = yw_win::time::monotonic_ms();
     again.app.wait_tick(now);
@@ -6478,7 +6503,7 @@ fn the_reset_hold_area_is_the_shells_and_its_gate_the_wallets() {
     let (mut app, dir) = unlocked_app("reset-hold-split", false);
     app.open_reset();
     app.drain();
-    let phrase = crate::app_reset::RESET_PHRASE.get(app.settings.language);
+    let phrase = yw_engine::wallet::app_reset::RESET_PHRASE.get(app.settings.language);
     app.reset_phrase_changed(phrase);
     assert!(app.reset.phrase_ok);
     app.drain();
@@ -6581,7 +6606,7 @@ fn a_reset_hold_the_logic_ends_releases_the_pointer() {
         w: 100,
         h: 40,
     };
-    let phrase = crate::app_reset::RESET_PHRASE.get(app.settings.language);
+    let phrase = yw_engine::wallet::app_reset::RESET_PHRASE.get(app.settings.language);
     let held = |app: &mut App, now: u64| {
         app.open_reset();
         app.reset_phrase_changed(phrase);
@@ -6646,7 +6671,7 @@ fn lock_during_wallet_reset_still_reaches_first_run() {
     h.pump();
     h.app.open_reset();
     h.app
-        .reset_phrase_changed(crate::app_reset::RESET_PHRASE.ko);
+        .reset_phrase_changed(yw_engine::wallet::app_reset::RESET_PHRASE.ko);
     h.app.reset_execute();
     assert!(h.app.reset.running);
     h.app.lock(LockReason::SessionLock);
@@ -6666,14 +6691,14 @@ fn lock_during_wallet_reset_still_reaches_first_run() {
 #[test]
 #[expect(clippy::too_many_lines, reason = "one connect walk-through")]
 fn yubikey_connect_without_words_from_the_first_run_screen() {
-    use crate::app_yubikey::YkPurpose;
-    use crate::app_yubikey::connect::{Choice, T_YK_UNKNOWN_PATH};
-    use crate::app_yubikey::manage::{
-        CLEAR_WORD, ClearStep, LOSS_WORD, T_YK_CLEAR_FUNDS, T_YK_KEY_LOST, YkManage,
-    };
     use crate::ui::screens_yubikey::ids as yk;
     use yw_core::bip32::path::AccountIndex;
     use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot, address_texts};
+    use yw_engine::wallet::app_yubikey::YkPurpose;
+    use yw_engine::wallet::app_yubikey::connect::{Choice, T_YK_UNKNOWN_PATH};
+    use yw_engine::wallet::app_yubikey::manage::{
+        CLEAR_WORD, ClearStep, LOSS_WORD, T_YK_CLEAR_FUNDS, T_YK_KEY_LOST, YkManage,
+    };
 
     let (mut h, cards) = card_harness("yk-connect", 8_800_061);
     let mut seen = YkSeen::default();
@@ -6869,8 +6894,8 @@ fn yubikey_connect_without_words_from_the_first_run_screen() {
 /// it back (the hide note says where).
 #[test]
 fn hidden_account_comes_back_with_show_again() {
-    use crate::app_hidden::Family;
     use crate::ui::screens_hidden::ids as hidden_ids;
+    use yw_engine::wallet::app_hidden::Family;
     let (mut app, dir) = unlocked_app("unhide", false);
     let meta = app.meta.as_mut().unwrap();
     meta.evm_accounts.push(crate::meta::Account {
@@ -6887,9 +6912,8 @@ fn hidden_account_comes_back_with_show_again() {
             .any(|row| row.0 == EvmAccountPref::Index(1))
     };
     assert!(!shown(&app));
-    assert!(app.banners.iter().any(
-        |banner| banner.text == crate::app_hidden::hidden_note(yw_core::lang::Lang::Ko, "저축")
-    ));
+    assert!(app.banners.iter().any(|banner| banner.text
+        == yw_engine::wallet::app_hidden::hidden_note(yw_core::lang::Lang::Ko, "저축")));
     assert!(
         controls(&app.items())
             .iter()
@@ -6966,8 +6990,8 @@ fn files_starting(dir: &std::path::Path, prefix: &str) -> Vec<String> {
 /// and remembers the time in meta, after which Bitcoin asks for a check and Solana and Zcash wait.
 #[test]
 fn journal_choice_closes_without_change_and_a_reset_keeps_the_old_copy_and_guards_sends() {
-    use crate::app_sidecar::{JournalHold, SendChain};
     use crate::ui::screens_sidecar::ids as sidecar_ids;
+    use yw_engine::wallet::app_sidecar::{JournalHold, SendChain};
     let mut h = Harness::new("journalreset");
     h.create_and_confirm();
     h.app.lock(LockReason::Manual);
@@ -7492,54 +7516,69 @@ fn scroll_effects_carry_what_they_read() {
 
 /// 2026-11-21 (S4 W1): the wallet half of the S22 hold, checked with the converted handlers below
 /// (the shell keeps the area and the pointer: `App::hold_down`/`hold_move` in `app.rs`).
-/// 2026-11-21 (S4 F19): also `replace_reset`, which ends a running hold through
+/// 2026-11-23 (S4d E1): `reset_hold_tick` and `reset_phrase_changed` are `pub` in yw-engine (the
+/// shell's hold timer and edit reach them). 2026-11-21 (S4 F19): also `replace_reset`, which ends a running hold through
 /// `Effect::ReleaseHold` when it replaces S22's state (the pointer is the shell's to let go).
 const RESET_HOLD_LOGIC: [&str; 4] = [
     "    pub(crate) fn reset_hold_begin(&mut self, now: u64) {",
-    "    pub(crate) fn reset_hold_tick(&mut self, now: u64) {",
-    "    pub(crate) fn reset_phrase_changed(&mut self, text: &str) {",
+    "    pub fn reset_hold_tick(&mut self, now: u64) {",
+    "    pub fn reset_phrase_changed(&mut self, text: &str) {",
     "    fn replace_reset(&mut self, state: ResetUi) {",
 ];
 
 /// 2026-11-21 (S4 W3a, spec/04 §5.3): `lock` is the shell's composition of the lock's two wallet
 /// halves, and the wallet's own lock composes them too; checked with the converted handlers below.
 /// 2026-11-23 (S4d E0b): in the wallet half `app/wallet.rs`, the first two `pub(super)` (the
-/// shell's `lock` composes them).
+/// shell's `lock` composes them). 2026-11-23 (S4d E1): in yw-engine's `wallet/mod.rs`, the first
+/// two `pub` (the shell is another crate).
 const LOCK_HALVES: [&str; 3] = [
-    "    pub(super) fn lock_steps(&mut self, reason: LockReason) -> bool {",
-    "    pub(super) fn lock_after_wait(&mut self, vault_present: bool) {",
+    "    pub fn lock_steps(&mut self, reason: LockReason) -> bool {",
+    "    pub fn lock_after_wait(&mut self, vault_present: bool) {",
     "    pub(crate) fn lock_wallet(&mut self, reason: WalletLock) {",
 ];
 
 /// The handlers [`converted_handlers_reach_the_main_window_only_through_effects`] reads (file,
 /// head). 2026-11-23 (S4d E0b): a const (was a local array); the wallet fns are in the wallet
-/// half `app/wallet.rs`, the shell's `lock` stays in `app.rs`.
+/// half `app/wallet.rs`, the shell's `lock` stays in `app.rs`. 2026-11-23 (S4d E1): the wallet
+/// files are yw-engine's (`../../yw-engine/src/wallet/…`, read relative to yw-app's `src`).
 const CONVERTED: [(&str, &str); 10] = [
     (
-        "app/wallet.rs",
+        "../../yw-engine/src/wallet/mod.rs",
         "    fn enter_screen(&mut self, screen: Screen, back: bool) {",
     ),
     (
-        "app/wallet.rs",
+        "../../yw-engine/src/wallet/mod.rs",
         "    fn close_overlay_in_place(&mut self, previous: Screen) {",
     ),
-    ("app/wallet.rs", "    fn activate(&mut self) {"),
     (
-        "app/wallet.rs",
+        "../../yw-engine/src/wallet/mod.rs",
+        "    fn activate(&mut self) {",
+    ),
+    (
+        "../../yw-engine/src/wallet/mod.rs",
         "    pub(crate) fn open_rpc_row(&mut self, network: NetworkId, edit: bool) {",
     ),
     ("app.rs", "    pub fn lock(&mut self, reason: LockReason) {"),
     (
-        "app/wallet.rs",
+        "../../yw-engine/src/wallet/mod.rs",
         "    fn on_press(&mut self, press: Press) {",
     ),
-    ("app_reset.rs", "    pub(crate) fn hold_cancel(&mut self) {"),
-    ("app_btc.rs", "    pub fn btc_select_tab(&mut self) {"),
     (
-        "app_sol.rs",
+        "../../yw-engine/src/wallet/app_reset.rs",
+        "    pub(crate) fn hold_cancel(&mut self) {",
+    ),
+    (
+        "../../yw-engine/src/wallet/app_btc.rs",
+        "    pub fn btc_select_tab(&mut self) {",
+    ),
+    (
+        "../../yw-engine/src/wallet/app_sol.rs",
         "    pub fn sol_select_tab(&mut self, tab: Tab) {",
     ),
-    ("app_zec.rs", "    pub fn zec_select_tab(&mut self) {"),
+    (
+        "../../yw-engine/src/wallet/app_zec.rs",
+        "    pub fn zec_select_tab(&mut self) {",
+    ),
 ];
 
 /// 2026-11-20 (S4 P4): the handlers P4 converted reach the main window only through effects —
@@ -7582,8 +7621,8 @@ fn converted_handlers_reach_the_main_window_only_through_effects() {
         "self.placed",
         "self.controls",
     ];
-    let hold = RESET_HOLD_LOGIC.map(|head| ("app_reset.rs", head));
-    let lock = LOCK_HALVES.map(|head| ("app/wallet.rs", head));
+    let hold = RESET_HOLD_LOGIC.map(|head| ("../../yw-engine/src/wallet/app_reset.rs", head));
+    let lock = LOCK_HALVES.map(|head| ("../../yw-engine/src/wallet/mod.rs", head));
     for (file, head) in CONVERTED.into_iter().chain(hold).chain(lock) {
         let code = body(file, head);
         for shell in shell_names {
@@ -7591,7 +7630,7 @@ fn converted_handlers_reach_the_main_window_only_through_effects() {
         }
     }
     let dispatch = body(
-        "app/wallet.rs",
+        "../../yw-engine/src/wallet/mod.rs",
         "    fn on_press(&mut self, press: Press) {",
     );
     for key in ["escape_key", "enter_key", "enter_on", "focused"] {
@@ -7705,10 +7744,10 @@ fn secret_sessions_follow_their_window_results() {
         app.banners.iter().map(|banner| banner.code).collect()
     };
     // Headless: refused as today (E-SEC-001), the serial counted, no session left.
-    let before = app.secret_serial;
+    let before = app.secret_serial();
     app.open_input(SecretKind::Unlock, Purpose::Unlock, false);
     app.drain();
-    assert_eq!(app.secret_serial, before + 1);
+    assert_eq!(app.secret_serial(), before + 1);
     assert!(!app.secret_open());
     assert_eq!(app.secret_purpose(), None);
     assert_eq!(codes(&app), [Some(ErrorCode::Sec001)]);
@@ -7737,9 +7776,8 @@ fn secret_sessions_follow_their_window_results() {
         },
     });
     assert!(
-        app.secret_session
-            .as_ref()
-            .is_some_and(crate::secret_session::SecretSession::shown)
+        app.secret_session()
+            .is_some_and(yw_engine::wallet::secret_session::SecretSession::shown)
     );
     // A second answer for a shown window does not end it.
     app.dispatch(Cmd::SecretOpened {
@@ -7756,7 +7794,7 @@ fn secret_sessions_follow_their_window_results() {
     assert!(app.key_queue.is_empty());
     app.on_secret_action(
         serial + 1,
-        crate::secret_session::SecretAction::Submit(crate::ui::secret::Submission {
+        yw_engine::wallet::secret_session::SecretAction::Submit(Submission {
             values: vec![
                 Zeroizing::new(b"old".to_vec()),
                 Zeroizing::new(b"new".to_vec()),
@@ -7863,7 +7901,7 @@ fn secret_opens_make_windows_only_for_their_unshown_session() {
     let stale = open(&mut app, serial + 7, SecretKind::Unlock);
     assert!(refused(stale.as_ref(), serial + 7));
     assert!(created().is_empty(), "a stale open asked for a window");
-    assert_eq!(app.secret_serial, serial);
+    assert_eq!(app.secret_serial(), serial);
     // A second open of the shown session makes nothing either; the session stays shown.
     let again = open(&mut app, serial, SecretKind::ConfirmPassword);
     assert!(refused(again.as_ref(), serial));
@@ -7873,9 +7911,8 @@ fn secret_opens_make_windows_only_for_their_unshown_session() {
     }
     assert_eq!(app.secret_purpose(), Some(Purpose::ChangePassword));
     assert!(
-        app.secret_session
-            .as_ref()
-            .is_some_and(crate::secret_session::SecretSession::shown)
+        app.secret_session()
+            .is_some_and(yw_engine::wallet::secret_session::SecretSession::shown)
     );
     assert!(app.banners.is_empty());
     secret_seam::stop();
@@ -7895,11 +7932,11 @@ fn w12_reads_its_card_counters_only_once_shown() {
     use yw_engine::cmd::Cmd;
     use yw_engine::secret::{CardSecretKind, SecretKind};
 
-    use crate::app_yubikey::YkPurpose;
     use crate::errors::ErrorCode;
     use crate::events::KeyJob;
-    use crate::secret_session::AfterShown;
     use crate::workers::key::yubikey::{CounterTarget, YkJob};
+    use yw_engine::wallet::app_yubikey::YkPurpose;
+    use yw_engine::wallet::secret_session::AfterShown;
 
     const CARD: u32 = 7_700_011;
     let dir = temp_dir("secret-after-shown");
@@ -7940,7 +7977,7 @@ fn w12_reads_its_card_counters_only_once_shown() {
 
     // A session with the step: a stale answer takes nothing; `Shown` takes it once.
     let serial = app.begin_secret(kind, purpose, false);
-    if let Some(session) = app.secret_session.as_mut() {
+    if let Some(session) = app.secret_session_mut().as_mut() {
         session.then_when_shown(AfterShown::CardCounters { card: CARD });
     }
     let shown = |serial: u64| Cmd::SecretOpened {
@@ -7967,7 +8004,7 @@ fn w12_reads_its_card_counters_only_once_shown() {
         OpenOutcome::Failed(ErrorCode::App009),
     ] {
         let serial = app.begin_secret(kind, purpose, false);
-        if let Some(session) = app.secret_session.as_mut() {
+        if let Some(session) = app.secret_session_mut().as_mut() {
             session.then_when_shown(AfterShown::CardCounters { card: CARD });
         }
         app.dispatch(Cmd::SecretOpened { serial, outcome });
@@ -8010,10 +8047,10 @@ fn display_secrets_move_only_into_verified_windows() {
     use yw_engine::secret::{SecretEffect, SecretKind};
 
     use super::secret_seam;
-    use crate::app_yubikey::{YkPurpose, YkWords};
     use crate::errors::ErrorCode;
-    use crate::secret_session::AfterShown;
     use yw_engine::secret::DisplaySecret;
+    use yw_engine::wallet::app_yubikey::{YkPurpose, YkWords};
+    use yw_engine::wallet::secret_session::AfterShown;
 
     let dir = temp_dir("secret-display-seam");
     let mut app = app_at(&dir);
@@ -8058,14 +8095,14 @@ fn display_secrets_move_only_into_verified_windows() {
 
     // The secret moves out once, only for the open session's serial.
     let serial = app.begin_secret(SecretKind::ShowKey, Purpose::ShowRevealed, false);
-    if let Some(session) = app.secret_session.as_mut() {
+    if let Some(session) = app.secret_session_mut().as_mut() {
         session.hold_display(display());
     }
     assert!(app.take_display_secret(serial + 1).is_none());
     assert!(app.take_display_secret(serial).is_some());
     assert!(app.take_display_secret(serial).is_none(), "taken twice");
     // Once shown, a held secret is never handed out again.
-    if let Some(session) = app.secret_session.as_mut() {
+    if let Some(session) = app.secret_session_mut().as_mut() {
         session.hold_display(display());
     }
     app.dispatch(Cmd::SecretOpened {
@@ -8081,7 +8118,7 @@ fn display_secrets_move_only_into_verified_windows() {
 
     // An open effect of another serial makes no window and takes nothing (A-3).
     let serial = app.begin_secret(SecretKind::ShowKey, Purpose::ShowRevealed, false);
-    if let Some(session) = app.secret_session.as_mut() {
+    if let Some(session) = app.secret_session_mut().as_mut() {
         session.hold_display(display());
     }
     let lang = app.settings.language;
@@ -8132,7 +8169,7 @@ fn display_secrets_move_only_into_verified_windows() {
         Purpose::ShowRevealed,
         false,
     );
-    if let Some(session) = app.secret_session.as_mut() {
+    if let Some(session) = app.secret_session_mut().as_mut() {
         session.hold_display(display());
     }
     app.lock(LockReason::Manual);
@@ -8187,7 +8224,7 @@ fn display_secrets_move_only_into_verified_windows() {
     ] {
         app.yk_words = YkWords::None;
         let serial = app.begin_secret(kind, words, false);
-        if let Some(session) = app.secret_session.as_mut() {
+        if let Some(session) = app.secret_session_mut().as_mut() {
             session.then_when_shown(AfterShown::YkWordsShown);
         }
         app.dispatch(Cmd::SecretOpened {
@@ -8203,7 +8240,7 @@ fn display_secrets_move_only_into_verified_windows() {
     // Words already further on stay there.
     app.yk_words = YkWords::OnCard;
     let serial = app.begin_secret(kind, words, false);
-    if let Some(session) = app.secret_session.as_mut() {
+    if let Some(session) = app.secret_session_mut().as_mut() {
         session.then_when_shown(AfterShown::YkWordsShown);
     }
     app.dispatch(Cmd::SecretOpened {

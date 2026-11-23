@@ -5,16 +5,19 @@
 //! E0c, spec/09 §2.1): a child of `app::tests` (that file moves to yw-engine at S4d E1 and these
 //! tests need `App`); it reaches nothing private there, so nothing was widened.
 
+// 2026-11-23 (S4d E1): the wallet's crate-private steps, buffers and flow state as the tests reach
+// them across the crate boundary (`yw_engine::testkit`).
 use std::collections::HashMap;
 use std::sync::Arc;
+use yw_engine::testkit::WalletTestExt;
 
 use crate::apikeys::ApiKeys;
 use crate::app::{App, Paths};
-use crate::app_browser::{BrowserUi, GrantWrite, SignWaiter};
 use crate::browser::Reply;
 use crate::browser::envelope::{Correlation, Id16, Id32};
 use crate::events::{EventQueue, MessageSignFailure, MessageSigned};
 use crate::settings::Settings;
+use yw_engine::wallet::app_browser::{BrowserUi, GrantWrite, SignWaiter};
 
 fn app() -> App {
     let dir = std::env::temp_dir().join(format!("yw-app-tickets-{}", std::process::id()));
@@ -44,7 +47,7 @@ fn app() -> App {
         unlocked: false,
         locking: false,
         grant_write: GrantWrite::default(),
-        site_rows: crate::app_browser::SiteRows::default(),
+        site_rows: yw_engine::wallet::app_browser::SiteRows::default(),
     });
     app
 }
@@ -68,8 +71,8 @@ fn broadcast_reply(app: &App, hash: [u8; 32]) -> Option<Reply> {
 }
 
 /// `account` signing for `https://app.example`.
-fn signer(account: [u8; 20]) -> crate::app_browser::SiteSigner {
-    crate::app_browser::SiteSigner {
+fn signer(account: [u8; 20]) -> yw_engine::wallet::app_browser::SiteSigner {
+    yw_engine::wallet::app_browser::SiteSigner {
         origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
         account: yw_core::evm::address::Address::from_bytes(account),
     }
@@ -170,9 +173,9 @@ fn sol_tx_kind() -> crate::browser::SiteKind {
 /// unaffected.
 #[test]
 fn unverified_passphrase_refuses_dapp_connect_and_signing() {
-    use crate::app::AppMode;
     use crate::browser::{DappEvent, SiteKind, VaultView};
     use crate::ui::approval::QueueOutcome;
+    use yw_engine::wallet::AppMode;
 
     let mut app = app();
     app.meta = Some(crate::meta::Meta::default());
@@ -250,7 +253,7 @@ fn addr(text: &str) -> yw_core::evm::address::Address {
 /// `app()` unlocked with EVM accounts A (index 0) and B (index 1, hidden when `b_hidden`).
 fn accounts_app(b_hidden: bool) -> App {
     let mut app = app();
-    app.mode = crate::app::AppMode::Unlocked {
+    app.mode = yw_engine::wallet::AppMode::Unlocked {
         alt_passphrase: false,
     };
     let account = |index: u32, address: &str, hidden: bool| crate::meta::Account {
@@ -338,7 +341,7 @@ fn removing_an_account_revokes_its_waiting_signing_requests() {
     use crate::browser::{DappEvent, SiteKind};
     let mut app = accounts_app(false);
     // Queued while locked: they wait.
-    app.mode = crate::app::AppMode::Locked;
+    app.mode = yw_engine::wallet::AppMode::Locked;
     app.sync_browser();
     let sign = |account: &str| SiteKind::PersonalSign {
         account: addr(account),
@@ -352,7 +355,7 @@ fn removing_an_account_revokes_its_waiting_signing_requests() {
     assert_eq!(app.evm.queue.len(), 1);
     assert!(app.evm.queue.waiting_payloads().all(|item| matches!(
         item,
-        crate::app_evm::QueuedItem::Site(site)
+        yw_engine::wallet::app_evm::QueuedItem::Site(site)
             if matches!(&site.kind, SiteKind::PersonalSign { account, .. } if *account == addr(ACCOUNT_A))
     )));
 }
@@ -363,8 +366,8 @@ fn removing_an_account_revokes_its_waiting_signing_requests() {
 /// which only the extension's requests open. Other origins' requests are untouched.
 #[test]
 fn walletconnect_requests_end_with_their_window_and_at_lock() {
-    use crate::app_evm::QueuedItem;
     use crate::ui::approval::{QueueOutcome, QueueSource};
+    use yw_engine::wallet::app_evm::QueuedItem;
     let mut app = accounts_app(false);
     // The unlock merge (it moves the queue) is behind us, as in the app.
     app.sync_browser();
@@ -402,7 +405,7 @@ fn walletconnect_requests_end_with_their_window_and_at_lock() {
     );
     // Lock: the waiting WalletConnect request ends; the extension's waits for the unlock.
     app.evm_lock();
-    app.mode = crate::app::AppMode::Locked;
+    app.mode = yw_engine::wallet::AppMode::Locked;
     assert_eq!(app.evm.queue.len(), 1);
     assert!(app.evm.queue.waiting_payloads().all(|item| !is_wc(item)));
     // The reload after the lock: the password window for the extension's request only.
@@ -770,7 +773,7 @@ fn a_factory_pin_card_is_stopped_at_the_form_and_before_the_window() {
     // The send form: the band and its `PIN 설정`, `검토` off.
     assert_eq!(app.evm_selected_card_gate(), Some(SERIAL));
     assert!(!app.can_review());
-    app.screen = crate::app::Screen::Send;
+    app.screen = yw_engine::wallet::Screen::Send;
     let items = app.items();
     let band = format!(
         "YubiKey #{SERIAL} PIN 설정 전 — 이 계정은 받기만 되고, 보내기·서명은 PIN을 바꾼 뒤에 됩니다."

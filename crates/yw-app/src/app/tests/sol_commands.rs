@@ -10,13 +10,14 @@ use yw_core::slip10::SolKeySource;
 use yw_core::sol::SolAddress;
 
 use crate::apikeys::ApiKeys;
-use crate::app::{App, AppMode, Paths, Screen};
-use crate::app_sol::ScanStage;
+use crate::app::{App, Paths};
 use crate::meta::{Account, Meta, Tab};
 use crate::settings::Settings;
 use crate::sol::scan::ScanRow;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_sol::ids::{self, ScanAction, scan_row_id};
+use yw_engine::wallet::app_sol::ScanStage;
+use yw_engine::wallet::{AppMode, Screen};
 
 fn address(seed: u8) -> SolAddress {
     SolAddress::from_bytes([seed; 32])
@@ -188,7 +189,7 @@ fn scan_moves_go_to_a_primary_standard_account() {
     app.meta.as_mut().unwrap().sol_accounts.clear();
     let mut items = Vec::new();
     app.sol_scan_screen(&mut items);
-    let text = crate::app_sol::SOL_SCAN_NO_TARGET_TEXT;
+    let text = yw_engine::wallet::app_sol::SOL_SCAN_NO_TARGET_TEXT;
     assert!(
         items
             .iter()

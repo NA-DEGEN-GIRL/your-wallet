@@ -19,11 +19,11 @@
 //! code names them); the card is drawn here.
 
 use crate::app::App;
-use crate::app_hidden::Family;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_links::PickerEntry;
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::text::{SOURCE_EVM_KEY, SOURCE_IMPORTED, SOURCE_WORDS};
+use yw_engine::wallet::app_hidden::Family;
 
 /// One account of the card's drop-down.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -8,12 +8,13 @@
 use std::path::{Path, PathBuf};
 
 use crate::apikeys::ApiKeys;
-use crate::app::{App, AppMode, Paths, Screen};
+use crate::app::{App, Paths};
 use crate::explorer::{EXPLORERS_KEY, ExplorerNet, ExplorerOverride, LinkKind, Templates};
 use crate::explorer_launcher::Launcher;
 use crate::network::{NetworkId, SolCluster};
 use crate::settings::{EvmChainDef, Settings};
 use crate::ui::screens_explorer::ids;
+use yw_engine::wallet::{AppMode, Screen};
 
 const HASH: &str = "0x7a329aaf9f457ef8516d5a51631fe5a75e3c12d7d71b6a73a38ce42ad352de2d";
 
@@ -243,7 +244,7 @@ fn helpers_follow_user_chains_and_overrides_and_open_without_a_browser() {
     app.drain();
     assert_eq!(
         app.info.as_deref(),
-        Some(crate::app_explorer::text::EXPLORER_NONE.ko)
+        Some(yw_engine::wallet::app_explorer::text::EXPLORER_NONE.ko)
     );
     app.open_explorer_address(
         ExplorerNet::HyperCore(yw_core::hypercore::HcNetwork::Testnet),
@@ -395,9 +396,9 @@ fn english_explorer_chain_and_site_texts() {
         crate::flow::evm::form::AddressNote::Contract,
     ];
     let mut lines: Vec<String> = notes.iter().map(|note| note.text_in(Lang::En)).collect();
-    lines.push(crate::app_book::look_alike_note(
+    lines.push(yw_engine::wallet::app_book::look_alike_note(
         Lang::En,
-        &crate::app_book::Resembles::Sent("0x5290".to_owned()),
+        &yw_engine::wallet::app_book::Resembles::Sent("0x5290".to_owned()),
     ));
     lines.push(crate::ui::screens_evm::browser_status_text(
         Lang::En,
@@ -419,13 +420,13 @@ fn english_explorer_chain_and_site_texts() {
         "'Alice'과 앞 3자·끝 4자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다."
     );
     let catalogues: [&[Entry]; 13] = [
-        crate::app_book::text::ALL,
-        crate::app_browser::text::ALL,
+        yw_engine::wallet::app_book::text::ALL,
+        yw_engine::wallet::app_browser::text::ALL,
         crate::app_chain_sites::text::ALL,
-        crate::app_evm::text::ALL,
-        crate::app_explorer::text::ALL,
+        yw_engine::wallet::app_evm::text::ALL,
+        yw_engine::wallet::app_explorer::text::ALL,
         crate::app_extension::text::ALL,
-        crate::app_tokens::text::ALL,
+        yw_engine::wallet::app_tokens::text::ALL,
         crate::explorer::text::ALL,
         crate::flow::evm::form::text::ALL,
         crate::flow::evm::user_chain::text::ALL,

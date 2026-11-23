@@ -78,8 +78,12 @@
 //! Regenerate for review (PowerShell): `$env:YW_S4_FLOW_OUT='<folder>'; cargo test -p yw-app
 //! --lib --locked --offline -- --ignored --test-threads=1 app_approval::input_tests::print`.
 
+// 2026-11-23 (S4d E1): the wallet's crate-private steps, buffers and flow state as the tests reach
+// them across the crate boundary (`yw_engine::testkit`).
+// 2026-11-23 (S4d E1): the approval flow's state as the tests read it across the crate boundary.
 use std::fmt::Write as _;
 use std::rc::Rc;
+use yw_engine::testkit::{FlowTestExt, WalletTestExt};
 
 use yw_core::approval::ApprovalId;
 use yw_win::ui::{Handler, Msg, Rect, Reply, Window};
@@ -287,7 +291,7 @@ fn open(kind: Kind, oracle: Signals, tag: &str, fixed: bool) -> Opened {
                 .evm
                 .approval
                 .as_ref()
-                .map_or(0, crate::approval_flow::ApprovalFlow::job);
+                .map_or(0, yw_engine::wallet::approval_flow::ApprovalFlow::job);
             fx.app().on_simulating(job, START_MS);
             None
         }
@@ -334,7 +338,7 @@ fn open(kind: Kind, oracle: Signals, tag: &str, fixed: bool) -> Opened {
             .evm
             .approval
             .as_ref()
-            .map_or(0, crate::approval_flow::ApprovalFlow::view_rev);
+            .map_or(0, yw_engine::wallet::approval_flow::ApprovalFlow::view_rev);
         let win = app.approval_win.as_mut().expect("the window is open");
         if fixed {
             let layout = PanelLayout {
@@ -587,7 +591,7 @@ fn after(opened: &Opened, issued: Option<ApprovalId>) -> String {
         _ => "win closed".to_owned(),
     };
     let store = issued
-        .and_then(|id| app.evm.store.state(id))
+        .and_then(|id| app.evm_store().state(id))
         .map_or_else(|| "-".to_owned(), |state| format!("{state:?}"));
     drop(app);
     let rpc = names(fx.rpc_jobs().iter().map(RpcJob::name));
@@ -1357,11 +1361,19 @@ fn the_input_goldens_hold_only_known_rows() {
 
 const APPROVAL_SOURCE: &str = include_str!("app_approval.rs");
 const STRAY_SOURCE: &str = include_str!("ui/approval_input.rs");
+/// The approval flow half (2026-11-23, spec/15 §11.4 S4d E1: it moved from this file's
+/// `app_approval.rs` to yw-engine; S1, S3 and S6 read it there, the window half here).
+const FLOW_SOURCE: &str = include_str!("../../yw-engine/src/wallet/app_approval.rs");
 const PANEL_SOURCE: &str = include_str!("../../yw-engine/src/explain/panel.rs");
 const INTERACTION_SOURCE: &str = include_str!("../../yw-engine/src/approval/interaction.rs");
 
 /// `app_approval.rs` without its `cfg(test)` child modules and test hooks (they follow the
 /// smoke module's declaration at the end of the file) and without comment lines.
+/// The flow half's code without comment lines (2026-11-23, S4d E1; [`FLOW_SOURCE`]).
+fn flow_production() -> String {
+    code_only(FLOW_SOURCE)
+}
+
 fn approval_production() -> String {
     let end = APPROVAL_SOURCE
         .find("#[cfg(test)]\n#[path = \"app_approval_smoke.rs\"]")
@@ -1376,6 +1388,25 @@ fn code_only(source: &str) -> String {
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The text of the one fn `name` at method depth (4 spaces), whatever its visibility (2026-11-23,
+/// S4d E1: the flow half moved to yw-engine and some of its fns became `pub` there).
+fn fn_item<'a>(source: &'a str, name: &str) -> &'a str {
+    let heads: Vec<String> = [
+        "",
+        "pub ",
+        "pub(crate) ",
+        "const ",
+        "pub const ",
+        "pub(crate) const ",
+    ]
+    .iter()
+    .map(|vis| format!("\n    {vis}fn {name}("))
+    .filter(|head| source.contains(head.as_str()))
+    .collect();
+    assert_eq!(heads.len(), 1, "exactly one fn {name}: {heads:?}");
+    item(source, heads[0].trim_start_matches('\n'), 4)
 }
 
 /// The text of the one item that starts with `head` (asserted to occur exactly once) up to its
@@ -1443,7 +1474,19 @@ fn approval_window_is_topmost_and_eats_activating_clicks() {
         1,
         "A01 is made in one place"
     );
-    assert!(!item(&code, "    fn open_approval(", 4).contains("WindowSpec"));
+    // 2026-11-23 (S4d E1, the pre-approved `E1` of this check's rule, spec/15 §18 18; critic
+    // C14): the flow's `open_approval` is yw-engine's, which makes no window and has no
+    // `topmost`/`MouseActivate` at all (the window half above keeps both assertions).
+    let flow = flow_production();
+    assert!(!item(&flow, "    fn open_approval(", 4).contains("WindowSpec"));
+    for shell_only in [
+        ".topmost(",
+        "MA_ACTIVATEANDEAT",
+        "MouseActivate",
+        "WindowSpec",
+    ] {
+        assert!(!flow.contains(shell_only), "{shell_only} in the flow half");
+    }
     for moved in ["MA_ACTIVATEANDEAT", "MouseActivate"] {
         assert!(
             !code.contains(moved),
@@ -1800,18 +1843,48 @@ fn approving_input_is_built_only_by_the_mapper() {
     }
     ways.sort_unstable();
     // 2026-11-23 (S4d E0b): the wallet's router `on_cmd` (its `Cmd::Approval(` arm) is in the
-    // wallet half `app/wallet.rs` (was `app.rs`).
+    // wallet half `app/wallet.rs` (was `app.rs`). 2026-11-23 (S4d E1, A-6 "extended at E1"): that
+    // arm and the flow's `.event(` are yw-engine's (`wallet/mod.rs`, `wallet/approval_flow.rs`),
+    // checked below; in yw-app only the window half builds and sends `Cmd::Approval`.
     assert_eq!(
         ways,
         [
-            ("app/wallet.rs", "Cmd::Approval(", 1),
             ("app_approval.rs", ".deliver(", 1),
             ("app_approval.rs", "Cmd::Approval(", 2),
             ("app_approval.rs", "Sampled(", 1),
             ("app_approval.rs", "window_input(", 2),
-            ("approval_flow.rs", ".event(", 1),
         ]
     );
+    let router = code_only(include_str!("../../yw-engine/src/wallet/mod.rs"));
+    let gate_writer = code_only(include_str!("../../yw-engine/src/wallet/approval_flow.rs"));
+    assert_eq!(
+        router.matches("Cmd::Approval(").count(),
+        1,
+        "the router's arm"
+    );
+    let gate_code = gate_writer
+        .split(
+            "#[cfg(test)]
+mod tests",
+        )
+        .next()
+        .unwrap_or_default();
+    assert_eq!(
+        gate_code.matches(".event(").count(),
+        1,
+        "the gate's one event"
+    );
+    for approving in [
+        "ApproveActivated",
+        "PointerPressed",
+        "SpacePressed",
+        "ApprovalInput {",
+    ] {
+        assert!(
+            !router.contains(approving),
+            "{approving} in the wallet's router"
+        );
+    }
     let code = approval_production();
     let run_step = folded(item(&code, "    fn run_step(", 4));
     in_order(
@@ -1880,7 +1953,7 @@ fn approving_input_is_built_only_by_the_mapper() {
         ],
     );
     in_order(
-        &folded(item(&code, "    pub(crate) fn on_approval_input(", 4)),
+        &folded(fn_item(&flow_production(), "on_approval_input")),
         &[
             "let shown = input.shown;",
             "if self.shown_now() != Some(shown) { return; }",
@@ -1888,15 +1961,13 @@ fn approving_input_is_built_only_by_the_mapper() {
         ],
     );
     assert!(
-        item(&code, "    fn approval_event(", 4).contains("flow.on_event(now, foreground, event)"),
+        fn_item(&flow_production(), "approval_event")
+            .contains("flow.on_event(now, foreground, event)"),
         "approval_event hands the event to the flow"
     );
-    let flow = found
-        .iter()
-        .find(|(path, _)| path == "approval_flow.rs")
-        .map(|(_, text)| code_only(text))
-        .expect("approval_flow.rs");
-    let on_event = item(&flow, "    pub(crate) fn on_event(", 4);
+    // 2026-11-23 (S4d E1): `approval_flow.rs` is yw-engine's (`wallet/approval_flow.rs`).
+    let flow = code_only(include_str!("../../yw-engine/src/wallet/approval_flow.rs"));
+    let on_event = fn_item(&flow, "on_event");
     assert!(
         on_event.contains("self.session.event(now, event)"),
         "the flow hands the event to the session"
@@ -1937,7 +2008,14 @@ fn approving_input_is_built_only_by_the_mapper() {
     reason = "the window's AI functions, then the flow module and the shell state"
 )]
 fn ai_never_touches_the_gate() {
-    let code = approval_production();
+    // 2026-11-23 (S4d E1, `E1` in this check's rule): the window half (`ai_scroll_by`) here and
+    // the flow half (the rest) in yw-engine, scanned as one text in that order.
+    let code = format!(
+        "{}
+{}",
+        approval_production(),
+        flow_production()
+    );
     // Every `fn ai_*` of any visibility (2026-11-18, A5 review: the scan matched private
     // `    fn ai_` only, so a `pub(crate) fn ai_*` was skipped).
     let mut found = Vec::new();
@@ -2008,7 +2086,7 @@ fn ai_never_touches_the_gate() {
             .count(),
         1
     );
-    let flow = code_only(include_str!("approval_flow.rs"));
+    let flow = code_only(include_str!("../../yw-engine/src/wallet/approval_flow.rs"));
     assert!(
         flow.contains("pub struct ApprovalFlow {"),
         "the flow module"
@@ -2037,7 +2115,13 @@ fn ai_never_touches_the_gate() {
     // its first `{` or `;`.
     let ident = |c: char| c.is_alphanumeric() || c == '_';
     let mut files = Vec::new();
-    let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    // 2026-11-23 (S4d E1, `E1` in this check's rule): and yw-engine's wallet, where
+    // `approval_flow.rs` (and `AiFlow`'s `Debug`) moved.
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut dirs = vec![
+        manifest.join("src"),
+        manifest.join("../yw-engine/src/wallet"),
+    ];
     while let Some(dir) = dirs.pop() {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -2089,15 +2173,22 @@ fn ai_never_touches_the_gate() {
         ["impl core::fmt::Debug for AiFlow"],
         "AiFlow has no methods"
     );
-    for (head, indent) in [
+    // 2026-11-23 (S4d E1, `E1` in this check's rule): `ai` is `pub` in yw-engine (the window's
+    // paint reads it), so the fns are found by name, whatever their visibility.
+    let ai_fns = ["ai", "ai_mut", "take_ai", "attach_ai"];
+    let heads = [
         ("pub struct AiFlow {", 0),
         ("impl core::fmt::Debug for AiFlow {", 0),
-        ("    pub(crate) const fn ai(", 4),
-        ("    pub(crate) fn ai_mut(", 4),
-        ("    pub(crate) fn take_ai(", 4),
-        ("    pub(crate) fn attach_ai(", 4),
-    ] {
-        let body = item(&flow, head, indent);
+    ];
+    let bodies = heads
+        .iter()
+        .map(|&(head, indent)| (head.to_owned(), item(&flow, head, indent)))
+        .chain(
+            ai_fns
+                .iter()
+                .map(|name| (format!("fn {name}"), fn_item(&flow, name))),
+        );
+    for (head, body) in bodies {
         for banned in [
             "session",
             "gate",
@@ -2124,9 +2215,9 @@ fn ai_never_touches_the_gate() {
 #[test]
 fn the_ai_panel_repaints_through_an_effect() {
     use super::headless_host::{self, OpenAnswer};
-    use crate::approval_flow::ApprovalFlow;
     use crate::explain::AiPanelState;
     use yw_engine::approval::flow::ApprovalEffect;
+    use yw_engine::wallet::approval_flow::ApprovalFlow;
 
     fn repaints() -> Vec<ApprovalEffect> {
         headless_host::take_effects()
@@ -2216,9 +2307,9 @@ fn the_ai_panel_repaints_through_an_effect() {
 #[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn the_ai_repaint_reaches_only_its_window() {
     use super::TEST_AI_REPAINTS;
-    use crate::approval_flow::ApprovalFlow;
     use yw_engine::approval::flow::{ApprovalEffect, ShownId};
     use yw_engine::effect::Effect;
+    use yw_engine::wallet::approval_flow::ApprovalFlow;
 
     /// Stops the record when the test ends, also on a failed assertion.
     struct Recording;
@@ -2362,13 +2453,19 @@ fn the_approval_flow_names_no_window() {
         "focus_window",
         "kill_timer",
     ];
+    // 2026-11-23 (S4d E1): the flow fns are yw-engine's (`wallet/app_approval.rs`,
+    // `flow_code`); the shell's open and close stay in this file's window half (`code`).
     let code = approval_production();
-    let start = code
+    let flow_code = flow_production();
+    let start = flow_code
         .find("    pub fn show_next_approval(")
         .expect("show_next_approval");
-    let end = code.find("    fn rebuild_view(").expect("rebuild_view");
+    let end = ["    fn rebuild_view(", "    pub fn rebuild_view("]
+        .iter()
+        .find_map(|head| flow_code.find(head))
+        .expect("rebuild_view");
     assert!(start < end);
-    let range = code.get(start..end).unwrap_or_default();
+    let range = flow_code.get(start..end).unwrap_or_default();
     let mut heads: Vec<String> = Vec::new();
     for line in range.lines() {
         let trimmed = line.trim_start();
@@ -2387,8 +2484,14 @@ fn the_approval_flow_names_no_window() {
             heads.push(line.get(..head_len).unwrap_or_default().to_owned());
         }
     }
-    heads.push("    fn rebuild_view(".to_owned());
-    heads.push("    fn rebuild_view_with(".to_owned());
+    // 2026-11-23 (S4d E1): by their head as it is now (`rebuild_view_with` is `pub` in yw-engine).
+    for name in ["rebuild_view", "rebuild_view_with"] {
+        let found = ["    fn ", "    pub fn ", "    pub(crate) fn "]
+            .iter()
+            .map(|prefix| format!("{prefix}{name}("))
+            .find(|head| flow_code.contains(&format!("\n{head}")));
+        heads.push(found.unwrap_or_else(|| format!("    fn {name}(")));
+    }
     let names: Vec<&str> = heads
         .iter()
         .map(|head| {
@@ -2421,13 +2524,13 @@ fn the_approval_flow_names_no_window() {
     }
     assert!(names.len() > 20, "{names:?}");
     for head in &heads {
-        let body = item(&code, head, 4);
+        let body = item(&flow_code, head, 4);
         for banned in BANNED {
             assert!(!ident(body, banned), "{banned} in {head}");
         }
     }
     // The open makes the flow, then asks for the window; the answer ends a refused open.
-    let open = folded(item(&code, "    fn open_approval(", 4));
+    let open = folded(fn_item(&flow_code, "open_approval"));
     in_order(
         &open,
         &[
@@ -2438,7 +2541,7 @@ fn the_approval_flow_names_no_window() {
             "ai_reserved: reserve_ai,",
         ],
     );
-    let answer = folded(item(&code, "    pub(crate) fn on_approval_opened(", 4));
+    let answer = folded(fn_item(&flow_code, "on_approval_opened"));
     // 2026-11-19 (S4 B5 review, critique A-3): a stale answer closes the window it made; the AI
     // explanation is the one reserved at the open, never worked out again from the endpoint.
     in_order(
@@ -2472,7 +2575,7 @@ fn the_approval_flow_names_no_window() {
         ],
     );
     // The close ends the flow (reject, AI close), then the window goes.
-    let close = folded(item(&code, "    pub fn close_approval_window(", 4));
+    let close = folded(fn_item(&flow_code, "close_approval_window"));
     in_order(
         &close,
         &[

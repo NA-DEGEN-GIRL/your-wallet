@@ -1,0 +1,3084 @@
+//! EVM flows on the UI thread (M4): journal and chain state, balances, the send form (S11),
+//! receive (S12), address book (S14), token add (S16), EVM chain settings (S15/S17), fee caps,
+//! activity with speed-up/cancel/resend/discard, receipt tracking and the approval queue
+//! (spec/03 §3.6–§5, spec/04 §2.6–§2.17, §3.7). RPC work goes to `yw-rpc`, signing and journal
+//! commits to `yw-key`.
+
+use std::collections::HashMap;
+
+use crate::cmd::{CopyBand, CopyMark, Press};
+use crate::effect::{Effect, TimerId};
+use yw_core::approval::{ApprovalId, ApprovalStore, TokenMeta};
+use yw_core::bip32::path::AccountIndex;
+use yw_core::evm::abi::erc20_transfer_data;
+use yw_core::evm::address::{Address, parse_address};
+use yw_core::evm::amount::{U256, format_amount, format_units};
+use yw_core::evm::chain::{ChainInfo, GenesisRule, HYPEREVM_MAINNET, SimulationSupport};
+use yw_core::journal::evm::{
+    EvmRecord, FLAG_MANUAL_RESEND, FLAG_RPC_HASH_MISMATCH, GroupKey, Transition, groups, in_flight,
+    latest_candidate,
+};
+use yw_core::vault::{EvmKeySource, FileKind, RecordId};
+
+use crate::apikeys::{KeyName, mask_url};
+use crate::approval::{ApprovalQueue, QueueOutcome, QueueSource};
+use crate::badge::custom_chain_badge;
+use crate::errors::ErrorCode;
+use crate::events::{
+    BalanceSnapshot, EvmSigned, JournalView, KeyJob, KeyOutcome, RpcEvent, SignFailure,
+};
+use crate::flow::evm::form::{
+    AddressNote, KnownAddress, Quote, add_history, check_recipient, parse_amount, tx_recipients,
+};
+use crate::flow::evm::prepare::{ReplaceMode, ReplaceTarget, SendIntent};
+use crate::flow::evm::track::{BroadcastOutcome, TrackInput, poll_interval_ms};
+use crate::flow::evm::user_chain::{
+    ChainForm, ProbeError, RpcSpec, ValidChainForm, validate_chain_form,
+};
+use crate::flow::evm::{
+    ChainCheck, ChainJob, MismatchKind, chain_info, default_caps_text, fee_caps, parse_caps,
+};
+use crate::logging::{self, Field};
+use crate::meta::ActivityEntry;
+use crate::meta::{EvmAccountPref, ListError, TokenEntry};
+use crate::network::NetworkId;
+use crate::screen::ActivityRowView;
+use crate::screen::SettingsSection;
+use crate::settings::{EvmChainDef, FeeCapsText, Settings, validate_fee_caps};
+use crate::text::{hash32_text, is_valid_label, json_object, json_str};
+use crate::wallet::app_sol::{ReviewBlocker, ReviewRefusal};
+use crate::wallet::{AppMode, Confirm, Screen, Wallet};
+use crate::workers::rpc::RpcJob;
+use yw_core::journal::evm::ReceiptStatus;
+use yw_core::journal::evm::TxState;
+use yw_core::lang::Lang;
+
+/// Balance refresh while S10 is visible and the window is not hidden or minimized
+/// (spec/04 §2.6; 15 s since 2026-11-11, was 60 s).
+pub const BALANCE_REFRESH_MS: u64 = 15_000;
+/// Send-form validation after typing stops (spec/04 §2.7): text that is not a whole address
+/// or amount yet.
+pub const SEND_DEBOUNCE_MS: u64 = 500;
+/// The same for text that is a whole address or amount, or empty (2026-11-12): checked at once.
+pub const SEND_QUICK_MS: u64 = 40;
+/// The fee quote after the last amount edit (2026-11-12; a new recipient is quoted at once).
+pub const SEND_QUOTE_PAUSE_MS: u64 = 250;
+/// Main-window timer of the send-form validation, one shot (the main tick is 1, the wheel
+/// glide 2).
+pub const SEND_TIMER_ID: usize = 21;
+/// Activity rows shown.
+pub const MAX_ACTIVITY_ROWS: usize = 50;
+/// Rows of the S11 send form's recipient picker (`ui::screens_evm::ids::SEND_PICK_SPAN` is this).
+/// 2026-11-22 (S4d E0c): a wallet const that the ui ids span re-uses; before, the wallet code read
+/// the ui span `ids::SEND_PICK_SPAN`.
+pub const SEND_PICK_ROWS: u16 = 40;
+/// EVM flow texts of the app (spec/03 §4, spec/04 §2.7, §2.16, §2.17; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        /// `수수료 올리기`·`취소` of a group whose account has no key in this wallet any more
+        /// (spec/03 §4.6).
+        REPLACE_NO_KEY = "이 거래를 보낸 계정의 키가 이 지갑에 없어 수수료 올리기·취소를 할 수 없습니다. 그 키를 다시 가져오거나 YubiKey를 다시 연결한 뒤 시도하세요."
+            / "The key of the account that sent this transaction is no longer in this wallet, so it cannot be sped up or cancelled. Import that key again or reconnect the YubiKey, then try again.";
+        JOURNAL_CORRUPT = "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)"
+            / "The transaction journal is damaged, so sending has stopped. (E-VLT-006)";
+        /// `{0}` = the E-VLT-003 text.
+        JOURNAL_WRITE_FAILED(1) = "저널 저장 실패 — {0}" / "Journal save failed — {0}";
+        /// `{0}` network, `{1}` hash.
+        GENESIS_PINNED(2) = "{0}의 제네시스 해시를 첫 연결에서 고정했습니다: {1}"
+            / "Pinned the genesis hash of {0} on first connection: {1}";
+        HASH_MISMATCH = "RPC가 다른 거래 해시를 반환했습니다. 자동으로 다시 보내지 않습니다. 활동에서 확인하세요."
+            / "The RPC returned a different transaction hash. It is not sent again automatically. Check Activity.";
+        /// `{0}` = the E-TX-004 text.
+        REJECTED_UNKNOWN(1) = "{0} (재전송·폐기)" / "{0} (rebroadcast/drop)";
+        APPROVAL_EXPIRED = "승인 시간이 지났습니다. 다시 검토하세요."
+            / "The approval time ran out. Review again.";
+        LOOKING_UP = "조회 중…" / "Looking up…";
+        NO_DECIMALS = "decimals를 읽지 못해 추가할 수 없습니다. (E25)"
+            / "Cannot add: decimals could not be read. (E25)";
+        TOKEN_DUPLICATE = "이미 추가한 토큰입니다." / "This token is already added.";
+        TOKEN_FULL = "토큰은 네트워크당 100개, 전체 1,000개까지입니다."
+            / "Up to 100 tokens per network and 1,000 in total.";
+        CHECKING_CHAIN = "체인을 확인하는 중…" / "Checking the chain…";
+        SAVED = "저장했습니다." / "Saved.";
+        CAPS_RANGE = "maxFee 상한 1–10,000 gwei, tip 상한 0.01–10,000 gwei(maxFee 상한 이하), 총 상한 0.0001–10 범위로 입력하세요."
+            / "Enter a maxFee cap of 1–10,000 gwei, a tip cap of 0.01–10,000 gwei (at most the maxFee cap) and a total cap of 0.0001–10.";
+        ENDPOINT_NONE = "없음" / "None";
+        ENDPOINT_SET(1) = "설정됨 {0}" / "Set {0}";
+        REOWN_COPIED = "dashboard.reown.com 주소를 복사했습니다. 브라우저 주소창에 붙여넣으세요."
+            / "Copied the dashboard.reown.com address. Paste it into your browser's address bar.";
+        PATH_COPIED = "경로를 복사했습니다. 폴더 선택 창 위쪽 주소 칸에 Ctrl+V 하세요."
+            / "Path copied. Press Ctrl+V in the address box at the top of the folder picker.";
+        URL_COPIED = "chrome://extensions 주소를 복사했습니다. Chrome 주소창에 붙여넣으세요."
+            / "Copied chrome://extensions. Paste it into the Chrome address bar.";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        BLOCKED_TAG = " (차단됨)" / " (blocked)";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        HIDDEN_TOKEN_TAG = " · [숨긴 토큰]" / " · [hidden token]";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        RAW_UNITS(1) = "{0} (원시 단위)" / "{0} (raw units)";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_BROADCAST = "전송됨" / "Sent";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_CONFIRMING = "전송 확인 중" / "Confirming the send";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_FINAL(1) = "확정 (블록 {0})" / "Final (block {0})";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_FINAL_FAILED(1) = "확정 (실행 실패, 블록 {0})" / "Final (execution failed, block {0})";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_HASH_MISMATCH = "RPC가 다른 거래 해시를 반환했습니다 (재전송·폐기)"
+            / "The RPC returned a different transaction hash (rebroadcast/discard)";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_NONCE_USED = "다른 거래가 이 nonce를 사용" / "Another transaction used this nonce";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_SEND_FAILED = "전송 실패 — 재전송하거나 폐기하세요" / "Send failed — rebroadcast or discard it";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_SIGNED = "서명됨" / "Signed";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_SUCCEEDED = "성공" / "Succeeded";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_FAILED = "실패" / "Failed";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_DROPPED = "폐기됨" / "Discarded";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_REPLACED = "대체됨" / "Replaced";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_EXPIRED = "만료" / "Expired";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_REJECTED = "거부됨" / "Rejected";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_CONFLICTED = "충돌" / "Conflicted";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_STOPPED = "중단됨" / "Stopped";
+    }
+}
+
+/// The asset being sent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SendAsset {
+    /// The chain's native asset.
+    #[default]
+    Native,
+    /// An ERC-20 token.
+    Token(Address),
+}
+
+/// S11 state (inputs survive rejection and expiry, spec/04 §2.7).
+#[derive(Clone, Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent states of one form (ack, picker, quote in flight, max amount waiting)"
+)]
+pub struct SendForm {
+    /// Asset.
+    pub asset: SendAsset,
+    /// Recipient text.
+    pub to_text: String,
+    /// Amount text.
+    pub amount_text: String,
+    /// `주소 전체를 직접 확인했습니다` (W-ADDR-3).
+    pub ack: bool,
+    /// Address-book picker open.
+    pub picker: bool,
+    /// The filter of the picker rows on screen: the recipient text as of the last validation
+    /// or picker toggle. Typing does not redraw the open picker before its validation, so the
+    /// rows — and the row a click picks — follow this, not the text being typed.
+    pub picker_filter: String,
+    /// Last edit (monotonic ms) awaiting validation.
+    pub dirty_ms: Option<u64>,
+    /// Parsed recipient and notes.
+    pub recipient: Option<(Address, Vec<AddressNote>)>,
+    /// Recipient error.
+    pub recipient_error: Option<ErrorCode>,
+    /// Parsed amount.
+    pub amount: Option<U256>,
+    /// Amount or funds error.
+    pub amount_error: Option<ErrorCode>,
+    /// Fee quote.
+    pub quote: Option<Quote>,
+    /// Quote error.
+    pub quote_error: Option<ErrorCode>,
+    /// Pending quote job.
+    pub quote_job: u64,
+    /// A quote job was sent and its answer has not arrived (a second `최대` click waits for it
+    /// instead of asking again).
+    pub quoting: bool,
+    /// Pending code job.
+    pub code_job: u64,
+    /// Recipient has code (W-ADDR-4).
+    pub contract: Option<bool>,
+    /// `최대` requested: fill when the quote arrives (dropped when that quote fails).
+    pub max_pending: bool,
+    /// Message (T-APPR-EXPIRED, errors).
+    pub info: Option<String>,
+    /// `HyperEVM` system-address mismatch (spec/11 §5.5): blocks `검토`.
+    pub system_error: Option<String>,
+}
+
+/// What a send approval is built from: the parsed recipient, the asset and the amount.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EvmReviewInputs {
+    to: Option<Address>,
+    asset: SendAsset,
+    amount: Option<U256>,
+}
+
+impl EvmReviewInputs {
+    fn of(form: &SendForm) -> Self {
+        Self {
+            to: form.recipient.as_ref().map(|(address, _)| *address),
+            asset: form.asset,
+            amount: form.amount,
+        }
+    }
+}
+
+/// Balances of one chain.
+#[derive(Clone, Debug, Default)]
+pub struct BalanceState {
+    /// Last snapshot.
+    pub snapshot: Option<BalanceSnapshot>,
+    /// Last error (the old values stay, muted).
+    pub error: Option<ErrorCode>,
+    /// Outstanding job.
+    pub job: u64,
+    /// Wall-clock Unix ms of the last successful result (S10 "블록 N 기준 · HH:MM 갱신"; no
+    /// result and no error yet is "잔액을 불러오는 중…").
+    pub updated_unix_ms: Option<u64>,
+}
+
+/// Tracking state of one nonce group.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TrackState {
+    /// Next poll (monotonic ms).
+    pub next_ms: u64,
+    /// A round is running.
+    pub busy: bool,
+    /// First `latest > nonce` observation.
+    pub drop_seen: Option<u64>,
+}
+
+/// A queued app approval (send, speed-up, cancel).
+#[derive(Clone, Debug)]
+pub struct AppApproval {
+    /// Chain.
+    pub chain_id: u64,
+    /// Signing account.
+    pub account: Address,
+    /// Key source.
+    pub signer: EvmKeySource,
+    /// What to send (replacements ignore it).
+    pub intent: SendIntent,
+    /// Replacement target.
+    pub replace: Option<ReplaceTarget>,
+}
+
+/// A queued approval item: this app's own flows or a dApp request (spec/04 §3.1).
+#[derive(Clone, Debug)]
+pub enum QueuedItem {
+    /// Send, speed-up, cancel.
+    App(Box<AppApproval>),
+    /// A dApp request (connect, signing, unlock-gated permission).
+    Site(Box<crate::browser::SiteRequest>),
+    /// A Solana transfer of this app (spec/07 §13).
+    Sol(Box<crate::wallet::app_sol::SolApprovalItem>),
+    /// A Bitcoin send or fee bump of this app (spec/08 §10).
+    Btc(Box<crate::wallet::app_btc::BtcApprovalItem>),
+    /// A Zcash transparent send of this app (spec/12 §9).
+    Zec(Box<crate::wallet::app_zec::ZecApprovalItem>),
+    /// A `HyperCore 전송` of this app (spec/11 §6).
+    HyperCore(Box<crate::wallet::app_hypercore::HcApprovalItem>),
+}
+
+impl QueuedItem {
+    /// The EVM chain the item signs on (dApp: the origin chain at request time); 0 for Solana.
+    #[must_use]
+    pub fn chain_id(&self) -> u64 {
+        match self {
+            Self::App(item) => item.chain_id,
+            Self::Site(site) => site.chain_id,
+            Self::Sol(_) | Self::Btc(_) | Self::Zec(_) | Self::HyperCore(_) => 0,
+        }
+    }
+
+    /// The network of the item (logs).
+    #[must_use]
+    pub fn network(&self) -> NetworkId {
+        match self {
+            Self::App(item) => NetworkId::Eip155(item.chain_id),
+            Self::Site(site) => NetworkId::Eip155(site.chain_id),
+            Self::Sol(item) => crate::workers::journal::sol_network(item.cluster),
+            Self::Btc(item) => item.network_id(),
+            Self::Zec(item) => item.network_id(),
+            Self::HyperCore(item) => NetworkId::Eip155(item.action.network.hyperevm_chain_id()),
+        }
+    }
+}
+
+/// A consumed EVM transaction approval whose signing job has not ended (spec/03 §3.6): the send
+/// slot it holds, released when that job ends without a signature — never another approval's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SigningSlot {
+    /// Chain.
+    pub chain_id: u64,
+    /// Signing account.
+    pub account: Address,
+    /// The S11 send: once signed, its form resets and `보내기 결과` shows (a dApp transaction,
+    /// speed-up or cancel leaves the form alone).
+    pub form: bool,
+}
+
+/// The last sent transaction (S11 result).
+#[derive(Clone, Copy, Debug)]
+pub struct SentInfo {
+    /// Chain.
+    pub chain_id: u64,
+    /// Hash.
+    pub tx_hash: [u8; 32],
+}
+
+/// S17 state.
+#[derive(Clone, Debug, Default)]
+pub struct ChainFormState {
+    /// Edited chain id.
+    pub editing: Option<u64>,
+    /// Inputs (the RPC field is read from its `ES_PASSWORD` edit on save).
+    pub chain_id: String,
+    /// Name.
+    pub name: String,
+    /// Symbol.
+    pub symbol: String,
+    /// Decimals.
+    pub decimals: String,
+    /// Explorer.
+    pub explorer: String,
+    /// Simulation.
+    pub unsupported: bool,
+    /// Message.
+    pub message: Option<String>,
+    /// Outstanding probe job.
+    pub job: u64,
+    /// Validated input awaiting the probe / the T-CHAIN-PIN confirmation.
+    pub pending: Option<(ValidChainForm, Option<[u8; 32]>)>,
+}
+
+/// `다시 고정` state (spec/04 §2.17.4).
+#[derive(Clone, Debug, Default)]
+pub struct RepinState {
+    /// Chain.
+    pub chain_id: u64,
+    /// The new hash (after the probe).
+    pub new: Option<[u8; 32]>,
+    /// Probe job.
+    pub job: u64,
+    /// T-CHAIN-REPIN-ACK.
+    pub checked: bool,
+    /// Message.
+    pub message: Option<String>,
+}
+
+/// S16 state.
+#[derive(Clone, Debug, Default)]
+pub struct TokenForm {
+    /// Address text.
+    pub address: String,
+    /// Label text.
+    pub label: String,
+    /// Looked-up metadata.
+    pub found: Option<(Address, TokenMeta)>,
+    /// Lookup job.
+    pub job: u64,
+    /// Message.
+    pub message: Option<String>,
+}
+
+/// Fee caps editing (spec/04 §2.11).
+#[derive(Clone, Debug, Default)]
+pub struct CapsForm {
+    /// Chain being edited.
+    pub chain_id: u64,
+    /// maxFee (gwei).
+    pub fee: String,
+    /// Tip (gwei).
+    pub tip: String,
+    /// Total (native).
+    pub total: String,
+    /// Message.
+    pub message: Option<String>,
+}
+
+/// EVM UI state.
+#[derive(Debug, Default)]
+pub struct EvmUi {
+    /// Journal view while unlocked.
+    pub journal: Option<JournalView>,
+    /// Chain checks reported by the RPC worker.
+    pub chain_checks: HashMap<u64, ChainCheck>,
+    /// Balances per chain.
+    pub balances: HashMap<u64, BalanceState>,
+    /// Next balance refresh.
+    pub next_balance_ms: u64,
+    /// Tracking per nonce group.
+    pub tracking: HashMap<GroupKey, TrackState>,
+    /// Last broadcast outcome per hash (activity buttons and notes).
+    pub notes: HashMap<[u8; 32], BroadcastOutcome>,
+    /// S11.
+    pub send: SendForm,
+    /// Last sent.
+    pub sent: Option<SentInfo>,
+    /// Approval queue (app items and dApp requests).
+    pub queue: ApprovalQueue<QueuedItem>,
+    /// Issued approvals. 2026-11-23 (S4d E1, critique A-15, AGENTS.md §6 "only `consume` creates
+    /// `Approved`"): crate-private, so no shell reaches `consume` (the flow's `consume_and_sign`
+    /// is the only caller); the yw-app tests read and drive it through
+    /// `testkit::WalletTestExt::{evm_store, evm_store_mut}`.
+    pub(crate) store: ApprovalStore,
+    /// Send slots `(chain, account)` (spec/03 §3.6).
+    pub slots: Vec<(u64, Address)>,
+    /// Signing jobs of consumed EVM transaction approvals, by ticket.
+    pub signing: HashMap<crate::events::SignTicket, SigningSlot>,
+    /// Job counter.
+    pub next_job: u64,
+    /// Signing-ticket counter (`SignEvm` / `SignMessage` waiters).
+    pub next_ticket: u64,
+    /// S17.
+    pub chain_form: Option<ChainFormState>,
+    /// 다시 고정.
+    pub repin: Option<RepinState>,
+    /// S16.
+    pub token: TokenForm,
+    /// Fee caps.
+    pub caps: Option<CapsForm>,
+    /// Group awaiting the discard confirmation.
+    pub discard: Option<GroupKey>,
+    /// User chain awaiting the delete confirmation.
+    pub delete_chain: Option<u64>,
+    /// User token awaiting the delete confirmation `(chain, contract)`.
+    pub token_delete: Option<(u64, Address)>,
+    /// The S10 token card lists the hidden tokens (`숨긴 토큰 n개 보기`; session only).
+    pub show_hidden_tokens: bool,
+    /// The S11 asset radios of hidden tokens are expanded (`숨긴 토큰 n개 보기`; session only).
+    pub send_show_hidden: bool,
+    /// The shown approval's flow state (2026-11-19, S4 B4b, spec/15 §11.4 S4: was `window:
+    /// Option<ApprovalUi>`, which also held the window; the shell state is `App.approval_win`).
+    pub approval: Option<crate::wallet::approval_flow::ApprovalFlow>,
+    /// The last approval window id handed out (2026-11-19, S4 B5: `ShownId`, a fresh serial at
+    /// every open, never reused; not cleared by a lock).
+    pub next_shown: u64,
+    /// The steps an opener left for after the answer to the open of its window, by window
+    /// (2026-11-20, S4 P9: `Wallet::show_next_approval_then`, `App::after_approval_opened`; since
+    /// P10a also `Wallet::after_pending_open`, and the answer takes them in
+    /// `Wallet::approval_open_answered`). 2026-11-21 (S4 F14, owner decision, spec/04 §5.3, spec/15
+    /// §18 item 14): cleared by a lock (`Wallet::lock_steps`, at the `lock_epoch` bump; `App::lock`
+    /// until S4 W3a), so no kept step
+    /// runs after a lock. Before F14 a lock left them and a late answer still ran them; with the
+    /// outbox (2026-11-20, S4 P10b review) that late answer was the stale answer of an open
+    /// queued in the entry that then locked, so its steps ran after the lock.
+    #[doc(hidden)]
+    pub after_open: Vec<(
+        crate::approval::flow::ShownId,
+        crate::wallet::app_approval::AfterOpen,
+    )>,
+    /// The last approval window whose open was asked for (`Effect::Approval(Open)`) and is not
+    /// answered yet (2026-11-20, S4 P10a: `Wallet::after_pending_open` hands a step to its answer).
+    /// 2026-11-20 (S4 P10b): it names the open the outbox still holds, until the entry drains and
+    /// the answer comes (`None` again between messages: every entry drains); before, the executor
+    /// applied effects at once, the answer came before `emit` returned, and this was `None`
+    /// whenever logic code ran. 2026-11-21 (S4 F14): cleared by a lock with the kept steps
+    /// (`after_open`), so a step asked for after the lock runs at once; before F14 a lock left it
+    /// and a late answer still ran the steps kept for it.
+    #[doc(hidden)]
+    pub open_unanswered: Option<crate::approval::flow::ShownId>,
+    /// What the S12 receive QR encodes (session only, spec/04 §2.8).
+    pub receive_qr: crate::screen::EvmQrKind,
+    /// The S10 network drop-down is open (2026-11-11; session only, closed by a choice).
+    pub network_picker: bool,
+}
+
+impl EvmUi {
+    /// A fresh job id.
+    pub fn job(&mut self) -> u64 {
+        self.next_job = self.next_job.saturating_add(1);
+        self.next_job
+    }
+
+    /// A fresh approval window id (S4 B5).
+    pub fn shown_id(&mut self) -> crate::approval::flow::ShownId {
+        self.next_shown = self.next_shown.saturating_add(1);
+        crate::approval::flow::ShownId(self.next_shown)
+    }
+
+    /// Forgets everything that needs the unlocked wallet (lock).
+    pub fn clear_unlocked(&mut self) {
+        self.journal = None;
+        self.tracking.clear();
+        self.balances.clear();
+        self.notes.clear();
+        self.slots.clear();
+        self.signing.clear();
+        self.sent = None;
+        self.send = SendForm::default();
+        self.token = TokenForm::default();
+        self.discard = None;
+        self.token_delete = None;
+        self.send_show_hidden = false;
+        // S17, `다시 고정` and a chain delete in progress: a check answering after the lock
+        // finds nothing to confirm or save.
+        self.chain_form = None;
+        self.repin = None;
+        self.delete_chain = None;
+    }
+
+    /// Records of the journal view.
+    #[must_use]
+    pub fn records(&self) -> &[EvmRecord] {
+        self.journal
+            .as_ref()
+            .map_or(&[], |journal| journal.records.as_slice())
+    }
+
+    /// EVM sending is stopped by a damaged journal record (spec/03 §5.1).
+    #[must_use]
+    pub fn journal_damaged(&self) -> bool {
+        self.journal
+            .as_ref()
+            .is_some_and(|journal| journal.corrupt > 0)
+    }
+
+    /// Whether the chain is blocked (E-RPC-006 / E-CHN-008).
+    #[must_use]
+    pub fn blocked(&self, chain_id: u64) -> Option<MismatchKind> {
+        match self.chain_checks.get(&chain_id) {
+            Some(ChainCheck::Mismatch(kind)) => Some(*kind),
+            _ => None,
+        }
+    }
+}
+
+/// How long a copy is answered at its control (2026-11-12): the check mark and `복사됨`.
+pub const COPIED_MS: u64 = 1_500;
+
+/// The copy just made (2026-11-12): answered at the control that was pressed instead of in a
+/// band at the top of the page, which moved everything under the pointer, was out of sight on
+/// a scrolled page and stayed until it was closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Copied {
+    /// The press of the control (2026-11-20, S4 P6: the press, which the screen maps to its
+    /// control id with `ui::cmd_table::id_of` when it draws the mark; before, that id).
+    pub anchor: Press,
+    /// When the mark goes (monotonic ms).
+    pub until_ms: u64,
+    /// An address: the caption keeps the paste check.
+    pub address: bool,
+}
+
+/// `0x` + lowercase hash.
+#[must_use]
+pub fn hash_text(hash: &[u8; 32]) -> String {
+    hash32_text(hash)
+}
+
+/// Restores the activity notes of journaled refusals (after a restart or unlock the in-memory
+/// notes are gone, the record flags are not): a `Signed` record with `manual_resend` shows the
+/// failed broadcast with `재전송`·`폐기`, one with `rpc_hash_mismatch` the other-hash note. Notes
+/// of this session are kept.
+pub fn seed_notes<S: std::hash::BuildHasher>(
+    notes: &mut HashMap<[u8; 32], BroadcastOutcome, S>,
+    records: &[EvmRecord],
+) {
+    for record in records
+        .iter()
+        .filter(|record| record.state == yw_core::journal::evm::TxState::Signed)
+    {
+        let note = if record.has_flag(FLAG_RPC_HASH_MISMATCH) {
+            BroadcastOutcome::HashMismatch
+        } else if record.has_flag(FLAG_MANUAL_RESEND) {
+            BroadcastOutcome::Rejected { known: false }
+        } else {
+            continue;
+        };
+        notes.entry(record.tx_hash).or_insert(note);
+    }
+}
+
+impl Wallet {
+    // ----- chain helpers ------------------------------------------------------------------
+
+    /// The active chain's runtime info.
+    #[must_use]
+    pub fn active_chain(&self) -> Option<ChainInfo> {
+        chain_info(&self.settings, self.settings.evm_chain_id)
+    }
+
+    /// A job's chain (definition, caps, URL), or E-KEY-005 without any call.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::Key005`] for a missing endpoint, [`ErrorCode::App009`] for an unknown chain.
+    pub fn chain_job(&self, chain_id: u64) -> Result<ChainJob, ErrorCode> {
+        let info = chain_info(&self.settings, chain_id).ok_or(ErrorCode::App009)?;
+        let url = self
+            .apikeys
+            .rpc_url(NetworkId::Eip155(chain_id))
+            .ok_or(ErrorCode::Key005)?;
+        let caps = fee_caps(&self.settings, &info);
+        Ok(ChainJob { info, caps, url })
+    }
+
+    pub(crate) fn rpc(&self, job: RpcJob) -> bool {
+        self.rpc_tx.as_ref().is_some_and(|tx| tx.send(job).is_ok())
+    }
+
+    /// The selected account: address and key source. A preference that names no listed account
+    /// (a key-only wallet's default `{"index": 0}`, a removed key) falls back to the first row.
+    #[must_use]
+    pub fn selected_account(&self) -> Option<(Address, EvmKeySource, String)> {
+        self.preferred_account().or_else(|| {
+            let (pref, ..) = self.account_rows().into_iter().next()?;
+            self.account_of(pref)
+        })
+    }
+
+    /// The effective selection: the stored preference when it names a listed account, else the
+    /// first row (what [`Wallet::selected_account`] shows).
+    #[must_use]
+    pub fn selected_pref(&self) -> Option<EvmAccountPref> {
+        let stored = self.meta.as_ref()?.prefs.evm_account;
+        if self.account_of(stored).is_some() {
+            return Some(stored);
+        }
+        self.account_rows()
+            .into_iter()
+            .next()
+            .map(|(pref, ..)| pref)
+    }
+
+    /// The selected EVM account is a `YubiKey` account (no "개인키 보기", spec/10 §13).
+    #[must_use]
+    pub fn hardware_selected(&self) -> bool {
+        matches!(self.selected_pref(), Some(EvmAccountPref::Hardware(_)))
+    }
+
+    fn preferred_account(&self) -> Option<(Address, EvmKeySource, String)> {
+        self.account_of(self.meta.as_ref()?.prefs.evm_account)
+    }
+
+    fn account_of(&self, pref: EvmAccountPref) -> Option<(Address, EvmKeySource, String)> {
+        let meta = self.meta.as_ref()?;
+        match pref {
+            EvmAccountPref::Index(index) => {
+                let account = meta
+                    .evm_accounts
+                    .iter()
+                    .find(|account| account.index == index)?;
+                let address = yw_core::evm::address::parse_address(&account.address).ok()?;
+                Some((
+                    address,
+                    EvmKeySource::Derived(AccountIndex::new(index).ok()?),
+                    account.label.clone(),
+                ))
+            }
+            EvmAccountPref::Record(id) => {
+                let raw = meta
+                    .evm_raw_accounts
+                    .iter()
+                    .find(|raw| raw.record_id == id)?;
+                let address = yw_core::evm::address::parse_address(&raw.address).ok()?;
+                Some((
+                    address,
+                    EvmKeySource::Raw(RecordId::from_bytes(id)),
+                    raw.label.clone(),
+                ))
+            }
+            EvmAccountPref::Hardware(index) => {
+                let account = meta
+                    .hw_accounts
+                    .evm
+                    .iter()
+                    .find(|account| account.index == index)?;
+                let address = yw_core::evm::address::parse_address(&account.address).ok()?;
+                Some((
+                    address,
+                    EvmKeySource::Hardware(AccountIndex::new(index).ok()?),
+                    account.label.clone(),
+                ))
+            }
+            EvmAccountPref::Mnemonic(id, index) => self.mnemonic_account(id, index),
+        }
+    }
+
+    /// Visible own accounts `(address, label)`. With several recovery phrases a derived
+    /// account's name carries its phrase, `{label} ({phrase})` ([`Self::mnemonic_named`]): the
+    /// connect window, S13, the `WalletConnect` session cards and the approval's `[내 계정: …]`
+    /// tell the accounts apart (2026-11-10). Display only.
+    #[must_use]
+    pub fn own_accounts(&self) -> Vec<(Address, String)> {
+        self.own_account_rows()
+            .into_iter()
+            .map(|(address, name, _)| (address, name))
+            .collect()
+    }
+
+    /// [`Self::own_accounts`] with each row's source and path (the fourth column of
+    /// [`Self::account_rows`]).
+    #[must_use]
+    pub fn own_account_rows(&self) -> Vec<(Address, String, String)> {
+        self.account_rows()
+            .into_iter()
+            .filter_map(|(pref, label, address, path)| {
+                let address = yw_core::evm::address::parse_address(&address).ok()?;
+                let name = match pref {
+                    EvmAccountPref::Index(_) => self.mnemonic_named(&label, None),
+                    EvmAccountPref::Mnemonic(id, _) => self.mnemonic_named(&label, Some(id)),
+                    EvmAccountPref::Record(_) | EvmAccountPref::Hardware(_) => label,
+                };
+                Some((address, name, path))
+            })
+            .collect()
+    }
+
+    /// Address book, own accounts and sent history for the form notes. History entries (past
+    /// recipients of every EVM chain: the journal records' `to` and decoded ERC-20 recipient,
+    /// then the activity rows' counterparties) are compared for look-alikes only and are not
+    /// offered by the picker; addresses already listed are not repeated.
+    #[must_use]
+    pub fn known_addresses(&self) -> Vec<KnownAddress> {
+        let mut known: Vec<KnownAddress> = self
+            .meta
+            .as_ref()
+            .map(|meta| {
+                meta.contacts_favorites_first(crate::meta::BookChain::Evm)
+                    .into_iter()
+                    .filter_map(|entry| {
+                        Some(KnownAddress {
+                            address: yw_core::evm::address::parse_address(&entry.address).ok()?,
+                            name: entry.label,
+                            verified: entry.verified,
+                            mine: false,
+                            history: false,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        known.extend(
+            self.own_accounts()
+                .into_iter()
+                .map(|(address, label)| KnownAddress {
+                    address,
+                    name: label,
+                    verified: false,
+                    mine: true,
+                    history: false,
+                }),
+        );
+        let journal = self
+            .evm
+            .records()
+            .iter()
+            .filter_map(EvmRecord::tx)
+            .flat_map(|tx| tx_recipients(&tx));
+        add_history(&mut known, journal);
+        if let Some(meta) = self.meta.as_ref() {
+            let activity = meta
+                .activity
+                .iter()
+                .filter(|(network, _)| network.starts_with("eip155:"))
+                .flat_map(|(network, _)| meta.activity_of(network))
+                .filter_map(|entry| yw_core::evm::address::parse_address(&entry.counterparty).ok());
+            add_history(&mut known, activity);
+        }
+        known
+    }
+
+    /// Address-book names for approval facts.
+    #[must_use]
+    pub fn address_book_facts(&self) -> Vec<(Address, String)> {
+        self.meta
+            .as_ref()
+            .map(|meta| {
+                meta.book()
+                    .into_iter()
+                    .filter_map(|entry| {
+                        Some((
+                            yw_core::evm::address::parse_address(&entry.address).ok()?,
+                            entry.label,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Tokens of a chain: registry `(address, symbol or label, decimals, registered)` then meta
+    /// tokens.
+    #[must_use]
+    pub fn chain_tokens(&self, chain_id: u64) -> Vec<(Address, String, u8, bool)> {
+        let mut out: Vec<(Address, String, u8, bool)> = chain_info(&self.settings, chain_id)
+            .map(|chain| {
+                chain
+                    .tokens
+                    .iter()
+                    .map(|token| {
+                        // Pegged/bridged registry tokens show their label (spec/03 §1.2).
+                        let shown = token.label.unwrap_or(token.symbol);
+                        (token.address, shown.to_owned(), token.decimals, true)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(meta) = self.meta.as_ref() {
+            for entry in meta.tokens_of(&NetworkId::Eip155(chain_id).to_string()) {
+                if let Ok(address) = yw_core::evm::address::parse_address(&entry.address)
+                    && !out.iter().any(|(known, ..)| *known == address)
+                {
+                    out.push((address, entry.label, entry.decimals, false));
+                }
+            }
+        }
+        out
+    }
+
+    // ----- unlock, lock, events -----------------------------------------------------------
+
+    /// After meta is loaded in `Unlocked`: read the journal (reconcile follows).
+    pub fn evm_after_unlock(&mut self) {
+        if matches!(self.mode, AppMode::Unlocked { .. }) {
+            self.key(KeyJob::SetLanguage(self.settings.language));
+            self.key(KeyJob::LoadJournal);
+            self.evm.next_balance_ms = 0;
+        }
+    }
+
+    /// Lock: close the approval window, invalidate approvals, drop unlocked state.
+    pub fn evm_lock(&mut self) {
+        self.close_approval_window();
+        self.evm.store.invalidate_all();
+        // WalletConnect requests never wait for the unlock (spec/13 §5.2, §8): no password
+        // window opens for a remote dApp, so the waiting ones end now with the locked answer
+        // (4100) instead of raising it after the reload or reappearing after the unlock.
+        let finished = self.evm.queue.drain_waiting_matching(
+            |item| {
+                matches!(item, QueuedItem::Site(site)
+                    if crate::walletconnect::is_session_origin(&site.origin))
+            },
+            QueueOutcome::Revoked,
+        );
+        for (item, outcome) in finished {
+            self.approval_finished(&item.payload, outcome);
+        }
+        for (item, outcome) in self.evm.queue.lock() {
+            self.approval_finished(&item.payload, outcome);
+        }
+        self.evm.clear_unlocked();
+        self.hypercore.clear_unlocked();
+    }
+
+    /// Key worker outcomes of the EVM flows.
+    pub fn evm_key_outcome(&mut self, outcome: KeyOutcome) {
+        match outcome {
+            KeyOutcome::Journal(Ok(view)) => {
+                let corrupt = text::JOURNAL_CORRUPT.get(self.settings.language);
+                if view.corrupt > 0 {
+                    self.banner(Some(ErrorCode::Vlt006), corrupt.to_owned());
+                }
+                if view.sol_corrupt > 0 {
+                    self.banner(Some(ErrorCode::Vlt006), corrupt.to_owned());
+                }
+                if view.btc_corrupt > 0 {
+                    self.banner(Some(ErrorCode::Vlt006), corrupt.to_owned());
+                }
+                seed_notes(&mut self.evm.notes, &view.records);
+                self.evm.journal = Some(view);
+                self.schedule_tracking(true);
+                self.sol_schedule_tracking();
+                self.btc_journal_changed();
+                // 2026-11-20 (S4 P10a): after the answer of an open Bitcoin's controller asked
+                // for (`AfterOpen::Refresh`; before, here directly).
+                self.after_pending_open(crate::wallet::app_approval::AfterOpen::Refresh);
+            }
+            KeyOutcome::Journal(Err(
+                error @ (yw_core::error::VaultError::SidecarCorrupt(FileKind::Journal)
+                | yw_core::error::VaultError::SidecarVaultMismatch(FileKind::Journal)
+                | yw_core::error::VaultError::SidecarUnsupported(FileKind::Journal)),
+            )) => self.journal_unreadable(error),
+            KeyOutcome::Journal(Err(error)) => {
+                logging::warn(
+                    "journal",
+                    "journal.error",
+                    &[("code", Field::Code(crate::errors::vault_code(error)))],
+                );
+            }
+            KeyOutcome::ActivityMoved(rows) => {
+                if let Some(meta) = self.meta.as_mut() {
+                    for (network, entry) in &rows {
+                        meta.upsert_activity(&network.to_string(), entry);
+                    }
+                }
+                self.refresh();
+            }
+            KeyOutcome::SignedEvm(signed) => self.on_signed(signed),
+            _ => {}
+        }
+    }
+
+    fn on_signed(&mut self, signed: EvmSigned) {
+        let EvmSigned { ticket, result } = signed;
+        if result == Err(SignFailure::Locked) {
+            self.evm_sign_locked(ticket);
+            return;
+        }
+        self.browser_tx_signed(
+            ticket,
+            result.as_ref().map(|signed| signed.tx_hash).map_err(|_| ()),
+        );
+        // Only this job's slot is released, and only the S11 send touches the send form: a dApp
+        // transaction, speed-up or cancel signed meanwhile leaves a half-typed form alone.
+        let form = self.evm.signing.get(&ticket).is_some_and(|slot| slot.form);
+        match result {
+            Ok(signed) => {
+                self.evm.signing.remove(&ticket);
+                self.release_slot(signed.chain_id, &signed.account);
+                if form {
+                    self.evm.sent = Some(SentInfo {
+                        chain_id: signed.chain_id,
+                        tx_hash: signed.tx_hash,
+                    });
+                    self.evm.send = SendForm::default();
+                }
+                match self.chain_job(signed.chain_id) {
+                    Ok(chain) => {
+                        let _ = self.rpc(RpcJob::Broadcast {
+                            chain,
+                            raw: signed.raw,
+                            tx_hash: signed.tx_hash,
+                        });
+                    }
+                    Err(code) => self.error_banner(code),
+                }
+                if form && matches!(self.screen, Screen::Send) {
+                    self.set_screen(Screen::SendResult);
+                } else {
+                    self.refresh();
+                }
+            }
+            Err(failure) => {
+                let account = self.evm.signing.get(&ticket).map(|slot| slot.account);
+                self.release_signing(ticket);
+                let lang = self.settings.language;
+                let message = match failure {
+                    // Which phrase, and where its backup quiz is finished (the form's `검토`
+                    // is off while the app knows; this is the vault's last word).
+                    SignFailure::Sign(yw_core::evm::sign::SignError::Vault(
+                        yw_core::error::VaultError::BackupNotConfirmed,
+                    )) => self.backup_refused_text(
+                        account.and_then(|account| self.evm_account_unconfirmed(&account)),
+                    ),
+                    SignFailure::Sign(yw_core::evm::sign::SignError::Vault(error)) => {
+                        crate::errors::vault_code(error).text_in(lang)
+                    }
+                    SignFailure::Sign(_) => ErrorCode::Tx003.text_in(lang),
+                    SignFailure::JournalFull => ErrorCode::Tx005.text_in(lang),
+                    SignFailure::JournalWrite(_) => {
+                        text::JOURNAL_WRITE_FAILED.fill(lang, [&ErrorCode::Vlt003.text_in(lang)])
+                    }
+                    SignFailure::Locked => ErrorCode::App009.text_in(lang),
+                    SignFailure::Card(error) => error.to_string(),
+                };
+                logging::warn("app", "sign.failed", &[]);
+                // The S11 send says it next to its `검토`; a header band only when that form is
+                // not on screen (a dApp transaction, a speed-up or cancel, another screen).
+                let on_form = form && matches!(self.screen, Screen::Send);
+                if form {
+                    self.evm.send.info = Some(message.clone());
+                }
+                if !on_form {
+                    self.banner(None, message);
+                }
+                self.refresh();
+            }
+        }
+    }
+
+    /// The signing job of `ticket` ended without a signature (failure, `YubiKey` PIN cancelled or
+    /// timed out, card step superseded): the send slot of its own approval is released — the
+    /// slots of other open approvals stay held (spec/03 §3.6, D20).
+    pub(crate) fn release_signing(&mut self, ticket: crate::events::SignTicket) {
+        let Some(slot) = self.evm.signing.remove(&ticket) else {
+            return;
+        };
+        self.release_slot(slot.chain_id, &slot.account);
+        logging::info(
+            "app",
+            "slot.released",
+            &[
+                ("net", Field::Net(NetworkId::Eip155(slot.chain_id))),
+                ("account", Field::Address(slot.account.as_bytes())),
+            ],
+        );
+    }
+
+    /// A consumed signing job with `ticket` ended without a signature because of the lock: its
+    /// dApp waiter gets 4001 (spec/04 §1.2).
+    pub fn evm_sign_locked(&mut self, ticket: crate::events::SignTicket) {
+        self.browser_sign_cancelled(ticket);
+        self.evm_sign_cancelled();
+    }
+
+    /// A signing job ended without a signature because of the lock (signing jobs report
+    /// through [`Self::evm_sign_locked`] with their ticket; this keeps the slot bookkeeping).
+    pub fn evm_sign_cancelled(&mut self) {
+        logging::info("app", "sign.aborted", &[("reason", Field::Word("locked"))]);
+        self.evm.slots.clear();
+        self.evm.signing.clear();
+    }
+
+    pub(crate) fn release_slot(&mut self, chain_id: u64, account: &Address) {
+        self.evm
+            .slots
+            .retain(|(chain, held)| !(*chain == chain_id && held == account));
+    }
+
+    /// RPC worker events of the EVM flows.
+    pub fn evm_rpc_event(&mut self, event: RpcEvent) {
+        match event {
+            RpcEvent::Chain { chain_id, check } => self.on_chain_check(chain_id, check),
+            RpcEvent::Balances {
+                job,
+                chain_id,
+                result,
+            } => self.on_balances(job, chain_id, result),
+            RpcEvent::Quote { job, result } => self.on_quote(job, result),
+            RpcEvent::Code {
+                job,
+                address,
+                result,
+            } => self.on_recipient_code(job, address, result),
+            RpcEvent::TokenMeta { job, token, result } => {
+                if job == self.evm.token.job {
+                    match result {
+                        Ok(meta) => {
+                            if self.evm.token.label.is_empty()
+                                && let Some(symbol) = meta
+                                    .symbol
+                                    .as_deref()
+                                    .filter(|symbol| crate::text::is_symbol(symbol))
+                            {
+                                symbol.clone_into(&mut self.evm.token.label);
+                            }
+                            self.evm.token.found = Some((token, meta));
+                            self.evm.token.message = None;
+                        }
+                        Err(code) => {
+                            self.evm.token.message = Some(code.text_in(self.settings.language));
+                        }
+                    }
+                    self.refresh();
+                }
+            }
+            RpcEvent::Simulating { job, since_ms } => self.on_simulating(job, since_ms),
+            RpcEvent::Prepared(result) => self.on_prepared(*result),
+            RpcEvent::TypedFacts { job, facts, check } => {
+                self.on_typed_facts(job, &facts, Some(check));
+            }
+            RpcEvent::Resimulated(result) => self.on_resimulated(*result),
+            RpcEvent::Broadcast {
+                chain_id,
+                tx_hash,
+                outcome,
+                at_unix_ms,
+            } => self.on_broadcast(chain_id, tx_hash, outcome, at_unix_ms),
+            RpcEvent::Tracked { key, result } => {
+                let now = self.clock.now_ms();
+                let interval = self.group(&key).map_or(15_000, |group| {
+                    poll_interval_ms(&group, self.clock.now_unix_ms())
+                });
+                let state = self.evm.tracking.entry(key).or_default();
+                state.busy = false;
+                state.drop_seen = result.drop_seen_unix_ms;
+                state.next_ms = now.saturating_add(interval);
+                if result.invalid_receipts > 0 {
+                    logging::warn(
+                        "rpc",
+                        "receipt.invalid",
+                        &[("net", Field::Net(NetworkId::Eip155(key.chain_id)))],
+                    );
+                }
+                // A transaction confirmed or failed: the balances changed, read them at the next
+                // tick instead of up to a minute later (2026-11-10).
+                if result.transitions.iter().any(|transition| {
+                    matches!(
+                        transition,
+                        Transition::Included { .. }
+                            | Transition::Finalized { .. }
+                            | Transition::Dropped { .. }
+                    )
+                }) {
+                    self.evm_balances_due();
+                }
+                if !result.transitions.is_empty() {
+                    self.apply_transitions(result.transitions);
+                }
+            }
+            RpcEvent::Probe { job, result } => self.on_probe(job, result),
+            RpcEvent::Test { .. } => {}
+            event @ (RpcEvent::SolBalances { .. }
+            | RpcEvent::SolPreviewed(_)
+            | RpcEvent::SolDappPreviewed(_)
+            | RpcEvent::SolPreSigned { .. }
+            | RpcEvent::SolDappPreSigned { .. }
+            | RpcEvent::SolTracked(_)
+            | RpcEvent::SolScanned { .. }) => self.sol_rpc_event(event),
+            RpcEvent::Btc(event) => self.btc_rpc_event(*event),
+            RpcEvent::Zec(event) => self.zec_rpc_event(*event),
+            RpcEvent::HyperCore(event) => self.hc_rpc_event(*event),
+            RpcEvent::Received(event) => self.received_event(*event),
+        }
+    }
+
+    /// A balance job's answer (the latest job of its chain only): the snapshot and when it came,
+    /// or the error with the old values kept.
+    fn on_balances(&mut self, job: u64, chain_id: u64, result: Result<BalanceSnapshot, ErrorCode>) {
+        let state = self.evm.balances.entry(chain_id).or_default();
+        if state.job != job {
+            return;
+        }
+        match result {
+            Ok(snapshot) => {
+                state.snapshot = Some(snapshot);
+                state.error = None;
+                state.updated_unix_ms = Some(self.clock.now_unix_ms());
+            }
+            Err(code) => state.error = Some(code),
+        }
+        self.on_balances_for_form();
+        self.refresh();
+    }
+
+    /// The S11 recipient's `eth_getCode` answer (W-ADDR-4), for the recipient still shown.
+    fn on_recipient_code(&mut self, job: u64, address: Address, result: Result<bool, ErrorCode>) {
+        if job == self.evm.send.code_job
+            && self
+                .evm
+                .send
+                .recipient
+                .as_ref()
+                .is_some_and(|(recipient, _)| *recipient == address)
+        {
+            self.evm.send.contract = result.ok();
+            self.refresh();
+        }
+    }
+
+    pub(crate) fn on_chain_check(&mut self, chain_id: u64, check: ChainCheck) {
+        if let ChainCheck::Verified {
+            genesis,
+            pinned_now: true,
+        } = check
+            && chain_id == HYPEREVM_MAINNET
+            && !self
+                .settings
+                .evm_genesis_pins
+                .iter()
+                .any(|(id, _)| *id == chain_id)
+        {
+            let mut settings = self.settings.clone();
+            settings.evm_genesis_pins.push((chain_id, genesis));
+            self.save_settings(settings, "evmGenesisPins");
+            logging::info(
+                "app",
+                "chain.genesis_pinned",
+                &[
+                    ("net", Field::Net(NetworkId::Eip155(chain_id))),
+                    ("hash", Field::Hash(&genesis)),
+                ],
+            );
+            let name = self.network_name(NetworkId::Eip155(chain_id));
+            self.notice(
+                text::GENESIS_PINNED.fill(self.settings.language, [&name, &hash32_text(&genesis)]),
+                crate::screen::Tone::Info,
+            );
+        }
+        if let ChainCheck::Mismatch(kind) = check {
+            let code = kind.code();
+            if !self
+                .evm
+                .blocked(chain_id)
+                .is_some_and(|known| known == kind)
+            {
+                logging::warn(
+                    "app",
+                    "chain.blocked",
+                    &[
+                        ("net", Field::Net(NetworkId::Eip155(chain_id))),
+                        ("code", Field::Code(code)),
+                    ],
+                );
+            }
+        }
+        if !matches!(check, ChainCheck::Unverified(_)) {
+            self.evm.chain_checks.insert(chain_id, check);
+        }
+        self.refresh();
+    }
+
+    // ----- balances -----------------------------------------------------------------------
+
+    /// The balances of the active chain are read at the next main tick (S10 visible): the
+    /// network, the selected account or the account list changed, or a transaction of the
+    /// journal confirmed or failed (2026-11-10; before, the next read was up to 60 s away).
+    /// A main-window message runs that check right after itself (`Wallet::reads_due`, 2026-11-12).
+    pub(crate) fn evm_balances_due(&mut self) {
+        self.evm.next_balance_ms = 0;
+    }
+
+    /// Requests balances of the active chain (S10 entry, `새로고침`, every 60 s).
+    pub fn refresh_balances(&mut self) {
+        self.hc_refresh();
+        if !matches!(self.mode, AppMode::Unlocked { .. }) {
+            return;
+        }
+        let chain_id = self.settings.evm_chain_id;
+        self.evm.next_balance_ms = self.clock.now_ms().saturating_add(BALANCE_REFRESH_MS);
+        let chain = match self.chain_job(chain_id) {
+            Ok(chain) => chain,
+            // No address is U17's own line; anything else (an unknown chain) is a failed read,
+            // not "loading" forever.
+            Err(ErrorCode::Key005) => return,
+            Err(code) => {
+                self.evm.balances.entry(chain_id).or_default().error = Some(code);
+                return;
+            }
+        };
+        let Some((owner, _, _)) = self.selected_account() else {
+            return;
+        };
+        let accounts: Vec<Address> = self.own_accounts().into_iter().map(|(a, _)| a).collect();
+        let tokens: Vec<Address> = self
+            .chain_tokens(chain_id)
+            .into_iter()
+            .map(|(address, ..)| address)
+            .collect();
+        let job = self.evm.job();
+        self.evm.balances.entry(chain_id).or_default().job = job;
+        let _ = self.rpc(RpcJob::Balances {
+            job,
+            chain,
+            accounts,
+            tokens,
+            token_owner: owner,
+        });
+    }
+
+    /// Native balance of an account on a chain.
+    #[must_use]
+    pub fn native_balance(&self, chain_id: u64, account: &Address) -> Option<U256> {
+        self.evm
+            .balances
+            .get(&chain_id)?
+            .snapshot
+            .as_ref()?
+            .native
+            .iter()
+            .find_map(|(known, balance)| (known == account).then_some(*balance))
+    }
+
+    /// Token balance of the selected account: `None` while the last snapshot's token balances
+    /// are another account's (the selection changed after the job was sent, 2026-11-10) — the
+    /// token card then says "잔액 알 수 없음", S11 "잔액 모름", and `{기호} 보내기` hides.
+    #[must_use]
+    pub fn token_balance(&self, chain_id: u64, token: &Address) -> Option<U256> {
+        let snapshot = self.evm.balances.get(&chain_id)?.snapshot.as_ref()?;
+        let (selected, ..) = self.selected_account()?;
+        if snapshot.token_owner != selected {
+            return None;
+        }
+        snapshot
+            .tokens
+            .iter()
+            .find_map(|(known, balance)| (known == token).then_some(*balance))?
+    }
+
+    // ----- tracking -----------------------------------------------------------------------
+
+    /// The current records of a nonce group.
+    #[must_use]
+    pub fn group(&self, key: &GroupKey) -> Option<Vec<EvmRecord>> {
+        let records: Vec<EvmRecord> = self
+            .evm
+            .records()
+            .iter()
+            .filter(|record| record.key() == *key)
+            .cloned()
+            .collect();
+        (!records.is_empty()).then_some(records)
+    }
+
+    /// Open nonce groups (any state but terminal) of the journal.
+    #[must_use]
+    pub fn open_groups(&self) -> Vec<(GroupKey, Vec<EvmRecord>)> {
+        groups(self.evm.records())
+            .into_iter()
+            .filter(|(_, members)| members.iter().any(|record| !record.is_terminal()))
+            .map(|(key, members)| (key, members.into_iter().cloned().collect()))
+            .collect()
+    }
+
+    /// Ensures every open group is tracked; `now_too` polls them immediately (reconcile after
+    /// unlock, spec/03 §5.4).
+    pub fn schedule_tracking(&mut self, now_too: bool) {
+        let now = self.clock.now_ms();
+        let open: Vec<GroupKey> = self.open_groups().into_iter().map(|(key, _)| key).collect();
+        self.evm.tracking.retain(|key, _| open.contains(key));
+        for key in open {
+            let state = self.evm.tracking.entry(key).or_default();
+            if now_too && !state.busy {
+                state.next_ms = now;
+            }
+        }
+    }
+
+    /// Timer part of tracking: start due rounds (paused while locked, spec/03 §4.5).
+    pub fn tick_tracking(&mut self, now: u64) {
+        if !matches!(self.mode, AppMode::Unlocked { .. }) || self.evm.journal.is_none() {
+            return;
+        }
+        let due: Vec<GroupKey> = self
+            .evm
+            .tracking
+            .iter()
+            .filter(|(_, state)| !state.busy && state.next_ms <= now)
+            .map(|(key, _)| *key)
+            .collect();
+        for key in due {
+            let Some(group) = self.group(&key) else {
+                continue;
+            };
+            let Ok(chain) = self.chain_job(key.chain_id) else {
+                if let Some(state) = self.evm.tracking.get_mut(&key) {
+                    state.next_ms = now.saturating_add(60_000);
+                }
+                continue;
+            };
+            // A refusal seen this session whose `manual_resend` record flag is not committed
+            // yet; once committed, tracking itself honours the flag (and still notices a node
+            // that knows the transaction after all).
+            let manual = group.iter().any(|record| {
+                matches!(
+                    self.evm.notes.get(&record.tx_hash),
+                    Some(
+                        BroadcastOutcome::Rejected { known: false }
+                            | BroadcastOutcome::ChainMismatch
+                    )
+                ) && !record.has_flag(FLAG_MANUAL_RESEND)
+            });
+            let drop_seen = self
+                .evm
+                .tracking
+                .get(&key)
+                .and_then(|state| state.drop_seen);
+            if self.rpc(RpcJob::Track {
+                chain,
+                input: TrackInput {
+                    group,
+                    drop_seen_unix_ms: drop_seen,
+                    now_unix_ms: self.clock.now_unix_ms(),
+                    allow_rebroadcast: !manual,
+                },
+            }) && let Some(state) = self.evm.tracking.get_mut(&key)
+            {
+                state.busy = true;
+            }
+        }
+    }
+
+    /// Sends transitions to the key worker (only while unlocked: commits need the DEK).
+    pub fn apply_transitions(&mut self, transitions: Vec<Transition>) {
+        if matches!(self.mode, AppMode::Unlocked { .. }) && !transitions.is_empty() {
+            self.key(KeyJob::JournalApply {
+                transitions,
+                now_unix_ms: self.clock.now_unix_ms(),
+            });
+        }
+    }
+
+    fn on_broadcast(
+        &mut self,
+        chain_id: u64,
+        tx_hash: [u8; 32],
+        outcome: BroadcastOutcome,
+        at_unix_ms: u64,
+    ) {
+        // A manual `재전송` that could not even re-check the chain leaves a manual-only record:
+        // keep offering `재전송`·`폐기` rather than "서명됨".
+        let manual_only = self
+            .evm
+            .records()
+            .iter()
+            .any(|record| record.tx_hash == tx_hash && record.has_flag(FLAG_MANUAL_RESEND));
+        let note = match outcome {
+            BroadcastOutcome::ChainUnverified if manual_only => {
+                BroadcastOutcome::Rejected { known: false }
+            }
+            other => other,
+        };
+        self.evm.notes.insert(tx_hash, note);
+        self.browser_broadcast(tx_hash, outcome);
+        match outcome {
+            BroadcastOutcome::HashMismatch => self.banner(
+                None,
+                text::HASH_MISMATCH.get(self.settings.language).to_owned(),
+            ),
+            BroadcastOutcome::Rejected { known: false } => {
+                let lang = self.settings.language;
+                self.banner(
+                    None,
+                    text::REJECTED_UNKNOWN.fill(lang, [&ErrorCode::Tx004.text_in(lang)]),
+                );
+            }
+            BroadcastOutcome::ChainMismatch => self.error_banner(ErrorCode::Rpc006),
+            _ => {}
+        }
+        if let Some(transition) = outcome.transition(tx_hash, at_unix_ms) {
+            self.apply_transitions(vec![transition]);
+        }
+        let _ = chain_id;
+        self.schedule_tracking(false);
+        self.refresh();
+    }
+
+    // ----- timer --------------------------------------------------------------------------
+
+    /// EVM part of the main timer. 2026-11-20 (S4 P10a): the parts after the approval queue's
+    /// follow the answer of an open its tick asked for (`AfterOpen::EvmTickRest`, with this
+    /// `now`; before, they ran here directly).
+    pub fn evm_tick(&mut self, now: u64) {
+        self.tick_approval(now);
+        self.after_pending_open(crate::wallet::app_approval::AfterOpen::EvmTickRest(now));
+    }
+
+    /// The EVM timer part after the approval queue's ([`Self::evm_tick`]; 2026-11-20, S4 P10a:
+    /// split out unchanged).
+    pub(crate) fn evm_tick_rest(&mut self, now: u64) {
+        self.tick_tracking(now);
+        self.browser_tick(now);
+        self.evm_balance_tick(now);
+        if let Some(changed) = self.evm.send.dirty_ms
+            && now.saturating_sub(changed) >= SEND_DEBOUNCE_MS
+        {
+            self.evm.send.dirty_ms = None;
+            self.validate_send(true);
+        }
+    }
+
+    /// The timer's balance check: a due read starts while S10 shows, unlocked and not hidden;
+    /// whether one did. Also run right after a main-window message (`Wallet::reads_due`,
+    /// 2026-11-12).
+    #[doc(hidden)]
+    pub fn evm_balance_tick(&mut self, now: u64) -> bool {
+        let due = matches!(self.mode, AppMode::Unlocked { .. })
+            && matches!(self.screen, Screen::Main)
+            && now >= self.evm.next_balance_ms
+            && !self.main_hidden();
+        if due {
+            self.refresh_balances();
+        }
+        due
+    }
+
+    // ----- send form (S11) ----------------------------------------------------------------
+
+    /// How long an edit of the recipient (`true`) or the amount waits for its validation
+    /// (2026-11-12): text that is a whole address or amount, or empty, is checked at once;
+    /// anything else after the typing pause, so no error flashes under half-typed text.
+    #[doc(hidden)]
+    pub fn send_edit_wait_ms(&self, recipient: bool) -> u64 {
+        let form = &self.evm.send;
+        let whole = if recipient {
+            let text = form.to_text.trim();
+            text.is_empty() || parse_address(text).is_ok()
+        } else {
+            form.amount_text.is_empty()
+                || parse_amount(&form.amount_text, self.send_asset_meta().0).is_ok()
+        };
+        if whole {
+            SEND_QUICK_MS
+        } else {
+            SEND_DEBOUNCE_MS
+        }
+    }
+
+    /// Arms the one-shot validation of a send-form edit (EVM and Solana). Without a window or a
+    /// timer the main tick's `dirty_ms` poll runs it after the full pause. 2026-11-18 (S3 B4):
+    /// through `Effect::StartTimer`, applied at once; it fires as `Cmd::Timer(SendCheck)`.
+    pub(crate) fn arm_send_timer(&mut self, wait_ms: u64) {
+        self.emit(Effect::StartTimer {
+            timer: TimerId::SendCheck,
+            ms: wait_ms,
+        });
+    }
+
+    /// The send timer fired: the edit it waited for is validated. Never from `EN_CHANGE` itself
+    /// — a validation may rebuild the controls, the edit that is notifying included.
+    #[doc(hidden)]
+    pub fn on_send_timer(&mut self) {
+        self.emit(Effect::StopTimer {
+            timer: TimerId::SendCheck,
+        });
+        // Solana validates locally only.
+        if self.sol.send.dirty_ms.take().is_some() {
+            self.sol_validate_send();
+        }
+        let Some(edited) = self.evm.send.dirty_ms else {
+            return;
+        };
+        let waited = self.clock.now_ms().saturating_sub(edited);
+        if waited >= SEND_QUOTE_PAUSE_MS {
+            self.evm.send.dirty_ms = None;
+            self.validate_send(true);
+            return;
+        }
+        // The local result shows now. A new recipient is quoted (and its code read) at once; an
+        // amount alone once the typing pauses — the RPC worker is one queue, and `검토` stays
+        // off until then.
+        let recipient = |app: &Self| app.evm.send.recipient.as_ref().map(|(address, _)| *address);
+        let shown = recipient(self);
+        self.validate_send(false);
+        if recipient(self) == shown {
+            self.arm_send_timer(SEND_QUOTE_PAUSE_MS.saturating_sub(waited));
+        } else {
+            self.evm.send.dirty_ms = None;
+            self.request_quote();
+            self.refresh();
+        }
+    }
+
+    /// The send form's asset decimals and symbol.
+    #[must_use]
+    pub fn send_asset_meta(&self) -> (u8, String) {
+        let chain_id = self.settings.evm_chain_id;
+        match self.evm.send.asset {
+            SendAsset::Native => self.active_chain().map_or((18, "ETH".to_owned()), |chain| {
+                (chain.native_decimals, chain.native_symbol)
+            }),
+            SendAsset::Token(token) => self
+                .chain_tokens(chain_id)
+                .into_iter()
+                .find(|(address, ..)| *address == token)
+                .map_or((18, "?".to_owned()), |(_, symbol, decimals, _)| {
+                    (decimals, symbol)
+                }),
+        }
+    }
+
+    /// In-flight transaction of the selected account on the active chain (D20).
+    #[must_use]
+    pub fn send_in_flight(&self) -> Option<EvmRecord> {
+        let (account, ..) = self.selected_account()?;
+        let chain_id = self.settings.evm_chain_id;
+        let nonce = in_flight(self.evm.records(), chain_id, &account)?;
+        let group: Vec<&EvmRecord> = self
+            .evm
+            .records()
+            .iter()
+            .filter(|record| {
+                record.chain_id == chain_id && record.account == account && record.nonce == nonce
+            })
+            .collect();
+        latest_candidate(&group)
+            .or_else(|| group.last().copied())
+            .cloned()
+    }
+
+    /// Opens S11. A token chosen on another network (the form outlives `← 메인으로` and a
+    /// network change) is not an asset of this one: the form goes back to the native asset
+    /// with no amount instead of a transfer to that address with guessed decimals.
+    pub fn open_send(&mut self) {
+        self.evm.send.info = None;
+        if let SendAsset::Token(token) = self.evm.send.asset {
+            let listed = self
+                .chain_tokens(self.settings.evm_chain_id)
+                .iter()
+                .any(|(address, ..)| *address == token);
+            if !listed {
+                self.evm.send.asset = SendAsset::Native;
+                self.evm.send.amount_text.clear();
+                self.evm.send.amount = None;
+                self.evm.send.amount_error = None;
+                self.evm.send.quote = None;
+                self.evm.send.contract = None;
+            }
+        }
+        self.set_screen(Screen::Send);
+        self.refresh_balances();
+    }
+
+    fn intent(&self) -> Option<SendIntent> {
+        let (recipient, _) = self.evm.send.recipient.as_ref()?;
+        let amount = self.evm.send.amount?;
+        Some(match self.evm.send.asset {
+            SendAsset::Native => SendIntent {
+                to: *recipient,
+                value: amount,
+                data: Vec::new(),
+                access_list: Vec::new(),
+                dapp_gas: None,
+                dapp_nonce: None,
+            },
+            SendAsset::Token(token) => SendIntent {
+                to: token,
+                value: U256::ZERO,
+                data: erc20_transfer_data(recipient, &amount),
+                access_list: Vec::new(),
+                dapp_gas: None,
+                dapp_nonce: None,
+            },
+        })
+    }
+
+    /// Validates the form; `remote` also asks for the quote and the recipient code.
+    pub fn validate_send(&mut self, remote: bool) {
+        let Some((sender, ..)) = self.selected_account() else {
+            return;
+        };
+        let (decimals, _) = self.send_asset_meta();
+        let token = match self.evm.send.asset {
+            SendAsset::Native => None,
+            SendAsset::Token(token) => Some(token),
+        };
+        let known = self.known_addresses();
+        let form = &mut self.evm.send;
+        form.picker_filter.clone_from(&form.to_text);
+        let previous = form.recipient.as_ref().map(|(address, _)| *address);
+        match check_recipient(&form.to_text, &sender, token.as_ref(), &known) {
+            Ok((address, notes)) => {
+                if previous != Some(address) {
+                    form.contract = None;
+                    form.ack = false;
+                }
+                form.recipient = Some((address, notes));
+                form.recipient_error = None;
+            }
+            Err(code) => {
+                form.recipient = None;
+                form.recipient_error = (!form.to_text.trim().is_empty()).then_some(code);
+            }
+        }
+        match parse_amount(&form.amount_text, decimals) {
+            Ok(amount) => {
+                form.amount = Some(amount);
+                form.amount_error = None;
+            }
+            Err(code) => {
+                form.amount = None;
+                form.amount_error = (!form.amount_text.is_empty()).then_some(code);
+            }
+        }
+        let recipient = form.recipient.as_ref().map(|(address, _)| *address);
+        let asset = form.asset;
+        let system_error = recipient.and_then(|recipient| {
+            self.hc_system_recipient_error(self.settings.evm_chain_id, &recipient, asset)
+        });
+        self.evm.send.system_error = system_error;
+        if remote {
+            self.request_quote();
+        }
+        self.on_balances_for_form();
+        self.refresh();
+    }
+
+    fn request_quote(&mut self) {
+        let chain_id = self.settings.evm_chain_id;
+        let Some((from, ..)) = self.selected_account() else {
+            return;
+        };
+        let Ok(chain) = self.chain_job(chain_id) else {
+            self.evm.send.quote_error = Some(ErrorCode::Key005);
+            return;
+        };
+        let intent = self.intent().unwrap_or(SendIntent {
+            to: from,
+            value: U256::ZERO,
+            data: Vec::new(),
+            access_list: Vec::new(),
+            dapp_gas: None,
+            dapp_nonce: None,
+        });
+        if let Some((recipient, _)) = self.evm.send.recipient.as_ref()
+            && self.evm.send.asset == SendAsset::Native
+            && self.evm.send.contract.is_none()
+        {
+            let address = *recipient;
+            let job = self.evm.job();
+            self.evm.send.code_job = job;
+            let _ = self.rpc(RpcJob::Code {
+                job,
+                chain: chain.clone(),
+                address,
+            });
+        }
+        let job = self.evm.job();
+        self.evm.send.quote_job = job;
+        self.evm.send.quoting = self.rpc(RpcJob::Quote {
+            lang: self.settings.language,
+            job,
+            chain,
+            from,
+            intent,
+        });
+    }
+
+    /// 2026-11-22 (S4d E0c): `pub(crate)` for its App-building tests, children of `app::tests`
+    /// since then (before, of this module).
+    #[doc(hidden)]
+    pub fn on_quote(&mut self, job: u64, result: Result<Quote, ErrorCode>) {
+        if job != self.evm.send.quote_job {
+            return;
+        }
+        self.evm.send.quoting = false;
+        let quoted = result.is_ok();
+        match result {
+            Ok(quote) => {
+                self.evm.send.quote = Some(quote);
+                self.evm.send.quote_error = None;
+            }
+            Err(code) => {
+                self.evm.send.quote = None;
+                self.evm.send.quote_error = Some(code);
+            }
+        }
+        // `최대` waited for this quote: filled when it arrived, dropped when it failed (the quote
+        // error shows; asking again at once would loop on a failing or rate-limited RPC).
+        if std::mem::take(&mut self.evm.send.max_pending) && quoted {
+            self.fill_max();
+        }
+        self.on_balances_for_form();
+        self.refresh();
+    }
+
+    /// Re-checks funds with the latest balances and quote (E-INP-012).
+    fn on_balances_for_form(&mut self) {
+        let chain_id = self.settings.evm_chain_id;
+        let Some((account, ..)) = self.selected_account() else {
+            return;
+        };
+        let (Some(amount), Some(quote)) = (self.evm.send.amount, self.evm.send.quote.clone())
+        else {
+            return;
+        };
+        let native = self.native_balance(chain_id, &account);
+        let token_balance = match self.evm.send.asset {
+            SendAsset::Native => None,
+            SendAsset::Token(token) => self.token_balance(chain_id, &token),
+        };
+        if let Some(native) = native {
+            let result = crate::flow::evm::form::check_funds(
+                self.evm.send.asset == SendAsset::Native,
+                &amount,
+                &quote.max_total,
+                &native,
+                token_balance.as_ref(),
+            );
+            if let Err(code) = result {
+                self.evm.send.amount_error = Some(code);
+            }
+        }
+    }
+
+    /// `최대`. Without a quote it asks for one and fills when it arrives (one request per click
+    /// that is not already waiting; never a retry loop, see [`Self::on_quote`]).
+    pub fn fill_max(&mut self) {
+        let chain_id = self.settings.evm_chain_id;
+        let Some((account, ..)) = self.selected_account() else {
+            return;
+        };
+        let (decimals, _) = self.send_asset_meta();
+        let value = match self.evm.send.asset {
+            SendAsset::Native => {
+                let Some(quote) = self.evm.send.quote.clone() else {
+                    // A click while `최대` already waits for a quote in flight asks nothing more.
+                    if !(self.evm.send.max_pending && self.evm.send.quoting) {
+                        self.request_quote();
+                    }
+                    // Nothing to wait for when no quote could be asked (no endpoint: its error
+                    // shows).
+                    self.evm.send.max_pending = self.evm.send.quoting;
+                    if !self.evm.send.quoting {
+                        self.refresh();
+                    }
+                    return;
+                };
+                let Some(balance) = self.native_balance(chain_id, &account) else {
+                    return;
+                };
+                crate::flow::evm::form::max_native(&balance, &quote.max_total)
+            }
+            SendAsset::Token(token) => self
+                .token_balance(chain_id, &token)
+                .filter(|balance| !balance.is_zero())
+                .ok_or(ErrorCode::Inp012),
+        };
+        match value {
+            Ok(value) => {
+                self.evm.send.amount_text = format_units(&value, decimals).replace(',', "");
+                // 2026-11-18 (S3 C10): `Effect::SetField` (before, `controls.set_text`), applied
+                // at once inside this borrow, so the edit's `EN_CHANGE` is still not seen; the
+                // form state reads the edit back.
+                // (2026-11-21, S4 W3: the text is read first, as before the call.)
+                let text = self.evm.send.amount_text.clone();
+                self.emit(Effect::SetField {
+                    field: crate::form::EditField::EvmSendAmount,
+                    text,
+                });
+                self.validate_send(true);
+            }
+            Err(code) => {
+                self.evm.send.amount_error = Some(code);
+                self.refresh();
+            }
+        }
+    }
+
+    /// Whether `검토` is enabled (spec/04 §2.7). Off while an edit awaits its debounced
+    /// validation (`dirty_ms`): the shown result is not the input's yet.
+    #[must_use]
+    pub fn can_review(&self) -> bool {
+        self.review_blocker().is_none()
+    }
+
+    /// Why `검토` is off, `None` when it is on (2026-11-12: the line under the button). The
+    /// form's fields come in screen order.
+    #[must_use]
+    pub fn review_blocker(&self) -> Option<ReviewBlocker> {
+        let form = &self.evm.send;
+        let chain_id = self.settings.evm_chain_id;
+        if !matches!(self.mode, AppMode::Unlocked { .. }) {
+            return Some(ReviewBlocker::Locked);
+        }
+        if self.send_in_flight().is_some() {
+            return Some(ReviewBlocker::InFlight);
+        }
+        let held = self.evm.blocked(chain_id).is_some()
+            || self.evm.journal_damaged()
+            || self.evm.journal.is_none()
+            || self
+                .journal_hold(crate::wallet::app_sidecar::SendChain::Evm)
+                .is_some()
+            // U7: the phrase waits for its backup quiz (the form's band says so).
+            || self.mn_send_blocked(self.evm_selected_gate())
+            // spec/10 §9.3: the YubiKey is still on its factory PINs (the band says so).
+            || self.evm_selected_card_gate().is_some();
+        if held {
+            return Some(ReviewBlocker::Held);
+        }
+        if form.dirty_ms.is_some() {
+            return Some(if form.to_text.trim().is_empty() {
+                ReviewBlocker::NoRecipient
+            } else if form.amount_text.is_empty() {
+                ReviewBlocker::NoAmount
+            } else {
+                ReviewBlocker::Checking
+            });
+        }
+        if form.recipient_error.is_some() || form.system_error.is_some() {
+            return Some(ReviewBlocker::InputError);
+        }
+        let Some((_, notes)) = form.recipient.as_ref() else {
+            return Some(ReviewBlocker::NoRecipient);
+        };
+        if !form.ack && notes.iter().any(AddressNote::needs_ack) {
+            return Some(ReviewBlocker::NeedsAck);
+        }
+        if form.amount_error.is_some() {
+            return Some(ReviewBlocker::InputError);
+        }
+        if form.amount.is_none() {
+            return Some(ReviewBlocker::NoAmount);
+        }
+        match &form.quote {
+            Some(quote) if quote.cap_violation.is_some() => Some(ReviewBlocker::Held),
+            Some(_) => None,
+            // The quote failed: the band above says why.
+            None if form.quote_error.is_some() => Some(ReviewBlocker::Held),
+            None => Some(ReviewBlocker::NoFee),
+        }
+    }
+
+    /// The approval item of `검토` (spec/04 §2.7, the EVM counterpart of spec/07 §13.1-1). The
+    /// form is validated again first, without any call, and the item is built from that fresh
+    /// result only: when the fresh recipient, asset or amount differs from the last shown
+    /// validation (an edit inside the 500 ms debounce), nothing is queued and the quote for the
+    /// new input is asked for.
+    ///
+    /// # Errors
+    ///
+    /// [`ReviewRefusal`].
+    pub fn review_item(&mut self) -> Result<AppApproval, ReviewRefusal> {
+        let shown = EvmReviewInputs::of(&self.evm.send);
+        self.evm.send.dirty_ms = None;
+        self.validate_send(false);
+        if EvmReviewInputs::of(&self.evm.send) != shown {
+            self.request_quote();
+            return Err(ReviewRefusal::Changed);
+        }
+        if !self.can_review() {
+            return Err(ReviewRefusal::NotReady);
+        }
+        let (account, signer, _) = self.selected_account().ok_or(ReviewRefusal::NotReady)?;
+        let intent = self.intent().ok_or(ReviewRefusal::NotReady)?;
+        Ok(AppApproval {
+            chain_id: self.settings.evm_chain_id,
+            account,
+            signer,
+            intent,
+            replace: None,
+        })
+    }
+
+    /// `검토`: queue the approval built from a fresh validation and open A01 (spec/04 §2.7,
+    /// §3.5).
+    pub fn review_send(&mut self) {
+        match self.review_item() {
+            Ok(item) => self.enqueue_app(item),
+            Err(ReviewRefusal::Changed) => {
+                self.evm.send.info = Some(
+                    crate::wallet::app_sol::text::REVIEW_CHANGED
+                        .get(self.settings.language)
+                        .to_owned(),
+                );
+                self.refresh();
+            }
+            Err(ReviewRefusal::NotReady) => {}
+        }
+    }
+
+    /// Queues an app approval if its send slot is free (spec/03 §3.6).
+    pub fn enqueue_app(&mut self, item: AppApproval) {
+        if self
+            .evm
+            .slots
+            .iter()
+            .any(|(chain, held)| *chain == item.chain_id && *held == item.account)
+        {
+            self.evm.send.info = Some(ErrorCode::Tx002.text_in(self.settings.language));
+            self.refresh();
+            return;
+        }
+        let slot = (item.chain_id, item.account);
+        if self
+            .evm
+            .queue
+            .enqueue(QueueSource::App, QueuedItem::App(Box::new(item)))
+            .is_ok()
+        {
+            self.evm.slots.push(slot);
+            self.evm.send.info = None;
+            self.show_next_approval();
+        } else {
+            self.evm.send.info = Some(ErrorCode::App005.text_in(self.settings.language));
+            self.refresh();
+        }
+    }
+
+    /// An approval ended (any outcome): free the slot unless it was approved (the slot is held
+    /// until the `Signed` record, spec/03 §3.6).
+    pub fn approval_finished(&mut self, item: &QueuedItem, outcome: QueueOutcome) {
+        let item = match item {
+            QueuedItem::App(item) => item,
+            QueuedItem::Sol(item) => {
+                self.sol_approval_finished(item, outcome);
+                return;
+            }
+            QueuedItem::Btc(item) => {
+                self.btc_approval_finished(item, outcome);
+                return;
+            }
+            QueuedItem::Zec(item) => {
+                self.zec_approval_finished(item, outcome);
+                return;
+            }
+            QueuedItem::HyperCore(_) => {
+                self.hc_approval_finished(outcome);
+                return;
+            }
+            QueuedItem::Site(site) => {
+                self.site_finished(site, outcome);
+                logging::info(
+                    "app",
+                    "approval.finished",
+                    &[("outcome", Field::Word(outcome_name(outcome)))],
+                );
+                self.refresh();
+                return;
+            }
+        };
+        if outcome != QueueOutcome::Approved {
+            self.release_slot(item.chain_id, &item.account);
+        }
+        if outcome == QueueOutcome::Expired {
+            self.evm.send.info = Some(
+                text::APPROVAL_EXPIRED
+                    .get(self.settings.language)
+                    .to_owned(),
+            );
+        }
+        logging::info(
+            "app",
+            "approval.finished",
+            &[("outcome", Field::Word(outcome_name(outcome)))],
+        );
+        self.refresh();
+    }
+
+    // ----- activity actions ---------------------------------------------------------------
+
+    /// Speed-up or cancel of an open group (spec/03 §4.6). The approval's signer is the group
+    /// account's own key source; an account whose key is gone gets a notice and no approval
+    /// (never another key's signature).
+    pub fn replace_group(&mut self, key: GroupKey, mode: ReplaceMode) {
+        let Some(group) = self.group(&key) else {
+            return;
+        };
+        let Some(signer) = self.account_source(&key.account) else {
+            self.notice(
+                text::REPLACE_NO_KEY.get(self.settings.language).to_owned(),
+                crate::screen::Tone::Warn,
+            );
+            self.refresh();
+            return;
+        };
+        self.enqueue_app(AppApproval {
+            chain_id: key.chain_id,
+            account: key.account,
+            signer,
+            intent: SendIntent {
+                to: key.account,
+                value: U256::ZERO,
+                data: Vec::new(),
+                access_list: Vec::new(),
+                dapp_gas: None,
+                dapp_nonce: None,
+            },
+            replace: Some(ReplaceTarget { mode, group }),
+        });
+    }
+
+    /// The key source of an own EVM account with this address: derived, imported, an added
+    /// mnemonic's, then a `YubiKey` account's (`EvmKeySource::Hardware`, spec/10 §10 — the
+    /// signing step then moves to the card).
+    #[doc(hidden)]
+    pub fn account_source(&self, address: &Address) -> Option<EvmKeySource> {
+        let meta = self.meta.as_ref()?;
+        let text = address.to_lower_hex();
+        if let Some(account) = meta
+            .evm_accounts
+            .iter()
+            .find(|account| account.address == text)
+        {
+            return AccountIndex::new(account.index)
+                .ok()
+                .map(EvmKeySource::Derived);
+        }
+        meta.evm_raw_accounts
+            .iter()
+            .find(|raw| raw.address == text)
+            .map(|raw| EvmKeySource::Raw(RecordId::from_bytes(raw.record_id)))
+            .or_else(|| self.mnemonic_source(&text))
+            .or_else(|| {
+                let account = meta
+                    .hw_accounts
+                    .evm
+                    .iter()
+                    .find(|account| account.address == text)?;
+                AccountIndex::new(account.index)
+                    .ok()
+                    .map(EvmKeySource::Hardware)
+            })
+    }
+
+    /// `재전송` of the newest candidate's exact bytes (no re-signing).
+    pub fn resend_group(&mut self, key: GroupKey) {
+        let Some(group) = self.group(&key) else {
+            return;
+        };
+        let members: Vec<&EvmRecord> = group.iter().collect();
+        let Some(latest) = latest_candidate(&members) else {
+            return;
+        };
+        let (raw, hash) = (latest.raw.clone(), latest.tx_hash);
+        if let Ok(chain) = self.chain_job(key.chain_id) {
+            self.evm.notes.remove(&hash);
+            let _ = self.rpc(RpcJob::Broadcast {
+                chain,
+                raw,
+                tx_hash: hash,
+            });
+        }
+    }
+
+    /// `폐기` confirmed.
+    pub fn discard_group(&mut self, key: GroupKey) {
+        self.apply_transitions(vec![Transition::Discarded {
+            key,
+            at_unix_ms: self.clock.now_unix_ms(),
+        }]);
+    }
+
+    /// `해시 복사`: a plain copy, answered at the pressed control for [`COPIED_MS`] (2026-11-12:
+    /// the check mark and `복사됨`, `crate::ui::main_window::mark_copied`; no band, so nothing
+    /// moves and no control is created again). A failure stays the E-SEC-002 band.
+    pub fn copy_text(&mut self, text: &str) {
+        self.copy(text, false, None);
+    }
+
+    /// `주소 복사` of every chain (S12, the S10 account cards; 2026-11-11 one path): the plain
+    /// copy of [`Wallet::copy_text`], and its caption keeps the paste check in short ("복사됨 ·
+    /// 붙여넣은 뒤 전체 확인"; a failure keeps E-SEC-002).
+    pub fn copy_address_text(&mut self, address: &str) {
+        self.copy(address, true, None);
+    }
+
+    /// A setup step's plain copy (2026-11-20, S4 P6: S23's path and `chrome://extensions`, the
+    /// `WalletConnect` panel's `dashboard.reown.com`): [`Wallet::copy_text`] whose success is
+    /// answered with `band`'s instruction instead of the mark at the control
+    /// ([`Wallet::copy_done`]). Before P6 each handler read the result right after `copy_text`
+    /// (`copied.take()`) and replaced the mark with the band itself.
+    pub fn copy_with_band(&mut self, text: &str, band: CopyBand) {
+        self.copy(text, false, Some(band));
+    }
+
+    /// 2026-11-18 (S3 B4): the copy is `Effect::CopyText`, applied at once (Windows:
+    /// `clipboard::set_text` when the main window exists, nothing headless); its result comes
+    /// back as `Cmd::CopyDone` ([`Wallet::copy_done`]) with the mark made here from the press being
+    /// handled. Before, this function called `clipboard::set_text` and marked `self.command`.
+    /// 2026-11-20 (S4 P6): the mark also carries the setup step's band.
+    fn copy(&mut self, text: &str, address: bool, band: Option<CopyBand>) {
+        let mark = CopyMark {
+            anchor: self.last_press,
+            address,
+            band,
+        };
+        self.emit(Effect::CopyText {
+            text: text.to_owned(),
+            mark,
+        });
+        self.refresh();
+    }
+
+    /// `Cmd::CopyDone`: the copy reached the clipboard (`ok`) — answered at `mark`'s control for
+    /// [`COPIED_MS`], and an earlier failure's band goes — or it did not (E-SEC-002 band).
+    /// 2026-11-20 (S4 P6): a setup step's copy (`mark.band`) answers its success with its
+    /// instruction band instead, and no mark; S23's two then lay the screen out again, the
+    /// `WalletConnect` panel's press does at its end (as each handler did after reading the
+    /// result: the same steps in the same number). Before P6 the mark was made and the handler
+    /// took it back right after the copy (`copied.take()`) to set the band.
+    /// 2026-11-20 (S4 P6 review): a band leaves `App::copied` alone. Inside the press it is
+    /// already `None` (`on_press` cleared it), so nothing changes there; a band result that
+    /// arrives after another copy's mark (Android) keeps that newer mark (the first P6 version
+    /// cleared it). Only S23's bands lay out here; a late `ReownAddress` band, a late mark and a
+    /// late failure wait for the next layout, which a shell that answers `Cmd::CopyDone` after
+    /// the press makes (spec/15 §11.4 S4).
+    pub(crate) fn copy_done(&mut self, ok: bool, mark: CopyMark) {
+        let failed = ErrorCode::Sec002.text_in(self.settings.language);
+        if let (true, Some(band)) = (ok, mark.band) {
+            let (text, refresh) = match band {
+                CopyBand::ExtensionPath => (text::PATH_COPIED, true),
+                CopyBand::ExtensionsUrl => (text::URL_COPIED, true),
+                CopyBand::ReownAddress => (text::REOWN_COPIED, false),
+            };
+            self.info = Some(text.get(self.settings.language).to_owned());
+            if refresh {
+                self.refresh();
+            }
+        } else if ok {
+            self.copied = Some(Copied {
+                anchor: mark.anchor,
+                until_ms: self.clock.now_ms().saturating_add(COPIED_MS),
+                address: mark.address,
+            });
+            // An earlier failure's band no longer holds.
+            if self.info.as_deref() == Some(failed.as_str()) {
+                self.info = None;
+            }
+        } else {
+            self.copied = None;
+            self.info = Some(failed);
+        }
+    }
+
+    /// Copy part of the main timer: the mark of [`Wallet::copy_text`] goes at its deadline.
+    pub fn copied_tick(&mut self, now: u64) {
+        if self.copied.is_some_and(|copied| now >= copied.until_ms) {
+            self.copied = None;
+            self.refresh();
+        }
+    }
+
+    // ----- tokens (S16) ---------------------------------------------------------------------
+
+    /// `조회`.
+    pub fn lookup_token(&mut self) {
+        let chain_id = self.settings.evm_chain_id;
+        let text = self.evm.token.address.trim().to_owned();
+        let Ok(token) = yw_core::evm::address::parse_address(&text) else {
+            self.evm.token.message = Some(ErrorCode::Inp009.text_in(self.settings.language));
+            self.refresh();
+            return;
+        };
+        match self.chain_job(chain_id) {
+            Ok(chain) => {
+                let job = self.evm.job();
+                self.evm.token.job = job;
+                self.evm.token.found = None;
+                self.evm.token.message =
+                    Some(text::LOOKING_UP.get(self.settings.language).to_owned());
+                let _ = self.rpc(RpcJob::TokenMeta { job, chain, token });
+            }
+            Err(code) => self.evm.token.message = Some(code.text_in(self.settings.language)),
+        }
+        self.refresh();
+    }
+
+    /// `저장` of S16.
+    pub fn save_token(&mut self) {
+        let chain_id = self.settings.evm_chain_id;
+        let Some((token, meta_found)) = self.evm.token.found.clone() else {
+            return;
+        };
+        let Some(decimals) = meta_found.decimals else {
+            self.evm.token.message = Some(text::NO_DECIMALS.get(self.settings.language).to_owned());
+            self.refresh();
+            return;
+        };
+        let label = self.evm.token.label.clone();
+        if !is_valid_label(&label) {
+            self.evm.token.message = Some(ErrorCode::Inp017.text_in(self.settings.language));
+            self.refresh();
+            return;
+        }
+        let entry = TokenEntry {
+            address: token.to_lower_hex(),
+            label,
+            decimals,
+        };
+        let network = NetworkId::Eip155(chain_id).to_string();
+        let Some(meta) = self.meta.as_mut() else {
+            return;
+        };
+        match meta.add_token(&network, &entry) {
+            Ok(()) => {
+                self.evm.token = TokenForm::default();
+                self.save_meta();
+                self.set_screen(Screen::Main);
+                self.refresh_balances();
+            }
+            Err(ListError::Duplicate) => {
+                self.evm.token.message =
+                    Some(text::TOKEN_DUPLICATE.get(self.settings.language).to_owned());
+                self.refresh();
+            }
+            Err(ListError::Full) => {
+                self.evm.token.message =
+                    Some(text::TOKEN_FULL.get(self.settings.language).to_owned());
+                self.refresh();
+            }
+        }
+    }
+
+    // ----- EVM chains (S15/S17) -----------------------------------------------------------
+
+    /// Opens S17 for adding (`None`) or editing a user chain.
+    pub fn open_chain_form(&mut self, editing: Option<u64>) {
+        if editing.is_none()
+            && self.settings.evm_chains.len() >= crate::settings::MAX_CUSTOM_EVM_CHAINS
+        {
+            self.info = Some(ErrorCode::Chn006.text_in(self.settings.language));
+            self.refresh();
+            return;
+        }
+        let mut form = ChainFormState {
+            editing,
+            decimals: "18".to_owned(),
+            ..ChainFormState::default()
+        };
+        if let Some(id) = editing
+            && let Some(def) = self
+                .settings
+                .evm_chains
+                .iter()
+                .find(|def| def.chain_id == id)
+        {
+            form.chain_id = id.to_string();
+            form.name.clone_from(&def.name);
+            form.symbol.clone_from(&def.symbol);
+            form.decimals = def.decimals.to_string();
+            form.explorer = def.explorer.clone().unwrap_or_default();
+            form.unsupported = def.simulation == SimulationSupport::Unsupported;
+        }
+        self.evm.chain_form = Some(form);
+        self.set_screen(Screen::ChainEdit);
+    }
+
+    /// `저장` of S17 (spec/04 §2.17.2).
+    pub fn save_chain_form(&mut self, rpc_text: &str) {
+        let Some(form) = self.evm.chain_form.clone() else {
+            return;
+        };
+        let input = ChainForm {
+            chain_id: &form.chain_id,
+            name: &form.name,
+            symbol: &form.symbol,
+            decimals: &form.decimals,
+            rpc: rpc_text,
+            explorer: &form.explorer,
+            simulation: if form.unsupported {
+                SimulationSupport::Unsupported
+            } else {
+                SimulationSupport::Auto
+            },
+        };
+        let valid = match validate_chain_form(&input, &self.settings, &self.apikeys, form.editing) {
+            Ok(valid) => valid,
+            Err(error) => {
+                self.set_chain_message(error.message_in(self.settings.language));
+                return;
+            }
+        };
+        let pinned = form.editing.and_then(|id| {
+            self.settings
+                .evm_chains
+                .iter()
+                .find(|def| def.chain_id == id)
+                .map(|def| def.genesis_hash)
+        });
+        match valid.rpc.url().cloned() {
+            None => self.commit_chain(&valid, None),
+            Some(url) => {
+                let job = self.evm.job();
+                let chain_id = valid.chain_id;
+                if let Some(state) = self.evm.chain_form.as_mut() {
+                    state.job = job;
+                    state.pending = Some((valid, None));
+                    state.message =
+                        Some(text::CHECKING_CHAIN.get(self.settings.language).to_owned());
+                }
+                let _ = self.rpc(RpcJob::Probe {
+                    job,
+                    url,
+                    chain_id,
+                    pinned,
+                    check_base_fee: form.editing.is_none(),
+                });
+                self.refresh();
+            }
+        }
+    }
+
+    fn set_chain_message(&mut self, message: String) {
+        if let Some(state) = self.evm.chain_form.as_mut() {
+            state.message = Some(message);
+        }
+        self.refresh();
+    }
+
+    fn on_probe(&mut self, job: u64, result: Result<[u8; 32], ProbeError>) {
+        let lang = self.settings.language;
+        // A check that answers after the user left its screen (or after a lock, which also
+        // drops the forms) changes nothing: never a chain confirmation over the lock screen or
+        // another screen, never a chain saved without the user on S17.
+        let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
+        if self
+            .evm
+            .repin
+            .as_ref()
+            .is_some_and(|repin| repin.job == job)
+            && (!unlocked || self.screen != Screen::Settings(SettingsSection::Chains))
+        {
+            self.evm.repin = None;
+            return;
+        }
+        if self
+            .evm
+            .chain_form
+            .as_ref()
+            .is_some_and(|form| form.job == job)
+            && (!unlocked || self.screen != Screen::ChainEdit)
+        {
+            if let Some(form) = self.evm.chain_form.as_mut() {
+                form.pending = None;
+                form.message = None;
+            }
+            return;
+        }
+        if let Some(repin) = self.evm.repin.as_mut()
+            && repin.job == job
+        {
+            match result {
+                Ok(hash) => {
+                    repin.new = Some(hash);
+                    repin.message = None;
+                    self.set_screen(Screen::Confirm(Confirm::ChainRepin));
+                }
+                Err(ProbeError::ChainId { .. }) => {
+                    repin.message = Some(ErrorCode::Rpc006.text_in(lang));
+                    self.refresh();
+                }
+                Err(error) => {
+                    repin.message = Some(error.message_in(lang));
+                    self.refresh();
+                }
+            }
+            return;
+        }
+        let Some(state) = self.evm.chain_form.as_mut() else {
+            return;
+        };
+        if state.job != job {
+            return;
+        }
+        match result {
+            Ok(genesis) => {
+                let Some((valid, _)) = state.pending.take() else {
+                    return;
+                };
+                if valid.rpc.url().is_some() && state.editing.is_none() {
+                    state.pending = Some((valid, Some(genesis)));
+                    state.message = None;
+                    self.set_screen(Screen::Confirm(Confirm::ChainPin));
+                } else {
+                    self.commit_chain(&valid, Some(genesis));
+                }
+            }
+            Err(error) => {
+                state.pending = None;
+                state.message = Some(error.message_in(lang));
+                self.refresh();
+            }
+        }
+    }
+
+    /// Writes a validated chain: the URL first (`apikeys.dpapi`), then `settings.json`
+    /// (spec/04 §2.17.2-4).
+    pub fn commit_chain(&mut self, valid: &ValidChainForm, genesis: Option<[u8; 32]>) {
+        let existing = self
+            .settings
+            .evm_chains
+            .iter()
+            .find(|def| def.chain_id == valid.chain_id)
+            .cloned();
+        let Some(genesis) = genesis.or_else(|| existing.as_ref().map(|def| def.genesis_hash))
+        else {
+            return;
+        };
+        let network = NetworkId::Eip155(valid.chain_id);
+        if let Some(url) = valid.rpc.url() {
+            self.apikeys.set_rpc(network, url);
+            if !self.save_apikeys() {
+                return;
+            }
+            logging::info("app", "rpc.url_set", &[("net", Field::Net(network))]);
+        }
+        let mut def = existing.unwrap_or(EvmChainDef {
+            chain_id: valid.chain_id,
+            name: String::new(),
+            symbol: String::new(),
+            decimals: 18,
+            quicknode_subdomain: None,
+            alchemy_label: None,
+            explorer: None,
+            simulation: SimulationSupport::Auto,
+            genesis_hash: genesis,
+        });
+        def.name.clone_from(&valid.name);
+        def.symbol.clone_from(&valid.symbol);
+        def.decimals = valid.decimals;
+        def.explorer.clone_from(&valid.explorer);
+        def.simulation = valid.simulation;
+        if let RpcSpec::Template {
+            template, entry, ..
+        } = &valid.rpc
+        {
+            match template {
+                crate::settings::RpcTemplate::QuickNode => {
+                    def.quicknode_subdomain = Some(entry.clone());
+                }
+                crate::settings::RpcTemplate::Alchemy => def.alchemy_label = Some(entry.clone()),
+                crate::settings::RpcTemplate::Manual => {}
+            }
+        }
+        let mut settings = self.settings.clone();
+        let editing = settings
+            .evm_chains
+            .iter()
+            .position(|chain| chain.chain_id == def.chain_id);
+        match editing {
+            Some(index) => {
+                if let Some(slot) = settings.evm_chains.get_mut(index) {
+                    *slot = def;
+                }
+            }
+            None => settings.evm_chains.push(def),
+        }
+        self.save_settings(settings, "evmChains");
+        logging::info(
+            "app",
+            if editing.is_some() {
+                "chain.edited"
+            } else {
+                "chain.added"
+            },
+            &[
+                ("net", Field::Net(network)),
+                ("hash", Field::Hash(&genesis)),
+            ],
+        );
+        self.evm.chain_checks.remove(&valid.chain_id);
+        self.reset_read_chain(valid.chain_id);
+        let _ = self.rpc(RpcJob::ResetChain {
+            chain_id: valid.chain_id,
+        });
+        self.evm.chain_form = None;
+        self.info = Some(text::SAVED.get(self.settings.language).to_owned());
+        self.set_screen(Screen::Settings(SettingsSection::Chains));
+    }
+
+    /// `삭제` of a user chain (spec/04 §2.17.3) — checks before the confirmation.
+    pub fn request_delete_chain(&mut self, chain_id: u64) {
+        if !matches!(self.mode, AppMode::Unlocked { .. }) {
+            return;
+        }
+        let sending = self.evm.slots.iter().any(|(chain, _)| *chain == chain_id);
+        let records = self.evm.records();
+        let check = crate::flow::evm::user_chain::check_delete(
+            chain_id,
+            self.settings.evm_chain_id,
+            records,
+            sending,
+        );
+        if let Err(code) = check {
+            self.info = Some(code.text_in(self.settings.language));
+            self.refresh();
+            return;
+        }
+        self.evm.delete_chain = Some(chain_id);
+        self.set_screen(Screen::Confirm(Confirm::ChainDelete));
+    }
+
+    /// Deletion confirmed: settings first, then the URL.
+    pub fn delete_chain(&mut self, chain_id: u64) {
+        let mut settings = self.settings.clone();
+        settings
+            .evm_chains
+            .retain(|chain| chain.chain_id != chain_id);
+        settings.fee_caps.retain(|(id, _)| *id != chain_id);
+        self.save_settings(settings, "evmChains");
+        let network = NetworkId::Eip155(chain_id);
+        if self.apikeys.remove(KeyName::Rpc(network)) && self.save_apikeys() {
+            logging::info("app", "rpc.url_deleted", &[("net", Field::Net(network))]);
+        }
+        logging::info("app", "chain.deleted", &[("net", Field::Net(network))]);
+        self.evm.chain_checks.remove(&chain_id);
+        let _ = self.rpc(RpcJob::ResetChain { chain_id });
+        self.reset_read_chain(chain_id);
+        self.chain_removed_from_sites(chain_id);
+    }
+
+    /// `다시 고정` (spec/04 §2.17.4): fetch the new block-0 hash.
+    pub fn start_repin(&mut self, chain_id: u64) {
+        let Some(url) = self.apikeys.rpc_url(NetworkId::Eip155(chain_id)) else {
+            self.info = Some(ErrorCode::Key005.text_in(self.settings.language));
+            self.refresh();
+            return;
+        };
+        let job = self.evm.job();
+        self.evm.repin = Some(RepinState {
+            chain_id,
+            new: None,
+            job,
+            checked: false,
+            message: Some(text::CHECKING_CHAIN.get(self.settings.language).to_owned()),
+        });
+        let _ = self.rpc(RpcJob::Probe {
+            job,
+            url,
+            chain_id,
+            pinned: None,
+            check_base_fee: false,
+        });
+        self.refresh();
+    }
+
+    /// The repin confirmed with T-CHAIN-REPIN-ACK.
+    pub fn commit_repin(&mut self) {
+        let Some(repin) = self.evm.repin.take() else {
+            return;
+        };
+        let (Some(new), true) = (repin.new, repin.checked) else {
+            self.evm.repin = Some(repin);
+            return;
+        };
+        let mut settings = self.settings.clone();
+        if repin.chain_id == HYPEREVM_MAINNET {
+            settings
+                .evm_genesis_pins
+                .retain(|(id, _)| *id != repin.chain_id);
+            settings.evm_genesis_pins.push((repin.chain_id, new));
+        } else if let Some(def) = settings
+            .evm_chains
+            .iter_mut()
+            .find(|def| def.chain_id == repin.chain_id)
+        {
+            def.genesis_hash = new;
+        }
+        self.save_settings(settings, "evmGenesisPins");
+        logging::info(
+            "app",
+            "chain.repinned",
+            &[
+                ("net", Field::Net(NetworkId::Eip155(repin.chain_id))),
+                ("hash", Field::Hash(&new)),
+            ],
+        );
+        self.evm.chain_checks.remove(&repin.chain_id);
+        self.reset_read_chain(repin.chain_id);
+        let _ = self.rpc(RpcJob::ResetChain {
+            chain_id: repin.chain_id,
+        });
+    }
+
+    /// The pinned genesis shown in the chain list (`None` = first connection pins it).
+    #[must_use]
+    pub fn pinned_genesis(&self, chain_id: u64) -> Option<[u8; 32]> {
+        chain_info(&self.settings, chain_id).and_then(|chain| match chain.genesis {
+            GenesisRule::Fixed(hash) | GenesisRule::PinOnFirstUse(Some(hash)) => Some(hash),
+            GenesisRule::PinOnFirstUse(None) => None,
+        })
+    }
+
+    // ----- fee caps -----------------------------------------------------------------------
+
+    /// Selects the chain in the fee-cap editor.
+    pub fn select_caps_chain(&mut self, chain_id: u64) {
+        let Some(chain) = chain_info(&self.settings, chain_id) else {
+            return;
+        };
+        let text = self
+            .settings
+            .fee_caps
+            .iter()
+            .find(|(id, _)| *id == chain_id)
+            .map_or_else(|| default_caps_text(&chain), |(_, text)| text.clone());
+        self.evm.caps = Some(CapsForm {
+            chain_id,
+            fee: text.max_fee_per_gas_gwei,
+            tip: text.max_priority_fee_per_gas_gwei,
+            total: text.max_total_fee,
+            message: None,
+        });
+        self.refresh();
+    }
+
+    /// `저장` of the fee caps (spec/03 §3.4-7 ranges).
+    pub fn save_caps(&mut self, defaults: bool) {
+        let Some(form) = self.evm.caps.clone() else {
+            return;
+        };
+        let Some(chain) = chain_info(&self.settings, form.chain_id) else {
+            return;
+        };
+        let text = if defaults {
+            default_caps_text(&chain)
+        } else {
+            FeeCapsText {
+                max_fee_per_gas_gwei: form.fee.trim().to_owned(),
+                max_priority_fee_per_gas_gwei: form.tip.trim().to_owned(),
+                max_total_fee: form.total.trim().to_owned(),
+            }
+        };
+        let value = json_object(vec![
+            ("maxFeePerGasGwei", json_str(&text.max_fee_per_gas_gwei)),
+            (
+                "maxPriorityFeePerGasGwei",
+                json_str(&text.max_priority_fee_per_gas_gwei),
+            ),
+            ("maxTotalFee", json_str(&text.max_total_fee)),
+        ]);
+        let valid = validate_fee_caps(&value, chain.native_decimals)
+            .filter(|caps| parse_caps(caps, chain.native_decimals).is_some());
+        let Some(valid) = valid else {
+            if let Some(caps) = self.evm.caps.as_mut() {
+                caps.message = Some(text::CAPS_RANGE.get(self.settings.language).to_owned());
+            }
+            self.refresh();
+            return;
+        };
+        let mut settings = self.settings.clone();
+        settings.fee_caps.retain(|(id, _)| *id != form.chain_id);
+        if !defaults {
+            settings.fee_caps.push((form.chain_id, valid));
+        }
+        self.save_settings(settings, "feeCaps");
+        self.select_caps_chain(form.chain_id);
+        let saved = text::SAVED.get(self.settings.language);
+        if let Some(caps) = self.evm.caps.as_mut() {
+            caps.message = Some(saved.to_owned());
+        }
+        self.refresh();
+    }
+
+    // ----- display helpers ----------------------------------------------------------------
+
+    /// `X SYM` of a native amount on a chain.
+    #[must_use]
+    pub fn native_text(&self, chain_id: u64, value: &U256) -> String {
+        chain_info(&self.settings, chain_id).map_or_else(
+            || value.to_decimal_string(),
+            |chain| format_amount(value, chain.native_decimals, &chain.native_symbol),
+        )
+    }
+
+    /// The masked endpoint text of a chain (S15).
+    #[must_use]
+    pub fn endpoint_text(&self, chain_id: u64) -> String {
+        self.apikeys
+            .rpc_url(NetworkId::Eip155(chain_id))
+            .map_or_else(
+                || text::ENDPOINT_NONE.get(self.settings.language).to_owned(),
+                |url| text::ENDPOINT_SET.fill(self.settings.language, [&mask_url(&url)]),
+            )
+    }
+
+    /// Whether settings are loaded for chain lists (always).
+    #[must_use]
+    pub const fn settings_ref(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// The approval id for a new queue item.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::Vlt005`] when randomness is unavailable.
+    pub fn new_approval_id() -> Result<ApprovalId, ErrorCode> {
+        ApprovalId::random().map_err(|_| ErrorCode::Vlt005)
+    }
+}
+
+/// Fixed outcome names for logs.
+#[must_use]
+pub const fn outcome_name(outcome: QueueOutcome) -> &'static str {
+    match outcome {
+        QueueOutcome::Approved => "Approved",
+        QueueOutcome::Rejected => "Rejected",
+        QueueOutcome::Expired => "Expired",
+        QueueOutcome::TimedOut => "TimedOut",
+        QueueOutcome::Cancelled => "Cancelled",
+        QueueOutcome::Revoked => "Revoked",
+        QueueOutcome::TooManyPending => "TooManyPending",
+        QueueOutcome::NotReady => "NotReady",
+        QueueOutcome::PassphraseUnverified => "PassphraseUnverified",
+        QueueOutcome::Shutdown => "Shutdown",
+    }
+}
+
+// 2026-11-23 (spec/15 §11.4 S4d E0b): moved here unchanged from `ui::screens_evm` (wallet code in
+// a render file): the activity rows, the account and network labels and the send picker.
+
+impl Wallet {
+    /// An account row's name with its recovery phrase while the wallet has several.
+    pub fn evm_pref_title(&self, pref: crate::meta::EvmAccountPref, label: &str) -> String {
+        match pref {
+            crate::meta::EvmAccountPref::Index(_) => self.mnemonic_tagged(label, None),
+            crate::meta::EvmAccountPref::Mnemonic(id, _) => self.mnemonic_tagged(label, Some(id)),
+            crate::meta::EvmAccountPref::Record(_) | crate::meta::EvmAccountPref::Hardware(_) => {
+                label.to_owned()
+            }
+        }
+    }
+
+    fn account_label(&self, address: &str) -> String {
+        self.account_rows()
+            .into_iter()
+            .find(|(_, _, shown, _)| shown.eq_ignore_ascii_case(address))
+            .map_or_else(
+                || address.to_owned(),
+                |(pref, label, _, _)| self.evm_pref_title(pref, &label),
+            )
+    }
+
+    pub fn record_status(&self, record: &EvmRecord) -> String {
+        let lang = self.settings.language;
+        let note = self.evm.notes.get(&record.tx_hash).copied();
+        match record.state {
+            TxState::Signed => match note {
+                Some(BroadcastOutcome::HashMismatch) => text::REC_HASH_MISMATCH,
+                Some(BroadcastOutcome::Rejected { known: false }) => text::REC_SEND_FAILED,
+                Some(BroadcastOutcome::Unconfirmed { .. }) | None => text::REC_CONFIRMING,
+                _ => text::REC_SIGNED,
+            }
+            .get(lang)
+            .to_owned(),
+            TxState::Broadcast => text::REC_BROADCAST.get(lang).to_owned(),
+            // One confirmation is final; `Included` only remains in records of older builds
+            // until the next tracking round finalizes them.
+            TxState::Included | TxState::Finalized => {
+                if record.receipt_status == ReceiptStatus::Failure {
+                    text::REC_FINAL_FAILED
+                } else {
+                    text::REC_FINAL
+                }
+                .fill(lang, [&record.included_block_number.to_string()])
+            }
+            TxState::Dropped => {
+                if record.has_flag(yw_core::journal::evm::FLAG_USER_DISCARDED) {
+                    text::STATUS_DROPPED.get(lang).to_owned()
+                } else {
+                    text::REC_NONCE_USED.get(lang).to_owned()
+                }
+            }
+            TxState::Replaced => text::STATUS_REPLACED.get(lang).to_owned(),
+        }
+    }
+
+    /// Activity rows of the active chain: journal groups first, then meta activity.
+    /// 2026-11-22 (S4d E0c): a row carries its time as `time_unix_ms` and the render code
+    /// (`evm_main_sections`) prints it as local time; before, `head` began with
+    /// `format_local` of it (plan D-30: no wallet fn formats a local time).
+    #[must_use]
+    pub fn activity_rows(&self) -> Vec<ActivityRowView> {
+        let chain_id = self.settings.evm_chain_id;
+        let mut rows = Vec::new();
+        let records: Vec<EvmRecord> = self
+            .evm
+            .records()
+            .iter()
+            .filter(|record| record.chain_id == chain_id)
+            .cloned()
+            .collect();
+        let mut seen: Vec<String> = Vec::new();
+        let mut grouped = groups(&records);
+        grouped.sort_by_key(|(_, members)| {
+            std::cmp::Reverse(members.iter().map(|record| record.created_unix_ms).max())
+        });
+        for (key, members) in grouped {
+            let open = members.iter().any(|record| !record.is_terminal());
+            let shown = members
+                .iter()
+                .find(|record| matches!(record.state, TxState::Included | TxState::Finalized))
+                .or_else(|| members.iter().max_by_key(|record| record.created_unix_ms))
+                .copied();
+            let Some(shown) = shown else { continue };
+            let hash = hash_text(&shown.tx_hash);
+            for member in &members {
+                seen.push(hash_text(&member.tx_hash));
+            }
+            let manual = members.iter().any(|record| {
+                record.state == TxState::Signed
+                    && matches!(
+                        self.evm.notes.get(&record.tx_hash),
+                        Some(
+                            BroadcastOutcome::Rejected { known: false }
+                                | BroadcastOutcome::HashMismatch
+                        )
+                    )
+            });
+            // The nonce only matters while the group is open (speed-up, cancel).
+            let nonce = if open {
+                format!(" · nonce {}", key.nonce)
+            } else {
+                String::new()
+            };
+            rows.push(ActivityRowView {
+                time_unix_ms: shown.created_unix_ms,
+                head: format!(
+                    "{} · {}{nonce}",
+                    self.account_label(&shown.account.to_lower_hex()),
+                    shown.label,
+                ),
+                status: self.record_status(shown),
+                hash,
+                open: open.then_some(key),
+                manual,
+                counterparty: shown.tx().and_then(|tx| tx_recipients(&tx).last().copied()),
+            });
+        }
+        if let Some(meta) = self.meta.as_ref() {
+            let network = NetworkId::Eip155(chain_id).to_string();
+            for entry in meta.activity_of(&network) {
+                if seen.contains(&entry.tx_id) {
+                    continue;
+                }
+                rows.push(self.meta_activity_row(&entry, chain_id));
+            }
+        }
+        rows.truncate(crate::wallet::app_evm::MAX_ACTIVITY_ROWS);
+        rows
+    }
+
+    fn meta_activity_row(&self, entry: &ActivityEntry, chain_id: u64) -> ActivityRowView {
+        let lang = self.settings.language;
+        let amount = U256::from_decimal_str(&entry.amount).unwrap_or(U256::ZERO);
+        let mut value = if entry.asset == "native" {
+            self.native_text(chain_id, &amount)
+        } else {
+            let token = parse_address(&entry.asset).ok();
+            token
+                .and_then(|token| {
+                    self.chain_tokens(chain_id)
+                        .into_iter()
+                        .find(|(address, ..)| *address == token)
+                })
+                .map_or_else(
+                    || text::RAW_UNITS.fill(lang, [&amount.to_decimal_string()]),
+                    |(_, symbol, decimals, _)| format_amount(&amount, decimals, &symbol),
+                )
+        };
+        // History stays visible for hidden tokens, tagged so the row is not a surprise.
+        if parse_address(&entry.asset).is_ok_and(|token| self.evm_token_hidden(chain_id, &token)) {
+            value.push_str(text::HIDDEN_TOKEN_TAG.get(lang));
+        }
+        ActivityRowView {
+            time_unix_ms: entry.time_unix_ms,
+            head: format!(
+                "{} · {} · {value}",
+                self.account_label(&entry.account),
+                entry.title
+            ),
+            status: activity_status(lang, &entry.status).to_owned(),
+            hash: entry.tx_id.clone(),
+            open: None,
+            manual: false,
+            counterparty: parse_address(&entry.counterparty).ok(),
+        }
+    }
+}
+
+impl Wallet {
+    /// Network radios with "(차단됨)".
+    #[must_use]
+    pub fn network_label(&self, chain_id: u64) -> String {
+        let mut name = self.network_name(NetworkId::Eip155(chain_id));
+        if self
+            .settings
+            .evm_chains
+            .iter()
+            .any(|def| def.chain_id == chain_id)
+        {
+            name.push_str(" · ");
+            name.push_str(&custom_chain_badge(self.settings.language, chain_id));
+        }
+        if self.evm.blocked(chain_id).is_some() {
+            name.push_str(text::BLOCKED_TAG.get(self.settings.language));
+        }
+        name
+    }
+}
+
+impl Wallet {
+    /// The picker rows in display order: book entries and own accounts matching the filter of
+    /// the rows on screen (`SendForm::picker_filter`), at most [`crate::app_evm::SEND_PICK_ROWS`].
+    pub fn picker_known(&self) -> Vec<crate::flow::evm::form::KnownAddress> {
+        let filter = self.evm.send.picker_filter.trim().to_ascii_lowercase();
+        self.known_addresses()
+            .into_iter()
+            .filter(|entry| !entry.history)
+            .filter(|entry| {
+                filter.is_empty()
+                    || entry
+                        .address
+                        .to_lower_hex()
+                        .contains(filter.trim_start_matches("0x"))
+                    || entry.name.to_ascii_lowercase().contains(&filter)
+            })
+            .take(usize::from(crate::wallet::app_evm::SEND_PICK_ROWS))
+            .collect()
+    }
+
+    /// The picker entries in display order (for the command handler): the same rows as drawn,
+    /// so a click picks the row it was drawn for even when the recipient text changed since.
+    #[must_use]
+    pub fn picker_entries(&self) -> Vec<Address> {
+        self.picker_known()
+            .into_iter()
+            .map(|entry| entry.address)
+            .collect()
+    }
+}
+
+/// Status words of activity rows.
+fn activity_status(lang: Lang, word: &str) -> &'static str {
+    match word {
+        "succeeded" => text::STATUS_SUCCEEDED,
+        "failed" => text::STATUS_FAILED,
+        "dropped" => text::STATUS_DROPPED,
+        "replaced" => text::STATUS_REPLACED,
+        "expired" => text::STATUS_EXPIRED,
+        "rejected" => text::STATUS_REJECTED,
+        "conflicted" => text::STATUS_CONFLICTED,
+        _ => text::STATUS_STOPPED,
+    }
+    .get(lang)
+}
+
+// 2026-11-22 (S4d E0c): `pub(crate)` so that a test of `app::tests` (this file's App-building
+// tests, re-parented there) reaches its shared helper; private before.
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use yw_core::evm::address::Address;
+    use yw_core::journal::evm::{
+        EvmRecord, FLAG_MANUAL_RESEND, FLAG_RPC_HASH_MISMATCH, Role, TxState,
+    };
+
+    use super::seed_notes;
+    use crate::flow::evm::track::BroadcastOutcome;
+
+    const BESU_SIGNED: &str = "02f86e048203338301284d8301d97c828ae094000000000000000000000000000000000000aaaa8402933bc980c080a00f924cb68412c8f1cfd74d9b581c71eeaf94fff6abdde3e5b02ca6b2931dcf47a07dd1c50027c3e31f8b565e25ce68a5072110f61fce5eee81b195dd51273c2f83";
+
+    fn record(flags: u8) -> EvmRecord {
+        let sender =
+            yw_core::evm::address::parse_address("0xFE3B557E8Fb62b89F4916B721be55cEb828dBd73")
+                .unwrap_or(Address::from_bytes([0; 20]));
+        let mut record = EvmRecord::new_signed(
+            4,
+            sender,
+            819,
+            Role::Original,
+            1_790_000_000_000,
+            [7; 32],
+            "https://app.example",
+            "x",
+            yw_core::hex::decode(BESU_SIGNED).unwrap(),
+        )
+        .unwrap();
+        record.flags = flags;
+        record
+    }
+
+    /// After a restart the activity notes come back from the journal flags: a manual-resend-only
+    /// record offers `재전송`·`폐기` again (and tracking never re-sends it on its own).
+    #[test]
+    fn journal_flags_restore_the_manual_resend_notes() {
+        let manual = record(FLAG_MANUAL_RESEND);
+        let mut notes = HashMap::new();
+        seed_notes(&mut notes, std::slice::from_ref(&manual));
+        assert_eq!(
+            notes.get(&manual.tx_hash),
+            Some(&BroadcastOutcome::Rejected { known: false })
+        );
+        let other_hash = record(FLAG_RPC_HASH_MISMATCH);
+        let mut notes = HashMap::new();
+        seed_notes(&mut notes, std::slice::from_ref(&other_hash));
+        assert_eq!(
+            notes.get(&other_hash.tx_hash),
+            Some(&BroadcastOutcome::HashMismatch)
+        );
+        // Session notes win; records that are not `Signed` or carry no flag add nothing.
+        let mut notes = HashMap::from([(manual.tx_hash, BroadcastOutcome::Sent)]);
+        let mut sent = record(FLAG_MANUAL_RESEND);
+        sent.state = TxState::Broadcast;
+        seed_notes(&mut notes, &[manual.clone(), sent, record(0)]);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes.get(&manual.tx_hash), Some(&BroadcastOutcome::Sent));
+    }
+}

@@ -181,10 +181,10 @@ fn switch_off_queues_nothing_and_on_reads_the_shown_card() {
     assert!(has_text(&app.items(), &dust_line(Lang::Ko, 2)));
 
     // Another screen than the main one: no reads.
-    app.screen = crate::app::Screen::Settings(yw_engine::screen::SettingsSection::Security);
+    app.screen = yw_engine::wallet::Screen::Settings(yw_engine::screen::SettingsSection::Security);
     app.received_tick(yw_win::time::monotonic_ms() + 3_600_000);
     assert!(received(&rx).is_empty());
-    app.screen = crate::app::Screen::Main;
+    app.screen = yw_engine::wallet::Screen::Main;
 
     // Off again: the lists go and nothing is queued any more.
     app.on_command(ids::toggle(RecvChain::Evm));
@@ -239,7 +239,7 @@ fn read(entries: Vec<Incoming>, gone: &[&str], dropped: &[&str]) -> Fetched {
 /// confirmed row never turns back; a replacement is its own new pending row.
 #[test]
 fn pending_rows_go_only_when_a_read_says_so() {
-    use crate::app_received::RecvList;
+    use yw_engine::wallet::app_received::RecvList;
     let (a, b) = (pending_row("a", 50_000), pending_row("b", 70_000));
     let mut list = RecvList::default();
     list.apply(read(vec![a.clone(), b.clone()], &[], &[]));
@@ -283,9 +283,9 @@ fn pending_rows_go_only_when_a_read_says_so() {
 /// keeps the banner, and a pending row elsewhere no longer hides it.
 #[test]
 fn bitcoin_pending_banner_follows_the_history_coverage() {
-    use crate::app_btc::{PENDING_INCOMING, PENDING_INCOMING_UNREAD};
     use crate::ui::screens_btc::pending_banner;
     use yw_core::bip32::path::BtcChain;
+    use yw_engine::wallet::app_btc::{PENDING_INCOMING, PENDING_INCOMING_UNREAD};
     let at = [(BtcChain::Receive, 3)];
     assert_eq!(pending_banner(false, &[], true, None), None);
     assert_eq!(
@@ -303,7 +303,7 @@ fn bitcoin_pending_banner_follows_the_history_coverage() {
     );
     // Address 3 read completely: its deposit is a row, or dust only counted — no banner.
     assert_eq!(pending_banner(true, &at, true, Some(&[3])), None);
-    let mut list = crate::app_received::RecvList::default();
+    let mut list = yw_engine::wallet::app_received::RecvList::default();
     list.apply(Fetched {
         found: Found {
             entries: Vec::new(),
@@ -330,7 +330,7 @@ fn bitcoin_pending_banner_follows_the_history_coverage() {
 /// refresh banner while the section showed only the fixed line; confirmed rows stay.
 #[test]
 fn unsupported_read_drops_pending_rows_and_coverage() {
-    use crate::app_received::RecvList;
+    use yw_engine::wallet::app_received::RecvList;
     let a = pending_row("a", 50_000);
     let b = confirmed(&pending_row("b", 70_000), 800);
     let mut list = RecvList::default();
@@ -355,8 +355,8 @@ fn unsupported_read_drops_pending_rows_and_coverage() {
 /// after `PENDING_MISS_MAX` reads in a row; a read listing it again starts the count over.
 #[test]
 fn missed_pending_rows_go_after_three_reads() {
-    use crate::app_received::RecvList;
     use crate::received::PENDING_MISS_MAX;
+    use yw_engine::wallet::app_received::RecvList;
     let a = pending_row("a", 50_000);
     let mut list = RecvList::default();
     list.apply(read(vec![a.clone()], &[], &[]));

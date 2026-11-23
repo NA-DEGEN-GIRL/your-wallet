@@ -970,10 +970,13 @@ const HELPER_SET: [HelperFile; 14] = [
 /// B5 re-point them), pinned so that only those commits may change them (FA review). Each
 /// change must keep what it asserts: S1 `topmost(true)` and `MA_ACTIVATEANDEAT`, S2 the
 /// `physical` Enter expression with `injected`, S3 the scan that no AI code names the gate.
+/// 2026-11-23 (S4d E1; owner decision 2026-11-21, second batch, pre-approved, spec/15 §18 18): S1
+/// may change in `E1` too, so it follows the flow half to yw-engine (it reads both halves since,
+/// and still asserts `topmost(true)` and `MA_ACTIVATEANDEAT`).
 const SOURCE_CHECKS: [(&str, &str); 3] = [
     (
         "approval_window_is_topmost_and_eats_activating_clicks",
-        "B2,B4a,B4b,B5",
+        "B2,B4a,B4b,B5,E1",
     ),
     (
         "approve_enter_is_physical_and_not_injected",

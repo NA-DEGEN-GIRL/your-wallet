@@ -244,7 +244,7 @@ pub fn ranges() -> Vec<IdRange> {
             screens_book::ids::FAV_BASE,
             screens_book::ids::FAV_SPAN,
             1,
-            crate::app_book::FAVORITE_CHIPS,
+            yw_engine::wallet::app_book::FAVORITE_CHIPS,
         ),
         range(
             "book.btc_picker",
@@ -258,7 +258,7 @@ pub fn ranges() -> Vec<IdRange> {
             screens_book::ids::SOL_ACTIVITY_BASE,
             screens_book::ids::SOL_ACTIVITY_SPAN,
             1,
-            crate::app_sol::SOL_MAX_ACTIVITY_ROWS,
+            yw_engine::wallet::app_sol::SOL_MAX_ACTIVITY_ROWS,
         ),
         range(
             "evm.chain_rows",
@@ -286,7 +286,7 @@ pub fn ranges() -> Vec<IdRange> {
             screens_evm::ids::ACTIVITY_BASE,
             screens_evm::ids::ACTIVITY_SPAN,
             screens_evm::ids::ACTIVITY_STRIDE,
-            crate::app_evm::MAX_ACTIVITY_ROWS,
+            yw_engine::wallet::app_evm::MAX_ACTIVITY_ROWS,
         ),
         range(
             "sites.rows",
@@ -468,7 +468,7 @@ pub fn ranges() -> Vec<IdRange> {
             screens_btc::ids::ACTIVITY_BASE,
             screens_btc::ids::ACTIVITY_SPAN,
             screens_btc::ids::ACTIVITY_STRIDE,
-            crate::app_btc::BTC_MAX_ACTIVITY_ROWS,
+            yw_engine::wallet::app_btc::BTC_MAX_ACTIVITY_ROWS,
         ),
         range(
             "sol.activity_copy",
@@ -476,7 +476,7 @@ pub fn ranges() -> Vec<IdRange> {
             screens_sol::ids::ACTIVITY_COPY_SPAN,
             1,
             yw_core::journal::sol::SOL_JOURNAL_MAX_RECORDS
-                .max(crate::app_sol::SOL_MAX_ACTIVITY_ROWS),
+                .max(yw_engine::wallet::app_sol::SOL_MAX_ACTIVITY_ROWS),
         ),
         range(
             "zec.activity_copy",
@@ -499,14 +499,14 @@ pub fn ranges() -> Vec<IdRange> {
             screens_explorer::ids::SOL_ACTIVITY_SPAN,
             screens_explorer::ids::ACTIVITY_STRIDE,
             yw_core::journal::sol::SOL_JOURNAL_MAX_RECORDS
-                .max(crate::app_sol::SOL_MAX_ACTIVITY_ROWS),
+                .max(yw_engine::wallet::app_sol::SOL_MAX_ACTIVITY_ROWS),
         ),
         range(
             "explorer.btc_activity",
             screens_explorer::ids::BTC_ACTIVITY_BASE,
             screens_explorer::ids::BTC_ACTIVITY_SPAN,
             screens_explorer::ids::ACTIVITY_STRIDE,
-            crate::app_btc::BTC_MAX_ACTIVITY_ROWS,
+            yw_engine::wallet::app_btc::BTC_MAX_ACTIVITY_ROWS,
         ),
         range(
             "explorer.zec_activity",
@@ -520,7 +520,7 @@ pub fn ranges() -> Vec<IdRange> {
             screens_links::ids::EVM_TO_BASE,
             screens_links::ids::EVM_TO_SPAN,
             1,
-            crate::app_evm::MAX_ACTIVITY_ROWS,
+            yw_engine::wallet::app_evm::MAX_ACTIVITY_ROWS,
         ),
         range(
             "links.sol_to",
@@ -528,14 +528,14 @@ pub fn ranges() -> Vec<IdRange> {
             screens_links::ids::SOL_TO_SPAN,
             1,
             yw_core::journal::sol::SOL_JOURNAL_MAX_RECORDS
-                .max(crate::app_sol::SOL_MAX_ACTIVITY_ROWS),
+                .max(yw_engine::wallet::app_sol::SOL_MAX_ACTIVITY_ROWS),
         ),
         range(
             "links.btc_to",
             screens_links::ids::BTC_TO_BASE,
             screens_links::ids::BTC_TO_SPAN,
             1,
-            crate::app_btc::BTC_MAX_ACTIVITY_ROWS,
+            yw_engine::wallet::app_btc::BTC_MAX_ACTIVITY_ROWS,
         ),
         range(
             "links.zec_to",

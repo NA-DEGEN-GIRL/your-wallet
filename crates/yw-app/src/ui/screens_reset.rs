@@ -1,13 +1,14 @@
 //! S22 `지갑 초기화` (spec/04 §2.20), S23 `Chrome 확장 설치` (§2.21), their entry links, and
 //! T-WAIT-STALLED (a wait past `app_reset::WAIT_TIMEOUT_MS`).
 
-use crate::app::{App, AppMode};
+use crate::app::App;
 use crate::app_extension::{CHROME_EXTENSIONS_URL, expected_dir, extension_dir};
-use crate::app_reset::RESET_PHRASE;
 use crate::store::reset::FOLDER_PREFIX;
 use crate::ui::main_window::{Ctl, Item};
 use yw_core::lang::Lang;
 use yw_engine::screen::Tone;
+use yw_engine::wallet::AppMode;
+use yw_engine::wallet::app_reset::RESET_PHRASE;
 
 /// Command ids (block 13,400–13,449, `ui::command_ids`).
 pub mod ids {
@@ -280,15 +281,15 @@ impl App {
         if unreadable
             && matches!(
                 self.screen,
-                crate::app::Screen::Confirm(crate::app::Confirm::SidecarCorrupt)
-                    | crate::app::Screen::Processing(_)
+                yw_engine::wallet::Screen::Confirm(yw_engine::wallet::Confirm::SidecarCorrupt)
+                    | yw_engine::wallet::Screen::Processing(_)
             )
         {
             return;
         }
         let lang = self.settings.language;
         let band = if unreadable {
-            crate::app_sidecar::text::META_CLOSED.get(lang)
+            yw_engine::wallet::app_sidecar::text::META_CLOSED.get(lang)
         } else {
             T_META_FAILED.get(lang)
         };
@@ -298,7 +299,7 @@ impl App {
         ));
         let mut row = vec![Ctl::primary(ids::WAIT_RETRY, text::RELOAD.get(lang))];
         // S10's toolbar has `잠금` already.
-        if self.screen != crate::app::Screen::Main {
+        if self.screen != yw_engine::wallet::Screen::Main {
             row.push(Ctl::button(
                 crate::ui::screens::ids::LOCK,
                 text::LOCK.get(lang),
@@ -350,7 +351,7 @@ impl App {
         items.push(Item::Title(text::RESET_TITLE.get(lang).to_owned()));
         // Unlocked: what brings this wallet back, before anything is moved (2026-11-10; the
         // lines of settings → 보안).
-        if matches!(self.mode, crate::app::AppMode::Unlocked { .. }) {
+        if matches!(self.mode, yw_engine::wallet::AppMode::Unlocked { .. }) {
             let lines = self.backup_status_all();
             if !lines.is_empty() {
                 items.push(Item::CardStart(Some(
@@ -464,7 +465,7 @@ impl App {
             items.push(Item::Mono(dir.display().to_string()));
         } else {
             items.push(Item::Banner(
-                crate::app::text::T_EXT_MISSING.get(lang).to_owned(),
+                yw_engine::wallet::text::T_EXT_MISSING.get(lang).to_owned(),
                 Tone::Warn,
             ));
             if let Some(expected) = expected_dir() {
@@ -578,9 +579,18 @@ mod tests {
         for text in &texts {
             assert!(!has_hangul(text), "{text}");
         }
-        assert!(crate::app_reset::phrase_matches(Lang::En, " reset "));
-        assert!(!crate::app_reset::phrase_matches(Lang::En, "초기화"));
-        assert!(crate::app_reset::phrase_matches(Lang::Ko, "초기화"));
+        assert!(yw_engine::wallet::app_reset::phrase_matches(
+            Lang::En,
+            " reset "
+        ));
+        assert!(!yw_engine::wallet::app_reset::phrase_matches(
+            Lang::En,
+            "초기화"
+        ));
+        assert!(yw_engine::wallet::app_reset::phrase_matches(
+            Lang::Ko,
+            "초기화"
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

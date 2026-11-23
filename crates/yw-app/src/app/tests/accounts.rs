@@ -503,7 +503,7 @@ fn bitcoin_rename_hide_and_unhide() {
     assert_eq!(selects, [(network, yw_core::btc::BtcAccountId::PRIMARY)]);
     assert!(has_text(
         &app.items(),
-        &crate::app_hidden::hidden_note(Lang::Ko, "카드 A 계정")
+        &yw_engine::wallet::app_hidden::hidden_note(Lang::Ko, "카드 A 계정")
     ));
     // The hidden list names it with its cards and its whole address; `다시 보이기` brings it
     // back.
@@ -796,7 +796,7 @@ fn zcash_dropdown_is_disabled_while_a_transaction_is_unfinished() {
             .iter()
             .any(|ctl| { ctl.id == crate::ui::screens_links::ids::PICKER_ZEC && !ctl.enabled })
     );
-    let busy = crate::app_zec::text::SOURCE_BUSY.ko;
+    let busy = yw_engine::wallet::app_zec::text::SOURCE_BUSY.ko;
     assert!(
         items
             .iter()

@@ -8,10 +8,7 @@ use yw_core::evm::chain::{HYPEREVM_MAINNET, SEPOLIA, builtin_chain};
 use yw_core::evm::display::format_address;
 use yw_core::lang::Lang;
 
-use crate::app::{App, AppMode};
-use crate::app_book::{BookTarget, PromptPlace};
-use crate::app_evm::{SendAsset, hash_text};
-use crate::app_tokens::EvmTokenRow;
+use crate::app::App;
 use crate::errors::ErrorCode;
 use crate::flow::evm::MismatchKind;
 use crate::logging::format_utc;
@@ -24,6 +21,10 @@ use crate::ui::qr::RECEIVE_SHARED_ADDRESS_NOTE;
 use yw_engine::badge::custom_chain_badge;
 use yw_engine::screen::Tone;
 use yw_engine::screen::{ActivityRowView, EvmQrKind};
+use yw_engine::wallet::AppMode;
+use yw_engine::wallet::app_book::{BookTarget, PromptPlace};
+use yw_engine::wallet::app_evm::{SendAsset, hash_text};
+use yw_engine::wallet::app_tokens::EvmTokenRow;
 
 pub mod text;
 
@@ -90,7 +91,7 @@ pub mod ids {
     /// Picker rows.
     pub const SEND_PICK_BASE: u16 = 960;
     /// Picker span.
-    pub const SEND_PICK_SPAN: u16 = crate::app_evm::SEND_PICK_ROWS;
+    pub const SEND_PICK_SPAN: u16 = yw_engine::wallet::app_evm::SEND_PICK_ROWS;
     /// 주소 복사.
     pub const COPY_ADDRESS: u16 = 1_000;
     /// Receive QR: EIP-681 (`yw_engine::screen::EvmQrKind::Eip681`).
@@ -461,24 +462,26 @@ impl App {
 #[must_use]
 pub fn browser_status_text(
     lang: yw_core::lang::Lang,
-    browser: Option<&crate::app_browser::BrowserUi>,
+    browser: Option<&yw_engine::wallet::app_browser::BrowserUi>,
     pipe: Option<&crate::browser::server::PipeHost>,
 ) -> String {
     match (browser, pipe) {
         (Some(browser), Some(pipe)) if pipe.server.is_some() => match browser.connections {
-            0 => crate::app_browser::text::STATUS_NONE.get(lang).to_owned(),
-            count => crate::app_browser::text::STATUS_CONNECTED.fill(lang, [&count.to_string()]),
+            0 => yw_engine::wallet::app_browser::text::STATUS_NONE
+                .get(lang)
+                .to_owned(),
+            count => yw_engine::wallet::app_browser::text::STATUS_CONNECTED
+                .fill(lang, [&count.to_string()]),
         },
-        (Some(_), pipe) => crate::app_browser::text::STATUS_UNAVAILABLE.fill(
+        (Some(_), pipe) => yw_engine::wallet::app_browser::text::STATUS_UNAVAILABLE.fill(
             lang,
             [pipe
                 .and_then(|pipe| pipe.error)
                 .unwrap_or(ErrorCode::Pipe001)
                 .code()],
         ),
-        (None, _) => {
-            crate::app_browser::text::STATUS_UNAVAILABLE.fill(lang, [ErrorCode::Pipe001.code()])
-        }
+        (None, _) => yw_engine::wallet::app_browser::text::STATUS_UNAVAILABLE
+            .fill(lang, [ErrorCode::Pipe001.code()]),
     }
 }
 
@@ -551,7 +554,9 @@ impl App {
         }
         if self.evm.journal_damaged() {
             items.push(Item::Banner(
-                crate::app_evm::text::JOURNAL_CORRUPT.get(lang).to_owned(),
+                yw_engine::wallet::app_evm::text::JOURNAL_CORRUPT
+                    .get(lang)
+                    .to_owned(),
                 Tone::Blocked,
             ));
         }
@@ -1135,7 +1140,9 @@ impl App {
                     )
                 }) {
                     items.push(Item::Help(
-                        crate::app_book::text::BOOK_VERIFY_HINT.get(lang).to_owned(),
+                        yw_engine::wallet::app_book::text::BOOK_VERIFY_HINT
+                            .get(lang)
+                            .to_owned(),
                     ));
                 }
             }
@@ -1300,7 +1307,7 @@ impl App {
             items.push(Item::Banner(info.clone(), Tone::Warn));
         }
         items.push(Item::CardEnd);
-        self.journal_send_items(crate::app_sidecar::SendChain::Evm, items);
+        self.journal_send_items(yw_engine::wallet::app_sidecar::SendChain::Evm, items);
         let blocker = self.review_blocker();
         items.push(Item::Row(vec![
             Ctl::primary(ids::SEND_REVIEW, text::REVIEW.get(lang)).enabled(blocker.is_none()),
@@ -1308,7 +1315,7 @@ impl App {
         ]));
         // What `검토` waits for, or that it sends nothing yet (2026-11-12).
         items.push(Item::Help(
-            crate::app_sol::ReviewBlocker::line(lang, blocker).to_owned(),
+            yw_engine::wallet::app_sol::ReviewBlocker::line(lang, blocker).to_owned(),
         ));
     }
 
@@ -1359,7 +1366,11 @@ impl App {
                 .iter()
                 .find(|record| record.tx_hash == sent.tx_hash)
                 .map_or_else(
-                    || crate::app_evm::text::REC_CONFIRMING.get(lang).to_owned(),
+                    || {
+                        yw_engine::wallet::app_evm::text::REC_CONFIRMING
+                            .get(lang)
+                            .to_owned()
+                    },
                     |record| self.record_status(record),
                 );
             items.push(Item::Badged(

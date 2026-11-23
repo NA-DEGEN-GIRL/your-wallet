@@ -40,8 +40,12 @@
 //! Regenerate for review (PowerShell): `$env:YW_S4_FLOW_OUT='<folder>'; cargo test -p yw-app
 //! --lib --locked --offline -- --ignored --test-threads=1 app_approval::flow_tests::print`.
 
+// 2026-11-23 (S4d E1): the wallet's crate-private steps, buffers and flow state as the tests reach
+// them across the crate boundary (`yw_engine::testkit`).
+// 2026-11-23 (S4d E1): the approval flow's state as the tests read it across the crate boundary.
 use std::fmt::Write as _;
 use std::sync::Arc;
+use yw_engine::testkit::{FlowTestExt, WalletTestExt};
 
 use yw_core::approval::ApprovalId;
 use yw_core::bip32::AccountXpub;
@@ -54,7 +58,6 @@ use yw_win::ui::{Handler, Msg, Reply, Window, WindowKind, WindowSpec, create_win
 
 use super::flow_support::{self, Fixture, HostMode, Outlet, START_MS, Signals};
 use super::{Focus, PANEL_CLASS, text};
-use crate::app_evm::QueuedItem;
 use crate::events::KeyJob;
 use crate::flow::evm::prepare::{
     PrepareFailure, PrepareJob, ResimJob, ResimKind, ResimResult, resimulate,
@@ -64,6 +67,7 @@ use crate::ui::approval::QueueSource;
 use crate::ui::approval_input::{VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB};
 use crate::ui::interaction::{InteractionEvent, PrepareStage, PrepareState, ReadyContent};
 use crate::workers::rpc::RpcJob;
+use yw_engine::wallet::app_evm::QueuedItem;
 
 /// The committed golden.
 const GOLDEN: &str = include_str!("app/tests/s4_flow/flow.txt");
@@ -219,7 +223,7 @@ impl<'a> Rec<'a> {
         }
         let store = self
             .issued
-            .and_then(|id| app.evm.store.state(id))
+            .and_then(|id| app.evm_store().state(id))
             .map_or_else(|| "-".to_owned(), |state| format!("{state:?}"));
         let shown = app
             .evm
@@ -234,7 +238,9 @@ impl<'a> Rec<'a> {
         let info = match app.evm.send.info.as_deref() {
             None => "-",
             Some(info)
-                if info == crate::app_evm::text::APPROVAL_EXPIRED.get(app.settings.language) =>
+                if info
+                    == yw_engine::wallet::app_evm::text::APPROVAL_EXPIRED
+                        .get(app.settings.language) =>
             {
                 "APPROVAL_EXPIRED"
             }
@@ -304,7 +310,7 @@ fn prep_name(prepare: &PrepareState) -> String {
 }
 
 /// The catalogue key of the window's status message.
-fn status_key(flow: &crate::approval_flow::ApprovalFlow) -> &'static str {
+fn status_key(flow: &yw_engine::wallet::approval_flow::ApprovalFlow) -> &'static str {
     let Some(status) = flow.status() else {
         return "-";
     };
@@ -577,7 +583,7 @@ fn btc_item() -> QueuedItem {
         conflicts: &[],
     })
     .unwrap();
-    QueuedItem::Btc(Box::new(crate::app_btc::BtcApprovalItem {
+    QueuedItem::Btc(Box::new(yw_engine::wallet::app_btc::BtcApprovalItem {
         network: BtcNetwork::Testnet4,
         plan,
         facts: BtcSendFacts {
@@ -631,7 +637,7 @@ fn zec_item() -> QueuedItem {
         },
     )
     .unwrap();
-    QueuedItem::Zec(Box::new(crate::app_zec::ZecApprovalItem {
+    QueuedItem::Zec(Box::new(yw_engine::wallet::app_zec::ZecApprovalItem {
         plan,
         look_alike: None,
         first_time: true,
@@ -649,7 +655,7 @@ fn hypercore_item(fx: &Fixture, look_alike: bool) -> QueuedItem {
             amount: "1".to_owned(),
         },
     );
-    QueuedItem::HyperCore(Box::new(crate::app_hypercore::HcApprovalItem {
+    QueuedItem::HyperCore(Box::new(yw_engine::wallet::app_hypercore::HcApprovalItem {
         action,
         account: parse_address(ACCOUNT_A).unwrap(),
         signer: EvmKeySource::Derived(AccountIndex::ZERO),
@@ -924,7 +930,7 @@ fn resim_same_after_click() -> Vec<String> {
             }
         ),
     );
-    let again = fx.app().evm.store.consume(id, old, START_MS + 61_600);
+    let again = fx.app().evm_store_mut().consume(id, old, START_MS + 61_600);
     rec.fact(
         "old-digest",
         &format!(
@@ -989,7 +995,7 @@ fn resim_changed_old_digest() -> Vec<String> {
         "digest",
         &format!("shown (same id, digest changed)={replaced:?}"),
     );
-    let again = fx.app().evm.store.consume(id, old, START_MS + 61_600);
+    let again = fx.app().evm_store_mut().consume(id, old, START_MS + 61_600);
     rec.fact(
         "old-digest",
         &format!(
@@ -1079,7 +1085,7 @@ fn display_change_mid_hold() -> Vec<String> {
         .evm
         .approval
         .as_ref()
-        .map_or(0, crate::approval_flow::ApprovalFlow::job);
+        .map_or(0, yw_engine::wallet::approval_flow::ApprovalFlow::job);
     fx.app().on_simulating(job, START_MS + 3_500);
     rec.snap("display-changed");
     at(&fx, 4_000);
@@ -1411,7 +1417,7 @@ fn ui001_and_wc_label() -> Vec<String> {
     fx.app().show_ready_draft(unsafe_title, None);
     rec.snap("unsafe-title");
     // The `store` column above is the earlier S2 request's; the refused draft has no entry.
-    let refused = fx.app.borrow().evm.store.state(ApprovalId([9; 16]));
+    let refused = fx.app.borrow().evm_store().state(ApprovalId([9; 16]));
     rec.fact(
         "unsafe-title-id",
         &format!("store state of the draft={refused:?}"),
@@ -1431,7 +1437,7 @@ fn ui001_and_wc_label() -> Vec<String> {
     }
     fx3.app().show_ready_draft(draft, None);
     rec3.snap("unlabelled-field");
-    let refused = fx3.app.borrow().evm.store.state(ApprovalId([10; 16]));
+    let refused = fx3.app.borrow().evm_store().state(ApprovalId([10; 16]));
     rec3.fact(
         "unlabelled-field-id",
         &format!("store state of the draft={refused:?}"),
@@ -1661,7 +1667,7 @@ fn l1_press_past_deadline(press: &'static str, name: &'static str) -> Vec<String
     rec.snap(press);
     let app = fx.app.borrow();
     let first = first
-        .and_then(|id| app.evm.store.state(id))
+        .and_then(|id| app.evm_store().state(id))
         .map_or_else(|| "-".to_owned(), |state| format!("{state:?}"));
     let pressed = app
         .approval_win
@@ -1874,7 +1880,7 @@ fn gate_state(fx: &Fixture) -> String {
                 gate.submitting,
                 rel(gate.deadline_ms),
                 flow.issued()
-                    .and_then(|request| app.evm.store.state(request.id)),
+                    .and_then(|request| app.evm_store().state(request.id)),
                 app.evm.queue.len(),
             )
         },
@@ -2013,7 +2019,7 @@ fn connect_toggle_stale_layout() -> Vec<String> {
             .evm
             .approval
             .as_ref()
-            .map_or(0, crate::approval_flow::ApprovalFlow::view_rev)
+            .map_or(0, yw_engine::wallet::approval_flow::ApprovalFlow::view_rev)
     };
     fx.app().paint_panel(&spare);
     let drawn = fx
@@ -2352,8 +2358,8 @@ fn stale_open_and_stale_answer_leave_no_orphan_window() {
     use yw_engine::approval::flow::{ApprovalEffect, OpenOutcome, ShownId};
     use yw_engine::cmd::Cmd;
 
-    use crate::approval_flow::ApprovalFlow;
     use crate::errors::ErrorCode;
+    use yw_engine::wallet::approval_flow::ApprovalFlow;
 
     let fx = fixture("stale-open");
     fx.enqueue_sepolia_send();

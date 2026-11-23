@@ -9,11 +9,11 @@ use super::{
     ABOUT, EvmAccountPref, Harness, Purpose, YkSeen, about_wallet, all_text, card_harness, ctl,
     finish_result, has_text, unique_ids, yk_pump,
 };
-use crate::app_yubikey::PgpAction;
-use crate::app_yubikey::YkPurpose;
-use crate::app_yubikey::manage::{CLEAR_WORD, ClearStep, Preset, ReslotStep, YkManage};
 use crate::ui::screens_yubikey::ids as yk;
 use crate::ui::screens_yubikey::ids::pgp_id;
+use yw_engine::wallet::app_yubikey::PgpAction;
+use yw_engine::wallet::app_yubikey::YkPurpose;
+use yw_engine::wallet::app_yubikey::manage::{CLEAR_WORD, ClearStep, Preset, ReslotStep, YkManage};
 
 const ADMIN: &[u8] = b"12345678";
 const BIP84_0: &str = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
@@ -70,7 +70,7 @@ fn yubikey_reslot_switches_chains_and_applies_it_to_the_backup() {
     h.app.on_command(yk::ENROL_START);
     h.app.on_command(pgp_id(
         PgpKey::Aut,
-        PgpAction::Kind(crate::app_yubikey::PgpKind::Zec),
+        PgpAction::Kind(yw_engine::wallet::app_yubikey::PgpKind::Zec),
     ));
     h.app
         .yk_set_text(yw_engine::form::EditField::YkAutIndex, "0".to_owned());
@@ -130,7 +130,7 @@ fn yubikey_reslot_switches_chains_and_applies_it_to_the_backup() {
     assert!(all_text(&items).contains(&zec_address), "current map");
     assert!(has_text(
         &items,
-        crate::app_yubikey::manage::T_YK_RESLOT_WORDS
+        yw_engine::wallet::app_yubikey::manage::T_YK_RESLOT_WORDS
     ));
     h.app.on_command(yk::preset_id(Preset::EvmBtc));
     h.app.on_command(yk::RESLOT_NEXT);
@@ -302,7 +302,7 @@ fn yubikey_clear_our_slots_and_applet_resets() {
     );
     assert!(has_text(
         &items,
-        crate::app_yubikey::manage::T_YK_CLEAR_FUNDS
+        yw_engine::wallet::app_yubikey::manage::T_YK_CLEAR_FUNDS
     ));
     // The word must be typed exactly.
     h.app.yk_manage_set_text(
@@ -491,18 +491,18 @@ fn english_yubikey_screens_have_no_korean() {
     // The shared key and its warning, then back to Bitcoin.
     h.app.on_command(pgp_id(
         PgpKey::Aut,
-        PgpAction::Kind(crate::app_yubikey::PgpKind::Shared),
+        PgpAction::Kind(yw_engine::wallet::app_yubikey::PgpKind::Shared),
     ));
     let mut items = Vec::new();
     h.app.yk_wizard_screen(&mut items);
     assert_english(&items, "plan (shared key)");
     assert!(super::has_text(
         &items,
-        crate::app_yubikey::text::YK_SHARED.en
+        yw_engine::wallet::app_yubikey::text::YK_SHARED.en
     ));
     h.app.on_command(pgp_id(
         PgpKey::Aut,
-        PgpAction::Kind(crate::app_yubikey::PgpKind::Btc),
+        PgpAction::Kind(yw_engine::wallet::app_yubikey::PgpKind::Btc),
     ));
     h.app.on_command(yk::PLAN_NEXT);
     h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
@@ -565,13 +565,16 @@ fn yubikey_app_catalogues_are_complete() {
     use yw_core::lang::{has_hangul, placeholders};
     for (name, all) in [
         ("screens_yubikey", crate::ui::screens_yubikey::text::ALL),
-        ("app_yubikey", crate::app_yubikey::text::ALL),
+        ("app_yubikey", yw_engine::wallet::app_yubikey::text::ALL),
         (
             "app_yubikey::connect",
-            crate::app_yubikey::connect::text::ALL,
+            yw_engine::wallet::app_yubikey::connect::text::ALL,
         ),
-        ("app_yubikey::manage", crate::app_yubikey::manage::text::ALL),
-        ("app_card", crate::app_card::text::ALL),
+        (
+            "app_yubikey::manage",
+            yw_engine::wallet::app_yubikey::manage::text::ALL,
+        ),
+        ("app_card", yw_engine::wallet::app_card::text::ALL),
         ("yubikey", crate::yubikey::text::ALL),
     ] {
         for entry in all {

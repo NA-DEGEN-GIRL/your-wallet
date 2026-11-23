@@ -186,7 +186,7 @@ impl Drop for Entry<'_> {
 /// The main window's timer id for `timer`, and its name in the tests' shell-call log.
 const fn timer_of(timer: TimerId) -> (usize, &'static str) {
     match timer {
-        TimerId::SendCheck => (crate::app_evm::SEND_TIMER_ID, "send"),
+        TimerId::SendCheck => (yw_engine::wallet::app_evm::SEND_TIMER_ID, "send"),
     }
 }
 
@@ -279,7 +279,7 @@ impl App {
                 self.wallet.on_cmd(answer);
             }
         }
-        debug_assert!(self.outbox.is_empty(), "the outbox drained");
+        debug_assert!(self.queued_effects() == 0, "the outbox drained");
         // Tests (2026-11-20, S4 P10b review): the approval flow and its window are in step again
         // once the queue is empty, so an open's and a close's pairing is checked here (the checks
         // where the flow changes skip while its `Approval(Open)`/`Approval(Close)` is queued).
@@ -314,9 +314,9 @@ impl App {
     /// Debug builds: when an effect is queued.
     pub fn assert_outbox_empty(&self) {
         debug_assert!(
-            self.outbox.is_empty(),
+            self.queued_effects() == 0,
             "an entry returned with {} effect(s) queued",
-            self.outbox.len()
+            self.queued_effects()
         );
     }
 

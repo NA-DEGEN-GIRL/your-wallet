@@ -294,10 +294,65 @@ mod tests {
         assert!(offenders.is_empty(), "{offenders:?}");
     }
 
+    /// yw-app's `cfg(test)` module files outside a `tests` folder (2026-11-23, S4d E1): the file,
+    /// the file that declares it and the declaration (with its `cfg(test)`) found there.
+    const CFG_TEST_FILES: [(&str, &str, &str); 8] = [
+        (
+            "app/secret_seam.rs",
+            "app.rs",
+            "#[cfg(test)]
+pub(crate) mod secret_seam;",
+        ),
+        (
+            "app_approval_smoke.rs",
+            "app_approval.rs",
+            "#[cfg(test)]
+#[path = \"app_approval_smoke.rs\"]",
+        ),
+        (
+            "app_approval_flow_support.rs",
+            "app_approval.rs",
+            "#[cfg(test)]
+#[path = \"app_approval_flow_support.rs\"]",
+        ),
+        (
+            "app_approval_headless_host.rs",
+            "app_approval.rs",
+            "#[cfg(test)]
+#[path = \"app_approval_headless_host.rs\"]",
+        ),
+        (
+            "app_approval_flow_tests.rs",
+            "app_approval.rs",
+            "#[cfg(test)]
+#[path = \"app_approval_flow_tests.rs\"]",
+        ),
+        (
+            "app_approval_input_tests.rs",
+            "app_approval.rs",
+            "#[cfg(test)]
+#[path = \"app_approval_input_tests.rs\"]",
+        ),
+        (
+            "app_approval_lifecycle_tests.rs",
+            "app_approval_flow_tests.rs",
+            "#[path = \"app_approval_lifecycle_tests.rs\"]",
+        ),
+        (
+            "app_approval_headless_tests.rs",
+            "app_approval_lifecycle_tests.rs",
+            "#[path = \"app_approval_headless_tests.rs\"]",
+        ),
+    ];
+
     /// yw-engine's `testkit` (the `YubiKey` emulator wallet helper, always compiled because
     /// `cfg(test)` does not cross crates, spec/15 §11.4 S2 D-f) is named only by test code: no
     /// production source of yw-app or yw-engine reaches it, except its own declaration in the
     /// engine's `lib.rs` and the module itself. Comment lines are not code. (2026-11-17, S2 E3.)
+    /// 2026-11-23 (spec/15 §11.4 S4d E1): yw-app's `cfg(test)` module files that are not under a
+    /// `tests` folder ([`CFG_TEST_FILES`]) are test code too: since E1 they reach the wallet's
+    /// crate-private steps through `testkit::{WalletTestExt, FlowTestExt}`. Each must still be
+    /// declared `#[cfg(test)]` (checked), so a production file cannot hide in the list.
     #[test]
     fn testkit_is_named_only_by_tests() {
         let mut sources = Vec::new();
@@ -306,11 +361,27 @@ mod tests {
         }
         assert!(sources.len() > 100, "{}", sources.len());
         let mut offenders = Vec::new();
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for (file, declared_in, declaration) in CFG_TEST_FILES {
+            assert!(src.join(file).is_file(), "{file}");
+            let parent = std::fs::read_to_string(src.join(declared_in)).unwrap();
+            assert!(
+                parent.contains(declaration),
+                "{file} is declared `{declaration}` in {declared_in}"
+            );
+        }
         for (path, text) in &sources {
             let engine = path
                 .components()
                 .any(|part| part.as_os_str() == "yw-engine");
             if engine && path.ends_with("testkit.rs") {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(&src)
+                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if !engine && CFG_TEST_FILES.iter().any(|(file, _, _)| *file == relative) {
                 continue;
             }
             let code: String = text

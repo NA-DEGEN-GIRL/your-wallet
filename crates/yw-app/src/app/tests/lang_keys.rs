@@ -100,10 +100,13 @@ fn english_recovery_phrase_section() {
     let mut items = Vec::new();
     app.mn_settings_section(&mut items);
     assert_english(&items, &labels);
-    assert!(has_text(&items, crate::app_mnemonics::text::INTRO.en));
     assert!(has_text(
         &items,
-        crate::app_mnemonics::text::REMOVE_UNCONFIRMED.en
+        yw_engine::wallet::app_mnemonics::text::INTRO.en
+    ));
+    assert!(has_text(
+        &items,
+        yw_engine::wallet::app_mnemonics::text::REMOVE_UNCONFIRMED.en
     ));
     app.mn.add_pick = true;
     let mut items = Vec::new();
@@ -120,7 +123,7 @@ fn english_side_file_overlays_and_notices() {
         app.sidecar.meta_newer = newer;
         app.sidecar.journal_newer = newer;
         app.sidecar.advanced = true;
-        app.sidecar.refusal = Some(crate::app_sidecar::refusal_text(
+        app.sidecar.refusal = Some(yw_engine::wallet::app_sidecar::refusal_text(
             Lang::En,
             FileKind::Meta,
             SidecarRefusal::PrevUnreadable,
@@ -134,11 +137,11 @@ fn english_side_file_overlays_and_notices() {
     app.screen = Screen::Main;
     let mut items = Vec::new();
     app.journal_closed_items(&mut items);
-    app.journal_send_items(crate::app_sidecar::SendChain::Sol, &mut items);
+    app.journal_send_items(yw_engine::wallet::app_sidecar::SendChain::Sol, &mut items);
     assert_english(&items, &[]);
     assert!(has_text(
         &items,
-        crate::app_sidecar::text::JOURNAL_CLOSED.en
+        yw_engine::wallet::app_sidecar::text::JOURNAL_CLOSED.en
     ));
     let moves = SidecarMoves {
         quarantined: Some("meta.ywm.corrupt-1".to_owned()),
@@ -149,16 +152,16 @@ fn english_side_file_overlays_and_notices() {
         (FileKind::Meta, false),
         (FileKind::Journal, false),
     ] {
-        let text = crate::app_sidecar::resolved_text(Lang::En, kind, use_prev, &moves);
+        let text = yw_engine::wallet::app_sidecar::resolved_text(Lang::En, kind, use_prev, &moves);
         assert!(!has_hangul(&text), "{text}");
         assert!(text.contains("meta.ywm.prev.corrupt-1"), "{text}");
     }
     // Korean is the catalogue's Korean, particles included.
     assert!(
-        crate::app_sidecar::resolved_text(Lang::Ko, FileKind::Journal, false, &moves)
+        yw_engine::wallet::app_sidecar::resolved_text(Lang::Ko, FileKind::Journal, false, &moves)
             .contains("읽을 수 없던 파일은 meta.ywm.corrupt-1, 이전 사본은 meta.ywm.prev.corrupt-1(으)로 옮겨 두었습니다")
     );
-    let refusal = crate::app_sidecar::refusal_text(
+    let refusal = yw_engine::wallet::app_sidecar::refusal_text(
         Lang::En,
         FileKind::Journal,
         SidecarRefusal::Failed(crate::errors::ErrorCode::Vlt003),
@@ -172,7 +175,7 @@ fn english_side_file_overlays_and_notices() {
 
 #[test]
 fn english_rpc_import_texts() {
-    use crate::app_rpc_plan::ImportError;
+    use yw_engine::wallet::app_rpc_plan::ImportError;
     for error in [ImportError::Unreadable, ImportError::Format] {
         assert!(!has_hangul(error.text(Lang::En)));
         assert!(has_hangul(error.text(Lang::Ko)));

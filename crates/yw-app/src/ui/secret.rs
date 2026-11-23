@@ -18,8 +18,10 @@
 //! 2026-11-22 (spec/15 §11.4 S4d E0a): the W08 hold (`HoldGate`, `BACKUP_ACK_HOLD_MS`; the reset
 //! gate of S22 uses it too) and the displayed secret's container (`DisplaySecret`, which the
 //! wallet's secret session holds until the shell verified the window's capture exclusion) moved
-//! to `yw_engine::secret` unchanged, its redacted `Debug` included. `Submission` stays here until
-//! the wallet moves (S4d E1): a frozen helper names it by this path.
+//! to `yw_engine::secret` unchanged, its redacted `Debug` included. `Submission` stayed here until
+//! the wallet moved (S4d E1): a frozen helper named it by this path. 2026-11-23 (S4d E1): it is
+//! `yw_engine::secret::Submission` (unchanged, its redacted `Debug` included; the wallet's
+//! `on_submit` takes it).
 
 use yw_core::bip39::{is_word, is_word_prefix};
 use yw_core::keyimport::ImportChain;
@@ -27,7 +29,8 @@ use yw_core::lang::Lang;
 use yw_core::password::VaultPassword;
 use yw_core::secret::Zeroizing;
 use yw_engine::secret::{
-    BACKUP_ACK_HOLD_MS, CardSecretKind, DisplaySecret, HoldGate, SecretKind, SecretStep, text,
+    BACKUP_ACK_HOLD_MS, CardSecretKind, DisplaySecret, HoldGate, SecretKind, SecretStep,
+    Submission, text,
 };
 use yw_win::ui::{DrawFlags, PaintDc, Rect, scale};
 
@@ -125,24 +128,6 @@ pub const fn capture_decision(kind: SecretKind, created: Result<bool, ()>) -> Ca
         (_, Err(())) | (true, Ok(false)) => CaptureDecision::Refuse(ErrorCode::Sec001),
         (_, Ok(true)) => CaptureDecision::Show { warning: false },
         (false, Ok(false)) => CaptureDecision::Show { warning: true },
-    }
-}
-
-/// Values handed to the app on submit (moved out of the fields).
-pub struct Submission {
-    /// Field values in order.
-    pub values: Vec<Zeroizing<Vec<u8>>>,
-    /// Checkbox state (W05 passphrase).
-    pub checkbox: bool,
-}
-
-impl core::fmt::Debug for Submission {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            formatter,
-            "Submission({} values, [REDACTED])",
-            self.values.len()
-        )
     }
 }
 

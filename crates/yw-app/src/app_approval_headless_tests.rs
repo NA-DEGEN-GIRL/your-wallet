@@ -40,8 +40,11 @@
 //! yw-app --lib --locked --offline -- --ignored --exact
 //! app_approval::flow_tests::lifecycle::headless::print_headless`.
 
+// 2026-11-23 (S4d E1): the wallet's crate-private steps, buffers and flow state as the tests reach
+// them across the crate boundary (`yw_engine::testkit`).
 use std::fmt::Write as _;
 use std::sync::Arc;
+use yw_engine::testkit::{FlowTestExt, WalletTestExt};
 
 use yw_core::approval::ApprovalId;
 use yw_core::evm::amount::U256;
@@ -63,13 +66,11 @@ use super::{
     shown_id, signed_evm, sol_preview, sol_public, sol_record, sol_transfer, sol_tx, waiter_fact,
     waiters, wc_waiting,
 };
-use crate::app_evm::QueuedItem;
 use crate::events::{
     ChainMessageSigned, ChainSignature, EvmSigned, KeyJob, KeyOutcome, KeyResult, MessageSigned,
     RpcEvent, SignFailure, SignTicket, UiEvent,
 };
 use crate::flow::evm::prepare::{PrepareFailure, PrepareJob, ResimJob, ResimKind, ResimResult};
-use crate::lock::LockReason;
 use crate::shell_msg::{WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT};
 use crate::ui::approval_input::{
     BarHits, Facts, Focus, Step, TrustedSignals, VK_ESCAPE, VK_RETURN, VK_TAB, map_key, tab_order,
@@ -78,6 +79,8 @@ use crate::ui::approval_input::{
 use crate::ui::approval_view::Block;
 use crate::ui::interaction::InteractionEvent;
 use crate::workers::rpc::RpcJob;
+use yw_engine::wallet::app_evm::QueuedItem;
+use yw_engine::wallet::lock::LockReason;
 
 /// The committed headless golden.
 const GOLDEN: &str = include_str!("app/tests/s4_flow/headless.txt");
@@ -252,7 +255,7 @@ impl<'a> Run<'a> {
         }
         let store = self
             .issued
-            .and_then(|id| app.evm.store.state(id))
+            .and_then(|id| app.evm_store().state(id))
             .map_or_else(|| "-".to_owned(), |state| format!("{state:?}"));
         let shown = app
             .evm
@@ -267,7 +270,9 @@ impl<'a> Run<'a> {
         let info = match app.evm.send.info.as_deref() {
             None => "-",
             Some(info)
-                if info == crate::app_evm::text::APPROVAL_EXPIRED.get(app.settings.language) =>
+                if info
+                    == yw_engine::wallet::app_evm::text::APPROVAL_EXPIRED
+                        .get(app.settings.language) =>
             {
                 "APPROVAL_EXPIRED"
             }
@@ -309,7 +314,7 @@ impl<'a> Run<'a> {
             .evm
             .approval
             .as_ref()
-            .map(crate::approval_flow::ApprovalFlow::shown)
+            .map(yw_engine::wallet::approval_flow::ApprovalFlow::shown)
     }
 
     /// A new window starts with the focus on `거부` (reject-first) and no pressed button.
@@ -843,7 +848,7 @@ fn resim_same_after_click() -> Vec<String> {
             digest_word(signed, old)
         ),
     );
-    let again = fx.app().evm.store.consume(id, old, START_MS + 61_600);
+    let again = fx.app().evm_store_mut().consume(id, old, START_MS + 61_600);
     h.fact(
         "old-digest",
         &format!(
@@ -899,7 +904,7 @@ fn resim_changed_old_digest() -> Vec<String> {
         "digest",
         &format!("shown (same id, digest changed)={replaced:?}"),
     );
-    let again = fx.app().evm.store.consume(id, old, START_MS + 61_600);
+    let again = fx.app().evm_store_mut().consume(id, old, START_MS + 61_600);
     h.fact(
         "old-digest",
         &format!(
@@ -985,7 +990,7 @@ fn display_change_mid_hold() -> Vec<String> {
         .evm
         .approval
         .as_ref()
-        .map_or(0, crate::approval_flow::ApprovalFlow::job);
+        .map_or(0, yw_engine::wallet::approval_flow::ApprovalFlow::job);
     fx.app().on_simulating(job, START_MS + 3_500);
     h.snap("display-changed");
     h.at(4_000);
@@ -1290,7 +1295,7 @@ fn ui001_and_wc_label() -> Vec<String> {
     unsafe_title.display.title = "\u{202e}title".to_owned();
     fx.app().show_ready_draft(unsafe_title, None);
     h.snap("unsafe-title");
-    let refused = fx.app.borrow().evm.store.state(ApprovalId([9; 16]));
+    let refused = fx.app.borrow().evm_store().state(ApprovalId([9; 16]));
     h.fact(
         "unsafe-title-id",
         &format!("store state of the draft={refused:?}"),
@@ -1307,7 +1312,7 @@ fn ui001_and_wc_label() -> Vec<String> {
     }
     fx3.app().show_ready_draft(draft, None);
     h3.snap("unlabelled-field");
-    let refused = fx3.app.borrow().evm.store.state(ApprovalId([10; 16]));
+    let refused = fx3.app.borrow().evm_store().state(ApprovalId([10; 16]));
     h3.fact(
         "unlabelled-field-id",
         &format!("store state of the draft={refused:?}"),
@@ -1614,8 +1619,8 @@ fn open_then_lock_same_entry() -> Vec<String> {
 fn a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry() {
     use yw_engine::effect::Effect;
 
-    use crate::app::Screen;
-    use crate::app_approval::AfterOpen;
+    use yw_engine::wallet::Screen;
+    use yw_engine::wallet::app_approval::AfterOpen;
 
     let fx = fixture("open-lock-kept");
     let outlet = dapp(&fx, false, true);
@@ -1680,8 +1685,8 @@ fn a_lock_drops_the_steps_kept_for_an_open_in_the_same_entry() {
 /// reverted). No key worker runs, so the lock's wait times out (1.5 s). Headless, no window.
 #[test]
 fn a_suspend_lock_drops_the_steps_kept_for_an_open_before_its_drain() {
-    use crate::app::Screen;
-    use crate::app_approval::AfterOpen;
+    use yw_engine::wallet::Screen;
+    use yw_engine::wallet::app_approval::AfterOpen;
 
     let fx = fixture("open-lock-suspend");
     let outlet = dapp(&fx, false, true);
@@ -1696,7 +1701,7 @@ fn a_suspend_lock_drops_the_steps_kept_for_an_open_before_its_drain() {
     let _ = headless_host::take_effects();
     let note = {
         let app = fx.app.borrow();
-        crate::app_hidden::hidden_note(app.settings.language, "kept-step")
+        yw_engine::wallet::app_hidden::hidden_note(app.settings.language, "kept-step")
     };
     {
         let mut app = fx.app();
@@ -1759,8 +1764,8 @@ fn a_suspend_lock_drops_the_steps_kept_for_an_open_before_its_drain() {
 fn a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry() {
     use yw_engine::effect::Effect;
 
-    use crate::app::Screen;
-    use crate::app_approval::AfterOpen;
+    use yw_engine::wallet::Screen;
+    use yw_engine::wallet::app_approval::AfterOpen;
 
     let fx = fixture("open-lock-deferred");
     let outlet = dapp(&fx, false, true);
@@ -1849,8 +1854,8 @@ fn granted_origins(fx: &Fixture) -> Vec<String> {
 /// An unlock in one entry: the mode is `Unlocked` and the key worker's meta load answers with
 /// `meta` (`KeyOutcome::Meta`, at the current epoch), as after the password.
 fn unlock_with_meta(fx: &Fixture, meta: crate::meta::Meta) {
-    use crate::app::AppMode;
     use crate::events::MetaLoaded;
+    use yw_engine::wallet::AppMode;
 
     let mut app = fx.app();
     app.mode = AppMode::Unlocked {
@@ -2038,10 +2043,10 @@ fn saved_origins(meta: &crate::meta::Meta) -> Vec<String> {
 fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
     use yw_engine::effect::Effect;
 
-    use crate::app::Screen;
-    use crate::app_approval::AfterOpen;
     use crate::browser::{DappEvent, GrantChange};
     use yw_core::policy::BrowserOrigin;
+    use yw_engine::wallet::Screen;
+    use yw_engine::wallet::app_approval::AfterOpen;
 
     let fx = fixture("revoke-lock-deferred");
     let outlet = dapp(&fx, false, true);
@@ -2226,8 +2231,8 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
     use yw_core::policy::BrowserOrigin;
     use yw_engine::effect::Effect;
 
-    use crate::app_approval::AfterOpen;
     use crate::browser::{DappEvent, GrantChange};
+    use yw_engine::wallet::app_approval::AfterOpen;
 
     for (tag, change) in [
         ("revoke-lock-deferred-sol", GrantChange::SolRevoked),
@@ -2380,8 +2385,8 @@ fn a_shutdown_writes_a_coalesced_chain_switch_first() {
     use yw_core::evm::chain::{ETHEREUM_MAINNET, SEPOLIA};
     use yw_core::policy::ConnectedSite;
 
-    use crate::app::AppMode;
     use crate::browser::{DappEvent, GrantChange};
+    use yw_engine::wallet::AppMode;
 
     let fx = fixture("shutdown-chain-switch");
     let _outlet = dapp(&fx, false, true);
@@ -2491,9 +2496,9 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
     use yw_core::policy::BrowserOrigin;
     use yw_engine::effect::Effect;
 
-    use crate::app::AppMode;
-    use crate::app_approval::AfterOpen;
     use crate::browser::{DappEvent, GrantChange};
+    use yw_engine::wallet::AppMode;
+    use yw_engine::wallet::app_approval::AfterOpen;
 
     let fx = fixture("revoke-shutdown-deferred");
     let outlet = dapp(&fx, false, true);
@@ -2595,7 +2600,7 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
 /// fact's window count.
 fn store_fact(fx: &Fixture, id: Option<ApprovalId>) -> String {
     let state = id
-        .and_then(|id| fx.app.borrow().evm.store.state(id))
+        .and_then(|id| fx.app.borrow().evm_store().state(id))
         .map_or_else(|| "-".to_owned(), |state| format!("{state:?}"));
     format!("store of the request shown before={state}")
 }
@@ -3271,13 +3276,19 @@ fn rpc_import_on_temp_data() -> Vec<String> {
     let key = |fx: &Fixture| -> &'static str {
         let app = fx.app.borrow();
         let lang = app.settings.language;
-        let imported = crate::app_rpc_plan::text::IMPORTED.fill(lang, ["1"]);
+        let imported = yw_engine::wallet::app_rpc_plan::text::IMPORTED.fill(lang, ["1"]);
         match app.info.as_deref() {
             None => "-",
             Some(info) if info.starts_with(&imported) => "IMPORTED",
-            Some(info) if info == crate::app_rpc_plan::text::DELETED.get(lang) => "DELETED",
-            Some(info) if info == crate::app_rpc_plan::text::UNREADABLE.get(lang) => "UNREADABLE",
-            Some(info) if info == crate::app_rpc_plan::text::FORMAT.get(lang) => "FORMAT",
+            Some(info) if info == yw_engine::wallet::app_rpc_plan::text::DELETED.get(lang) => {
+                "DELETED"
+            }
+            Some(info) if info == yw_engine::wallet::app_rpc_plan::text::UNREADABLE.get(lang) => {
+                "UNREADABLE"
+            }
+            Some(info) if info == yw_engine::wallet::app_rpc_plan::text::FORMAT.get(lang) => {
+                "FORMAT"
+            }
             Some(_) => "other",
         }
     };

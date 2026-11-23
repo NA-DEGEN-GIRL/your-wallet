@@ -12,7 +12,6 @@ use btc_support::{
     CORE_URL, Call, Reply, Rig, TESTNET4_GENESIS, TestResult, Verb, account, chain_input, healthy,
     params, xpub,
 };
-use yw_app::app_received::RecvList;
 use yw_app::btc::{BtcClient, ChainSession, Trigger};
 use yw_app::received::btc::{
     BTC_PENDING_CHECK_MAX, BtcReceivedWork, ESPLORA_MEMPOOL_PAGE, T_BB_NO_TXS, T_BB_NO_TXS_ONCE,
@@ -23,6 +22,7 @@ use yw_app::settings::BtcIndexer;
 use yw_core::bip32::path::BtcChain;
 use yw_core::btc::BtcNetwork;
 use yw_core::btc::address::{BtcAddress, p2wpkh_program};
+use yw_engine::wallet::app_received::RecvList;
 
 /// A made-up sender (not a valid address of anyone).
 const THEIRS: &str = "tb1qsenderxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";

@@ -15,15 +15,16 @@ use yw_core::sol::template::spl_entries;
 use yw_core::sol::token::TokenHolding;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SplAllowEntry};
 
-use crate::app::{App, AppMode, Wallet};
-use crate::app_book::{BookTarget, PromptPlace};
-use crate::app_sol::SolAccountId;
+use crate::app::App;
 use crate::meta::{BookChain, Tab};
 use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_accounts::{AccountCard, AccountItem, SelectedLine};
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::Tone;
+use yw_engine::wallet::app_book::{BookTarget, PromptPlace};
+use yw_engine::wallet::app_sol::SolAccountId;
+use yw_engine::wallet::{AppMode, Wallet};
 
 /// Fixed texts of the Solana screens (spec/04 §2.6–§2.11, spec/07 §3.3, §12.3; English spec/14
 /// §5). Recipient notes shared with the approval come from `yw_core::sol::text`.
@@ -295,7 +296,7 @@ pub mod ids {
     /// Picker rows.
     pub const SEND_PICK_BASE: u16 = 7_030;
     /// Picker span.
-    pub const SEND_PICK_SPAN: u16 = crate::app_sol::SOL_SEND_PICK_ROWS;
+    pub const SEND_PICK_SPAN: u16 = yw_engine::wallet::app_sol::SOL_SEND_PICK_ROWS;
     /// Settings Solana section.
     pub const SECTION_SOL: u16 = 7_100;
     /// Fee cap edit.
@@ -694,7 +695,7 @@ impl App {
             self.mn_signing_banner(
                 self.mn_backup_gate(
                     id.mnemonic().map(yw_core::vault::RecordId::from_bytes),
-                    matches!(id, crate::app_sol::SolAccountId::Derived(_)),
+                    matches!(id, yw_engine::wallet::app_sol::SolAccountId::Derived(_)),
                 ),
                 items,
             );
@@ -922,7 +923,7 @@ impl App {
                 locked: None,
                 selected,
                 details: Vec::new(),
-                hidden: Some(crate::app_hidden::Family::Sol),
+                hidden: Some(yw_engine::wallet::app_hidden::Family::Sol),
                 actions,
                 footer,
             },
@@ -952,7 +953,7 @@ impl App {
                 ),
                 (None, Some(dapp)) => (
                     self.sol_label(&SolAddress::from_bytes(dapp.public).to_base58()),
-                    crate::app_sol_dapp::dapp_record_title(lang, &record),
+                    yw_engine::wallet::app_sol_dapp::dapp_record_title(lang, &record),
                 ),
                 (None, None) => (String::new(), String::new()),
             };
@@ -973,7 +974,7 @@ impl App {
         }
         if let Some(meta) = self.meta.as_ref() {
             for entry in meta.activity_of(cluster.network_id()) {
-                if shown >= crate::app_sol::SOL_MAX_ACTIVITY_ROWS {
+                if shown >= yw_engine::wallet::app_sol::SOL_MAX_ACTIVITY_ROWS {
                     break;
                 }
                 items.push(Item::Text(format!(
@@ -1270,7 +1271,9 @@ impl App {
         }
         if form.check.is_some() && !self.sol_move_target_ok() {
             items.push(Item::Banner(
-                crate::app_sol::text::MOVE_TARGET.get(lang).to_owned(),
+                yw_engine::wallet::app_sol::text::MOVE_TARGET
+                    .get(lang)
+                    .to_owned(),
                 Tone::Danger,
             ));
         }
@@ -1337,7 +1340,7 @@ impl App {
         if let Some(info) = &form.info {
             items.push(Item::Banner(info.clone(), Tone::Warn));
         }
-        self.journal_send_items(crate::app_sidecar::SendChain::Sol, items);
+        self.journal_send_items(yw_engine::wallet::app_sidecar::SendChain::Sol, items);
         let blocker = self.sol_review_blocker();
         items.push(Item::Row(vec![
             Ctl::primary(ids::SEND_REVIEW, text::REVIEW.get(lang)).enabled(blocker.is_none()),
@@ -1345,7 +1348,7 @@ impl App {
         ]));
         // What `검토` waits for, or that it sends nothing yet (2026-11-12).
         items.push(Item::Help(
-            crate::app_sol::ReviewBlocker::line(lang, blocker).to_owned(),
+            yw_engine::wallet::app_sol::ReviewBlocker::line(lang, blocker).to_owned(),
         ));
     }
 
@@ -1497,7 +1500,9 @@ impl App {
             // For checking on an explorer: 88 characters are not retyped by hand.
             let mut buttons = vec![Ctl::button(ids::RESULT_COPY, text::COPY_HASH.get(lang))];
             buttons.extend(self.explorer_tx_buttons(
-                crate::network::NetworkId::Solana(crate::app_explorer::app_cluster(cluster)),
+                crate::network::NetworkId::Solana(yw_engine::wallet::app_explorer::app_cluster(
+                    cluster,
+                )),
                 &yw_core::codec::base58::base58_encode(&signature),
                 Some((
                     crate::ui::screens_explorer::ids::RESULT_SOL_OPEN,
@@ -1519,7 +1524,7 @@ impl App {
             .resend
             .as_ref()
             .is_some_and(|(form, _)| form.moving.is_some());
-        if moved && self.sol.scan.stage == crate::app_sol::ScanStage::Done {
+        if moved && self.sol.scan.stage == yw_engine::wallet::app_sol::ScanStage::Done {
             row.push(Ctl::button(ids::SCAN_BACK, text::SCAN_BACK.get(lang)));
         }
         if self.sol_can_resend() {
@@ -1581,7 +1586,7 @@ impl App {
         self.mn_receive_banner(
             self.mn_backup_gate(
                 index.mnemonic().map(yw_core::vault::RecordId::from_bytes),
-                matches!(index, crate::app_sol::SolAccountId::Derived(_)),
+                matches!(index, yw_engine::wallet::app_sol::SolAccountId::Derived(_)),
             ),
             items,
         );
@@ -1675,7 +1680,7 @@ impl App {
 
     /// The recovery scan screen (spec/07 §3.3).
     pub fn sol_scan_screen(&self, items: &mut Vec<Item>) {
-        use crate::app_sol::ScanStage;
+        use yw_engine::wallet::app_sol::ScanStage;
         let lang = self.settings.language;
         items.push(crate::ui::screens::back_main(lang));
         items.push(Item::Title(
@@ -1715,7 +1720,9 @@ impl App {
                             format!("{label} · {}", id.path_text_in(lang)),
                         )),
                         None => items.push(Item::Banner(
-                            crate::app_sol::text::SCAN_NO_TARGET.get(lang).to_owned(),
+                            yw_engine::wallet::app_sol::text::SCAN_NO_TARGET
+                                .get(lang)
+                                .to_owned(),
                             Tone::Warn,
                         )),
                     }

@@ -310,9 +310,9 @@ impl App {
                 SenderNote { name, look_alike }
             }
             RecvChain::Btc => {
-                use crate::app_btc::BtcKnownSource;
+                use yw_engine::wallet::app_btc::BtcKnownSource;
                 let ctx = self.btc_ctx();
-                let known = crate::app_btc::known_addresses_on(&ctx, ctx.net());
+                let known = yw_engine::wallet::app_btc::known_addresses_on(&ctx, ctx.net());
                 let lower = from.to_ascii_lowercase();
                 let name = known
                     .iter()
@@ -323,7 +323,7 @@ impl App {
                         BtcKnownSource::Sent => None,
                     })
                     .unwrap_or_default();
-                let look_alike = crate::app_btc::btc_look_alike(&known, from)
+                let look_alike = yw_engine::wallet::app_btc::btc_look_alike(&known, from)
                     .map(|(entry, _)| warning(lang, &text::WHOM_QUOTED.fill(lang, [&entry.name])));
                 SenderNote { name, look_alike }
             }

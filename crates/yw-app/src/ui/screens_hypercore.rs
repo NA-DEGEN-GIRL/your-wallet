@@ -6,9 +6,9 @@ use yw_core::hypercore::{HcNetwork, WITHDRAW_FEE_USDC};
 use yw_core::lang::Lang;
 
 use crate::app::App;
-use crate::app_hypercore::{HcAsset, HcFormKind};
 use crate::ui::main_window::{Ctl, Item};
 use yw_engine::screen::Tone;
+use yw_engine::wallet::app_hypercore::{HcAsset, HcFormKind};
 
 /// Command ids (13,450–13,499).
 pub mod ids {
@@ -602,7 +602,7 @@ impl App {
         }
         if let Some(error) = &form.error {
             // Loading is a status; anything else stops `검토`.
-            let loading = crate::app_hypercore::text::LOADING;
+            let loading = yw_engine::wallet::app_hypercore::text::LOADING;
             let tone = if *error == loading.ko || *error == loading.en {
                 Tone::Info
             } else {
@@ -635,7 +635,7 @@ impl App {
                 && *note == crate::flow::evm::form::AddressNote::SameAsSender
             {
                 items.push(Item::Banner(
-                    crate::app_hypercore::text::WITHDRAW_OWN
+                    yw_engine::wallet::app_hypercore::text::WITHDRAW_OWN
                         .get(lang)
                         .to_owned(),
                     Tone::Info,

@@ -260,7 +260,7 @@ fn password_change_after_landed_rewrap_reports_success() -> TestResult {
         Ok(PasswordChange::PrevNotRefreshed)
     );
     assert!(
-        yw_app::app::password_changed_text(
+        yw_engine::wallet::password_changed_text(
             yw_core::lang::Lang::Ko,
             PasswordChange::PrevNotRefreshed
         )

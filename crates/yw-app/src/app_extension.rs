@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 
 use yw_engine::cmd::CopyBand;
 
-use crate::app::{App, AppMode, Screen};
+use crate::app::App;
+use yw_engine::wallet::{AppMode, Screen};
 
 /// The Chrome page that loads unpacked extensions.
 pub const CHROME_EXTENSIONS_URL: &str = "chrome://extensions";

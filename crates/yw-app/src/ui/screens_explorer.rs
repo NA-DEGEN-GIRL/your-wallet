@@ -50,7 +50,7 @@ pub mod ids {
     pub const ROW_STRIDE: u16 = 2;
     /// Card rows span (50 rows × 2; at most 7 + 32 + 2 + 2 + 2 + 2 = 47 networks). 2026-11-22
     /// (S4d E0c): the row count is the wallet's `app_explorer::EXPLORER_ROWS`.
-    pub const ROW_SPAN: u16 = crate::app_explorer::EXPLORER_ROWS * ROW_STRIDE;
+    pub const ROW_SPAN: u16 = yw_engine::wallet::app_explorer::EXPLORER_ROWS * ROW_STRIDE;
     /// Ids per activity row (`탐색기에서 열기`, `탐색기 링크 복사`).
     pub const ACTIVITY_STRIDE: u16 = 2;
     /// Solana activity rows (display order, as `Wallet::sol_activity_tx_ids`).

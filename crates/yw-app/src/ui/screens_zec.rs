@@ -8,7 +8,7 @@ use yw_core::journal::zec::ZecTxState;
 use yw_core::lang::Lang;
 use yw_core::zec::{ZecKeySource, ZecNetwork, format_zec, format_zec_and_zats};
 
-use crate::app::{App, AppMode};
+use crate::app::App;
 use crate::settings::ZecIndexer;
 use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item};
@@ -16,6 +16,7 @@ use crate::ui::screens_accounts::AccountItem;
 use crate::zec::rpc::ZecRpcError;
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::Tone;
+use yw_engine::wallet::AppMode;
 
 /// Fixed texts of the S10 Zcash tab (spec/12 §11, spec/04 §2.6; English spec/14 §5).
 pub mod text {
@@ -185,12 +186,12 @@ pub mod ids {
     /// before 2026-11-15).
     pub const SOURCE_EVM_BASE: u16 = 8_020;
     /// EVM item span.
-    pub const SOURCE_EVM_SPAN: u16 = crate::app_zec::ZEC_SOURCE_EVM_ROWS;
+    pub const SOURCE_EVM_SPAN: u16 = yw_engine::wallet::app_zec::ZEC_SOURCE_EVM_ROWS;
     /// Drop-down items of the `YubiKey` Zcash keys (position in the slot list; buttons before
     /// 2026-11-15).
     pub const HW_BASE: u16 = 8_040;
     /// `YubiKey` item span.
-    pub const HW_SPAN: u16 = crate::app_zec::ZEC_HW_ROWS;
+    pub const HW_SPAN: u16 = yw_engine::wallet::app_zec::ZEC_HW_ROWS;
     /// `개인키 가져오기` (spec/12 §2.3).
     pub const IMPORT: u16 = 8_050;
     /// `개인키 보기` of the account's imported key.
@@ -563,7 +564,11 @@ impl App {
                     lang,
                     yw_core::keyimport::ImportChain::Zec,
                 )),
-                locked: (!free).then(|| crate::app_zec::text::SOURCE_BUSY.get(lang).to_owned()),
+                locked: (!free).then(|| {
+                    yw_engine::wallet::app_zec::text::SOURCE_BUSY
+                        .get(lang)
+                        .to_owned()
+                }),
                 selected,
                 details,
                 hidden: None,
@@ -711,7 +716,8 @@ impl App {
         let hw_state = self.zec_hw_state();
         let address_ok = matches!(
             hw_state,
-            crate::app_zec::ZecHwState::NotHardware | crate::app_zec::ZecHwState::Present
+            yw_engine::wallet::app_zec::ZecHwState::NotHardware
+                | yw_engine::wallet::app_zec::ZecHwState::Present
         );
         items.push(Item::CardStart(None));
         items.push(Item::Badged(
@@ -759,7 +765,7 @@ impl App {
                             .map(|utxo| utxo.value)
                             .fold(0_u64, u64::saturating_add);
                         let (others, own) =
-                            crate::app_received::zec_unconfirmed(snapshot, &own_txids);
+                            yw_engine::wallet::app_received::zec_unconfirmed(snapshot, &own_txids);
                         (Some(confirmed), others, own)
                     });
                 // Only the received history's list (its read classified the inputs) says
@@ -771,7 +777,7 @@ impl App {
                     .received_list(crate::received::RecvChain::Zec)
                     .filter(|list| list.loaded && list.unsupported.is_none());
                 let incoming = list
-                    .and_then(crate::app_received::RecvList::pending_sum)
+                    .and_then(yw_engine::wallet::app_received::RecvList::pending_sum)
                     .unwrap_or(0);
                 let unclassified = others
                     .iter()
@@ -853,9 +859,11 @@ impl App {
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
 
         // Receive (hidden while a hardware account's key is missing or not yet checked).
-        if hw_state == crate::app_zec::ZecHwState::Missing {
+        if hw_state == yw_engine::wallet::app_zec::ZecHwState::Missing {
             items.push(Item::Banner(
-                crate::app_zec::text::HW_MISSING.get(lang).to_owned(),
+                yw_engine::wallet::app_zec::text::HW_MISSING
+                    .get(lang)
+                    .to_owned(),
                 Tone::Danger,
             ));
         }
@@ -951,7 +959,7 @@ impl App {
             // spec/10 §9.3: the YubiKey is still on its factory PINs (the band says so).
             && self.zec_card_gate().is_none()
             && self
-                .journal_hold(crate::app_sidecar::SendChain::Zec)
+                .journal_hold(yw_engine::wallet::app_sidecar::SendChain::Zec)
                 .is_none()
             && (self.zec.look_alike.is_none() || self.zec.ack);
         // What `검토`, the approval, signing and sending ended with, next to the button (the
@@ -968,7 +976,7 @@ impl App {
                 Tone::Success,
             ));
         }
-        self.journal_send_items(crate::app_sidecar::SendChain::Zec, items);
+        self.journal_send_items(yw_engine::wallet::app_sidecar::SendChain::Zec, items);
         let mut row =
             vec![Ctl::primary(ids::SEND_REVIEW, text::REVIEW.get(lang)).enabled(can_send)];
         if let Some(txid) = &self.zec.sent {

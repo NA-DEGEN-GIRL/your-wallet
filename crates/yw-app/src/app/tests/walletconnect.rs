@@ -14,11 +14,11 @@ use yw_engine::services::WcPlatform;
 
 use crate::apikeys::ApiKeys;
 use crate::app::{App, Paths};
-use crate::app_browser::{BrowserUi, GrantWrite, SiteRows};
 use crate::events::EventQueue;
 use crate::settings::Settings;
 use crate::walletconnect::verify::{P256Verify, VerifyHttp};
 use crate::walletconnect::worker::{ConnectError, RelayConnector, RelayLink};
+use yw_engine::wallet::app_browser::{BrowserUi, GrantWrite, SiteRows};
 
 /// How often each part was asked for: `[connector, verify_http, p256, connect]`.
 type Counts = Arc<[AtomicUsize; 4]>;
@@ -118,4 +118,20 @@ fn the_relay_worker_starts_from_the_injected_services() {
     app.services.walletconnect = None;
     app.wc_start();
     assert!(app.wc.handle.is_none(), "no platform parts, no worker");
+}
+
+/// S4 P2 (spec/13 §4): the Windows services keep the relay user agent word `windows` (the same
+/// `…/windows` bytes as before) and carry the `WalletConnect` parts. 2026-11-23 (spec/15 §11.4
+/// S4d E1): moved here unchanged from the inline tests of `app_walletconnect` (the services are
+/// the shell's `app::windows_services`).
+#[test]
+fn the_windows_services_keep_the_user_agent_word() {
+    let services = crate::app::windows_services();
+    assert_eq!(services.ua_platform, "windows");
+    assert!(crate::walletconnect::worker::relay_ua(services.ua_platform).ends_with("/windows"));
+    assert!(services.walletconnect.is_some());
+    assert_eq!(
+        format!("{services:?}"),
+        r#"Services { walletconnect: true, ua_platform: "windows", .. }"#
+    );
 }

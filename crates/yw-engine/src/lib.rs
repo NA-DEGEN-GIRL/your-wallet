@@ -37,6 +37,8 @@
 //! the wallet code took from yw-app shell files moved into `screen`, `secret`, `meta`,
 //! `wallet_files`, `text`, `badge`, `approval::flow` and `explain::config`. 2026-11-23 (S4d E0b):
 //! `probe` (hidden) was added, the wallet code's test observation points.
+//! 2026-11-23 (S4d E1): [`wallet`] was added: the wallet state `Wallet`, its handler families and
+//! the approval flow, moved from yw-app (spec/15 §11.4 S4).
 #![forbid(unsafe_code)]
 
 pub mod apikeys;
@@ -75,6 +77,8 @@ pub mod testkit;
 pub mod text;
 pub mod token_view;
 pub mod wallet_files;
+// 2026-11-23 (spec/15 §11.4 S4d E1): the wallet state, its handlers and the approval flow.
+pub mod wallet;
 pub mod walletconnect;
 pub mod workers;
 pub mod yubikey;

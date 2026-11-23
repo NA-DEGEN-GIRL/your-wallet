@@ -7,11 +7,12 @@
 use yw_core::lang::Text;
 use yw_core::vault::FileKind;
 
-use crate::app::{App, AppMode, Confirm, Screen};
-use crate::app_sidecar::{JournalHold, RESET_WATCH_SECS, SendChain, text};
+use crate::app::App;
 use crate::errors::ErrorCode;
 use crate::ui::main_window::{Ctl, Item};
 use yw_engine::screen::Tone;
+use yw_engine::wallet::app_sidecar::{JournalHold, RESET_WATCH_SECS, SendChain, text};
+use yw_engine::wallet::{AppMode, Confirm, Screen};
 
 /// Command ids (block 16,600–16,609 of `ui::command_ids`). The overlays' other buttons keep their
 /// ids: meta `SIDECAR_PREV`/`SIDECAR_FRESH`, journal `CONFIRM_YES`/`CONFIRM_NO`, `LOCK`.

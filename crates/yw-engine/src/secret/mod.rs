@@ -31,7 +31,7 @@ use core::fmt;
 
 use yw_core::keyimport::ImportChain;
 use yw_core::lang::Lang;
-use yw_core::secret::SecretString;
+use yw_core::secret::{SecretString, Zeroizing};
 
 use crate::yubikey::PinTarget;
 
@@ -471,6 +471,27 @@ impl HoldGate {
             Some(started) => BACKUP_ACK_HOLD_MS.saturating_sub(now_ms.saturating_sub(started)),
             None => BACKUP_ACK_HOLD_MS,
         }
+    }
+}
+
+/// Values a secret input window hands to the wallet on submit (moved out of the fields; in-process
+/// only through `Wallet::on_secret_action`, never in a `Cmd` or an `Effect`, plan §7.3).
+/// 2026-11-23 (spec/15 §11.4 S4d E1): moved here unchanged from yw-app `ui::secret` with the
+/// wallet, its redacted `Debug` included.
+pub struct Submission {
+    /// Field values in order.
+    pub values: Vec<Zeroizing<Vec<u8>>>,
+    /// Checkbox state (W05 passphrase).
+    pub checkbox: bool,
+}
+
+impl core::fmt::Debug for Submission {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "Submission({} values, [REDACTED])",
+            self.values.len()
+        )
     }
 }
 

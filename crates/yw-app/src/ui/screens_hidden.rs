@@ -2,9 +2,10 @@
 //! cards (spec/04 §2.6): their command ids and render builder. 2026-11-22 (S4d E0c): moved from
 //! `app_hidden`, which keeps the rows (`Wallet::hidden_rows`), the presses and their texts.
 
-use crate::app::{App, Wallet};
-use crate::app_hidden::{Family, text};
+use crate::app::App;
 use crate::ui::main_window::{Ctl, Item};
+use yw_engine::wallet::Wallet;
+use yw_engine::wallet::app_hidden::{Family, text};
 
 /// Command ids (blocks 16,100–16,199 and 16,200–16,599 of `ui::command_ids`).
 pub mod ids {
