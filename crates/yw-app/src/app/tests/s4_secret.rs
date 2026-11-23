@@ -37,6 +37,12 @@
 //! byte (no second copy, no line dropped). The windowed `ui::tour_secrets` stays on request (real
 //! windows: `shown=` and capture exclusion are real Win32 reads there).
 //!
+//! 2026-11-23 (S4d E2; plan §3.7, D-25; spec/15 §3.2, §11.4 S4): the same scenarios also run
+//! under the deferred reply schedule of `yw_engine::testkit::RecordingShell`
+//! ([`secret_sessions_run_headless_deferred`], `app_effects::deferred`), line for line against
+//! the same goldens but the lines [`SECRET_DEFERRED_DIFFERENCES`] lists with a reason; the run
+//! above is the immediate (Windows) schedule, unchanged.
+//!
 //! The copies of the shell's code here (`open_input_window`'s `Ok(window)` arm, `open_display_window`,
 //! `show_secret`'s log, `close_secret_window`'s wipe, `apply_form_op`'s match and `on_secret`'s
 //! arms) are pinned by [`the_headless_secret_host_mirrors_the_shell`], which reads `app.rs` and
@@ -601,6 +607,116 @@ fn secret_sessions_run_headless() {
             "no noted Debug text holds {needle}"
         );
     }
+    for text in &seen {
+        scan_debug(text);
+    }
+}
+
+/// The lines of a deferred run that differ from the secret goldens, as `(scenario, step, reason)`
+/// (2026-11-23, S4d E2; plan §3.7, D-25, stop rule 9). Every other line is the golden's byte for
+/// byte; a listed line must differ (the list stays exact).
+#[cfg(debug_assertions)]
+const SECRET_DEFERRED_DIFFERENCES: [(&str, &str, &str); 1] = [(
+    "lock_end_session",
+    "lock",
+    "the order of the ops log only (the line's state columns are the golden's): \
+     `App::shutdown`, the Windows shell's composition, drains the lock's effects (the secret \
+     close, the clip clear at exit, the approval close) before its own 5 s wait for the key \
+     worker's lock (spec/04 §1.5, §5.3); the deferred schedule applies nothing inside an entry, \
+     so they follow that wait. An Android shell has no such wait inside the shutdown entry",
+)];
+
+/// [`record_headless`] under the deferred reply schedule (2026-11-23, S4d E2;
+/// `app_effects::deferred`: every entry's effects applied after it returned, the answers after
+/// the batch), with the effects held and answers collected over all scenarios.
+#[cfg(debug_assertions)]
+fn record_headless_deferred(table: &[(&str, Scenario)]) -> (String, Vec<String>, (usize, usize)) {
+    use crate::app_effects::deferred;
+
+    let mut out = String::new();
+    let mut seen = Vec::new();
+    let mut total = (0, 0);
+    for (_, scenario) in table {
+        let scenario = *scenario;
+        let (lines, noted, counts) = std::thread::spawn(move || {
+            host::install(true);
+            deferred::install();
+            let lines = scenario();
+            let counts = deferred::counts();
+            deferred::remove();
+            host::remove();
+            (lines, host::take_seen(), counts)
+        })
+        .join()
+        .expect("the scenario's thread");
+        for line in lines {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        seen.extend(noted);
+        total = (total.0 + counts.0, total.1 + counts.1);
+    }
+    (out, seen, total)
+}
+
+/// The lines of `generated` that differ from `committed` and are not listed in
+/// [`SECRET_DEFERRED_DIFFERENCES`], and the listed ones that no longer differ (both must be
+/// empty); the two texts must have the same scenarios and steps, line for line.
+#[cfg(debug_assertions)]
+fn deferred_findings(what: &str, generated: &str, committed: &str) -> Vec<String> {
+    let head = |line: &str| line.split(" | ").next().unwrap_or_default().to_owned();
+    let generated: Vec<&str> = generated.lines().collect();
+    let committed: Vec<&str> = committed.lines().collect();
+    let heads = |lines: &[&str]| lines.iter().map(|line| head(line)).collect::<Vec<_>>();
+    if heads(&generated) != heads(&committed) {
+        return vec![format!(
+            "{what}: the deferred run's steps differ from the golden's"
+        )];
+    }
+    let mut findings = Vec::new();
+    for (generated, committed) in generated.iter().zip(&committed) {
+        let line_head = head(generated);
+        let listed = SECRET_DEFERRED_DIFFERENCES
+            .iter()
+            .any(|(scenario, step, _)| line_head == format!("{scenario} {step}"));
+        if listed && generated == committed {
+            findings.push(format!(
+                "{what}: {line_head} is listed but no longer differs"
+            ));
+        } else if !listed && generated != committed {
+            findings.push(format!(
+                "{what}: not listed:\n  generated: {generated}\n  committed: {committed}"
+            ));
+        }
+    }
+    findings
+}
+
+/// The secret sessions headless under the deferred reply schedule (2026-11-23, S4d E2; gate test
+/// step, no window): every scenario of `ui::tour_secrets` gives `s4_secret/secret.txt` and
+/// `lock.txt` line for line but the lines [`SECRET_DEFERRED_DIFFERENCES`] lists (each with its
+/// reason), the run held effects and collected answers (critique A-20), and no secret reaches a
+/// noted `Debug` text.
+#[cfg(debug_assertions)]
+#[test]
+fn secret_sessions_run_headless_deferred() {
+    let (secret, mut seen, counts) = record_headless_deferred(&tour_secrets::SECRET_SCENARIOS);
+    let (lock, lock_seen, lock_counts) = record_headless_deferred(&tour_secrets::LOCK_SCENARIOS);
+    seen.extend(lock_seen);
+    assert!(
+        counts.0 > 0 && counts.1 > 0 && lock_counts.0 > 0 && lock_counts.1 > 0,
+        "the deferred schedule held and answered: {counts:?} {lock_counts:?}"
+    );
+    let findings: Vec<String> =
+        deferred_findings("secret.txt", &secret, tour_secrets::SECRET_GOLDEN)
+            .into_iter()
+            .chain(deferred_findings(
+                "lock.txt",
+                &lock,
+                tour_secrets::LOCK_GOLDEN,
+            ))
+            .collect();
+    assert!(findings.is_empty(), "{}", findings.join("\n"));
     for text in &seen {
         scan_debug(text);
     }

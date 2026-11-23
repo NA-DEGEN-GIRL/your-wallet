@@ -153,7 +153,12 @@ pub(crate) struct Entry<'a>(core::cell::RefMut<'a, App>);
 
 #[cfg(test)]
 impl<'a> Entry<'a> {
-    pub(crate) const fn new(app: core::cell::RefMut<'a, App>) -> Self {
+    /// 2026-11-23 (S4d E2): under the deferred schedule ([`deferred`]) what an earlier drain held
+    /// outside an entry is applied first, so the entry starts as a later Android call does (no
+    /// held effect is left once the shell ran); before E2 a `const fn` that only wrapped the
+    /// borrow, which it still does with the immediate schedule.
+    pub(crate) fn new(mut app: core::cell::RefMut<'a, App>) -> Self {
+        deferred::settle(&mut app);
         Self(app)
     }
 }
@@ -179,6 +184,9 @@ impl Drop for Entry<'_> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
             self.0.drain();
+            // 2026-11-23 (S4d E2): the deferred schedule applies and answers what the entry's
+            // drain held once the entry returned ([`deferred::settle`]; nothing otherwise).
+            deferred::settle(&mut self.0);
         }
     }
 }
@@ -246,6 +254,12 @@ impl App {
             }
             return;
         }
+        // Tests (2026-11-23, S4d E2): the deferred schedule holds the queued effects until the
+        // entry ended (`deferred`); a held batch it applies runs the loop below.
+        #[cfg(test)]
+        if deferred::hold(&mut self.wallet) {
+            return;
+        }
         while let Some(effect) = self.wallet.next_effect() {
             // 2026-11-21 (S4 W2, plan §3.4, D-4): the composition. A display window's open is the
             // one effect that moves a value from the wallet into the shell (the secret), so it
@@ -275,11 +289,20 @@ impl App {
             if let Some(hidden) = self.main_hidden_answer() {
                 self.wallet.on_cmd(hidden);
             }
+            // Tests (2026-11-23, S4d E2): a held batch's answers go back after the batch.
+            #[cfg(test)]
+            let answer = answer.and_then(deferred::answer_now);
             if let Some(answer) = answer {
                 self.wallet.on_cmd(answer);
             }
         }
         debug_assert!(self.queued_effects() == 0, "the outbox drained");
+        // Tests (2026-11-23, S4d E2): a held batch is checked once its answers went back
+        // (`deferred::settle`).
+        #[cfg(test)]
+        if deferred::collecting() {
+            return;
+        }
         // Tests (2026-11-20, S4 P10b review): the approval flow and its window are in step again
         // once the queue is empty, so an open's and a close's pairing is checked here (the checks
         // where the flow changes skip while its `Approval(Open)`/`Approval(Close)` is queued).
@@ -498,5 +521,157 @@ impl App {
                 None
             }
         }
+    }
+}
+
+/// Tests (2026-11-23, S4d E2; plan §3.7, D-25, the S4d preflight's corrected row E2 and O-5;
+/// spec/15 §3.2, §11.4 S4): the deferred reply schedule of `yw_engine::testkit::RecordingShell`
+/// on this shell. While it is installed on the test thread, [`App::drain`] hands the effects the
+/// wallet queued to the recording shell instead of applying them (Android's `next()` runs only
+/// after `call` returned), and when the entry ends ([`Entry`]'s drop, or the next [`Entry`]) the
+/// shell releases them in rounds through this executor: a round applies the held batch in order
+/// with the same `App::drain` loop (the composition, `apply`, the headless approval and secret
+/// hosts), its answers are collected instead of handed back at once, and then each answer goes
+/// back to the wallet as an entry of its own (`ioComplete`), whose effects are held for the next
+/// round. A mid-entry drain (the lock's `Suspend` composition, the shutdown's) holds too. The
+/// immediate schedule is today's `App::drain`, unchanged: the headless runners reproduce the
+/// frozen goldens with it. Nothing here makes a window or touches the clipboard, a file or the
+/// network; the effects are the wallet's own, re-queued unchanged.
+#[cfg(test)]
+pub(crate) mod deferred {
+    use std::cell::RefCell;
+
+    use yw_engine::cmd::Cmd;
+    use yw_engine::effect::Effect;
+    use yw_engine::testkit::{RecordingShell, Schedule, ShellHost};
+    use yw_engine::wallet::Wallet;
+
+    use crate::app::App;
+
+    thread_local! {
+        /// The installed deferred shell (taken out while it releases).
+        static SHELL: RefCell<Option<RecordingShell>> = const { RefCell::new(None) };
+        /// While a held batch is applied: the answers, collected in order.
+        static ANSWERS: RefCell<Option<Vec<Cmd>>> = const { RefCell::new(None) };
+        /// Since the install: the effects held and the answers collected (a run that held
+        /// nothing proves nothing, critique A-20).
+        static COUNTS: core::cell::Cell<(usize, usize)> = const { core::cell::Cell::new((0, 0)) };
+    }
+
+    /// Installs the deferred schedule on this thread (nothing held).
+    pub(crate) fn install() {
+        SHELL.with(|shell| *shell.borrow_mut() = Some(RecordingShell::new(Schedule::Deferred)));
+        COUNTS.with(|counts| counts.set((0, 0)));
+    }
+
+    /// Since the install: how many effects were held and how many answers collected.
+    pub(crate) fn counts() -> (usize, usize) {
+        COUNTS.with(core::cell::Cell::get)
+    }
+
+    /// Removes it (`App::drain` applies at once again); what is still held is dropped.
+    pub(crate) fn remove() {
+        SHELL.with(|shell| *shell.borrow_mut() = None);
+    }
+
+    /// Keeps the held effects held across later entries (`true`: the shell has not run yet)
+    /// until [`release`], or settles at each entry's end again (`false`).
+    pub(crate) fn keep(on: bool) {
+        SHELL.with(|shell| {
+            if let Some(shell) = shell.borrow_mut().as_mut() {
+                shell.keep(on);
+            }
+        });
+    }
+
+    /// How many effects the shell holds.
+    pub(crate) fn held() -> usize {
+        SHELL.with(|shell| shell.borrow().as_ref().map_or(0, RecordingShell::held))
+    }
+
+    /// `App::drain`'s hook: `true` when it handed the queued effects to the shell (installed,
+    /// and no held batch is being applied).
+    pub(crate) fn hold(wallet: &mut Wallet) -> bool {
+        if collecting() {
+            return false;
+        }
+        let queued = wallet.queued_effects();
+        let held = SHELL.with(|shell| {
+            shell
+                .borrow_mut()
+                .as_mut()
+                .map(|shell| shell.hold(wallet))
+                .is_some()
+        });
+        if held {
+            COUNTS.with(|counts| {
+                let (effects, answers) = counts.get();
+                counts.set((effects.saturating_add(queued), answers));
+            });
+        }
+        held
+    }
+
+    /// Whether a held batch is being applied (its answers are collected).
+    pub(crate) fn collecting() -> bool {
+        ANSWERS.with(|answers| answers.borrow().is_some())
+    }
+
+    /// `App::drain`'s hook for an answer: collected while a held batch is applied (`None`), else
+    /// handed back.
+    pub(crate) fn answer_now(answer: Cmd) -> Option<Cmd> {
+        ANSWERS.with(|answers| match answers.borrow_mut().as_mut() {
+            Some(collected) => {
+                collected.push(answer);
+                COUNTS.with(|counts| {
+                    let (effects, answers) = counts.get();
+                    counts.set((effects, answers.saturating_add(1)));
+                });
+                None
+            }
+            None => Some(answer),
+        })
+    }
+
+    impl ShellHost for App {
+        fn wallet(&mut self) -> &mut Wallet {
+            &mut self.wallet
+        }
+
+        /// The batch, re-queued unchanged, through `App::drain`'s loop with its answers
+        /// collected.
+        fn apply_batch(&mut self, batch: Vec<Effect>) -> Vec<Cmd> {
+            ANSWERS.with(|answers| *answers.borrow_mut() = Some(Vec::new()));
+            self.wallet.outbox.extend(batch);
+            self.drain();
+            ANSWERS
+                .with(|answers| answers.borrow_mut().take())
+                .unwrap_or_default()
+        }
+    }
+
+    /// The end of an entry under the deferred schedule (nothing otherwise, or while the shell
+    /// keeps): the shell releases what it holds through this executor, then the drain's checks
+    /// run once (the flow and its window, the form state, the main-window mirror).
+    pub(crate) fn settle(app: &mut App) {
+        let Some(mut shell) = SHELL.with(|shell| shell.borrow_mut().take()) else {
+            return;
+        };
+        if !shell.keeps() && shell.held() > 0 {
+            shell.release(app);
+            app.assert_flow_and_window_in_step();
+            #[cfg(debug_assertions)]
+            {
+                app.check_form_in_step();
+                app.assert_main_hidden_in_step();
+            }
+        }
+        SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
+    }
+
+    /// Releases what the shell kept ([`keep`]) and settles at each entry's end again.
+    pub(crate) fn release(app: &mut App) {
+        keep(false);
+        settle(app);
     }
 }

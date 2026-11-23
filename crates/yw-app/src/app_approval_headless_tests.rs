@@ -39,6 +39,15 @@
 //! complete. Regenerate for review (PowerShell): `$env:YW_S4_FLOW_OUT='<folder>'; cargo test -p
 //! yw-app --lib --locked --offline -- --ignored --exact
 //! app_approval::flow_tests::lifecycle::headless::print_headless`.
+//!
+//! 2026-11-23 (S4d E2; plan §3.7, D-25; spec/15 §3.2, §11.4 S4): each `headless_*` test runs its
+//! scenario under both reply schedules of `yw_engine::testkit::RecordingShell`. The immediate run
+//! is the run above, unchanged (the Windows schedule: the golden byte for byte). The deferred run
+//! ([`run_deferred`], `app_effects::deferred`: the effects of every entry applied after it
+//! returned, their answers after the batch, each an entry of its own) must give the same steps
+//! and every line of the golden but those [`DEFERRED_DIFFERENCES`] lists with a reason (none
+//! today). [`late_answers_under_the_deferred_schedule`] runs the F14, F16 and F21 late-answer
+//! shapes on that schedule.
 
 // 2026-11-23 (S4d E1): the wallet's crate-private steps, buffers and flow state as the tests reach
 // them across the crate boundary (`yw_engine::testkit`).
@@ -2596,6 +2605,165 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
     assert!(app.approval_win.is_none(), "no window was made");
 }
 
+/// 2026-11-23 (S4d E2; plan §3.7, D-25; spec/04 §5.3, spec/05 §4.5, spec/15 §11.4 S4, §18 14, 16,
+/// 21): the late-answer shapes of F14, F16 and F21 under the recording shell's deferred schedule
+/// (`app_effects::deferred` with `keep`: the shell has not run when the next entry reaches the
+/// wallet, as an Android UI thread still busy), instead of the manual take from the outbox of
+/// [`a_lock_drops_the_steps_kept_for_an_open_of_an_earlier_entry`],
+/// [`a_lock_keeps_a_revoke_whose_write_waits_for_an_open`] and
+/// [`a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open`]. Entry 1 asks for an approval open
+/// (a dApp `personal_sign`) and keeps a step for its answer (`SetScreen`, or the revoke's grant
+/// write); entry 2 locks (`end`: the lock, or the shutdown); then the shell releases everything it
+/// held, entry 1's effects first. The final state is the manual tests': the lock dropped the kept
+/// step (the screen stays as the lock left it), a waiting revoke was written by the lock or the
+/// shutdown itself (its meta save queued, `grant_write.revoke` cleared), the stale open is
+/// answered `Failed` and makes no window, the request got the lock's answer. One difference, an
+/// order: the shell applies entry 1's open before entry 2's close (`open#1,close#1`), where the
+/// manual tests applied the close in its own entry and the held open after it
+/// (`close#1,open#1`). Headless, no window; files only below the fixture's temp folder.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "three late-answer shapes, each in three entries"
+)]
+fn late_answers_under_the_deferred_schedule() {
+    use yw_core::policy::BrowserOrigin;
+
+    use crate::app_effects::deferred;
+    use crate::browser::{DappEvent, GrantChange};
+    use yw_engine::wallet::app_approval::AfterOpen;
+    use yw_engine::wallet::{AppMode, Screen};
+
+    /// What entry 2 does.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum End {
+        Lock,
+        Shutdown,
+    }
+
+    for (tag, revoke, end) in [
+        ("late-lock-kept", false, End::Lock),
+        ("late-lock-revoke", true, End::Lock),
+        ("late-shutdown-revoke", true, End::Shutdown),
+    ] {
+        let fx = fixture(tag);
+        let outlet = dapp(&fx, false, true);
+        if revoke {
+            grant(&fx, OTHER, ACCOUNT_B);
+            fx.app().write_grants();
+        }
+        let _ = queued_saves(&fx);
+        let core = Arc::clone(&fx.app.borrow().browser.as_ref().unwrap().core);
+        personal_sign_frame_only(&fx, &outlet, &core);
+        let _ = headless_host::take_effects();
+        let _deferred = DeferredRun::start();
+        deferred::keep(true);
+        // Entry 1: the open, and a step kept for its answer.
+        {
+            let mut app = fx.app();
+            for event in outlet.events.drain() {
+                if let UiEvent::Dapp(event) = event {
+                    app.on_dapp_event(event);
+                }
+            }
+            assert!(
+                app.evm.open_unanswered.is_some(),
+                "{tag}: the open is queued"
+            );
+            if revoke {
+                let other = BrowserOrigin::parse(OTHER).unwrap();
+                assert!(core.remove_grant(&other), "{tag}: the dispatcher's revoke");
+                app.on_dapp_event(DappEvent::GrantChanged {
+                    origin: other,
+                    change: GrantChange::Revoked,
+                });
+                assert!(
+                    app.evm
+                        .after_open
+                        .iter()
+                        .any(|(_, after)| matches!(after, AfterOpen::WriteGrantsThenRefresh)),
+                    "{tag}: the revoke's write waits for the open's answer"
+                );
+            } else {
+                app.after_pending_open(AfterOpen::SetScreen(Screen::Sites));
+            }
+        }
+        assert!(deferred::held() > 0, "{tag}: the shell has not run");
+        assert!(
+            headless_host::take_effects().is_empty(),
+            "{tag}: nothing applied"
+        );
+        let saves_before_end = queued_saves(&fx).len();
+        // Entry 2: the lock or the shutdown, before the shell ran.
+        {
+            let _ack = (end == End::Shutdown).then(|| LockAck::start(&fx));
+            let mut app = fx.app();
+            match end {
+                End::Lock => app.lock(LockReason::Manual),
+                End::Shutdown => app.shutdown(),
+            }
+            assert!(
+                app.evm.after_open.is_empty(),
+                "{tag}: the lock dropped the step"
+            );
+            assert_eq!(app.evm.open_unanswered, None, "{tag}: no open waits");
+            assert!(
+                app.browser
+                    .as_ref()
+                    .is_none_or(|browser| !browser.grant_write.revoke),
+                "{tag}: a waiting revoke was written by the lock or the shutdown"
+            );
+        }
+        assert!(
+            headless_host::take_effects().is_empty(),
+            "{tag}: still nothing applied"
+        );
+        // The shell runs: entry 1's effects, then entry 2's, then the answers.
+        {
+            let mut app = fx.app();
+            deferred::release(&mut app);
+        }
+        assert_eq!(
+            effect_names(&headless_host::take_effects()),
+            "open#1,close#1",
+            "{tag}: the open, then the lock's close; the open was answered Failed (stale)"
+        );
+        assert_eq!(deferred::held(), 0, "{tag}: nothing left held");
+        let saves = queued_saves(&fx);
+        if revoke {
+            assert_eq!(
+                saves.len(),
+                saves_before_end + 1,
+                "{tag}: one meta save of the waiting revoke"
+            );
+            assert_eq!(
+                saves.last().map(saved_origins),
+                Some(vec!["https://app.example".to_owned()]),
+                "{tag}: the revoked site is not in the saved document"
+            );
+        }
+        let app = fx.app.borrow();
+        match end {
+            End::Lock => {
+                assert_eq!(
+                    app.screen,
+                    Screen::Locked,
+                    "{tag}: the kept step did not run"
+                );
+                assert_eq!(dapp_answers(&outlet), "4001 User rejected the request.");
+            }
+            End::Shutdown => {
+                assert_eq!(app.mode, AppMode::ShuttingDown);
+                assert_eq!(dapp_answers(&outlet), "4900 Wallet connection closed.");
+            }
+        }
+        assert!(app.outbox.is_empty());
+        assert!(app.evm.after_open.is_empty());
+        assert!(app.evm.approval.is_none());
+        assert!(app.approval_win.is_none(), "{tag}: no window was made");
+    }
+}
+
 /// The store state of request `id` (shown before a revoke or cancel), without the windowed
 /// fact's window count.
 fn store_fact(fx: &Fixture, id: Option<ApprovalId>) -> String {
@@ -3808,12 +3976,108 @@ fn run(name: &str) {
     );
 }
 
+/// The lines of a deferred run that differ from the golden, as `(step, reason)` per scenario
+/// (2026-11-23, S4d E2; plan §3.7, D-25, stop rule 9). Every other line of every scenario is the
+/// golden's byte for byte; a listed line must differ (the list stays exact).
+const DEFERRED_DIFFERENCES: [(&str, &str, &str); 0] = [];
+
+/// Removes the deferred schedule when it drops (also when the scenario panics).
+struct DeferredRun;
+
+impl DeferredRun {
+    fn start() -> Self {
+        crate::app_effects::deferred::install();
+        Self
+    }
+}
+
+impl Drop for DeferredRun {
+    fn drop(&mut self) {
+        crate::app_effects::deferred::remove();
+    }
+}
+
+/// The step word of a recorded line (`<scenario> <step> | …`).
+fn step_of(line: &str) -> &str {
+    line.split(" | ")
+        .next()
+        .and_then(|head| head.split_once(' '))
+        .map_or("", |(_, step)| step)
+}
+
+/// Runs scenario `name` headless under the deferred reply schedule (2026-11-23, S4d E2;
+/// [`crate::app_effects::deferred`]: every entry's effects applied after it returned, the answers
+/// after the batch) and checks it against `headless.txt`: the same steps, every line equal but
+/// those [`DEFERRED_DIFFERENCES`] lists for `name` (each of which must differ), and the last line
+/// (the final state) equal unless it is listed.
+fn run_deferred(name: &str) {
+    let (_, scenario, _) = SCENARIOS
+        .iter()
+        .find(|(known, ..)| *known == name)
+        .expect("a scenario of the table");
+    let (lines, (held, answered)) = {
+        let _deferred = DeferredRun::start();
+        let lines = scenario();
+        (lines, crate::app_effects::deferred::counts())
+    };
+    let generated: Vec<&str> = lines.iter().map(String::as_str).collect();
+    // The run cannot pass on nothing (critique A-20): every scenario's effects were held, and a
+    // scenario that opens an approval window had that open answered after its batch.
+    let opens = generated
+        .iter()
+        .any(|line| line.contains("open#") || line.contains("open-connect#"));
+    assert!(
+        held > 0 && (answered > 0 || !opens),
+        "{name}: the deferred schedule held {held} effects and collected {answered} answers"
+    );
+    let committed = lines_of(GOLDEN, name);
+    let steps = |lines: &[&str]| -> Vec<String> {
+        lines.iter().map(|line| step_of(line).to_owned()).collect()
+    };
+    assert!(
+        steps(&generated) == steps(&committed),
+        "{}",
+        first_difference(
+            &format!("{name} (deferred schedule, steps)"),
+            &generated,
+            &committed
+        )
+    );
+    let listed: Vec<&str> = DEFERRED_DIFFERENCES
+        .iter()
+        .filter(|(scenario, ..)| *scenario == name)
+        .map(|(_, step, _)| *step)
+        .collect();
+    let mut unlisted = Vec::new();
+    for (generated, committed) in generated.iter().zip(&committed) {
+        let listed_here = listed.contains(&step_of(generated));
+        if listed_here {
+            assert_ne!(
+                generated, committed,
+                "{name}: a listed deferred difference no longer differs"
+            );
+        } else if generated != committed {
+            unlisted.push(format!(
+                "  generated: {generated}\n  committed: {committed}"
+            ));
+        }
+    }
+    assert!(
+        unlisted.is_empty(),
+        "{name}: the deferred schedule differs on lines not listed:\n{}",
+        unlisted.join("\n")
+    );
+}
+
 macro_rules! headless_tests {
     ($($test:ident => $name:literal),* $(,)?) => {
         $(
+            /// The scenario under both reply schedules (2026-11-23, S4d E2: the deferred run
+            /// added; the immediate one is the run before E2).
             #[test]
             fn $test() {
                 run($name);
+                run_deferred($name);
             }
         )*
     };

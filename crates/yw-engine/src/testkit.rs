@@ -484,6 +484,363 @@ impl StoreProbe<'_> {
     }
 }
 
+// ----- The recording shell of both reply schedules (2026-11-23, spec/15 §11.4 S4d E2) ----------
+//
+// Plan §3.7 and D-25, the S4d preflight's corrected row E2 (O-5): the same wallet logic runs under
+// the shell's two reply schedules. `Immediate` is the Windows schedule (`App::drain`: the effects
+// an entry queued are applied inside its borrow, one at a time, and each answer goes back to the
+// wallet at once, before the next effect is applied). `Deferred` is the Android schedule of
+// spec/15 §3.2 (`call` returns, the shell takes the effects with `next()`, applies them and sends
+// each answer later with `ioComplete`): the entry's effects are held until it returned, then
+// applied in order, and only then do their answers go back, each an entry of its own whose
+// effects are held and applied in turn. `RecordingShell` holds the effects and runs those rounds;
+// a [`ShellHost`] applies them (the yw-app tests: the Windows shell's own executor with its
+// headless hosts; the engine tests: the shell model below, [`RecordingShell::entry`]). Nothing
+// here makes a window, touches a file, the network, the clipboard or a card reader, and no
+// secret is kept: a display secret the model takes for a verified window is wiped at once.
+
+use std::collections::VecDeque;
+
+use crate::approval::flow::{ApprovalEffect, OpenOutcome};
+use crate::cmd::Cmd;
+use crate::effect::{Effect, Folder};
+use crate::errors::ErrorCode;
+use crate::secret::SecretEffect;
+use crate::wallet::DisplayCheck;
+
+/// When a shell applies the effects one entry queued, and when their answers go back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Schedule {
+    /// Windows (`App::drain`): inside the entry's borrow, in order, each answer back at once.
+    Immediate,
+    /// Android (spec/15 §3.2): after the entry returned; the batch first, then its answers, each
+    /// an entry of its own.
+    Deferred,
+}
+
+/// The part of a shell that applies effects for a [`RecordingShell`] (tests only).
+pub trait ShellHost {
+    /// The wallet the effects came from.
+    fn wallet(&mut self) -> &mut Wallet;
+    /// Applies `batch` in order, as the shell does, and returns the answers in order. None of
+    /// them has gone back to the wallet yet.
+    fn apply_batch(&mut self, batch: Vec<Effect>) -> Vec<Cmd>;
+}
+
+/// The shell of both reply schedules (tests only; see the comment above).
+pub struct RecordingShell {
+    schedule: Schedule,
+    /// Effects the wallet queued that this shell has not applied yet (`Deferred`).
+    held: VecDeque<Effect>,
+    /// The shell has not run yet: held effects stay held across later entries until
+    /// [`Self::release`] (the Android UI thread busy while the next event already reached the
+    /// wallet).
+    keep: bool,
+    /// The model's approval opens are refused (`Failed(E-APP-009)`).
+    refuse_approval: bool,
+    /// What the model applied and answered, in order (names, serials and lengths only).
+    log: Vec<String>,
+}
+
+/// The schedule and the counts only.
+impl std::fmt::Debug for RecordingShell {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RecordingShell")
+            .field("schedule", &self.schedule)
+            .field("held", &self.held.len())
+            .field("keep", &self.keep)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RecordingShell {
+    /// A shell of `schedule` with nothing held.
+    #[must_use]
+    pub const fn new(schedule: Schedule) -> Self {
+        Self {
+            schedule,
+            held: VecDeque::new(),
+            keep: false,
+            refuse_approval: false,
+            log: Vec::new(),
+        }
+    }
+
+    /// The schedule.
+    #[must_use]
+    pub const fn schedule(&self) -> Schedule {
+        self.schedule
+    }
+
+    /// Keeps held effects held across later entries (`true`) until [`Self::release`], or settles
+    /// after each entry again (`false`).
+    pub const fn keep(&mut self, on: bool) {
+        self.keep = on;
+    }
+
+    /// Whether held effects stay held across entries.
+    #[must_use]
+    pub const fn keeps(&self) -> bool {
+        self.keep
+    }
+
+    /// The model refuses its approval opens from now on (`Failed(E-APP-009)`), or makes them.
+    pub const fn refuse_approval(&mut self, on: bool) {
+        self.refuse_approval = on;
+    }
+
+    /// How many effects are held.
+    #[must_use]
+    pub fn held(&self) -> usize {
+        self.held.len()
+    }
+
+    /// Takes every effect `wallet` queued into the held list, in order (the end of an entry under
+    /// `Deferred`).
+    pub fn hold(&mut self, wallet: &mut Wallet) {
+        while let Some(effect) = wallet.next_effect() {
+            self.held.push_back(effect);
+        }
+    }
+
+    /// The held effects, taken out in order.
+    pub fn take_held(&mut self) -> Vec<Effect> {
+        self.held.drain(..).collect()
+    }
+
+    /// Applies what is held through `host` in rounds until nothing is: each round applies the
+    /// held batch, then hands each answer back to the wallet as an entry of its own and holds what
+    /// that entry queued (spec/15 §3.2 `next` then `ioComplete`). Stops keeping (`keep(false)`).
+    pub fn release<H: ShellHost + ?Sized>(&mut self, host: &mut H) {
+        self.keep = false;
+        loop {
+            let batch = self.take_held();
+            if batch.is_empty() {
+                return;
+            }
+            for answer in host.apply_batch(batch) {
+                let wallet = host.wallet();
+                wallet.on_cmd(answer);
+                self.hold(wallet);
+            }
+        }
+    }
+
+    /// One shell entry into `wallet` with the shell model applying the effects: `step` runs, then
+    /// [`Self::end_entry`].
+    pub fn entry(&mut self, wallet: &mut Wallet, step: impl FnOnce(&mut Wallet)) {
+        step(wallet);
+        self.end_entry(wallet);
+    }
+
+    /// The end of a shell entry with the shell model: [`Self::drain`], then under `Deferred` the
+    /// release (unless [`Self::keep`] is on).
+    pub fn end_entry(&mut self, wallet: &mut Wallet) {
+        self.drain(wallet);
+        if self.schedule == Schedule::Deferred && !self.keep {
+            self.release_model(wallet);
+        }
+    }
+
+    /// A drain with the shell model, as `App::drain` (also the mid-entry drain of a shell
+    /// composition, the lock's `Suspend` wait): `Immediate` applies the queued effects one at a
+    /// time and hands each answer back at once; `Deferred` holds them (an Android shell applies
+    /// nothing inside an entry).
+    pub fn drain(&mut self, wallet: &mut Wallet) {
+        match self.schedule {
+            Schedule::Immediate => {
+                while let Some(effect) = wallet.next_effect() {
+                    if let Some(answer) = self.apply(wallet, effect) {
+                        self.log.push(format!("={}", answer_name(&answer)));
+                        wallet.on_cmd(answer);
+                    }
+                }
+            }
+            Schedule::Deferred => self.hold(wallet),
+        }
+    }
+
+    /// [`Self::release`] with the shell model applying the effects.
+    pub fn release_model(&mut self, wallet: &mut Wallet) {
+        self.keep = false;
+        loop {
+            let batch = self.take_held();
+            if batch.is_empty() {
+                return;
+            }
+            let answers: Vec<Cmd> = batch
+                .into_iter()
+                .filter_map(|effect| self.apply(wallet, effect))
+                .collect();
+            for answer in answers {
+                self.log.push(format!("={}", answer_name(&answer)));
+                wallet.on_cmd(answer);
+                self.hold(wallet);
+            }
+        }
+    }
+
+    /// The model's log since the last call: each effect applied (`effect_name`) and each answer
+    /// as it went back (`=` and `answer_name`), in order.
+    pub fn take_log(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.log)
+    }
+
+    /// The shell model: applies `effect` the way the Windows shell's executor answers it in the
+    /// yw-app headless tests, without a window, and returns the answer. A screen, a timer, a
+    /// field, a scroll, a hold or a lock wait has no window here (no answer, `FieldShown` for a
+    /// field write: the edit shows what was written); a copy and a link succeed; an extension
+    /// folder is not found; an approval open makes its window while it is the shown flow's (as
+    /// the headless approval host, `Shown { capture_excluded: false }`, wide), else
+    /// `Failed(E-APP-009)`; a secret window is made and its capture exclusion verified while its
+    /// serial is the open, unshown session (else `Refused(E-SEC-001)`, critique A-3), and a
+    /// display window's secret is handed over only then (`DisplayCheck::Verified`) and wiped at
+    /// once.
+    pub fn apply(&mut self, wallet: &mut Wallet, effect: Effect) -> Option<Cmd> {
+        self.log.push(effect_name(&effect));
+        match effect {
+            Effect::SetField { field, text } => Some(Cmd::FieldShown {
+                field,
+                text: Some(field.clamp(&text)),
+            }),
+            Effect::ClearField { field } => Some(Cmd::FieldShown { field, text: None }),
+            Effect::CopyText { mark, .. } => Some(Cmd::CopyDone { ok: true, mark }),
+            Effect::OpenUrl { which, .. } => Some(Cmd::Opened { ok: true, which }),
+            Effect::OpenFolder(Folder::Extension) => Some(Cmd::FolderMissing),
+            Effect::Approval(ApprovalEffect::Open { shown, .. }) => {
+                let current = wallet
+                    .evm
+                    .approval
+                    .as_ref()
+                    .map(crate::wallet::approval_flow::ApprovalFlow::shown);
+                let made = !self.refuse_approval && current == Some(shown);
+                Some(Cmd::ApprovalOpened {
+                    shown,
+                    outcome: if made {
+                        OpenOutcome::Shown {
+                            capture_excluded: false,
+                        }
+                    } else {
+                        OpenOutcome::Failed(ErrorCode::App009)
+                    },
+                    wide: made,
+                })
+            }
+            Effect::Secret(SecretEffect::OpenInput { serial, .. }) => Some(Cmd::SecretOpened {
+                serial,
+                outcome: if wallet.secret_unshown(serial) {
+                    OpenOutcome::Shown {
+                        capture_excluded: true,
+                    }
+                } else {
+                    OpenOutcome::Refused(ErrorCode::Sec001)
+                },
+            }),
+            Effect::Secret(SecretEffect::OpenDisplay { serial, .. }) => {
+                let shown = wallet.secret_unshown(serial)
+                    && wallet
+                        .hand_display_secret(serial, DisplayCheck::Verified)
+                        .is_some_and(|display| {
+                            // The model's window: the secret is wiped here, never kept.
+                            drop(display);
+                            true
+                        });
+                if shown {
+                    self.log.push(format!("display-handed#{serial}"));
+                }
+                Some(Cmd::SecretOpened {
+                    serial,
+                    outcome: if shown {
+                        OpenOutcome::Shown {
+                            capture_excluded: true,
+                        }
+                    } else {
+                        OpenOutcome::Refused(ErrorCode::Sec001)
+                    },
+                })
+            }
+            // No answer: a screen, a credential edit, a timer, the main window's own work, a
+            // scroll, a hold, the lock's wait, the data and log folders, the other approval and
+            // secret operations (close, rebuild, repaint, form, clip clear).
+            Effect::Render
+            | Effect::ClearCred { .. }
+            | Effect::StartTimer { .. }
+            | Effect::StopTimer { .. }
+            | Effect::Reveal(_)
+            | Effect::RaiseMain
+            | Effect::ScreenLeaving { .. }
+            | Effect::ScreenEntered { .. }
+            | Effect::OverlayClosedInPlace
+            | Effect::TabTop { .. }
+            | Effect::ScrollMemoryClear
+            | Effect::ScrollTop
+            | Effect::ReleaseHold
+            | Effect::AwaitKeyLock { .. }
+            | Effect::OpenFolder(Folder::Data | Folder::Logs)
+            | Effect::Approval(_)
+            | Effect::Secret(_) => None,
+        }
+    }
+}
+
+/// An effect's name for the logs (names, ids, serials and lengths only, never text).
+#[must_use]
+pub fn effect_name(effect: &Effect) -> String {
+    match effect {
+        Effect::Render => "render".to_owned(),
+        Effect::SetField { field, .. } => format!("set-field:{field:?}"),
+        Effect::ClearField { field } => format!("clear-field:{field:?}"),
+        Effect::ClearCred { field } => format!("clear-cred:{field:?}"),
+        Effect::StartTimer { .. } => "timer-start".to_owned(),
+        Effect::StopTimer { .. } => "timer-stop".to_owned(),
+        Effect::CopyText { text, .. } => format!("copy:len={}", text.chars().count()),
+        Effect::Approval(approval) => match *approval {
+            ApprovalEffect::Open { shown, .. } => format!("open#{}", shown.0),
+            ApprovalEffect::Close { shown } => format!("close#{}", shown.0),
+            ApprovalEffect::Rebuilt { shown, changed } => {
+                format!("{}#{}", if changed { "rebuilt" } else { "same" }, shown.0)
+            }
+            ApprovalEffect::RepaintBar { shown } => format!("bar#{}", shown.0),
+            ApprovalEffect::Redraw { shown } => format!("redraw#{}", shown.0),
+            ApprovalEffect::RepaintAi { shown, .. } => format!("ai#{}", shown.0),
+        },
+        Effect::OpenUrl { url, .. } => format!("open-url:len={}", url.len()),
+        Effect::OpenFolder(folder) => format!("open-folder:{folder:?}"),
+        Effect::Reveal(_) => "reveal".to_owned(),
+        Effect::RaiseMain => "raise-main".to_owned(),
+        Effect::ScreenLeaving { .. } => "screen-leaving".to_owned(),
+        Effect::ScreenEntered { .. } => "screen-entered".to_owned(),
+        Effect::OverlayClosedInPlace => "overlay-closed".to_owned(),
+        Effect::TabTop { .. } => "tab-top".to_owned(),
+        Effect::ScrollMemoryClear => "scroll-memory-clear".to_owned(),
+        Effect::ScrollTop => "scroll-top".to_owned(),
+        Effect::ReleaseHold => "release-hold".to_owned(),
+        Effect::Secret(secret) => match secret {
+            SecretEffect::OpenInput { serial, .. } => format!("secret-open#{serial}"),
+            SecretEffect::OpenDisplay { serial, .. } => format!("secret-display#{serial}"),
+            SecretEffect::Close { serial } => format!("secret-close#{serial}"),
+            SecretEffect::Form { serial, .. } => format!("secret-form#{serial}"),
+            SecretEffect::ClearClip { .. } => "clear-clip".to_owned(),
+        },
+        Effect::AwaitKeyLock { .. } => "wait".to_owned(),
+    }
+}
+
+/// An answer's name for the logs (names, ids, serials and outcomes only).
+#[must_use]
+pub fn answer_name(answer: &Cmd) -> String {
+    match answer {
+        Cmd::ApprovalOpened { shown, outcome, .. } => format!("opened#{}:{outcome:?}", shown.0),
+        Cmd::SecretOpened { serial, outcome } => format!("secret-opened#{serial}:{outcome:?}"),
+        Cmd::FieldShown { field, .. } => format!("field-shown:{field:?}"),
+        Cmd::CopyDone { ok, .. } => format!("copy-done:{ok}"),
+        Cmd::Opened { ok, .. } => format!("url-opened:{ok}"),
+        Cmd::FolderMissing => "folder-missing".to_owned(),
+        other => format!("{other:?}"),
+    }
+}
+
 /// A waiting Solana dApp send as the frozen lock test builds it (critic C2 ii): the engine's
 /// `PendingDappSign` keeps its approval and PIN private.
 #[must_use]
