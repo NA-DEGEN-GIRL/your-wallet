@@ -13,17 +13,17 @@ use crate::app::App;
 /// The shared EVM address (2026-11-23, spec/15 §11.4 S4d E1: a copy of `app_book::tests::EVM`,
 /// whose module moved to yw-engine and is private again).
 const EVM: &str = "0x52908400098527886e0f7030069857d2e4169ee7";
-use crate::meta::{BookChain, Contact};
+use yw_engine::meta::{BookChain, Contact};
 
 /// A new entry is compared with everything the send forms know, not only the book: a poison
 /// of a past recipient is flagged on save with the sent-history wording (it used to save
 /// silently and then pass for known), a book entry by its label.
 #[test]
 fn book_saves_compare_with_the_whole_known_set() {
-    use crate::apikeys::ApiKeys;
     use crate::app::Paths;
-    use crate::meta::{ActivityEntry, Meta};
-    use crate::settings::Settings;
+    use yw_engine::apikeys::ApiKeys;
+    use yw_engine::meta::{ActivityEntry, Meta};
+    use yw_engine::settings::Settings;
     use yw_engine::wallet::AppMode;
 
     let dir = std::env::temp_dir().join(format!("yw-app-book-known-{}", std::process::id()));
@@ -90,10 +90,10 @@ fn book_saves_compare_with_the_whole_known_set() {
 /// wheel glide alone, as the old write did.
 #[test]
 fn a_book_row_edit_opens_the_form_at_the_top_through_an_effect() {
-    use crate::apikeys::ApiKeys;
     use crate::app::Paths;
-    use crate::meta::Meta;
-    use crate::settings::Settings;
+    use yw_engine::apikeys::ApiKeys;
+    use yw_engine::meta::Meta;
+    use yw_engine::settings::Settings;
     use yw_engine::wallet::AppMode;
 
     let dir = std::env::temp_dir().join(format!("yw-app-book-top-{}", std::process::id()));

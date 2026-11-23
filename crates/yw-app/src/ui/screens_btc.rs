@@ -11,15 +11,15 @@ use yw_core::btc::policy::texts;
 use yw_core::btc::{BtcMeta, BtcNetwork, FeeRate, Sats, Txid, encode_address};
 use yw_core::lang::{Lang, Text};
 
-use crate::apikeys::KeyName;
 use crate::app::App;
-use crate::btc::work::FeeQuote;
-use crate::errors::ErrorCode;
-use crate::meta::BookChain;
-use crate::settings::BtcIndexer;
-use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item};
+use yw_engine::apikeys::KeyName;
+use yw_engine::badge::Badge;
+use yw_engine::btc::work::FeeQuote;
+use yw_engine::errors::ErrorCode;
+use yw_engine::meta::BookChain;
 use yw_engine::screen::Tone;
+use yw_engine::settings::BtcIndexer;
 use yw_engine::text::grouped;
 use yw_engine::wallet::app_book::{BookTarget, PromptPlace};
 use yw_engine::wallet::app_btc::{
@@ -606,7 +606,7 @@ fn network_banners(lang: Lang, net: BtcNetwork, items: &mut Vec<Item>) {
 /// `YYYY-MM-DD HH:MM` in local time (spec/04 §2.6); UTC with a suffix if the conversion fails.
 fn local_time(unix_ms: u64) -> String {
     let wall = yw_win::time::local_wall_ms(unix_ms);
-    let text = crate::logging::format_utc(wall.unwrap_or(unix_ms));
+    let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
         short
@@ -762,7 +762,7 @@ impl App {
         } else {
             text::STATUS_UNCHECKED.get(lang).to_owned()
         };
-        let indexer = crate::btc::indexer_display(ctx.settings.indexer);
+        let indexer = yw_engine::btc::indexer_display(ctx.settings.indexer);
         let checked = if self.btc.indexer_verified {
             text::STATUS_GENESIS_OK
         } else {
@@ -771,7 +771,7 @@ impl App {
         text::STATUS_LINE.fill(
             lang,
             [
-                &crate::btc::network_id(net).to_string(),
+                &yw_engine::btc::network_id(net).to_string(),
                 &rpc,
                 indexer,
                 checked.get(lang),
@@ -1093,7 +1093,7 @@ impl App {
         // 2026-11-13: the received history's unconfirmed deposits as an amount (display only,
         // never in the balance above); the refresh's yes/no banner stays while that list does
         // not account for every address the refresh flagged.
-        let list = self.received_list(crate::received::RecvChain::Btc);
+        let list = self.received_list(yw_engine::received::RecvChain::Btc);
         let pending_sum = list.and_then(yw_engine::wallet::app_received::RecvList::pending_sum);
         if let Some(sats) = pending_sum {
             items.push(Item::Muted(pending_incoming_line(
@@ -1278,7 +1278,7 @@ impl App {
                 Some(base.saturating_add(ids::ACT_COPY)),
                 &row.txid,
                 self.explorer_tx_icons(
-                    crate::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
+                    yw_engine::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
                     &row.txid,
                     crate::ui::screens_explorer::ids::activity_ids(
                         crate::ui::screens_explorer::ids::BTC_ACTIVITY_BASE,
@@ -1442,7 +1442,7 @@ impl App {
         }
         if let Some(lag) = self.btc.lag_warning {
             items.push(Item::Banner(
-                crate::btc::chain::lag_warning_text(lang, lag),
+                yw_engine::btc::chain::lag_warning_text(lang, lag),
                 Tone::Warn,
             ));
         }
@@ -1488,7 +1488,7 @@ impl App {
         items.push(Item::CardEnd);
         items.push(Item::CardStart(None));
         self.btc_activity_items(&ctx, items);
-        self.received_items(crate::received::RecvChain::Btc, items);
+        self.received_items(yw_engine::received::RecvChain::Btc, items);
         items.push(Item::CardEnd);
     }
 
@@ -1506,7 +1506,7 @@ impl App {
                 ids::CARD_COPY,
                 true,
                 self.explorer_address_icon(
-                    crate::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
+                    yw_engine::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
                     &address,
                     crate::ui::screens_explorer::ids::CARD_BTC,
                 ),
@@ -2029,7 +2029,7 @@ impl App {
         // 2026-11-11: the txid on the network's explorer (also before the broadcast is known:
         // the page then says it does not know the transaction yet).
         row.extend(self.explorer_tx_buttons(
-            crate::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
+            yw_engine::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
             &txid.to_display_hex(),
             Some((
                 crate::ui::screens_explorer::ids::RESULT_BTC_OPEN,
@@ -2196,7 +2196,7 @@ impl App {
         }
         items.push(Item::Help(text::ENABLE_HELP.get(lang).to_owned()));
         for known in BtcNetwork::ALL {
-            let network = crate::btc::network_id(known);
+            let network = yw_engine::btc::network_id(known);
             let state = if self.apikeys.has(KeyName::Rpc(network)) {
                 text::RPC_SET.get(lang).to_owned()
             } else {
@@ -2280,18 +2280,18 @@ mod tests {
     use super::{
         T_BTC_ESPLORA_NOTE, fee_choice_of, fee_ids, grouped, ids, mismatch_labels, network_tone,
     };
-    use crate::apikeys::ApiKeys;
     use crate::app::{App, Paths};
-    use crate::errors::ErrorCode;
-    use crate::events::JournalView;
-    use crate::meta::{Meta, Tab};
-    use crate::network::{BtcNet, NetworkId};
-    use crate::settings::Settings;
     use crate::ui::main_window::{Ctl, Item};
     use crate::ui::theme::address_spans;
     use yw_core::lang::Lang;
+    use yw_engine::apikeys::ApiKeys;
+    use yw_engine::errors::ErrorCode;
+    use yw_engine::events::JournalView;
+    use yw_engine::meta::{Meta, Tab};
+    use yw_engine::network::{BtcNet, NetworkId};
     use yw_engine::screen::SettingsSection;
     use yw_engine::screen::Tone;
+    use yw_engine::settings::Settings;
     use yw_engine::wallet::app_btc::{BTC_IMPORT_NOTE, BTC_MAX_ACTIVITY_ROWS, BtcFeeChoice};
     use yw_engine::wallet::app_sol::ReviewBlocker;
     use yw_engine::wallet::{AppMode, Screen};
@@ -2865,7 +2865,7 @@ mod tests {
         let korean: Vec<&str> = super::text::ALL
             .iter()
             .chain(yw_engine::wallet::app_btc::text::ALL)
-            .chain(crate::btc::text::ALL)
+            .chain(yw_engine::btc::text::ALL)
             .map(|entry| entry.ko)
             .filter(|ko| has_hangul(ko) && ko.chars().count() >= 4 && !ko.contains("{0}"))
             .collect();
@@ -2935,7 +2935,7 @@ mod tests {
                 to: BtcNetwork::Mainnet,
             },
             BtcConfirm::IndexerOptIn {
-                indexer: crate::settings::BtcIndexer::BbRpc,
+                indexer: yw_engine::settings::BtcIndexer::BbRpc,
             },
             BtcConfirm::GapWarning { unused: 20 },
             BtcConfirm::Abandon { txid },
@@ -2988,9 +2988,9 @@ mod tests {
         for entry in super::text::ALL
             .iter()
             .chain(yw_engine::wallet::app_btc::text::ALL)
-            .chain(crate::btc::text::ALL)
-            .chain(crate::received::btc::text::ALL)
-            .chain(crate::workers::journal::btc::text::ALL)
+            .chain(yw_engine::btc::text::ALL)
+            .chain(yw_engine::received::btc::text::ALL)
+            .chain(yw_engine::workers::journal::btc::text::ALL)
         {
             let expected: Vec<usize> = (0..entry.args).collect();
             for template in [entry.ko, entry.en] {

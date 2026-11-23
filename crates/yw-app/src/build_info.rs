@@ -7,7 +7,7 @@
 
 use yw_json::{Limits, Value};
 
-use crate::logging::is_commit;
+use yw_engine::logging::is_commit;
 
 /// The startup failure texts of `main.rs` (spec/04 §1.4, spec/14). They live in the library
 /// because `main.rs` is the binary crate and every catalogue must be reachable from the tests.

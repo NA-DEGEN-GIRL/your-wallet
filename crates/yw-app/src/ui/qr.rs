@@ -221,7 +221,7 @@ mod decode_round_trip {
 
     use qrcodegen::{QrCode, QrCodeEcc};
 
-    use crate::walletconnect::qr_decode::{Gray, decode, decode_bgra_text};
+    use yw_engine::walletconnect::qr_decode::{Gray, decode, decode_bgra_text};
 
     const URI: &str = "wc:9e5b70f5ddde5d6f3f5a7b9b4a0a3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b@2?expiryTimestamp=1762430000&relay-protocol=irn&symKey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&methods=wc_sessionPropose,wc_sessionAuthenticate";
 

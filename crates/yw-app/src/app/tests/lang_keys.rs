@@ -6,8 +6,8 @@ use yw_core::lang::{Lang, has_hangul};
 use yw_core::vault::{FileKind, MnemonicInfo, RecordId};
 
 use super::{Screen, app_at, controls, has_text, temp_dir, texts, unlocked_app};
-use crate::events::{SidecarMoves, SidecarRefusal};
 use crate::ui::main_window::Item;
+use yw_engine::events::{SidecarMoves, SidecarRefusal};
 
 /// Every fixed text of `items`: item texts, labelled-row labels and control texts, minus the
 /// given data strings.
@@ -164,7 +164,7 @@ fn english_side_file_overlays_and_notices() {
     let refusal = yw_engine::wallet::app_sidecar::refusal_text(
         Lang::En,
         FileKind::Journal,
-        SidecarRefusal::Failed(crate::errors::ErrorCode::Vlt003),
+        SidecarRefusal::Failed(yw_engine::errors::ErrorCode::Vlt003),
     );
     assert!(
         !has_hangul(&refusal) && refusal.ends_with("(E-VLT-003)"),

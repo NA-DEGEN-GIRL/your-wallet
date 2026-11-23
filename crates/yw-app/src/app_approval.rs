@@ -21,23 +21,25 @@ use yw_win::ui::{
 };
 
 use crate::app::App;
-use crate::errors::ErrorCode;
-use crate::explain::panel::{BODY_LINES, PANEL_TITLE, PanelLine, RETRY_LABEL, body_lines};
 use crate::ui::approval_input::{
     APPROVAL_TIMER_ID, BarHits, Facts, Focus, Mapped, Pressed, ScrollGoal, Step, Surface,
     TrustedSignals, map_msg, panel_click, panel_hit, tab_order, tab_target, wheel_delta,
     window_input,
 };
-use crate::ui::approval_text as text;
-use crate::ui::approval_view::{ApprovalView, Block, Tone, escape_spans};
-use crate::ui::badge::{BADGE_DIP, BADGE_GAP_DIP};
-use crate::ui::interaction::{APPROVAL_TICK_MS, HIGH_RISK_HOLD_MS, PrepareStage, PrepareState};
-use crate::ui::text_layout;
 use crate::ui::theme::{self, FontRole, Fonts, wide};
 #[cfg(test)]
 use yw_engine::approval::QueueOutcome;
 #[cfg(test)]
 use yw_engine::approval::interaction::InteractionEvent;
+use yw_engine::approval::interaction::{
+    APPROVAL_TICK_MS, HIGH_RISK_HOLD_MS, PrepareStage, PrepareState,
+};
+use yw_engine::approval::layout as text_layout;
+use yw_engine::approval::text;
+use yw_engine::approval::view::{ApprovalView, Block, Tone, escape_spans};
+use yw_engine::badge::{BADGE_DIP, BADGE_GAP_DIP};
+use yw_engine::errors::ErrorCode;
+use yw_engine::explain::panel::{BODY_LINES, PANEL_TITLE, PanelLine, RETRY_LABEL, body_lines};
 use yw_engine::wallet::app_approval::is_badge;
 use yw_engine::wallet::approval_flow::{ApprovalFlow, ApprovalPaint};
 
@@ -1923,7 +1925,7 @@ impl App {
         let llm_busy = self
             .llm
             .as_ref()
-            .is_none_or(crate::explain::ExplainService::busy);
+            .is_none_or(yw_engine::explain::ExplainService::busy);
         let lang = self.approval_lang();
         // 2026-11-22 (S4c W15): the flow is borrowed shared (`&self.wallet.evm`) beside the
         // shell's fonts and window state; before, a `Self { wallet: Wallet { evm, .. }, .. }`
@@ -1986,7 +1988,7 @@ impl App {
         }
         if rows.is_empty() {
             rows.push((
-                crate::ui::approval::labels::ORIGIN
+                yw_engine::approval::labels::ORIGIN
                     .get(paint.lang)
                     .to_owned(),
                 yw_core::approval::APP_ORIGIN.get(paint.lang).to_owned(),
@@ -2017,7 +2019,7 @@ impl App {
         let badge_row = paint.view.chain.and_then(|badge| {
             rows.iter()
                 .position(|(label, _, _)| {
-                    label == crate::ui::approval::labels::NETWORK.get(paint.lang)
+                    label == yw_engine::approval::labels::NETWORK.get(paint.lang)
                 })
                 .map(|row| (row, badge))
         });
@@ -2048,12 +2050,12 @@ impl App {
             .iter()
             .any(|badge| is_badge(badge, text::BADGE_MAINNET));
         let (header_fill, header_text, header_muted) = match paint.view.btc_banner {
-            Some(crate::ui::approval_view::BtcBanner::Mainnet) => (
+            Some(yw_engine::approval::view::BtcBanner::Mainnet) => (
                 theme::BTC_MAINNET_BG,
                 theme::BTC_MAINNET_TEXT,
                 theme::BTC_MAINNET_TEXT,
             ),
-            Some(crate::ui::approval_view::BtcBanner::Testnet4) => {
+            Some(yw_engine::approval::view::BtcBanner::Testnet4) => {
                 (theme::BTC_TESTNET4_BG, theme::TEXT, theme::TEXT)
             }
             None if paint.view.testnet => (theme::TESTNET_BG, theme::TEXT, theme::MUTED),
@@ -2119,7 +2121,7 @@ impl App {
                         header_text,
                         // White on the red Bitcoin mainnet header, `FOCUS` elsewhere.
                         if paint.view.btc_banner
-                            == Some(crate::ui::approval_view::BtcBanner::Mainnet)
+                            == Some(yw_engine::approval::view::BtcBanner::Mainnet)
                         {
                             header_text
                         } else {
@@ -2494,8 +2496,8 @@ impl App {
         };
     }
 
-    /// Paints the AI panel body (spec/06 §6): plain text laid out by `ui::text_layout`, wrapped
-    /// only; no links, formatting, click actions or copy.
+    /// Paints the AI panel body (spec/06 §6): plain text laid out by
+    /// `yw_engine::approval::layout`, wrapped only; no links, formatting, click actions or copy.
     fn paint_ai_body(&mut self, window: &Window) {
         let now = self.clock.now_ms();
         let dpi = window.dpi();
@@ -2787,7 +2789,7 @@ impl App {
     }
 
     /// The open window's AI panel state (spec/06), if it has one.
-    pub(crate) fn tour_ai_state(&self) -> Option<crate::explain::AiPanelState> {
+    pub(crate) fn tour_ai_state(&self) -> Option<yw_engine::explain::AiPanelState> {
         // 2026-11-19 (S4 B4b): read through the flow's `ApprovalPaint`.
         self.evm
             .approval
@@ -2807,9 +2809,9 @@ mod tests {
     use super::{BarMetrics, bar_layout, layout_badges};
     use yw_engine::wallet::app_approval::{network_badge, order_badges};
 
-    const MAINNET_BADGE: &str = crate::ui::approval_text::BADGE_MAINNET.ko;
-    const T_ACK_FIRST: &str = crate::ui::approval_text::ACK_FIRST.ko;
-    const T_SIM_RESIM_FAILED: &str = crate::ui::approval_text::SIM_RESIM_FAILED.ko;
+    const MAINNET_BADGE: &str = yw_engine::approval::text::BADGE_MAINNET.ko;
+    const T_ACK_FIRST: &str = yw_engine::approval::text::ACK_FIRST.ko;
+    const T_SIM_RESIM_FAILED: &str = yw_engine::approval::text::SIM_RESIM_FAILED.ko;
     use crate::ui::theme;
 
     /// Test widths: 13 px a Hangul (or other wide) character, 7 px an ASCII one (96 DPI).

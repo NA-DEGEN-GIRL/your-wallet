@@ -244,7 +244,7 @@ fn reparse_points_are_refused_on_read_and_commit() {
 /// writable. The platform also opens the real folder storage.
 #[test]
 fn win_key_platform_gives_the_locked_slot_and_the_folder_storage() {
-    use crate::workers::key::platform::KeyPlatform;
+    use yw_engine::workers::key::platform::KeyPlatform;
 
     let platform = super::WinKeyPlatform;
     let mut slot = platform.new_slot().unwrap();

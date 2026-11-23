@@ -10,7 +10,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::logging::{self, LogLevel, LogSink, format_line_now};
+use yw_engine::logging::{self, LogLevel, LogSink, format_line_now};
 
 /// Rotation threshold.
 pub const LOG_FILE_MAX_BYTES: u64 = 1_048_576;

@@ -19,12 +19,7 @@ use yw_win::input::is_down;
 use yw_win::session;
 use yw_win::ui::{Handler, Msg, Reply, UiError, Window, WindowKind, WindowSpec, create_window};
 
-use crate::apikeys::ApiKeys;
 use crate::app_store::WinAppStore;
-use crate::errors::ErrorCode;
-use crate::events::{KeyQueue, LockSignal};
-use crate::logging::{self, Field};
-use crate::settings::Settings;
 use crate::shell_msg::{
     SystemAction, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT,
     WM_YW_TAB_SHORTCUT, system_action,
@@ -35,17 +30,22 @@ use crate::ui::secret::{
     CaptureDecision, FormAction, PASTE_MAX_UTF16_UNITS, SECRET_TIMER_ID, SECRET_TIMER_MS,
     SecretForm, capture_decision, window_size,
 };
+use yw_engine::apikeys::ApiKeys;
+use yw_engine::errors::ErrorCode;
+use yw_engine::events::{KeyQueue, LockSignal};
+use yw_engine::logging::{self, Field};
+use yw_engine::settings::Settings;
 use yw_engine::wallet::lock::LockReason;
 use yw_engine::wallet::secret_session::SecretAction;
 // `IDOK`/`IDCANCEL`: the ids `IsDialogMessageW` sends for Enter and Esc (2026-11-18, S3 B2: they
 // were constants of this file).
 use crate::ui::cmd_table::{self, IDCANCEL, IDOK};
 use crate::ui::theme::{FontCache, FontRole, wide};
-use crate::workers::rpc::RpcJob;
 use yw_core::lang::Lang;
 use yw_engine::approval::flow::OpenOutcome;
 use yw_engine::cmd::{Cmd, CorePress, Press, TickPart};
 use yw_engine::effect::TimerId;
+use yw_engine::workers::rpc::RpcJob;
 // `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
 // review); since C3 `Wallet::take_cred` uses it in every build.
 use yw_engine::form::{CredField, EditField};
@@ -552,14 +552,14 @@ enum EscTarget {
 
 /// Loads `settings.json` (spec/04 §6.2).
 #[must_use]
-pub fn load_settings(paths: &Paths) -> crate::settings::SettingsLoad {
+pub fn load_settings(paths: &Paths) -> yw_engine::settings::SettingsLoad {
     match read_limited_no_reparse(
         &paths.settings(),
-        u64::try_from(crate::settings::SETTINGS_MAX_BYTES).unwrap_or(65_536),
+        u64::try_from(yw_engine::settings::SETTINGS_MAX_BYTES).unwrap_or(65_536),
     ) {
-        Ok(bytes) => crate::settings::load(Some(&bytes)),
-        Err(FileError::NotFound) => crate::settings::load(None),
-        Err(_) => crate::settings::SettingsLoad {
+        Ok(bytes) => yw_engine::settings::load(Some(&bytes)),
+        Err(FileError::NotFound) => yw_engine::settings::load(None),
+        Err(_) => yw_engine::settings::SettingsLoad {
             settings: Settings::default(),
             banners: vec!["settings.json".to_owned()],
         },
@@ -745,7 +745,7 @@ impl App {
     /// ([`Wallet::workers_attached`]); before, all three were written here (the threads first).
     pub fn attach_workers(
         &mut self,
-        events: Arc<crate::events::EventQueue>,
+        events: Arc<yw_engine::events::EventQueue>,
         workers: Vec<JoinHandle<()>>,
         rpc_tx: Sender<RpcJob>,
     ) {
@@ -1706,9 +1706,9 @@ impl App {
     /// in of a key result as the event drain hands it on (`App::drain_events`: the typed entry
     /// [`Wallet::worker_event`], then the drain); before, also the event drain's own call.
     #[cfg(test)]
-    pub(crate) fn on_key_result(&mut self, result: crate::events::KeyResult) {
+    pub(crate) fn on_key_result(&mut self, result: yw_engine::events::KeyResult) {
         self.wallet
-            .worker_event(crate::events::UiEvent::Key(Box::new(result)));
+            .worker_event(yw_engine::events::UiEvent::Key(Box::new(result)));
         self.drain();
     }
 }

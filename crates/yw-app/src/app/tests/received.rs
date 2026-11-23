@@ -7,12 +7,14 @@ use std::sync::mpsc::Receiver;
 use yw_core::lang::Lang;
 
 use super::{controls, ctl, has_text, unlocked_app};
-use crate::network::NetworkId;
-use crate::received::{Cursor, Fetched, Found, Incoming, ReceivedEvent, ReceivedJob, RecvChain};
 use crate::ui::main_window::Item;
 use crate::ui::screens_received::{dust_line, ids, text as recv_text};
-use crate::workers::rpc::RpcJob;
+use yw_engine::network::NetworkId;
+use yw_engine::received::{
+    Cursor, Fetched, Found, Incoming, ReceivedEvent, ReceivedJob, RecvChain,
+};
 use yw_engine::screen::Tone;
+use yw_engine::workers::rpc::RpcJob;
 
 fn received(rx: &Receiver<RpcJob>) -> Vec<ReceivedJob> {
     rx.try_iter()
@@ -77,7 +79,7 @@ fn switch_off_queues_nothing_and_on_reads_the_shown_card() {
     assert_eq!(job.cursor, Cursor::Start);
     assert!(matches!(
         &job.kind,
-        crate::received::JobKind::Evm { tokens, .. } if !tokens.is_empty()
+        yw_engine::received::JobKind::Evm { tokens, .. } if !tokens.is_empty()
     ));
     // In flight: no second read, not even after 60 s.
     app.received_tick(now + 120_000);
@@ -206,7 +208,7 @@ fn pending_row(key: &str, units: u64) -> Incoming {
         hash: key.to_owned(),
         amount: yw_core::zec::format_zec(units),
         symbol: "ZEC".to_owned(),
-        from_note: Some(crate::received::zec::text::NO_SENDER.ko),
+        from_note: Some(yw_engine::received::zec::text::NO_SENDER.ko),
         pending: true,
         amount_units: units,
         ..Incoming::default()
@@ -340,14 +342,17 @@ fn unsupported_read_drops_pending_rows_and_coverage() {
     });
     assert_eq!(list.pending_sum(), Some(50_000));
     list.apply(Fetched {
-        unsupported: Some(crate::received::btc::T_BB_NO_TXS.ko),
+        unsupported: Some(yw_engine::received::btc::T_BB_NO_TXS.ko),
         ..Fetched::default()
     });
     assert_eq!(list.pending_sum(), None);
     assert!(list.covered.is_empty());
     assert_eq!(list.entries.len(), 1);
     assert!(!list.entries[0].pending);
-    assert_eq!(list.unsupported, Some(crate::received::btc::T_BB_NO_TXS.ko));
+    assert_eq!(
+        list.unsupported,
+        Some(yw_engine::received::btc::T_BB_NO_TXS.ko)
+    );
 }
 
 /// 2026-11-13 review (spec/04 §2.6): a pending row whose status the source keeps not giving
@@ -355,7 +360,7 @@ fn unsupported_read_drops_pending_rows_and_coverage() {
 /// after `PENDING_MISS_MAX` reads in a row; a read listing it again starts the count over.
 #[test]
 fn missed_pending_rows_go_after_three_reads() {
-    use crate::received::PENDING_MISS_MAX;
+    use yw_engine::received::PENDING_MISS_MAX;
     use yw_engine::wallet::app_received::RecvList;
     let a = pending_row("a", 50_000);
     let mut list = RecvList::default();
@@ -381,7 +386,7 @@ fn missed_pending_rows_go_after_three_reads() {
     assert_eq!(list.dropped, 1);
 }
 
-fn zec_snapshot(utxos: Vec<yw_core::zec::ZecUtxo>) -> crate::zec::work::ZecSnapshot {
+fn zec_snapshot(utxos: Vec<yw_core::zec::ZecUtxo>) -> yw_engine::zec::work::ZecSnapshot {
     let info = yw_json::parse(
         br#"{"chain":"test","blocks":4470000,"headers":4470001,
             "consensus":{"chaintip":"77190ad9","nextblock":"77190ad9"},
@@ -389,8 +394,9 @@ fn zec_snapshot(utxos: Vec<yw_core::zec::ZecUtxo>) -> crate::zec::work::ZecSnaps
         &yw_json::Limits::RESPONSE,
     )
     .unwrap();
-    crate::zec::work::ZecSnapshot {
-        chain: crate::zec::rpc::parse_chain_info(&info, yw_core::zec::ZecNetwork::Testnet).unwrap(),
+    yw_engine::zec::work::ZecSnapshot {
+        chain: yw_engine::zec::rpc::parse_chain_info(&info, yw_core::zec::ZecNetwork::Testnet)
+            .unwrap(),
         utxos,
         ignored_utxos: 0,
         utxo_error: None,
@@ -414,10 +420,10 @@ fn zcash_unconfirmed_deposits_on_the_card() {
     let (mut app, dir) = unlocked_app("received-zec", false);
     let (tx, rx) = std::sync::mpsc::channel();
     app.rpc_tx = Some(tx);
-    app.meta.as_mut().unwrap().prefs.tab = crate::meta::Tab::Zec;
+    app.meta.as_mut().unwrap().prefs.tab = yw_engine::meta::Tab::Zec;
     app.settings.zcash.enabled = true;
     app.settings.zcash.network = ZecNetwork::Testnet;
-    app.settings.zcash.indexer = crate::settings::ZecIndexer::BbRest;
+    app.settings.zcash.indexer = yw_engine::settings::ZecIndexer::BbRest;
     let account = yw_core::zec::ZecAccount {
         network: ZecNetwork::Testnet,
         source: yw_core::zec::ZecKeySource::DEFAULT,
@@ -477,7 +483,7 @@ fn zcash_unconfirmed_deposits_on_the_card() {
     app.on_command(ids::toggle(RecvChain::Zec));
     let jobs = received(&rx);
     assert_eq!(jobs.len(), 1);
-    let crate::received::JobKind::Zec(work) = &jobs[0].kind else {
+    let yw_engine::received::JobKind::Zec(work) = &jobs[0].kind else {
         unreachable!("{:?}", jobs[0].kind);
     };
     let dust = yw_core::zec::tx::txid_display(&[4; 32]);
@@ -499,7 +505,7 @@ fn zcash_unconfirmed_deposits_on_the_card() {
                 entries: vec![row.clone()],
                 dust: Vec::new(),
             },
-            limited: Some(crate::received::zec::text::NO_DELTAS_PENDING.ko),
+            limited: Some(yw_engine::received::zec::text::NO_DELTAS_PENDING.ko),
             ..Fetched::default()
         }),
     });
@@ -514,14 +520,14 @@ fn zcash_unconfirmed_deposits_on_the_card() {
     assert!(has_text(&items, recv_text::PENDING_HELP.ko));
     assert!(has_text(
         &items,
-        crate::received::zec::text::NO_DELTAS_PENDING.ko
+        yw_engine::received::zec::text::NO_DELTAS_PENDING.ko
     ));
 
     // The next automatic read carries the pending row; the row goes, counted.
     app.received_tick(yw_win::time::monotonic_ms() + 61_000);
     let next = received(&rx);
     assert_eq!(next.len(), 1, "a limited source keeps reading");
-    let crate::received::JobKind::Zec(work) = &next[0].kind else {
+    let yw_engine::received::JobKind::Zec(work) = &next[0].kind else {
         unreachable!("{:?}", next[0].kind);
     };
     assert_eq!(work.pending, [row]);

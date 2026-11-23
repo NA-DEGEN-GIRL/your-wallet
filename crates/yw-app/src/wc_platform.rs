@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use yw_engine::services::WcPlatform;
 
-use crate::walletconnect::verify::{P256Verify, VerifyHttp};
-use crate::walletconnect::worker::{ConnectError, RelayConnector, RelayLink, connect_error};
+use yw_engine::walletconnect::verify::{P256Verify, VerifyHttp};
+use yw_engine::walletconnect::worker::{ConnectError, RelayConnector, RelayLink, connect_error};
 
 /// Relay connect timeout.
 const CONNECT_TIMEOUT_MS: u32 = 15_000;

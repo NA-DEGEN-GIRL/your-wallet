@@ -25,13 +25,13 @@ use yw_core::lang::Text;
 use yw_core::secret::Zeroizing;
 use yw_win::file::read_limited_no_reparse;
 
-use crate::apikeys::KeyName;
 use crate::app::App;
-use crate::network::NetworkId;
-use crate::settings::Settings;
 use crate::ui::main_window::{Ctl, Item};
+use yw_engine::apikeys::KeyName;
 use yw_engine::cmd::RpcImportPress;
+use yw_engine::network::NetworkId;
 use yw_engine::screen::Tone;
+use yw_engine::settings::Settings;
 use yw_engine::wallet::app_rpc_plan::{DeleteError, ImportError, ImportPlan, plan_from_bytes};
 
 /// Largest `rpc.json` (spec/01 §4.6).
@@ -338,10 +338,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use crate::apikeys::{ApiKeys, KeyName};
     use crate::app::{App, Paths};
-    use crate::network::{BtcNet, NetworkId, SolCluster};
-    use crate::settings::{RpcTemplate, Settings};
+    use yw_engine::apikeys::{ApiKeys, KeyName};
+    use yw_engine::network::{BtcNet, NetworkId, SolCluster};
+    use yw_engine::settings::{RpcTemplate, Settings};
     use yw_engine::wallet::app_rpc_plan::{
         ImportError, Provider, apply_plan, check_url, plan_from_bytes,
     };

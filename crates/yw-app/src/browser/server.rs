@@ -22,11 +22,11 @@ use yw_engine::errors::ErrorCode;
 use yw_json::frame::{MAX_FRAME_BYTES, read_frame, write_frame};
 use yw_win::pipe::{Duplex, PipeReader, PipeWriter, Server, ServerError, ServerStop};
 
-use super::envelope::{
+use yw_engine::browser::envelope::{
     encode_event, encode_hello_ack, encode_hello_reject, encode_response, parse_hello,
 };
-use super::{BrowserCore, HELLO_TIMEOUT_MS, Outbound};
-use crate::logging::{self, Field};
+use yw_engine::browser::{BrowserCore, HELLO_TIMEOUT_MS, Outbound};
+use yw_engine::logging::{self, Field};
 
 /// The running server.
 pub struct PipeServer {

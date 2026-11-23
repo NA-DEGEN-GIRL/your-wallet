@@ -7,9 +7,9 @@ use yw_core::evm::address::parse_address;
 use yw_core::evm::display::format_address;
 
 use crate::app::App;
-use crate::meta::{BookChain, Contact};
-use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item};
+use yw_engine::badge::Badge;
+use yw_engine::meta::{BookChain, Contact};
 use yw_engine::screen::Tone;
 use yw_engine::text::grouped;
 use yw_engine::wallet::app_book::{BookTarget, PromptPlace, short_address};

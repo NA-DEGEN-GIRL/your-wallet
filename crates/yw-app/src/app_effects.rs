@@ -104,8 +104,8 @@ use yw_engine::secret::SecretEffect;
 use yw_win::clipboard;
 
 use crate::app::App;
-use crate::logging::{self, Field};
 use crate::ui::cmd_table::{self, cred_id_of, edit_id_of};
+use yw_engine::logging::{self, Field};
 
 #[cfg(test)]
 thread_local! {

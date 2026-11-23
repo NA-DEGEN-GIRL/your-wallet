@@ -12,9 +12,9 @@ use yw_core::lang::Lang;
 use yw_core::policy::{BrowserOrigin, Family};
 
 use crate::app::App;
-use crate::meta::BookChain;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_book::shown_address;
+use yw_engine::meta::BookChain;
 use yw_engine::screen::Tone;
 
 /// Control ids (6,700–6,965; the whole map is `ui::command_ids`).
@@ -122,7 +122,7 @@ fn page_nav(lang: Lang, items: &mut Vec<Item>, total: usize, pages: usize, shown
 
 fn local_time(unix_ms: u64) -> String {
     let local = yw_win::time::local_wall_ms(unix_ms);
-    let text = crate::logging::format_utc(local.unwrap_or(unix_ms));
+    let text = yw_engine::logging::format_utc(local.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if local.is_some() {
         short
@@ -220,7 +220,7 @@ impl App {
         let grants: Vec<_> = self
             .browser_grants()
             .into_iter()
-            .filter(|grant| !crate::walletconnect::is_session_origin(&grant.origin))
+            .filter(|grant| !yw_engine::walletconnect::is_session_origin(&grant.origin))
             .collect();
         let (sol_grants, btc_grants) = self.chain_grants();
         items.push(Item::Help(text::HELP.get(lang).to_owned()));
@@ -266,7 +266,7 @@ impl App {
                 .evm_chain_name_in(lang, site.chain_id)
                 .unwrap_or_else(|| format!("chainId {}", site.chain_id));
             items.push(Item::Badged(
-                crate::ui::badge::Badge::evm(site.chain_id, &chain),
+                yw_engine::badge::Badge::evm(site.chain_id, &chain),
                 Box::new(Item::Field(text::NETWORK.get(lang).to_owned(), chain)),
             ));
             items.push(Item::Field(
@@ -317,7 +317,7 @@ impl App {
                 yw_engine::wallet::app_browser::card_title(&grant.origin, Family::Solana),
             )));
             items.push(Item::Badged(
-                crate::ui::badge::Badge::family(BookChain::Sol),
+                yw_engine::badge::Badge::family(BookChain::Sol),
                 Box::new(Item::Field(
                     text::NETWORK.get(lang).to_owned(),
                     "Solana".to_owned(),
@@ -352,7 +352,7 @@ impl App {
                 yw_engine::wallet::app_browser::card_title(&grant.origin, Family::Bitcoin),
             )));
             items.push(Item::Badged(
-                crate::ui::badge::Badge::bitcoin(grant.network),
+                yw_engine::badge::Badge::bitcoin(grant.network),
                 Box::new(Item::Field(
                     text::NETWORK.get(lang).to_owned(),
                     yw_core::btc::text::network_name(lang, grant.network).to_owned(),

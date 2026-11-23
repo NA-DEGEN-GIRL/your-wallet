@@ -12,13 +12,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use yw_engine::services::WcPlatform;
 
-use crate::apikeys::ApiKeys;
 use crate::app::{App, Paths};
-use crate::events::EventQueue;
-use crate::settings::Settings;
-use crate::walletconnect::verify::{P256Verify, VerifyHttp};
-use crate::walletconnect::worker::{ConnectError, RelayConnector, RelayLink};
+use yw_engine::apikeys::ApiKeys;
+use yw_engine::events::EventQueue;
+use yw_engine::settings::Settings;
 use yw_engine::wallet::app_browser::{BrowserUi, GrantWrite, SiteRows};
+use yw_engine::walletconnect::verify::{P256Verify, VerifyHttp};
+use yw_engine::walletconnect::worker::{ConnectError, RelayConnector, RelayLink};
 
 /// How often each part was asked for: `[connector, verify_http, p256, connect]`.
 type Counts = Arc<[AtomicUsize; 4]>;
@@ -67,14 +67,14 @@ fn app_with_browser(tag: &str) -> App {
         ApiKeys::default(),
     );
     let events = Arc::new(EventQueue::new(Box::new(|| {})));
-    let core = crate::browser::BrowserCore::new(
+    let core = yw_engine::browser::BrowserCore::new(
         "abcdefghijklmnopabcdefghijklmnop",
-        Arc::clone(&events) as Arc<dyn crate::browser::DappSink>,
+        Arc::clone(&events) as Arc<dyn yw_engine::browser::DappSink>,
         Arc::clone(&app.clock),
     );
     app.browser = Some(BrowserUi {
         core,
-        reads: Arc::new(crate::browser::read::ReadContext::new(None)),
+        reads: Arc::new(yw_engine::browser::read::ReadContext::new(None)),
         connections: 0,
         waiters: HashMap::new(),
         broadcasts: HashMap::new(),
@@ -128,7 +128,7 @@ fn the_relay_worker_starts_from_the_injected_services() {
 fn the_windows_services_keep_the_user_agent_word() {
     let services = crate::app::windows_services();
     assert_eq!(services.ua_platform, "windows");
-    assert!(crate::walletconnect::worker::relay_ua(services.ua_platform).ends_with("/windows"));
+    assert!(yw_engine::walletconnect::worker::relay_ua(services.ua_platform).ends_with("/windows"));
     assert!(services.walletconnect.is_some());
     assert_eq!(
         format!("{services:?}"),

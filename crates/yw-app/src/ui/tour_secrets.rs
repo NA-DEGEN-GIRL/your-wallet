@@ -75,17 +75,17 @@ use crate::app::tests::s3_census::Census;
 use crate::app::tests::s4_secret::host;
 use crate::app_approval::flow_support::{Fixture, HostMode, Outlet, START_MS};
 use crate::app_approval::headless_host::{self, OpenAnswer};
-use crate::events::{KeyJob, KeyOutcome, KeyResult, RevealWhat};
 use crate::explorer_launcher::Launcher;
 use crate::ui::secret::SECRET_TIMER_ID;
-use crate::workers::key::mnemonics::MnOutcome;
-use crate::workers::key::yubikey::YkOutcome;
-use crate::workers::rpc::RpcJob;
+use yw_engine::events::{KeyJob, KeyOutcome, KeyResult, RevealWhat};
 use yw_engine::secret::{CardSecretKind, DisplaySecret, SecretKind};
 use yw_engine::wallet::app_mnemonics::MnPurpose;
 use yw_engine::wallet::app_yubikey::YkPurpose;
 use yw_engine::wallet::lock::LockReason;
 use yw_engine::wallet::{AppMode, PasswordAction, Purpose};
+use yw_engine::workers::key::mnemonics::MnOutcome;
+use yw_engine::workers::key::yubikey::YkOutcome;
+use yw_engine::workers::rpc::RpcJob;
 
 pub(crate) const SECRET_GOLDEN: &str = include_str!("../app/tests/s4_secret/secret.txt");
 pub(crate) const LOCK_GOLDEN: &str = include_str!("../app/tests/s4_secret/lock.txt");
@@ -148,8 +148,8 @@ fn backup_challenge() -> BackupChallenge {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let deps =
-            crate::store::WinKeyPlatform::deps_with_cards(Box::new(crate::yubikey::NoReaders));
-        let mut worker = crate::workers::key::KeyWorker::new(&dir, deps);
+            crate::store::WinKeyPlatform::deps_with_cards(Box::new(yw_engine::yubikey::NoReaders));
+        let mut worker = yw_engine::workers::key::KeyWorker::new(&dir, deps);
         let _ = worker.handle(KeyJob::Load);
         let created = worker.handle(KeyJob::CreateWallet {
             password: bytes(PASSWORD),
@@ -177,9 +177,11 @@ mod card_wallet {
     /// Builds `yw_engine::testkit::yubikey_wallet` (the `abandon … about` vault with an enrolled
     /// emulator card) in `dir` with no card readers, and returns the wallet folder and its loaded
     /// meta; no card job runs (as `app_approval::flow_tests::lifecycle`).
-    pub(super) fn meta(dir: std::path::PathBuf) -> (std::path::PathBuf, crate::events::MetaLoaded) {
+    pub(super) fn meta(
+        dir: std::path::PathBuf,
+    ) -> (std::path::PathBuf, yw_engine::events::MetaLoaded) {
         let deps =
-            crate::store::WinKeyPlatform::deps_with_cards(Box::new(crate::yubikey::NoReaders));
+            crate::store::WinKeyPlatform::deps_with_cards(Box::new(yw_engine::yubikey::NoReaders));
         let (worker, _cards, wallet_dir, loaded) = yw_engine::testkit::yubikey_wallet(dir, deps);
         drop(worker);
         (wallet_dir, loaded)
@@ -1067,7 +1069,7 @@ fn card_pin_window_page_cancelled() -> Vec<String> {
             core.handle_frame(outlet.conn, frame.as_bytes());
         }
         for event in outlet.events.drain() {
-            if let crate::events::UiEvent::Dapp(event) = event {
+            if let yw_engine::events::UiEvent::Dapp(event) = event {
                 env.fx.app().on_dapp_event(event);
             }
         }

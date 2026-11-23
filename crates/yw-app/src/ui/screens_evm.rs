@@ -9,18 +9,18 @@ use yw_core::evm::display::format_address;
 use yw_core::lang::Lang;
 
 use crate::app::App;
-use crate::errors::ErrorCode;
-use crate::flow::evm::MismatchKind;
-use crate::logging::format_utc;
-use crate::meta::BookChain;
-use crate::network::NetworkId;
-use crate::token_view::RowPlace;
-use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::qr::RECEIVE_SHARED_ADDRESS_NOTE;
+use yw_engine::badge::Badge;
 use yw_engine::badge::custom_chain_badge;
+use yw_engine::errors::ErrorCode;
+use yw_engine::flow::evm::MismatchKind;
+use yw_engine::logging::format_utc;
+use yw_engine::meta::BookChain;
+use yw_engine::network::NetworkId;
 use yw_engine::screen::Tone;
 use yw_engine::screen::{ActivityRowView, EvmQrKind};
+use yw_engine::token_view::RowPlace;
 use yw_engine::wallet::AppMode;
 use yw_engine::wallet::app_book::{BookTarget, PromptPlace};
 use yw_engine::wallet::app_evm::{SendAsset, hash_text};
@@ -493,7 +493,7 @@ impl App {
         let network = NetworkId::Eip155(chain_id);
         let lang = self.settings.language;
         let browser = browser_status_text(lang, self.browser.as_ref(), self.pipe.as_ref());
-        let rpc = if !self.apikeys.has(crate::apikeys::KeyName::Rpc(network)) {
+        let rpc = if !self.apikeys.has(yw_engine::apikeys::KeyName::Rpc(network)) {
             text::RPC_NO_ADDRESS.get(lang)
         } else if let Some(kind) = self.evm.blocked(chain_id) {
             return text::RPC_BLOCKED.fill(lang, [kind.code().code(), &browser]);
@@ -577,7 +577,7 @@ impl App {
             return;
         };
         if self.evm.blocked(chain_id).is_some()
-            || !self.apikeys.has(crate::apikeys::KeyName::Rpc(network))
+            || !self.apikeys.has(yw_engine::apikeys::KeyName::Rpc(network))
         {
             return;
         }
@@ -813,7 +813,7 @@ impl App {
                 },
             )]));
         }
-        self.received_items(crate::received::RecvChain::Evm, items);
+        self.received_items(yw_engine::received::RecvChain::Evm, items);
         items.push(Item::CardEnd);
     }
 
@@ -846,7 +846,9 @@ impl App {
         let can_send = matches!(self.mode, AppMode::Unlocked { .. })
             && self
                 .apikeys
-                .has(crate::apikeys::KeyName::Rpc(NetworkId::Eip155(chain_id)));
+                .has(yw_engine::apikeys::KeyName::Rpc(NetworkId::Eip155(
+                    chain_id,
+                )));
         for (position, row) in shown.into_iter().enumerate() {
             if position > 0 {
                 items.push(Item::Rule);
@@ -1117,13 +1119,13 @@ impl App {
             }
             if form.contract == Some(true) && form.asset == SendAsset::Native {
                 items.push(Item::Banner(
-                    crate::flow::evm::form::AddressNote::Contract.text_in(lang),
+                    yw_engine::flow::evm::form::AddressNote::Contract.text_in(lang),
                     Tone::Warn,
                 ));
             }
             if notes
                 .iter()
-                .any(crate::flow::evm::form::AddressNote::needs_ack)
+                .any(yw_engine::flow::evm::form::AddressNote::needs_ack)
             {
                 items.push(Item::Row(vec![Ctl::check(
                     ids::SEND_ACK,
@@ -1133,7 +1135,7 @@ impl App {
                 if notes.iter().any(|note| {
                     matches!(
                         note,
-                        crate::flow::evm::form::AddressNote::Book {
+                        yw_engine::flow::evm::form::AddressNote::Book {
                             verified: false,
                             ..
                         }
@@ -1518,7 +1520,7 @@ impl App {
             let symbol = meta
                 .symbol
                 .as_deref()
-                .filter(|symbol| crate::text::is_symbol(symbol))
+                .filter(|symbol| yw_engine::text::is_symbol(symbol))
                 .unwrap_or(text::SYMBOL_UNSHOWABLE.get(lang));
             items.push(Item::Rule);
             items.push(Item::Mono(format_address(token)));
@@ -1562,7 +1564,7 @@ impl App {
                 .evm_chains
                 .iter()
                 .find(|def| def.chain_id == chain_id);
-            let info = crate::flow::evm::chain_info(&self.settings, chain_id);
+            let info = yw_engine::flow::evm::chain_info(&self.settings, chain_id);
             let (symbol, decimals, simulation) =
                 info.as_ref().map_or((String::new(), 18, "auto"), |chain| {
                     (
@@ -1572,10 +1574,10 @@ impl App {
                     )
                 });
             let state = match self.evm.chain_checks.get(&chain_id) {
-                Some(crate::flow::evm::ChainCheck::Verified { .. }) => {
+                Some(yw_engine::flow::evm::ChainCheck::Verified { .. }) => {
                     text::CONNECTED.get(lang).to_owned()
                 }
-                Some(crate::flow::evm::ChainCheck::Mismatch(kind)) => {
+                Some(yw_engine::flow::evm::ChainCheck::Mismatch(kind)) => {
                     text::BLOCKED_CODE.fill(lang, [kind.code().code()])
                 }
                 _ => text::UNCHECKED.get(lang).to_owned(),
@@ -1619,7 +1621,7 @@ impl App {
             if self.show_advanced {
                 let genesis = self.pinned_genesis(chain_id).map_or_else(
                     || text::PIN_ON_FIRST.get(lang).to_owned(),
-                    |hash| crate::text::hash32_text(&hash),
+                    |hash| yw_engine::text::hash32_text(&hash),
                 );
                 items.push(Item::Mono(format!("genesis {genesis}")));
             }
@@ -1690,7 +1692,7 @@ impl App {
         if let Some(message) = &caps.message {
             items.push(Item::Banner(message.clone(), Tone::Info));
         }
-        let symbol = crate::flow::evm::chain_info(&self.settings, caps.chain_id)
+        let symbol = yw_engine::flow::evm::chain_info(&self.settings, caps.chain_id)
             .map_or_else(String::new, |chain| chain.native_symbol);
         items.push(Item::LabeledRow(
             text::CAPS_FEE.get(lang).to_owned(),
@@ -1743,7 +1745,7 @@ impl App {
             vec![Ctl::edit(ids::CHAIN_NAME_EDIT, &form.name, 260, false, 64)],
         ));
         items.push(Item::LabeledRow(
-            crate::flow::evm::user_chain::text::ITEM_SYMBOL
+            yw_engine::flow::evm::user_chain::text::ITEM_SYMBOL
                 .get(lang)
                 .to_owned(),
             vec![Ctl::edit(
@@ -1755,7 +1757,7 @@ impl App {
             )],
         ));
         items.push(Item::LabeledRow(
-            crate::flow::evm::user_chain::text::ITEM_DECIMALS
+            yw_engine::flow::evm::user_chain::text::ITEM_DECIMALS
                 .get(lang)
                 .to_owned(),
             vec![Ctl::edit(
@@ -1776,13 +1778,13 @@ impl App {
         }
         .get(lang);
         let hint = match template {
-            crate::settings::RpcTemplate::QuickNode => {
+            yw_engine::settings::RpcTemplate::QuickNode => {
                 text::RPC_HINT_QUICKNODE.fill(lang, [credential])
             }
-            crate::settings::RpcTemplate::Alchemy => {
+            yw_engine::settings::RpcTemplate::Alchemy => {
                 text::RPC_HINT_ALCHEMY.fill(lang, [credential])
             }
-            crate::settings::RpcTemplate::Manual => text::RPC_HINT_MANUAL.get(lang).to_owned(),
+            yw_engine::settings::RpcTemplate::Manual => text::RPC_HINT_MANUAL.get(lang).to_owned(),
         };
         items.push(Item::LabeledRow(
             text::RPC_ADDRESS.get(lang).to_owned(),
@@ -1841,16 +1843,18 @@ impl App {
         };
         let lang = self.settings.language;
         let rpc = match &valid.rpc {
-            crate::flow::evm::user_chain::RpcSpec::Template {
+            yw_engine::flow::evm::user_chain::RpcSpec::Template {
                 template, entry, ..
             } => match template {
-                crate::settings::RpcTemplate::QuickNode => {
+                yw_engine::settings::RpcTemplate::QuickNode => {
                     text::QUICKNODE_ENTRY.fill(lang, [entry])
                 }
                 _ => text::ALCHEMY_ENTRY.fill(lang, [entry]),
             },
-            crate::flow::evm::user_chain::RpcSpec::Url(url) => crate::apikeys::mask_url(url),
-            crate::flow::evm::user_chain::RpcSpec::Keep => String::new(),
+            yw_engine::flow::evm::user_chain::RpcSpec::Url(url) => {
+                yw_engine::apikeys::mask_url(url)
+            }
+            yw_engine::flow::evm::user_chain::RpcSpec::Keep => String::new(),
         };
         text::CHAIN_PIN.fill(
             lang,
@@ -1858,7 +1862,7 @@ impl App {
                 &valid.chain_id.to_string(),
                 &valid.name,
                 &rpc,
-                &crate::text::hash32_text(&genesis),
+                &yw_engine::text::hash32_text(&genesis),
             ],
         )
     }
@@ -1871,10 +1875,10 @@ impl App {
         };
         let old = self
             .pinned_genesis(repin.chain_id)
-            .map_or_else(String::new, |hash| crate::text::hash32_text(&hash));
+            .map_or_else(String::new, |hash| yw_engine::text::hash32_text(&hash));
         let new = repin
             .new
-            .map_or_else(String::new, |hash| crate::text::hash32_text(&hash));
+            .map_or_else(String::new, |hash| yw_engine::text::hash32_text(&hash));
         text::CHAIN_REPIN.fill(self.settings.language, [&old, &new])
     }
 

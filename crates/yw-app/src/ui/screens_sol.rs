@@ -16,10 +16,10 @@ use yw_core::sol::token::TokenHolding;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SplAllowEntry};
 
 use crate::app::App;
-use crate::meta::{BookChain, Tab};
-use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_accounts::{AccountCard, AccountItem, SelectedLine};
+use yw_engine::badge::Badge;
+use yw_engine::meta::{BookChain, Tab};
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::Tone;
 use yw_engine::wallet::app_book::{BookTarget, PromptPlace};
@@ -521,7 +521,7 @@ pub mod ids {
 
 fn local_time(unix_ms: u64) -> String {
     let wall = yw_win::time::local_wall_ms(unix_ms);
-    let text = crate::logging::format_utc(wall.unwrap_or(unix_ms));
+    let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
         short
@@ -651,7 +651,7 @@ impl App {
                 Tone::Blocked,
             ));
         }
-        let network = crate::network::NetworkId::Solana(self.settings.solana.cluster);
+        let network = yw_engine::network::NetworkId::Solana(self.settings.solana.cluster);
         let no_endpoint = self.sol_endpoint(cluster).is_err();
         let failure = (!no_endpoint)
             .then(|| self.sol.balance_error.get(&cluster).copied())
@@ -774,7 +774,7 @@ impl App {
                 ids::COPY_ADDRESS,
                 true,
                 self.explorer_address_icon(
-                    crate::network::NetworkId::Solana(self.settings.solana.cluster),
+                    yw_engine::network::NetworkId::Solana(self.settings.solana.cluster),
                     &text,
                     crate::ui::screens_explorer::ids::CARD_SOL,
                 ),
@@ -887,7 +887,7 @@ impl App {
                                 || self
                                     .meta
                                     .as_ref()
-                                    .and_then(crate::meta::Meta::next_sol_index)
+                                    .and_then(yw_engine::meta::Meta::next_sol_index)
                                     .is_some()),
                     ),
             );
@@ -1005,7 +1005,7 @@ impl App {
         if shown == 0 {
             items.push(Item::Help(text::NO_SENT.get(lang).to_owned()));
         }
-        self.received_items(crate::received::RecvChain::Sol, items);
+        self.received_items(yw_engine::received::RecvChain::Sol, items);
         items.push(Item::CardEnd);
     }
 
@@ -1500,9 +1500,9 @@ impl App {
             // For checking on an explorer: 88 characters are not retyped by hand.
             let mut buttons = vec![Ctl::button(ids::RESULT_COPY, text::COPY_HASH.get(lang))];
             buttons.extend(self.explorer_tx_buttons(
-                crate::network::NetworkId::Solana(yw_engine::wallet::app_explorer::app_cluster(
-                    cluster,
-                )),
+                yw_engine::network::NetworkId::Solana(
+                    yw_engine::wallet::app_explorer::app_cluster(cluster),
+                ),
                 &yw_core::codec::base58::base58_encode(&signature),
                 Some((
                     crate::ui::screens_explorer::ids::RESULT_SOL_OPEN,
@@ -1624,13 +1624,13 @@ impl App {
                 Ctl::radio(
                     ids::SET_MAINNET,
                     "mainnet",
-                    solana.cluster == crate::network::SolCluster::Mainnet,
+                    solana.cluster == yw_engine::network::SolCluster::Mainnet,
                     true,
                 ),
                 Ctl::radio(
                     ids::SET_DEVNET,
                     text::DEVNET_RADIO.get(lang),
-                    solana.cluster == crate::network::SolCluster::Devnet,
+                    solana.cluster == yw_engine::network::SolCluster::Devnet,
                     false,
                 ),
             ],
@@ -1798,7 +1798,7 @@ impl App {
             ),
             tx_id,
             self.explorer_tx_icons(
-                crate::network::NetworkId::Solana(self.settings.solana.cluster),
+                yw_engine::network::NetworkId::Solana(self.settings.solana.cluster),
                 tx_id,
                 activity_ids(SOL_ACTIVITY_BASE, SOL_ACTIVITY_SPAN, row),
             ),

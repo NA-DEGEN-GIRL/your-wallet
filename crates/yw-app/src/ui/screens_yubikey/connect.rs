@@ -99,7 +99,7 @@ impl App {
                 [&self.card_name(scan.serial), &scan.firmware.to_string()],
             ),
         ));
-        let counters = crate::yubikey::PinCounters {
+        let counters = yw_engine::yubikey::PinCounters {
             serial: scan.serial,
             pw1: scan.pgp_pin_retries,
             pw3: None,
@@ -109,8 +109,8 @@ impl App {
         for line in counters.lines(
             lang,
             &[
-                crate::yubikey::PinKind::OpenPgpUser,
-                crate::yubikey::PinKind::PivPin,
+                yw_engine::yubikey::PinKind::OpenPgpUser,
+                yw_engine::yubikey::PinKind::PivPin,
             ],
         ) {
             items.push(Item::Help(line));
@@ -213,7 +213,7 @@ impl App {
                 &address_texts(slot.role, &slot.public).unwrap_or_default(),
                 items,
             );
-            let holders = crate::yubikey::holders(&self.card.records, slot.role);
+            let holders = yw_engine::yubikey::holders(&self.card.records, slot.role);
             if !holders.is_empty() {
                 items.push(Item::Field(
                     t::FIELD_RELATION.get(lang).to_owned(),

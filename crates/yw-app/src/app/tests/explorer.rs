@@ -7,13 +7,13 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::apikeys::ApiKeys;
 use crate::app::{App, Paths};
-use crate::explorer::{EXPLORERS_KEY, ExplorerNet, ExplorerOverride, LinkKind, Templates};
 use crate::explorer_launcher::Launcher;
-use crate::network::{NetworkId, SolCluster};
-use crate::settings::{EvmChainDef, Settings};
 use crate::ui::screens_explorer::ids;
+use yw_engine::apikeys::ApiKeys;
+use yw_engine::explorer::{EXPLORERS_KEY, ExplorerNet, ExplorerOverride, LinkKind, Templates};
+use yw_engine::network::{NetworkId, SolCluster};
+use yw_engine::settings::{EvmChainDef, Settings};
 use yw_engine::wallet::{AppMode, Screen};
 
 const HASH: &str = "0x7a329aaf9f457ef8516d5a51631fe5a75e3c12d7d71b6a73a38ce42ad352de2d";
@@ -315,7 +315,7 @@ fn the_card_stores_overrides_only_and_resets_them() {
     let text = String::from_utf8(written.clone()).unwrap();
     assert!(text.contains(&format!("\"{EXPLORERS_KEY}\":{{\"solana:devnet\":")));
     assert_eq!(
-        crate::settings::load(Some(&written)).settings.explorers,
+        yw_engine::settings::load(Some(&written)).settings.explorers,
         app.settings.explorers
     );
     assert_eq!(
@@ -381,19 +381,19 @@ fn english_explorer_chain_and_site_texts() {
         assert!(!has_hangul(text), "{text}");
     }
     let notes = [
-        crate::flow::evm::form::AddressNote::SameAsSender,
-        crate::flow::evm::form::AddressNote::Book {
+        yw_engine::flow::evm::form::AddressNote::SameAsSender,
+        yw_engine::flow::evm::form::AddressNote::Book {
             name: "Alice".to_owned(),
             verified: true,
         },
-        crate::flow::evm::form::AddressNote::LookAlike {
+        yw_engine::flow::evm::form::AddressNote::LookAlike {
             name: "Alice".to_owned(),
             history: false,
             prefix: 3,
             suffix: 4,
         },
-        crate::flow::evm::form::AddressNote::NotInBook,
-        crate::flow::evm::form::AddressNote::Contract,
+        yw_engine::flow::evm::form::AddressNote::NotInBook,
+        yw_engine::flow::evm::form::AddressNote::Contract,
     ];
     let mut lines: Vec<String> = notes.iter().map(|note| note.text_in(Lang::En)).collect();
     lines.push(yw_engine::wallet::app_book::look_alike_note(
@@ -405,7 +405,7 @@ fn english_explorer_chain_and_site_texts() {
         None,
         None,
     ));
-    lines.push(crate::explorer::TemplateError::Placeholder(LinkKind::Tx).text_in(Lang::En));
+    lines.push(yw_engine::explorer::TemplateError::Placeholder(LinkKind::Tx).text_in(Lang::En));
     lines.push(app.unlock_pending_text().unwrap_or_default());
     lines.push(
         crate::app_extension::ExtensionStatus::Never
@@ -427,10 +427,10 @@ fn english_explorer_chain_and_site_texts() {
         yw_engine::wallet::app_explorer::text::ALL,
         crate::app_extension::text::ALL,
         yw_engine::wallet::app_tokens::text::ALL,
-        crate::explorer::text::ALL,
-        crate::flow::evm::form::text::ALL,
-        crate::flow::evm::user_chain::text::ALL,
-        crate::received::evm::text::ALL,
+        yw_engine::explorer::text::ALL,
+        yw_engine::flow::evm::form::text::ALL,
+        yw_engine::flow::evm::user_chain::text::ALL,
+        yw_engine::received::evm::text::ALL,
         crate::ui::screens_book::text::ALL,
         crate::ui::screens_evm::text::ALL,
     ];

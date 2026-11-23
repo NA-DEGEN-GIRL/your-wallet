@@ -7,11 +7,11 @@ use super::{
     BACKUP_ACK_HOLD_MS, CaptureDecision, DisplaySecret, FormAction, HoldGate,
     SECRET_WINDOW_TIMEOUT_MS, SecretForm, SecretKind, capture_decision,
 };
-use crate::errors::ErrorCode;
-use crate::ui::secure_field::{Charset, PushResult, SecretField};
 use yw_core::keyimport::ImportChain;
 use yw_core::lang::Lang;
 use yw_core::secret::{SecretString, Zeroizing};
+use yw_engine::errors::ErrorCode;
+use yw_engine::secure_field::{Charset, PushResult, SecretField};
 
 fn type_text(form: &mut SecretForm, text: &str, now: u64) {
     for unit in text.encode_utf16() {
@@ -360,7 +360,7 @@ fn w07_solana_and_bitcoin_fields_take_their_formats() {
     assert_eq!(field.as_bytes(), b"[1, 2]");
     assert_eq!(
         field.push_unit(u16::from(b'"')),
-        PushResult::Rejected(crate::ui::secure_field::RejectReason::NotAllowed)
+        PushResult::Rejected(yw_engine::secure_field::RejectReason::NotAllowed)
     );
     // Bitcoin WIF: the base58 alphabet only (no 0, O, I, l).
     let mut wif = SecretField::new(Charset::Base58, 52).unwrap();
@@ -393,7 +393,7 @@ fn w07_solana_and_bitcoin_fields_take_their_formats() {
  3]"
     .encode_utf16()
     .collect();
-    let pasted = crate::ui::secure_field::normalize_paste(&units, Charset::KeyText, 64).unwrap();
+    let pasted = yw_engine::secure_field::normalize_paste(&units, Charset::KeyText, 64).unwrap();
     assert_eq!(pasted.as_slice(), b"[1, 2, 3]");
 }
 
@@ -494,7 +494,7 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
 #[test]
 fn w12_card_secrets() {
     use super::CardSecretKind;
-    use crate::yubikey::PinTarget;
+    use yw_engine::yubikey::PinTarget;
     let submit = |kind: SecretKind, fields: &[&str]| {
         let mut form = SecretForm::new(kind, Lang::Ko, 0, true);
         for (index, text) in fields.iter().enumerate() {
@@ -659,7 +659,7 @@ fn secret_text_catalogue_is_complete() {
 /// The Korean PIN-target texts of the W12 windows stay those of `PinTarget` (byte-identical).
 #[test]
 fn pin_target_texts_match_the_korean_originals() {
-    use crate::yubikey::PinTarget;
+    use yw_engine::yubikey::PinTarget;
     for target in [
         PinTarget::OpenPgpUser,
         PinTarget::OpenPgpAdmin,
@@ -685,8 +685,8 @@ fn pin_target_texts_match_the_korean_originals() {
 #[expect(clippy::too_many_lines, reason = "one table of every window kind")]
 fn every_secret_window_is_english_with_lang_en() {
     use super::CardSecretKind;
-    use crate::yubikey::PinTarget;
     use yw_core::lang::has_hangul;
+    use yw_engine::yubikey::PinTarget;
     let mut kinds = vec![
         SecretKind::SetPassword,
         SecretKind::Unlock,

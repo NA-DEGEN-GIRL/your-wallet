@@ -42,21 +42,21 @@ use yw_win::ui::{
     self, CaptureExclusion, ClassSpec, Handler, Hwnd, Msg, Reply, Window, WindowKind, WindowSpec,
 };
 
-use crate::apikeys::ApiKeys;
 use crate::app::{App, MAIN_CLASS, Paths, SECRET_INPUT_CLASS, SECRET_VIEW_CLASS};
 use crate::app_approval::smoke::{FixtureClock, FixtureRpc, fixture};
 use crate::app_approval::{APPROVAL_CLASS, PANEL_CLASS};
-use crate::events::{BalanceSnapshot, JournalView};
-use crate::flow::evm::prepare::{SendIntent, prepare};
-use crate::flow::evm::{ChainCache, ChainCheck, SharedTransport};
-use crate::meta::{Account, Meta, Tab};
-use crate::network::{BtcNet, NetworkId, SolCluster};
-use crate::settings::Settings;
-use crate::workers::rpc::RpcJob;
+use yw_engine::apikeys::ApiKeys;
+use yw_engine::events::{BalanceSnapshot, JournalView};
+use yw_engine::flow::evm::prepare::{SendIntent, prepare};
+use yw_engine::flow::evm::{ChainCache, ChainCheck, SharedTransport};
+use yw_engine::meta::{Account, Meta, Tab};
+use yw_engine::network::{BtcNet, NetworkId, SolCluster};
 use yw_engine::screen::SettingsSection;
 use yw_engine::secret::{DisplaySecret, SecretFormOp, SecretKind};
+use yw_engine::settings::Settings;
 use yw_engine::wallet::app_evm::{AppApproval, BalanceState};
 use yw_engine::wallet::{AppMode, Purpose, Screen};
+use yw_engine::workers::rpc::RpcJob;
 
 const TIMER_CLASS: &str = "YourWalletV3TourTimer";
 /// A made-up user token contract (shot 31, hidden like an unwanted airdrop).
@@ -276,13 +276,13 @@ fn tour_meta() -> Meta {
         }],
         ..Meta::default()
     };
-    let _ = meta.add_book(&crate::meta::BookEntry {
+    let _ = meta.add_book(&yw_engine::meta::BookEntry {
         address: recipient().to_lower_hex(),
         label: text::TEST_RECIPIENT.get(tour_lang()).to_owned(),
         verified: true,
         added_at_unix_ms: 1_793_000_000_000,
     });
-    let _ = meta.add_sol_book(&crate::meta::SolBookEntry {
+    let _ = meta.add_sol_book(&yw_engine::meta::SolBookEntry {
         address: SOL_RECIPIENT.to_owned(),
         label: text::TEST_RECIPIENT.get(tour_lang()).to_owned(),
         verified: true,
@@ -293,18 +293,18 @@ fn tour_meta() -> Meta {
     // favorites, so the send forms show them as `즐겨찾기` chips.
     let extra = [
         (
-            crate::meta::BookChain::Evm,
+            yw_engine::meta::BookChain::Evm,
             "0x000000000000000000000000000000000000dead",
             text::TEST_BURN.get(tour_lang()),
         ),
         (
-            crate::meta::BookChain::Btc,
+            yw_engine::meta::BookChain::Btc,
             "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
             text::BIP173_EXAMPLE.get(tour_lang()),
         ),
     ];
     for (chain, address, label) in extra {
-        let _ = meta.add_contact(&crate::meta::Contact {
+        let _ = meta.add_contact(&yw_engine::meta::Contact {
             chain,
             address: address.to_owned(),
             label: label.to_owned(),
@@ -313,11 +313,11 @@ fn tour_meta() -> Meta {
         });
     }
     meta.set_favorite(
-        crate::meta::BookChain::Evm,
+        yw_engine::meta::BookChain::Evm,
         &recipient().to_lower_hex(),
         true,
     );
-    meta.set_favorite(crate::meta::BookChain::Sol, SOL_RECIPIENT, true);
+    meta.set_favorite(yw_engine::meta::BookChain::Sol, SOL_RECIPIENT, true);
     meta
 }
 
@@ -404,15 +404,15 @@ fn unlocked_state(state: &mut App) {
 /// wallet's pipe; nobody connects to it) and two made-up connected sites.
 fn tour_browser(state: &mut App) {
     use std::sync::Arc;
-    let events = Arc::new(crate::events::EventQueue::new(Box::new(|| {})));
-    let sink = Arc::clone(&events) as Arc<dyn crate::browser::DappSink>;
-    let core = crate::browser::BrowserCore::new(
-        crate::browser::pinned_extension_id().unwrap_or_default(),
+    let events = Arc::new(yw_engine::events::EventQueue::new(Box::new(|| {})));
+    let sink = Arc::clone(&events) as Arc<dyn yw_engine::browser::DappSink>;
+    let core = yw_engine::browser::BrowserCore::new(
+        yw_engine::browser::pinned_extension_id().unwrap_or_default(),
         sink,
         Arc::clone(&state.clock),
     );
     let name = format!(r"\\.\pipe\YourWallet.tour.{}", std::process::id());
-    let server = crate::browser::pinned_origin()
+    let server = yw_engine::browser::pinned_origin()
         .and_then(|origin| crate::browser::server::start(Arc::clone(&core), &name, origin).ok());
     // 2026-11-21 (S4 W1): the server is the shell's (`App::pipe`), the dispatcher the wallet's.
     state.pipe = Some(crate::browser::server::PipeHost {
@@ -422,7 +422,7 @@ fn tour_browser(state: &mut App) {
     });
     state.browser = Some(yw_engine::wallet::app_browser::BrowserUi {
         core,
-        reads: Arc::new(crate::browser::read::ReadContext::new(None)),
+        reads: Arc::new(yw_engine::browser::read::ReadContext::new(None)),
         connections: 1,
         waiters: std::collections::HashMap::new(),
         broadcasts: std::collections::HashMap::new(),
@@ -456,7 +456,7 @@ fn tour_browser(state: &mut App) {
     })
     .collect::<Vec<_>>();
     if let Some(meta) = state.meta.as_mut() {
-        meta.connected_sites = crate::browser::grants::sites_to_values(&sites);
+        meta.connected_sites = yw_engine::browser::grants::sites_to_values(&sites);
     }
 }
 
@@ -560,13 +560,13 @@ const SOL_RECIPIENT: &str = "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb";
 /// shown), rents are the 2026-10-28 live values.
 struct SolTourRpc;
 
-impl crate::rpc::Transport for SolTourRpc {
+impl yw_engine::rpc::Transport for SolTourRpc {
     fn post_json(
         &self,
         _url: &HttpsUrl,
         body: &[u8],
         _max_response: usize,
-    ) -> Result<crate::rpc::HttpReply, yw_platform::http::HttpError> {
+    ) -> Result<yw_engine::rpc::HttpReply, yw_platform::http::HttpError> {
         use yw_json::{Limits, Object, Value};
         let request = yw_json::parse(body, &Limits::REQUEST)
             .map_err(|_| yw_platform::http::HttpError::InvalidUrl)?;
@@ -597,7 +597,7 @@ impl crate::rpc::Transport for SolTourRpc {
         let account = |data: &[u8]| {
             format!(
                 "{{\"data\":[\"{}\",\"base64\"],\"executable\":false,\"lamports\":1461600,\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"rentEpoch\":0,\"space\":{}}}",
-                crate::sol::rpc::base64(data),
+                yw_engine::sol::rpc::base64(data),
                 data.len()
             )
         };
@@ -640,7 +640,7 @@ impl crate::rpc::Transport for SolTourRpc {
         ];
         let body = Object::from_pairs(pairs)
             .map_or_else(Vec::new, |object| yw_json::to_vec(&Value::Object(object)));
-        Ok(crate::rpc::HttpReply { status: 200, body })
+        Ok(yw_engine::rpc::HttpReply { status: 200, body })
     }
 }
 
@@ -659,7 +659,7 @@ const TOUR_DAPP_PAYER: [u8; 32] = [0xf3; 32];
 fn tour_account(owner: &SolAddress, lamports: u64, data: &[u8]) -> String {
     format!(
         "{{\"data\":[\"{}\",\"base64\"],\"executable\":false,\"lamports\":{lamports},\"owner\":\"{}\",\"rentEpoch\":0,\"space\":{}}}",
-        crate::sol::rpc::base64(data),
+        yw_engine::sol::rpc::base64(data),
         owner.to_base58(),
         data.len()
     )
@@ -693,13 +693,13 @@ struct SolDappTourRpc {
     post: Vec<(String, Vec<(String, String)>)>,
 }
 
-impl crate::rpc::Transport for SolDappTourRpc {
+impl yw_engine::rpc::Transport for SolDappTourRpc {
     fn post_json(
         &self,
         _url: &HttpsUrl,
         body: &[u8],
         _max_response: usize,
-    ) -> Result<crate::rpc::HttpReply, yw_platform::http::HttpError> {
+    ) -> Result<yw_engine::rpc::HttpReply, yw_platform::http::HttpError> {
         use yw_json::{Limits, Object, Value};
         let request = yw_json::parse(body, &Limits::REQUEST)
             .map_err(|_| yw_platform::http::HttpError::InvalidUrl)?;
@@ -790,7 +790,7 @@ impl crate::rpc::Transport for SolDappTourRpc {
         ];
         let body = Object::from_pairs(pairs)
             .map_or_else(Vec::new, |object| yw_json::to_vec(&Value::Object(object)));
-        Ok(crate::rpc::HttpReply { status: 200, body })
+        Ok(yw_engine::rpc::HttpReply { status: 200, body })
     }
 }
 
@@ -967,7 +967,7 @@ fn tour_dapp_rpc(swap: &[u8], payment: &[u8]) -> SolDappTourRpc {
     ];
     let post = vec![
         (
-            crate::sol::rpc::base64(swap),
+            yw_engine::sol::rpc::base64(swap),
             vec![
                 (
                     wallet.to_base58(),
@@ -989,7 +989,7 @@ fn tour_dapp_rpc(swap: &[u8], payment: &[u8]) -> SolDappTourRpc {
             ],
         ),
         (
-            crate::sol::rpc::base64(payment),
+            yw_engine::sol::rpc::base64(payment),
             vec![(
                 wallet.to_base58(),
                 tour_account(&SYSTEM_PROGRAM, 2_500_000_000 - sol / 100, &[]),
@@ -1014,7 +1014,7 @@ fn sol_dapp_approval(
         app,
         "https://app.example.org",
         method,
-        crate::browser::SiteKind::SolTx {
+        yw_engine::browser::SiteKind::SolTx {
             public: SolAddress::parse(TOUR_SOL).unwrap().to_bytes(),
             cluster: yw_core::sol::SolCluster::Devnet,
             batch: txs.len() > 1,
@@ -1033,8 +1033,8 @@ fn sol_dapp_approval(
     let clock = FixtureClock {
         now_ms: AtomicU64::new(0),
     };
-    let result = crate::sol::flow::dapp_preview(rpc, &job, &clock);
-    entry(app).sol_rpc_event(crate::events::RpcEvent::SolDappPreviewed(Box::new((
+    let result = yw_engine::sol::flow::dapp_preview(rpc, &job, &clock);
+    entry(app).sol_rpc_event(yw_engine::events::RpcEvent::SolDappPreviewed(Box::new((
         job.job, result,
     ))));
 }
@@ -1056,8 +1056,8 @@ fn sol_approval(app: &Rc<RefCell<App>>) {
             Err(_) => unreachable!("no Solana preview job"),
         }
     };
-    let result = crate::sol::flow::preview(&SolTourRpc, &job);
-    entry(app).sol_rpc_event(crate::events::RpcEvent::SolPreviewed(Box::new(result)));
+    let result = yw_engine::sol::flow::preview(&SolTourRpc, &job);
+    entry(app).sol_rpc_event(yw_engine::events::RpcEvent::SolPreviewed(Box::new(result)));
 }
 
 /// Opens the approval window for a Sepolia send and prepares it against `fixture_name`
@@ -1116,7 +1116,7 @@ fn approval(app: &Rc<RefCell<App>>, fixture_name: &str) {
 /// address-book recipient), or for the settings' connection-test sample (`0x…dEaD` →
 /// `0x…beef`) when the request carries that sample.
 fn tour_llm_answer(request: &[u8]) -> Vec<u8> {
-    use crate::text::{json_object, json_str};
+    use yw_engine::text::{json_object, json_str};
     let sample =
         String::from_utf8_lossy(request).contains("000000000000000000000000000000000000dead");
     let (from, to, summary) = if sample {
@@ -1227,9 +1227,9 @@ fn tour_llm_mock() -> String {
 /// A dApp `eth_sendTransaction` from the connected `https://app.example.org` (0.01 `SepoliaETH` to
 /// the address-book recipient), prepared against the S2 fixture like [`approval`].
 fn site_approval(app: &Rc<RefCell<App>>) {
-    use crate::browser::envelope::{Correlation, Id16, Id32};
-    use crate::browser::params::TxParams;
-    use crate::browser::{DappEvent, Reply, SiteKind, SiteRequest};
+    use yw_engine::browser::envelope::{Correlation, Id16, Id32};
+    use yw_engine::browser::params::TxParams;
+    use yw_engine::browser::{DappEvent, Reply, SiteKind, SiteRequest};
     let (tx, rx) = mpsc::channel();
     {
         let mut state = entry(app);
@@ -1292,11 +1292,11 @@ fn dapp_request(
     app: &Rc<RefCell<App>>,
     origin: &str,
     method: yw_core::policy::Method,
-    kind: crate::browser::SiteKind,
+    kind: yw_engine::browser::SiteKind,
 ) {
-    use crate::browser::envelope::{Correlation, Id16, Id32};
-    use crate::browser::{DappEvent, Reply, SiteRequest};
     use std::sync::atomic::{AtomicU8, Ordering};
+    use yw_engine::browser::envelope::{Correlation, Id16, Id32};
+    use yw_engine::browser::{DappEvent, Reply, SiteRequest};
     // A fresh request id and sequence per request (a repeated id is a duplicate).
     static NEXT: AtomicU8 = AtomicU8::new(10);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -1374,8 +1374,8 @@ fn wait_for_ai(app: &Rc<RefCell<App>>) {
         if !matches!(
             state,
             Some(
-                crate::explain::AiPanelState::Waiting
-                    | crate::explain::AiPanelState::Requesting { .. }
+                yw_engine::explain::AiPanelState::Waiting
+                    | yw_engine::explain::AiPanelState::Requesting { .. }
             )
         ) {
             return;
@@ -1387,8 +1387,8 @@ fn wait_for_ai(app: &Rc<RefCell<App>>) {
 /// template network has an `*.example.test` placeholder address (never contacted) and made-up
 /// test results — Base failed (its row link), Zcash testnet still testing, the rest working.
 fn tour_first_setup(app: &Rc<RefCell<App>>) {
-    use crate::errors::ErrorCode;
     use crate::ui::screens::ids;
+    use yw_engine::errors::ErrorCode;
     use yw_engine::wallet::TestState;
     {
         let mut state = entry(app);
@@ -1454,9 +1454,9 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
     use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot};
     use yw_core::yubikey::record::{HwKeyRecord, RecordedSlot};
 
-    use crate::workers::key::yubikey::YkPreview;
     use yw_engine::secret::CardSecretKind;
     use yw_engine::wallet::app_yubikey::{WizardOrigin, WizardStep, YkPurpose, YkWizard};
+    use yw_engine::workers::key::yubikey::YkPreview;
 
     let network = app.borrow().yk_network();
     let seed = *yw_core::bip39::Mnemonic::parse(&test_phrase_12())
@@ -1777,7 +1777,7 @@ fn screenshot_tour() {
         // the block of the balance kept below, its two buttons and a test on its way (made up).
         let mut state = entry(&app);
         if let Some(balance) = state.evm.balances.get_mut(&SEPOLIA) {
-            balance.error = Some(crate::errors::ErrorCode::Rpc003);
+            balance.error = Some(yw_engine::errors::ErrorCode::Rpc003);
         }
         state.set_rpc_message(
             NetworkId::Eip155(SEPOLIA),
@@ -1811,7 +1811,7 @@ fn screenshot_tour() {
         if let Some(meta) = state.meta.as_mut() {
             let _ = meta.add_token(
                 &network,
-                &crate::meta::TokenEntry {
+                &yw_engine::meta::TokenEntry {
                     address: TOUR_AIRDROP.to_owned(),
                     label: "FREE-AIRDROP".to_owned(),
                     decimals: 18,
@@ -1852,7 +1852,7 @@ fn screenshot_tour() {
         let network = NetworkId::Eip155(SEPOLIA).to_string();
         if let Some(meta) = state.meta.as_mut() {
             meta.remove_token(&network, TOUR_AIRDROP);
-            *meta.token_view = crate::token_view::TokenView::default();
+            *meta.token_view = yw_engine::token_view::TokenView::default();
         }
         if let Some(snapshot) = state
             .evm
@@ -1892,7 +1892,7 @@ fn screenshot_tour() {
                 let index = u64::try_from(index).unwrap();
                 meta.upsert_activity(
                     &network,
-                    &crate::meta::ActivityEntry {
+                    &yw_engine::meta::ActivityEntry {
                         account: account.clone(),
                         tx_id: format!("0x{:064x}", 0x7a11_u64 + index),
                         title: text::SEND_TITLE.get(tour_lang()).to_owned(),
@@ -1931,13 +1931,13 @@ fn screenshot_tour() {
         state.evm.send.to_text = recipient().to_checksum();
         state.evm.send.recipient = Some((
             recipient(),
-            vec![crate::flow::evm::form::AddressNote::Book {
+            vec![yw_engine::flow::evm::form::AddressNote::Book {
                 name: text::TEST_RECIPIENT.get(tour_lang()).to_owned(),
                 verified: true,
             }],
         ));
         state.evm.send.amount = Some(U256::from_u64(10_000_000_000_000_000));
-        state.evm.send.quote = Some(crate::flow::evm::form::Quote {
+        state.evm.send.quote = Some(yw_engine::flow::evm::form::Quote {
             gas_limit: 21_000,
             max_fee_per_gas: U256::from_u64(3_000_000_000),
             max_total: U256::from_u64(63_000_000_000_000),
@@ -2054,7 +2054,7 @@ fn screenshot_tour() {
         state.btc.send.amount = yw_core::btc::Sats::new(100_000);
         state.btc.fee_quote = Some((
             yw_core::btc::BtcNetwork::Testnet4,
-            crate::btc::work::FeeQuote {
+            yw_engine::btc::work::FeeQuote {
                 floor: yw_core::btc::FeeRate::from_sat_per_kvb(1_000),
                 rates: [
                     Some(yw_core::btc::FeeRate::from_sat_per_kvb(12_000)),
@@ -2089,7 +2089,7 @@ fn screenshot_tour() {
         &app,
         "https://app.example.org",
         yw_core::policy::Method::SolSignMessage,
-        crate::browser::SiteKind::SolSign {
+        yw_engine::browser::SiteKind::SolSign {
             public: SolAddress::parse("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk")
                 .unwrap()
                 .to_bytes(),
@@ -2114,7 +2114,7 @@ fn screenshot_tour() {
         &app,
         "https://app.example.org",
         yw_core::policy::Method::SolSignIn,
-        crate::browser::SiteKind::SolSign {
+        yw_engine::browser::SiteKind::SolSign {
             public: SolAddress::parse("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk")
                 .unwrap()
                 .to_bytes(),
@@ -2158,7 +2158,7 @@ fn screenshot_tour() {
         &app,
         "https://app.example.org",
         yw_core::policy::Method::BtcSignMessage,
-        crate::browser::SiteKind::BtcSign {
+        yw_engine::browser::SiteKind::BtcSign {
             address: payment,
             message: text::BTC_SIGN_IN.get(tour_lang()).as_bytes().to_vec(),
             protocol: None,
@@ -2196,7 +2196,7 @@ fn screenshot_tour() {
         let mut state = entry(&app);
         state.settings.zcash.enabled = false;
         if let Some(meta) = state.meta.as_mut() {
-            *meta.zcash = crate::zec::meta::ZcashMeta::default();
+            *meta.zcash = yw_engine::zec::meta::ZcashMeta::default();
         }
     }
     {
@@ -2238,7 +2238,7 @@ fn screenshot_tour() {
         &app,
         "https://swap.example.org",
         yw_core::policy::Method::RequestAccounts,
-        crate::browser::SiteKind::RequestAccounts,
+        yw_engine::browser::SiteKind::RequestAccounts,
     );
     save(approval_hwnd(&app), "26-approval-connect");
     entry(&app).tour_reject_approval();
@@ -2249,14 +2249,14 @@ fn screenshot_tour() {
     let endpoint = tour_llm_mock();
     {
         let mut state = entry(&app);
-        state.settings.llm_explain = crate::settings::LlmSettings {
+        state.settings.llm_explain = yw_engine::settings::LlmSettings {
             enabled: true,
             endpoint,
             model: "mock-model".to_owned(),
-            privacy_notice_version: u64::from(crate::explain::PRIVACY_NOTICE_VERSION),
-            ..crate::settings::LlmSettings::default()
+            privacy_notice_version: u64::from(yw_engine::explain::PRIVACY_NOTICE_VERSION),
+            ..yw_engine::settings::LlmSettings::default()
         };
-        state.events = Some(std::sync::Arc::new(crate::events::EventQueue::new(
+        state.events = Some(std::sync::Arc::new(yw_engine::events::EventQueue::new(
             Box::new(|| {}),
         )));
         // The tour's wallet is unlocked: the settings snapshot check has run.

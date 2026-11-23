@@ -60,7 +60,7 @@ use crate::app::tests::s3_census::{
 };
 use crate::ui::cmd_table::{IDOK, edit_id_of, press_of};
 use crate::ui::screens_walletconnect;
-use crate::workers::rpc::RpcJob;
+use yw_engine::workers::rpc::RpcJob;
 
 /// Totals of one run.
 #[derive(Default)]
@@ -340,7 +340,11 @@ fn balance_tick(state: &mut App, rx: &Receiver<RpcJob>, hidden: bool, what: &str
 /// queued by the three shown ticks.
 fn main_hidden_follows_the_window(census: &Census, tally: &mut Tally) -> [usize; 3] {
     use yw_engine::cmd::Cmd;
-    let (app, rx) = open(census, Base::Main(crate::meta::Tab::Evm, false), no_setup);
+    let (app, rx) = open(
+        census,
+        Base::Main(yw_engine::meta::Tab::Evm, false),
+        no_setup,
+    );
     let mut jobs = [0; 3];
     {
         let mut state = app.borrow_mut();
@@ -375,13 +379,13 @@ fn main_hidden_follows_the_window(census: &Census, tally: &mut Tally) -> [usize;
 /// or a state change (values are made up; nothing is sent).
 #[expect(clippy::too_many_lines, reason = "one scenario per form")]
 fn extra_scenarios() -> Vec<Scenario> {
-    use crate::meta::Tab;
     use crate::ui::{
         screens, screens_btc as btc, screens_evm as evm, screens_explorer as explorer,
         screens_hypercore as hc, screens_reset as reset, screens_sites as sites,
         screens_sol as sol, screens_walletconnect as wc, screens_yubikey as yk,
     };
     use Step::{Call, Enter, Press, Type};
+    use yw_engine::meta::Tab;
     use yw_engine::screen::SettingsSection;
     fn advanced(app: &mut App) {
         app.show_advanced = true;

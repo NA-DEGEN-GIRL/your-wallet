@@ -9,13 +9,13 @@ use yw_core::bip32::path::AccountIndex;
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::SolAddress;
 
-use crate::apikeys::ApiKeys;
 use crate::app::{App, Paths};
-use crate::meta::{Account, Meta, Tab};
-use crate::settings::Settings;
-use crate::sol::scan::ScanRow;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_sol::ids::{self, ScanAction, scan_row_id};
+use yw_engine::apikeys::ApiKeys;
+use yw_engine::meta::{Account, Meta, Tab};
+use yw_engine::settings::Settings;
+use yw_engine::sol::scan::ScanRow;
 use yw_engine::wallet::app_sol::ScanStage;
 use yw_engine::wallet::{AppMode, Screen};
 
@@ -157,7 +157,7 @@ fn scan_rows_past_the_fortieth_keep_their_own_action() {
 #[test]
 fn scan_moves_go_to_a_primary_standard_account() {
     let mut app = scanned_app();
-    app.evm.journal = Some(crate::events::JournalView::default());
+    app.evm.journal = Some(yw_engine::events::JournalView::default());
     let hardware = hardware_selected(&mut app);
     let mut items = Vec::new();
     app.sol_scan_screen(&mut items);

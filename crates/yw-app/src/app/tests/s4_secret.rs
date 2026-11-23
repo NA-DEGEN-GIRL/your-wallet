@@ -75,10 +75,10 @@ pub(crate) mod host {
     use crate::app::secret_seam::{self, Op, Refuse};
     #[cfg(debug_assertions)]
     use crate::app::{VK_CONTROL, VK_MENU, VK_SHIFT, secret_modifier};
-    use crate::errors::ErrorCode;
     use crate::ui::secret::{CaptureDecision, SecretForm, capture_decision};
     #[cfg(debug_assertions)]
     use crate::ui::secret::{FormAction, SECRET_TIMER_ID};
+    use yw_engine::errors::ErrorCode;
 
     /// The window the headless host holds instead of a Win32 window: its session's serial and
     /// its form.
@@ -812,7 +812,7 @@ fn a_made_but_unexcluded_display_window_drops_its_secret() {
     use yw_engine::secret::SecretKind;
 
     use crate::app::secret_seam;
-    use crate::errors::ErrorCode;
+    use yw_engine::errors::ErrorCode;
     use yw_engine::secret::DisplaySecret;
     use yw_engine::wallet::{AppMode, Purpose, Screen};
 

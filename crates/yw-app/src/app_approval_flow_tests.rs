@@ -58,16 +58,18 @@ use yw_win::ui::{Handler, Msg, Reply, Window, WindowKind, WindowSpec, create_win
 
 use super::flow_support::{self, Fixture, HostMode, Outlet, START_MS, Signals};
 use super::{Focus, PANEL_CLASS, text};
-use crate::events::KeyJob;
-use crate::flow::evm::prepare::{
+use crate::ui::approval_input::{VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB};
+use yw_engine::approval::QueueSource;
+use yw_engine::approval::interaction::{
+    InteractionEvent, PrepareStage, PrepareState, ReadyContent,
+};
+use yw_engine::events::KeyJob;
+use yw_engine::flow::evm::prepare::{
     PrepareFailure, PrepareJob, ResimJob, ResimKind, ResimResult, resimulate,
 };
-use crate::flow::evm::{ChainCache, SharedTransport};
-use crate::ui::approval::QueueSource;
-use crate::ui::approval_input::{VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB};
-use crate::ui::interaction::{InteractionEvent, PrepareStage, PrepareState, ReadyContent};
-use crate::workers::rpc::RpcJob;
+use yw_engine::flow::evm::{ChainCache, SharedTransport};
 use yw_engine::wallet::app_evm::QueuedItem;
+use yw_engine::workers::rpc::RpcJob;
 
 /// The committed golden.
 const GOLDEN: &str = include_str!("app/tests/s4_flow/flow.txt");
@@ -233,7 +235,7 @@ impl<'a> Rec<'a> {
         let banners = names(
             app.banners
                 .iter()
-                .filter_map(|banner| banner.code.map(crate::errors::ErrorCode::code)),
+                .filter_map(|banner| banner.code.map(yw_engine::errors::ErrorCode::code)),
         );
         let info = match app.evm.send.info.as_deref() {
             None => "-",
@@ -325,7 +327,7 @@ fn status_key(flow: &yw_engine::wallet::approval_flow::ApprovalFlow) -> &'static
             return key;
         }
     }
-    if status == crate::errors::ErrorCode::Rpc001.text_in(lang) {
+    if status == yw_engine::errors::ErrorCode::Rpc001.text_in(lang) {
         "E-RPC-001"
     } else {
         "other"
@@ -457,19 +459,19 @@ pub(super) fn dapp(fx: &Fixture, sol: bool, granted: bool) -> Outlet {
     let outlet = fx.connect_outlet();
     {
         let mut app = fx.app();
-        let account = |index: u32, address: &str| crate::meta::Account {
+        let account = |index: u32, address: &str| yw_engine::meta::Account {
             index,
             label: format!("Account {}", index + 1),
             address: address.to_owned(),
             hidden: false,
         };
         // Meta keeps EVM addresses in lower-case hex (`account_source` compares that text).
-        let mut meta = crate::meta::Meta {
+        let mut meta = yw_engine::meta::Meta {
             evm_accounts: vec![
                 account(0, &ACCOUNT_A.to_ascii_lowercase()),
                 account(1, &ACCOUNT_B.to_ascii_lowercase()),
             ],
-            ..crate::meta::Meta::default()
+            ..yw_engine::meta::Meta::default()
         };
         if sol {
             meta.sol_accounts.push(account(0, SOL_KEY));
@@ -1449,7 +1451,7 @@ fn ui001_and_wc_label() -> Vec<String> {
     // `SiteRequest` whose answer reached no frame).
     let fx2 = fixture("wc-label");
     let outlet = dapp(&fx2, false, true);
-    let wc_origin = crate::walletconnect::session_origin(&[9; 32]).unwrap();
+    let wc_origin = yw_engine::walletconnect::session_origin(&[9; 32]).unwrap();
     let (sender, frames) = std::sync::mpsc::channel();
     let core = fx2
         .app
@@ -1485,40 +1487,40 @@ fn ui001_and_wc_label() -> Vec<String> {
 /// submits it, spec/13 §5), handed to the App.
 fn wc_personal_sign(
     fx: &Fixture,
-    core: &crate::browser::BrowserCore,
+    core: &yw_engine::browser::BrowserCore,
     wc: &Outlet,
     wc_origin: BrowserOrigin,
 ) {
     let method = yw_core::policy::Method::PersonalSign;
     core.submit(
         wc.conn,
-        &crate::browser::envelope::RequestEnvelope {
-            correlation: crate::browser::envelope::Correlation {
-                session_id: crate::browser::envelope::Id32([0x57; 32]),
+        &yw_engine::browser::envelope::RequestEnvelope {
+            correlation: yw_engine::browser::envelope::Correlation {
+                session_id: yw_engine::browser::envelope::Id32([0x57; 32]),
                 sequence: 1,
-                activation_nonce: crate::browser::envelope::Id32([9; 32]),
-                request_id: crate::browser::envelope::Id16([3; 16]),
+                activation_nonce: yw_engine::browser::envelope::Id32([9; 32]),
+                request_id: yw_engine::browser::envelope::Id16([3; 16]),
             },
             deadline_unix_ms: fx.clock.unix_at(fx.clock.peek() + 600_000),
-            profile_install_id: crate::browser::envelope::Id32([0; 32]),
+            profile_install_id: yw_engine::browser::envelope::Id32([0; 32]),
             method: method.as_str().to_owned(),
             params: yw_json::Value::Array(vec![
                 yw_json::Value::String("0x6869".to_owned()),
                 yw_json::Value::String(ACCOUNT_A.to_owned()),
             ]),
             route: method.route(),
-            context: crate::browser::envelope::BrowserContext {
+            context: yw_engine::browser::envelope::BrowserContext {
                 tab_id: 0,
                 document_id: "walletconnect".to_owned(),
                 origin: wc_origin,
-                channel_nonce: crate::browser::envelope::Id32([9; 32]),
+                channel_nonce: yw_engine::browser::envelope::Id32([9; 32]),
                 compat_mode: None,
             },
         },
         yw_core::evm::chain::SEPOLIA,
     );
     for event in wc.events.drain() {
-        if let crate::events::UiEvent::Dapp(event) = event {
+        if let yw_engine::events::UiEvent::Dapp(event) = event {
             fx.app().on_dapp_event(event);
         }
     }
@@ -2358,7 +2360,7 @@ fn stale_open_and_stale_answer_leave_no_orphan_window() {
     use yw_engine::approval::flow::{ApprovalEffect, OpenOutcome, ShownId};
     use yw_engine::cmd::Cmd;
 
-    use crate::errors::ErrorCode;
+    use yw_engine::errors::ErrorCode;
     use yw_engine::wallet::approval_flow::ApprovalFlow;
 
     let fx = fixture("stale-open");

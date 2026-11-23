@@ -46,15 +46,15 @@ use super::{
     ACCOUNT_A, ACCOUNT_B, Rec, SOL_KEY, app_send, approve_by_risk, at, click, ev, fixture, origin,
     personal_sign, request, spare_window,
 };
-use crate::events::{
+use crate::shell_msg::{WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT};
+use yw_engine::approval::interaction::InteractionEvent;
+use yw_engine::events::{
     ChainMessageSigned, ChainSignature, EvmSigned, KeyJob, KeyOutcome, KeyResult, MessageSigned,
     RpcEvent, SignFailure, SignTicket, SignedSummary, UiEvent,
 };
-use crate::shell_msg::{WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT};
-use crate::ui::interaction::InteractionEvent;
-use crate::workers::rpc::RpcJob;
 use yw_engine::wallet::app_browser::SignWaiter;
 use yw_engine::wallet::lock::LockReason;
+use yw_engine::workers::rpc::RpcJob;
 
 /// The committed golden.
 const GOLDEN: &str = include_str!("app/tests/s4_flow/lifecycle.txt");
@@ -78,7 +78,7 @@ fn main_tick(fx: &Fixture, main: &Window) {
 /// Gives the App its event queue (the outlet's when there is one: one queue, as in the app).
 fn install_events(fx: &Fixture, outlet: Option<&Outlet>) {
     let queue = outlet.map_or_else(
-        || Arc::new(crate::events::EventQueue::new(Box::new(|| {}))),
+        || Arc::new(yw_engine::events::EventQueue::new(Box::new(|| {}))),
         |outlet| Arc::clone(&outlet.events),
     );
     fx.app().events = Some(queue);
@@ -385,7 +385,7 @@ fn lock_shortcut_while_shown() -> Vec<String> {
 /// shown request), on a virtual connection of the dispatcher (the bridge's path, spec/13 §5);
 /// its answers reach the returned outlet.
 fn wc_waiting(fx: &Fixture, outlet: &Outlet) -> Outlet {
-    let wc_origin = crate::walletconnect::session_origin(&[9; 32]).unwrap();
+    let wc_origin = yw_engine::walletconnect::session_origin(&[9; 32]).unwrap();
     let core = fx
         .app
         .borrow()
@@ -547,7 +547,7 @@ fn open_then_lock_same_entry() -> Vec<String> {
 }
 
 /// A `personal_sign` frame into the dispatcher only (its event stays queued for the caller).
-fn personal_sign_frame_only(fx: &Fixture, outlet: &Outlet, core: &crate::browser::BrowserCore) {
+fn personal_sign_frame_only(fx: &Fixture, outlet: &Outlet, core: &yw_engine::browser::BrowserCore) {
     let frame = format!(
         concat!(
             r#"{{"namespace":"your-wallet","version":1,"role":"extension","kind":"request","#,
@@ -763,7 +763,7 @@ fn broadcast(fx: &Fixture, hash: u8) -> UiEvent {
     UiEvent::Rpc(RpcEvent::Broadcast {
         chain_id: 11_155_111,
         tx_hash: [hash; 32],
-        outcome: crate::flow::evm::track::BroadcastOutcome::Sent,
+        outcome: yw_engine::flow::evm::track::BroadcastOutcome::Sent,
         at_unix_ms: fx.clock.unix_at(fx.clock.peek()),
     })
 }
@@ -1027,9 +1027,11 @@ mod card_wallet {
     /// Builds `yw_engine::testkit::yubikey_wallet` (the `abandon … about` vault with an enrolled
     /// emulator card) in `dir` with the key worker's deps on real files there and no card readers
     /// (AGENTS rule 3), and returns the wallet folder and its loaded meta; no card job runs.
-    pub(super) fn meta(dir: std::path::PathBuf) -> (std::path::PathBuf, crate::events::MetaLoaded) {
+    pub(super) fn meta(
+        dir: std::path::PathBuf,
+    ) -> (std::path::PathBuf, yw_engine::events::MetaLoaded) {
         let deps =
-            crate::store::WinKeyPlatform::deps_with_cards(Box::new(crate::yubikey::NoReaders));
+            crate::store::WinKeyPlatform::deps_with_cards(Box::new(yw_engine::yubikey::NoReaders));
         let (worker, _cards, wallet_dir, loaded) = yw_engine::testkit::yubikey_wallet(dir, deps);
         drop(worker);
         (wallet_dir, loaded)
@@ -1127,8 +1129,8 @@ fn card_step_from_the_window() -> Vec<String> {
 /// Critique A-5 (Zcash): the signed transaction queues only the journal's `Disclose` mark; the
 /// node gets it after that commit; a failed commit sends nothing.
 fn journal_zec() -> Vec<String> {
-    use crate::workers::journal::zec::{ZecKeyOutcome, ZecSignedSummary};
     use yw_core::zec::ZecNetwork;
+    use yw_engine::workers::journal::zec::{ZecKeyOutcome, ZecSignedSummary};
     let fx = fixture("journal-zec");
     let main = spare_window();
     install_events(&fx, None);
@@ -1136,7 +1138,7 @@ fn journal_zec() -> Vec<String> {
         let mut app = fx.app();
         app.settings.zcash.network = ZecNetwork::Testnet;
         app.apikeys.set_rpc(
-            crate::network::NetworkId::Zcash(ZecNetwork::Testnet),
+            yw_engine::network::NetworkId::Zcash(ZecNetwork::Testnet),
             &yw_platform::http::HttpsUrl::parse("https://zec.example.test/").unwrap(),
         );
     }
@@ -1182,9 +1184,9 @@ fn sol_public() -> [u8; 32] {
 /// Devnet with an endpoint (never contacted).
 fn devnet(fx: &Fixture) {
     let mut app = fx.app();
-    app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+    app.settings.solana.cluster = yw_engine::network::SolCluster::Devnet;
     app.apikeys.set_rpc(
-        crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
+        yw_engine::network::NetworkId::Solana(yw_engine::network::SolCluster::Devnet),
         &yw_platform::http::HttpsUrl::parse("https://sol.example.test/").unwrap(),
     );
     // The dispatcher's view follows the cluster (a dApp request names the wallet's cluster).
@@ -1216,12 +1218,12 @@ fn sol_transfer() -> yw_engine::wallet::app_evm::QueuedItem {
 }
 
 /// The RPC worker's preview of `job`: ready, 10 SOL balance, no simulation result, no blocks.
-fn sol_preview(job: &crate::sol::flow::PreviewJob) -> UiEvent {
+fn sol_preview(job: &yw_engine::sol::flow::PreviewJob) -> UiEvent {
     use yw_core::sol::display::{SimSummary, SolPreviewFacts, intent_flags};
     use yw_core::sol::recipient::AccountClass;
     let cu_limit = yw_core::sol::fee::template_cu_limit(job.asset);
     let simulation = SimSummary::NoResult;
-    let prepared = crate::sol::flow::SolPrepared {
+    let prepared = yw_engine::sol::flow::SolPrepared {
         cluster: job.endpoint.cluster,
         source: job.source,
         core: yw_core::sol::SolTransferCore {
@@ -1256,9 +1258,9 @@ fn sol_preview(job: &crate::sol::flow::PreviewJob) -> UiEvent {
         genesis: yw_core::sol::address::DEVNET_GENESIS,
     };
     UiEvent::Rpc(RpcEvent::SolPreviewed(Box::new(
-        crate::sol::flow::PreviewResult {
+        yw_engine::sol::flow::PreviewResult {
             job: job.job,
-            outcome: crate::sol::flow::PreviewOutcome::Ready(Box::new(prepared)),
+            outcome: yw_engine::sol::flow::PreviewOutcome::Ready(Box::new(prepared)),
         },
     )))
 }
@@ -1267,7 +1269,7 @@ fn sol_preview(job: &crate::sol::flow::PreviewJob) -> UiEvent {
 /// worker signs; its journaled transfer starts the tracking round that sends it; a journal
 /// failure starts none.
 fn journal_sol_app_send() -> Vec<String> {
-    use crate::events::{SolSignFailure, SolSignedSummary};
+    use yw_engine::events::{SolSignFailure, SolSignedSummary};
     let fx = fixture("journal-sol");
     let main = spare_window();
     let _outlet = super::dapp(&fx, true, false);
@@ -1391,7 +1393,7 @@ fn sol_dapp_request(
             main,
             UiEvent::Rpc(RpcEvent::SolDappPreviewed(Box::new((
                 job,
-                Ok(crate::sol::flow::DappPreview {
+                Ok(yw_engine::sol::flow::DappPreview {
                     items: vec![item],
                     mints: Vec::new(),
                     unread_mints: Vec::new(),
@@ -1452,7 +1454,7 @@ fn grant_sol_dapp_sign() -> Vec<String> {
     reason = "three sends in order, one per outcome"
 )]
 fn journal_sol_dapp_send() -> Vec<String> {
-    use crate::events::{SolDappSigned, SolDappSignedSummary, SolSignFailure};
+    use yw_engine::events::{SolDappSigned, SolDappSignedSummary, SolSignFailure};
     let fx = fixture("journal-sol-dapp");
     let main = spare_window();
     let outlet = super::dapp(&fx, true, true);
@@ -1541,7 +1543,7 @@ fn journal_sol_dapp_send() -> Vec<String> {
             &fx,
             &main,
             UiEvent::Rpc(RpcEvent::SolTracked(Box::new(
-                crate::sol::flow::TrackResult {
+                yw_engine::sol::flow::TrackResult {
                     signature: tx_id,
                     state: yw_core::sol::broadcast::LoopState::default(),
                     outcome: Ok(yw_core::sol::broadcast::Outcome::Pending { notice: false }),
@@ -1669,15 +1671,15 @@ fn rpc_import_on_temp_data() -> Vec<String> {
         app.rpc_import.imported,
         fx.dir().join("apikeys.dpapi").exists(),
         app.apikeys
-            .rpc_url(crate::network::NetworkId::Eip155(1))
+            .rpc_url(yw_engine::network::NetworkId::Eip155(1))
             .is_some(),
         app.apikeys
-            .rpc_url(crate::network::NetworkId::Solana(
-                crate::network::SolCluster::Devnet
+            .rpc_url(yw_engine::network::NetworkId::Solana(
+                yw_engine::network::SolCluster::Devnet
             ))
             .is_some(),
         app.apikeys
-            .rpc_url(crate::network::NetworkId::Eip155(11_155_111))
+            .rpc_url(yw_engine::network::NetworkId::Eip155(11_155_111))
             .is_some(),
         app.rpc_tests.running.is_some(),
         app.rpc_tests.waiting.len(),
@@ -1740,7 +1742,7 @@ fn polling_while_hidden() -> Vec<String> {
             if hidden { "hidden" } else { "shown" },
             &format!("main hidden={}", fx.app.borrow().main_hidden()),
         );
-        for tab in [crate::meta::Tab::Evm, crate::meta::Tab::Sol] {
+        for tab in [yw_engine::meta::Tab::Evm, yw_engine::meta::Tab::Sol] {
             {
                 let mut app = fx.app();
                 if let Some(meta) = app.meta.as_mut() {
@@ -1755,9 +1757,9 @@ fn polling_while_hidden() -> Vec<String> {
             at(&fx, 60_000);
             main_tick(&fx, &timer);
             rec.snap(match (hidden, tab) {
-                (false, crate::meta::Tab::Evm) => "shown-evm-tab",
+                (false, yw_engine::meta::Tab::Evm) => "shown-evm-tab",
                 (false, _) => "shown-sol-tab",
-                (true, crate::meta::Tab::Evm) => "hidden-evm-tab",
+                (true, yw_engine::meta::Tab::Evm) => "hidden-evm-tab",
                 (true, _) => "hidden-sol-tab",
             });
         }

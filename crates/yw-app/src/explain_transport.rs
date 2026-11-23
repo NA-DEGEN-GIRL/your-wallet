@@ -14,8 +14,8 @@ use yw_engine::services::LlmFactory;
 use yw_platform::http::{EndpointUrl, HttpError};
 use yw_win::http::Client;
 
-use crate::explain::TransportFactory;
-use crate::explain::request::{HttpResponse, LLM_TIMEOUTS, LlmTransport, TransportError};
+use yw_engine::explain::TransportFactory;
+use yw_engine::explain::request::{HttpResponse, LLM_TIMEOUTS, LlmTransport, TransportError};
 
 /// `yw_win::http::Client` for the LLM: its own session (not the RPC one), `Client::new` for https
 /// and `Client::new_loopback` (no proxy) for loopback http, [`LLM_TIMEOUTS`], no redirects,

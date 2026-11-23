@@ -11,7 +11,7 @@ use yw_core::yubikey::piv::{MgmtAlgorithm, MgmtCipher};
 use yw_core::yubikey::{CardError, CardTransport, TransportFault};
 use yw_win::pcsc::{self, PcscFault};
 
-use crate::yubikey::{CardSource, CardVisit};
+use yw_engine::yubikey::{CardSource, CardVisit};
 
 const fn transport_error(fault: PcscFault) -> CardError {
     match fault {

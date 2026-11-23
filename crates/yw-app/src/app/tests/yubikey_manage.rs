@@ -199,8 +199,8 @@ fn yubikey_reslot_switches_chains_and_applies_it_to_the_backup() {
     assert_eq!(after_a.slots[1].public, bip84.public);
     assert_eq!(bip84.addresses, [BIP84_0]);
     // The card answers with that key (read-only check of every recorded slot).
-    let checked = crate::yubikey::check_record(
-        &mut crate::yubikey::MockSource {
+    let checked = yw_engine::yubikey::check_record(
+        &mut yw_engine::yubikey::MockSource {
             cards: std::sync::Arc::clone(&cards),
         },
         &after_a,
@@ -241,8 +241,8 @@ fn yubikey_reslot_switches_chains_and_applies_it_to_the_backup() {
     assert!(h.app.card.manage.is_none());
     let outcome = h
         .worker
-        .handle(crate::events::KeyJob::YubiKey(
-            crate::workers::key::yubikey::YkJob::Preview {
+        .handle(yw_engine::events::KeyJob::YubiKey(
+            yw_engine::workers::key::yubikey::YkJob::Preview {
                 mnemonic: None,
                 slots: Vec::new(),
             },
@@ -250,8 +250,8 @@ fn yubikey_reslot_switches_chains_and_applies_it_to_the_backup() {
         .pop();
     assert!(matches!(
         outcome,
-        Some(crate::events::KeyOutcome::YubiKey(
-            crate::workers::key::yubikey::YkOutcome::Preview(Err(_))
+        Some(yw_engine::events::KeyOutcome::YubiKey(
+            yw_engine::workers::key::yubikey::YkOutcome::Preview(Err(_))
         ))
     ));
     let items = h.app.items();
@@ -575,7 +575,7 @@ fn yubikey_app_catalogues_are_complete() {
             yw_engine::wallet::app_yubikey::manage::text::ALL,
         ),
         ("app_card", yw_engine::wallet::app_card::text::ALL),
-        ("yubikey", crate::yubikey::text::ALL),
+        ("yubikey", yw_engine::yubikey::text::ALL),
     ] {
         for entry in all {
             assert!(!has_hangul(entry.en), "{name}::{}", entry.name);

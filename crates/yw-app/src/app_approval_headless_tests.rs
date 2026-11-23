@@ -75,21 +75,21 @@ use super::{
     shown_id, signed_evm, sol_preview, sol_public, sol_record, sol_transfer, sol_tx, waiter_fact,
     waiters, wc_waiting,
 };
-use crate::events::{
-    ChainMessageSigned, ChainSignature, EvmSigned, KeyJob, KeyOutcome, KeyResult, MessageSigned,
-    RpcEvent, SignFailure, SignTicket, UiEvent,
-};
-use crate::flow::evm::prepare::{PrepareFailure, PrepareJob, ResimJob, ResimKind, ResimResult};
 use crate::shell_msg::{WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT};
 use crate::ui::approval_input::{
     BarHits, Facts, Focus, Step, TrustedSignals, VK_ESCAPE, VK_RETURN, VK_TAB, map_key, tab_order,
     tab_target, window_input,
 };
-use crate::ui::approval_view::Block;
-use crate::ui::interaction::InteractionEvent;
-use crate::workers::rpc::RpcJob;
+use yw_engine::approval::interaction::InteractionEvent;
+use yw_engine::approval::view::Block;
+use yw_engine::events::{
+    ChainMessageSigned, ChainSignature, EvmSigned, KeyJob, KeyOutcome, KeyResult, MessageSigned,
+    RpcEvent, SignFailure, SignTicket, UiEvent,
+};
+use yw_engine::flow::evm::prepare::{PrepareFailure, PrepareJob, ResimJob, ResimKind, ResimResult};
 use yw_engine::wallet::app_evm::QueuedItem;
 use yw_engine::wallet::lock::LockReason;
+use yw_engine::workers::rpc::RpcJob;
 
 /// The committed headless golden.
 const GOLDEN: &str = include_str!("app/tests/s4_flow/headless.txt");
@@ -274,7 +274,7 @@ impl<'a> Run<'a> {
         let banners = names(
             app.banners
                 .iter()
-                .filter_map(|banner| banner.code.map(crate::errors::ErrorCode::code)),
+                .filter_map(|banner| banner.code.map(yw_engine::errors::ErrorCode::code)),
         );
         let info = match app.evm.send.info.as_deref() {
             None => "-",
@@ -1329,7 +1329,7 @@ fn ui001_and_wc_label() -> Vec<String> {
     h.lines.append(&mut h3.lines);
     let fx2 = fixture("wc-label");
     let outlet = dapp(&fx2, false, true);
-    let wc_origin = crate::walletconnect::session_origin(&[9; 32]).unwrap();
+    let wc_origin = yw_engine::walletconnect::session_origin(&[9; 32]).unwrap();
     let (sender, frames) = std::sync::mpsc::channel();
     let core = fx2
         .app
@@ -1862,8 +1862,8 @@ fn granted_origins(fx: &Fixture) -> Vec<String> {
 
 /// An unlock in one entry: the mode is `Unlocked` and the key worker's meta load answers with
 /// `meta` (`KeyOutcome::Meta`, at the current epoch), as after the password.
-fn unlock_with_meta(fx: &Fixture, meta: crate::meta::Meta) {
-    use crate::events::MetaLoaded;
+fn unlock_with_meta(fx: &Fixture, meta: yw_engine::meta::Meta) {
+    use yw_engine::events::MetaLoaded;
     use yw_engine::wallet::AppMode;
 
     let mut app = fx.app();
@@ -1961,7 +1961,7 @@ impl DiskWorker {
     }
 
     /// The meta document on disk: a meta load (after an unlock when the worker is locked).
-    fn saved(&mut self) -> crate::meta::Meta {
+    fn saved(&mut self) -> yw_engine::meta::Meta {
         if let Some(KeyOutcome::Meta(Ok(loaded))) = self.worker.handle(KeyJob::LoadMeta).pop() {
             return *loaded.meta;
         }
@@ -1998,7 +1998,7 @@ fn queued(fx: &Fixture) -> Vec<String> {
 
 /// The documents of the App's queued meta saves (`KeyJob::SaveMeta`) in queue order, left queued
 /// as [`queued`] leaves them.
-fn queued_saves(fx: &Fixture) -> Vec<crate::meta::Meta> {
+fn queued_saves(fx: &Fixture) -> Vec<yw_engine::meta::Meta> {
     let queue = Arc::clone(&fx.app.borrow().key_queue);
     let mut entries = Vec::new();
     while !queue.is_empty() {
@@ -2021,8 +2021,8 @@ fn queued_saves(fx: &Fixture) -> Vec<crate::meta::Meta> {
 }
 
 /// The EVM grant origins of a meta document.
-fn saved_origins(meta: &crate::meta::Meta) -> Vec<String> {
-    crate::browser::grants::sites_from_values(&meta.connected_sites)
+fn saved_origins(meta: &yw_engine::meta::Meta) -> Vec<String> {
+    yw_engine::browser::grants::sites_from_values(&meta.connected_sites)
         .iter()
         .map(|site| site.origin.as_str().to_owned())
         .collect()
@@ -2052,8 +2052,8 @@ fn saved_origins(meta: &crate::meta::Meta) -> Vec<String> {
 fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
     use yw_engine::effect::Effect;
 
-    use crate::browser::{DappEvent, GrantChange};
     use yw_core::policy::BrowserOrigin;
+    use yw_engine::browser::{DappEvent, GrantChange};
     use yw_engine::wallet::Screen;
     use yw_engine::wallet::app_approval::AfterOpen;
 
@@ -2181,7 +2181,7 @@ fn a_lock_keeps_a_revoke_whose_write_waits_for_an_open() {
 
 /// Grants `origin` the Solana account (`sol`) or a Bitcoin payment address in the dispatcher.
 fn chain_grant(
-    core: &crate::browser::BrowserCore,
+    core: &yw_engine::browser::BrowserCore,
     origin: &yw_core::policy::BrowserOrigin,
     sol: bool,
 ) -> bool {
@@ -2210,7 +2210,7 @@ fn chain_grant(
 }
 
 /// How many Solana (`sol`) or Bitcoin sites the meta document holds.
-fn saved_chain_sites(meta: &crate::meta::Meta, sol: bool) -> usize {
+fn saved_chain_sites(meta: &yw_engine::meta::Meta, sol: bool) -> usize {
     if sol {
         meta.chain_sites.sol.len()
     } else {
@@ -2240,7 +2240,7 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
     use yw_core::policy::BrowserOrigin;
     use yw_engine::effect::Effect;
 
-    use crate::browser::{DappEvent, GrantChange};
+    use yw_engine::browser::{DappEvent, GrantChange};
     use yw_engine::wallet::app_approval::AfterOpen;
 
     for (tag, change) in [
@@ -2248,7 +2248,7 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
         ("revoke-lock-deferred-btc", GrantChange::BtcRevoked),
     ] {
         let sol = matches!(change, GrantChange::SolRevoked);
-        let sites = |meta: &crate::meta::Meta| saved_chain_sites(meta, sol);
+        let sites = |meta: &yw_engine::meta::Meta| saved_chain_sites(meta, sol);
         let fx = fixture(tag);
         let outlet = dapp(&fx, false, true);
         let core = Arc::clone(&fx.app.borrow().browser.as_ref().unwrap().core);
@@ -2367,8 +2367,8 @@ fn a_lock_keeps_a_solana_or_bitcoin_revoke_whose_write_waits_for_an_open() {
 }
 
 /// The chain the meta document's EVM grant of `site` names, if it has one.
-fn saved_chain(meta: &crate::meta::Meta, site: &str) -> Option<u64> {
-    crate::browser::grants::sites_from_values(&meta.connected_sites)
+fn saved_chain(meta: &yw_engine::meta::Meta, site: &str) -> Option<u64> {
+    yw_engine::browser::grants::sites_from_values(&meta.connected_sites)
         .iter()
         .find(|saved| saved.origin.as_str() == site)
         .map(|saved| saved.chain_id)
@@ -2394,7 +2394,7 @@ fn a_shutdown_writes_a_coalesced_chain_switch_first() {
     use yw_core::evm::chain::{ETHEREUM_MAINNET, SEPOLIA};
     use yw_core::policy::ConnectedSite;
 
-    use crate::browser::{DappEvent, GrantChange};
+    use yw_engine::browser::{DappEvent, GrantChange};
     use yw_engine::wallet::AppMode;
 
     let fx = fixture("shutdown-chain-switch");
@@ -2505,7 +2505,7 @@ fn a_shutdown_keeps_a_revoke_whose_write_waits_for_an_open() {
     use yw_core::policy::BrowserOrigin;
     use yw_engine::effect::Effect;
 
-    use crate::browser::{DappEvent, GrantChange};
+    use yw_engine::browser::{DappEvent, GrantChange};
     use yw_engine::wallet::AppMode;
     use yw_engine::wallet::app_approval::AfterOpen;
 
@@ -2630,7 +2630,7 @@ fn late_answers_under_the_deferred_schedule() {
     use yw_core::policy::BrowserOrigin;
 
     use crate::app_effects::deferred;
-    use crate::browser::{DappEvent, GrantChange};
+    use yw_engine::browser::{DappEvent, GrantChange};
     use yw_engine::wallet::app_approval::AfterOpen;
     use yw_engine::wallet::{AppMode, Screen};
 
@@ -2824,7 +2824,7 @@ fn cancel_while_shown() -> Vec<String> {
     // queued request's approval window opens and is closed at once.
     let mut events: Vec<UiEvent> = outlet.events.drain();
     events.sort_by_key(|event| match event {
-        UiEvent::Dapp(crate::browser::DappEvent::Cancel(key)) => (0, key.request.0),
+        UiEvent::Dapp(yw_engine::browser::DappEvent::Cancel(key)) => (0, key.request.0),
         _ => (1, [0; 16]),
     });
     for event in events {
@@ -3046,7 +3046,7 @@ fn sol_dapp_request(fx: &Fixture, h: &mut Run<'_>, outlet: &Outlet, n: u8, metho
         };
         h.deliver(UiEvent::Rpc(RpcEvent::SolDappPreviewed(Box::new((
             job,
-            Ok(crate::sol::flow::DappPreview {
+            Ok(yw_engine::sol::flow::DappPreview {
                 items: vec![item],
                 mints: Vec::new(),
                 unread_mints: Vec::new(),
@@ -3089,7 +3089,7 @@ fn grant_sol_dapp_sign() -> Vec<String> {
 }
 
 fn journal_sol_dapp_send() -> Vec<String> {
-    use crate::events::{SolDappSigned, SolDappSignedSummary, SolSignFailure};
+    use yw_engine::events::{SolDappSigned, SolDappSignedSummary, SolSignFailure};
     let fx = fixture("journal-sol-dapp");
     let outlet = dapp(&fx, true, true);
     devnet(&fx);
@@ -3162,7 +3162,7 @@ fn journal_sol_dapp_send() -> Vec<String> {
             h.snap("disconnected");
         }
         h.deliver(UiEvent::Rpc(RpcEvent::SolTracked(Box::new(
-            crate::sol::flow::TrackResult {
+            yw_engine::sol::flow::TrackResult {
                 signature: tx_id,
                 state: yw_core::sol::broadcast::LoopState::default(),
                 outcome: Ok(yw_core::sol::broadcast::Outcome::Pending { notice: false }),
@@ -3177,7 +3177,7 @@ fn journal_sol_dapp_send() -> Vec<String> {
 }
 
 fn journal_sol_app_send() -> Vec<String> {
-    use crate::events::{SolSignFailure, SolSignedSummary};
+    use yw_engine::events::{SolSignFailure, SolSignedSummary};
     let fx = fixture("journal-sol");
     let _outlet = dapp(&fx, true, false);
     devnet(&fx);
@@ -3241,15 +3241,15 @@ fn journal_sol_app_send() -> Vec<String> {
 }
 
 fn journal_zec() -> Vec<String> {
-    use crate::workers::journal::zec::{ZecKeyOutcome, ZecSignedSummary};
     use yw_core::zec::ZecNetwork;
+    use yw_engine::workers::journal::zec::{ZecKeyOutcome, ZecSignedSummary};
     let fx = fixture("journal-zec");
     install_events(&fx, None);
     {
         let mut app = fx.app();
         app.settings.zcash.network = ZecNetwork::Testnet;
         app.apikeys.set_rpc(
-            crate::network::NetworkId::Zcash(ZecNetwork::Testnet),
+            yw_engine::network::NetworkId::Zcash(ZecNetwork::Testnet),
             &yw_platform::http::HttpsUrl::parse("https://zec.example.test/").unwrap(),
         );
     }
@@ -3483,15 +3483,15 @@ fn rpc_import_on_temp_data() -> Vec<String> {
         app.rpc_import.imported,
         fx.dir().join("apikeys.dpapi").exists(),
         app.apikeys
-            .rpc_url(crate::network::NetworkId::Eip155(1))
+            .rpc_url(yw_engine::network::NetworkId::Eip155(1))
             .is_some(),
         app.apikeys
-            .rpc_url(crate::network::NetworkId::Solana(
-                crate::network::SolCluster::Devnet
+            .rpc_url(yw_engine::network::NetworkId::Solana(
+                yw_engine::network::SolCluster::Devnet
             ))
             .is_some(),
         app.apikeys
-            .rpc_url(crate::network::NetworkId::Eip155(11_155_111))
+            .rpc_url(yw_engine::network::NetworkId::Eip155(11_155_111))
             .is_some(),
         app.rpc_tests.running.is_some(),
         app.rpc_tests.waiting.len(),

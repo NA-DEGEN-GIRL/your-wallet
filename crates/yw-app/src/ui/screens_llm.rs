@@ -3,12 +3,14 @@
 //! effort, the API key (`apikeys.dpapi` entry `llm`, never shown again), the connection test,
 //! and the privacy notice overlay shown when enabling.
 
-use crate::apikeys::KeyName;
 use crate::app::App;
-use crate::explain::config::{effectively_enabled, host_phrase, parse_endpoint, privacy_notice};
-use crate::explain::{ReasoningEffort, ResponseFormatMode};
 use crate::ui::main_window::{Ctl, Item};
+use yw_engine::apikeys::KeyName;
 use yw_engine::explain::config::DraftNotes;
+use yw_engine::explain::config::{
+    effectively_enabled, host_phrase, parse_endpoint, privacy_notice,
+};
+use yw_engine::explain::{ReasoningEffort, ResponseFormatMode};
 use yw_engine::screen::Tone;
 
 /// Command ids of the AI section (10,000–10,099; the whole map is `ui::command_ids`).

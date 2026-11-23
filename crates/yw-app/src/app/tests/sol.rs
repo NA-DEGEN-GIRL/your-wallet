@@ -14,13 +14,13 @@ use yw_core::sol::message::{assemble_transaction, encode_message};
 use yw_core::sol::recipient::KnownKind;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore};
 
-use crate::apikeys::ApiKeys;
 use crate::app::{App, Paths};
-use crate::errors::ErrorCode;
-use crate::events::{JournalView, SolKeysPurpose};
-use crate::meta::{Account, ActivityEntry, Meta, Tab};
-use crate::settings::Settings;
-use crate::sol::flow::TrackResult;
+use yw_engine::apikeys::ApiKeys;
+use yw_engine::errors::ErrorCode;
+use yw_engine::events::{JournalView, SolKeysPurpose};
+use yw_engine::meta::{Account, ActivityEntry, Meta, Tab};
+use yw_engine::settings::Settings;
+use yw_engine::sol::flow::TrackResult;
 use yw_engine::wallet::app_sol::{
     ReviewRefusal, SOL_APPLY_RETRY_MS, SOL_REVIEW_CHANGED_TEXT, SOL_SAVE_FAILED_TEXT,
     SOL_SAVING_TEXT, SOL_SCAN_RECONFIRM_TEXT, ScanStage, SolHalt,
@@ -120,7 +120,7 @@ fn a_round_from_before_a_url_change_cannot_set_or_clear_the_genesis_flag() {
     let (mut app, signature) = tracking_app();
     // A round with the genesis check runs (generation 0) when the URL changes.
     app.sol.tracking.get_mut(&signature).unwrap().busy = true;
-    app.sol_url_changed(crate::network::SolCluster::Mainnet);
+    app.sol_url_changed(yw_engine::network::SolCluster::Mainnet);
     let state = app.sol.tracking[&signature];
     assert_eq!(state.generation, 1);
     assert!(!state.genesis_checked);
@@ -151,7 +151,7 @@ fn a_round_from_before_a_url_change_cannot_set_or_clear_the_genesis_flag() {
             .contains(ErrorCode::Rpc006.text_in(yw_core::lang::Lang::Ko).as_str())
     );
     // A URL change lifts the mismatch halt.
-    app.sol_url_changed(crate::network::SolCluster::Mainnet);
+    app.sol_url_changed(yw_engine::network::SolCluster::Mainnet);
     assert_eq!(app.sol.tracking[&signature].halt, None);
 }
 
@@ -249,7 +249,7 @@ fn only_successful_sends_on_this_cluster_make_a_recipient_known() {
     });
     assert!(!first_time(&mut app, TO_D));
     // On devnet the devnet successes are the known ones.
-    app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+    app.settings.solana.cluster = yw_engine::network::SolCluster::Devnet;
     assert!(!first_time(&mut app, TO_C));
     assert!(first_time(&mut app, TO_A));
 }
@@ -262,11 +262,11 @@ fn the_scan_runs_only_for_the_cluster_whose_notice_was_confirmed() {
     let mut app = app();
     let url = yw_platform::http::HttpsUrl::parse("https://rpc.example.test/v1").unwrap();
     for cluster in [
-        crate::network::SolCluster::Mainnet,
-        crate::network::SolCluster::Devnet,
+        yw_engine::network::SolCluster::Mainnet,
+        yw_engine::network::SolCluster::Devnet,
     ] {
         app.apikeys
-            .set_rpc(crate::network::NetworkId::Solana(cluster), &url);
+            .set_rpc(yw_engine::network::NetworkId::Solana(cluster), &url);
     }
     app.sol_open_scan();
     app.sol_start_scan();
@@ -283,7 +283,7 @@ fn the_scan_runs_only_for_the_cluster_whose_notice_was_confirmed() {
     // Confirmed for devnet, then the selection changes without a reset: confirm again.
     app.sol_start_scan();
     assert_eq!(app.sol.scan.cluster, Some(SolCluster::Devnet));
-    app.settings.solana.cluster = crate::network::SolCluster::Mainnet;
+    app.settings.solana.cluster = yw_engine::network::SolCluster::Mainnet;
     app.on_sol_keys(SolKeysPurpose::Scan, Ok(Vec::new()));
     assert_eq!(app.sol.scan.stage, ScanStage::Notice);
     assert_eq!(
@@ -352,7 +352,7 @@ fn review_uses_a_fresh_validation_and_refuses_a_changed_input() {
 fn dapp_sends_are_tracked_together_and_do_not_hold_the_send_form() {
     use yw_core::journal::sol::{SolDappMeta, dapp_flags};
 
-    use crate::workers::rpc::RpcJob;
+    use yw_engine::workers::rpc::RpcJob;
     let mut app = app();
     let dapp = |sig: u8, flags: u8| {
         let mut pending = record(SolCluster::Mainnet, SolTxState::Pending, TO_A, sig);
@@ -377,7 +377,7 @@ fn dapp_sends_are_tracked_together_and_do_not_hold_the_send_form() {
     app.rpc_tx = Some(rpc);
     let url = yw_platform::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
     app.apikeys.set_rpc(
-        crate::network::NetworkId::Solana(crate::network::SolCluster::Mainnet),
+        yw_engine::network::NetworkId::Solana(yw_engine::network::SolCluster::Mainnet),
         &url,
     );
     let now = app.clock.now_ms();

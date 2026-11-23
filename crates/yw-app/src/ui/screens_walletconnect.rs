@@ -6,8 +6,8 @@
 
 use crate::app::App;
 use crate::ui::main_window::{Ctl, Item};
-use crate::walletconnect::VerifyStatus;
 use yw_engine::screen::Tone;
+use yw_engine::walletconnect::VerifyStatus;
 
 /// Control ids (16,000–16,099; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -142,7 +142,7 @@ pub mod text {
 fn local_time(seconds: u64) -> String {
     let unix_ms = seconds.saturating_mul(1_000);
     let local = yw_win::time::local_wall_ms(unix_ms);
-    let text = crate::logging::format_utc(local.unwrap_or(unix_ms));
+    let text = yw_engine::logging::format_utc(local.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if local.is_some() {
         short
@@ -281,7 +281,8 @@ impl App {
             )));
             items.push(Item::Field(
                 text::SITE_URL.get(lang).to_owned(),
-                crate::walletconnect::text::CLAIMED.fill(lang, [&session.peer.display_url(lang)]),
+                yw_engine::walletconnect::text::CLAIMED
+                    .fill(lang, [&session.peer.display_url(lang)]),
             ));
             if !session.acknowledged {
                 // Approved here, not yet confirmed by the dApp (spec/13 §5.3): never shown as

@@ -330,7 +330,7 @@ impl App {
                         && slot.public == line.public
                 })
             });
-            let holders = crate::yubikey::holders(&others, planned.role);
+            let holders = yw_engine::yubikey::holders(&others, planned.role);
             let relation = match (unchanged, holders.is_empty()) {
                 (true, _) => t::RELATION_UNCHANGED.get(lang).to_owned(),
                 (false, true) => t::RELATION_PUT.get(lang).to_owned(),
@@ -656,7 +656,7 @@ impl App {
                 .iter()
                 .filter(|slot| plan.clears(slot.slot))
                 .map(|slot| {
-                    let holders = crate::yubikey::holders(&others, slot.role);
+                    let holders = yw_engine::yubikey::holders(&others, slot.role);
                     let mut account = self.card_removed(slot, &others, true);
                     account.label = format!("{} — {}", slot.slot.label_in(lang), account.label);
                     account.note = Some(if holders.is_empty() && !slot.path_known {
@@ -718,7 +718,7 @@ impl App {
         ));
         let mut asks: Vec<&str> = Vec::new();
         if plan.openpgp == Some(ClearMethod::OurSlots) {
-            asks.push(crate::yubikey::PinKind::OpenPgpAdmin.name(lang));
+            asks.push(yw_engine::yubikey::PinKind::OpenPgpAdmin.name(lang));
         }
         if plan.piv == Some(ClearMethod::OurSlots) {
             asks.push("PIV PIN");
@@ -748,7 +748,7 @@ impl App {
             // wrong one is named (spec/10 §9.1).
             let line =
                 |name: &str,
-                 pin: crate::yubikey::PinKind,
+                 pin: yw_engine::yubikey::PinKind,
                  asked: Option<ClearMethod>,
                  result: Option<Result<(), yw_core::yubikey::CardError>>| {
                     match (asked, result) {
@@ -773,13 +773,13 @@ impl App {
             for (text, tone) in [
                 line(
                     "OpenPGP",
-                    crate::yubikey::PinKind::OpenPgpAdmin,
+                    yw_engine::yubikey::PinKind::OpenPgpAdmin,
                     cleared.asked.openpgp,
                     cleared.report.openpgp,
                 ),
                 line(
                     "PIV",
-                    crate::yubikey::PinKind::PivPin,
+                    yw_engine::yubikey::PinKind::PivPin,
                     cleared.asked.piv,
                     cleared.report.piv,
                 ),
@@ -796,7 +796,7 @@ impl App {
                 Ok(()) => items.push(Item::Text(t::RESULT_SLOTS_REMOVED.get(lang).to_owned())),
                 Err(error) => items.push(Item::Banner(
                     t::RESULT_VAULT_FAILED
-                        .fill(lang, [&crate::errors::vault_code(error).text_in(lang)]),
+                        .fill(lang, [&yw_engine::errors::vault_code(error).text_in(lang)]),
                     Tone::Danger,
                 )),
             }

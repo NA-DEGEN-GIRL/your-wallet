@@ -91,15 +91,15 @@ use yw_win::ui::{Handler, Msg, Rect, Reply, Window};
 use super::flow_support::{self, Call, Fixture, HostMode, Logged, Outlet, Read, START_MS, Signals};
 use super::flow_tests::{dapp, dapp_answers, personal_sign, request, spare_window};
 use super::{APPROVAL_TIMER_ID, Bottom, Focus, Forward, PanelLayout, Pressed, Target};
-use crate::explain::config::{ModelName, parse_endpoint};
-use crate::explain::request::{HttpResponse, LlmTransport, TransportError};
-use crate::explain::{ExplainService, LlmConfig, ResponseFormatMode};
 use crate::ui::approval_input::{
     Surface, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_NEXT, VK_PRIOR, VK_RETURN, VK_SPACE, VK_TAB,
     VK_UP,
 };
-use crate::ui::interaction::InteractionEvent;
-use crate::workers::rpc::RpcJob;
+use yw_engine::approval::interaction::InteractionEvent;
+use yw_engine::explain::config::{ModelName, parse_endpoint};
+use yw_engine::explain::request::{HttpResponse, LlmTransport, TransportError};
+use yw_engine::explain::{ExplainService, LlmConfig, ResponseFormatMode};
+use yw_engine::workers::rpc::RpcJob;
 
 /// The committed goldens.
 const INPUT: &str = include_str!("app/tests/s4_flow/input.txt");
@@ -595,7 +595,7 @@ fn after(opened: &Opened, issued: Option<ApprovalId>) -> String {
         .map_or_else(|| "-".to_owned(), |state| format!("{state:?}"));
     drop(app);
     let rpc = names(fx.rpc_jobs().iter().map(RpcJob::name));
-    let key = names(fx.key_jobs().iter().map(crate::events::KeyJob::name));
+    let key = names(fx.key_jobs().iter().map(yw_engine::events::KeyJob::name));
     let dapp = outlet.map_or_else(|| "-".to_owned(), dapp_answers);
     let _ = write!(
         line,
@@ -2268,8 +2268,8 @@ fn ai_never_touches_the_gate() {
 #[test]
 fn the_ai_panel_repaints_through_an_effect() {
     use super::headless_host::{self, OpenAnswer};
-    use crate::explain::AiPanelState;
     use yw_engine::approval::flow::ApprovalEffect;
+    use yw_engine::explain::AiPanelState;
     use yw_engine::wallet::approval_flow::ApprovalFlow;
 
     fn repaints() -> Vec<ApprovalEffect> {

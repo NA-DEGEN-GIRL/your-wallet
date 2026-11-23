@@ -11,12 +11,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use yw_engine::testkit::WalletTestExt;
 
-use crate::apikeys::ApiKeys;
 use crate::app::{App, Paths};
-use crate::browser::Reply;
-use crate::browser::envelope::{Correlation, Id16, Id32};
-use crate::events::{EventQueue, MessageSignFailure, MessageSigned};
-use crate::settings::Settings;
+use yw_engine::apikeys::ApiKeys;
+use yw_engine::browser::Reply;
+use yw_engine::browser::envelope::{Correlation, Id16, Id32};
+use yw_engine::events::{EventQueue, MessageSignFailure, MessageSigned};
+use yw_engine::settings::Settings;
 use yw_engine::wallet::app_browser::{BrowserUi, GrantWrite, SignWaiter};
 
 fn app() -> App {
@@ -31,14 +31,14 @@ fn app() -> App {
         ApiKeys::default(),
     );
     let events = Arc::new(EventQueue::new(Box::new(|| {})));
-    let core = crate::browser::BrowserCore::new(
+    let core = yw_engine::browser::BrowserCore::new(
         "abcdefghijklmnopabcdefghijklmnop",
-        events as Arc<dyn crate::browser::DappSink>,
+        events as Arc<dyn yw_engine::browser::DappSink>,
         Arc::clone(&app.clock),
     );
     app.browser = Some(BrowserUi {
         core,
-        reads: Arc::new(crate::browser::read::ReadContext::new(None)),
+        reads: Arc::new(yw_engine::browser::read::ReadContext::new(None)),
         connections: 0,
         waiters: HashMap::new(),
         broadcasts: HashMap::new(),
@@ -110,16 +110,16 @@ fn signing_results_answer_their_own_ticket() {
     assert_eq!(broadcast_reply(&app, [0x11; 32]), Some(reply(1)));
     // The app send's result answers nobody; an unknown ticket is ignored.
     app.browser_tx_signed(own, Ok([0x44; 32]));
-    app.browser_tx_signed(crate::events::SignTicket(999), Ok([0x55; 32]));
+    app.browser_tx_signed(yw_engine::events::SignTicket(999), Ok([0x55; 32]));
     assert_eq!(broadcast_reply(&app, [0x44; 32]), None);
     assert_eq!(broadcast_reply(&app, [0x55; 32]), None);
     // The Solana transactions' waiter is still there; its own result takes it.
     assert!(app.browser.as_ref().is_some_and(|browser| {
         browser.waiters.len() == 1 && browser.waiters.contains_key(&sol)
     }));
-    app.browser_chain_message_signed(&crate::events::ChainMessageSigned {
+    app.browser_chain_message_signed(&yw_engine::events::ChainMessageSigned {
         ticket: sol,
-        result: Ok(crate::events::ChainSignature::SolTxs(vec![vec![0xab]])),
+        result: Ok(yw_engine::events::ChainSignature::SolTxs(vec![vec![0xab]])),
     });
     assert!(
         app.browser
@@ -128,13 +128,13 @@ fn signing_results_answer_their_own_ticket() {
     );
 }
 
-fn site(n: u8, kind: crate::browser::SiteKind) -> crate::browser::SiteRequest {
+fn site(n: u8, kind: yw_engine::browser::SiteKind) -> yw_engine::browser::SiteRequest {
     let method = match kind {
-        crate::browser::SiteKind::RequestAccounts => yw_core::policy::Method::RequestAccounts,
-        crate::browser::SiteKind::Revoke => yw_core::policy::Method::RevokePermissions,
+        yw_engine::browser::SiteKind::RequestAccounts => yw_core::policy::Method::RequestAccounts,
+        yw_engine::browser::SiteKind::Revoke => yw_core::policy::Method::RevokePermissions,
         _ => yw_core::policy::Method::PersonalSign,
     };
-    crate::browser::SiteRequest {
+    yw_engine::browser::SiteRequest {
         reply: reply(n),
         origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
         chain_id: yw_core::evm::chain::SEPOLIA,
@@ -145,8 +145,8 @@ fn site(n: u8, kind: crate::browser::SiteKind) -> crate::browser::SiteRequest {
     }
 }
 
-fn sign_kind() -> crate::browser::SiteKind {
-    crate::browser::SiteKind::PersonalSign {
+fn sign_kind() -> yw_engine::browser::SiteKind {
+    yw_engine::browser::SiteKind::PersonalSign {
         account: yw_core::evm::address::parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94")
             .unwrap(),
         message: b"hi".to_vec(),
@@ -155,8 +155,8 @@ fn sign_kind() -> crate::browser::SiteKind {
 
 /// A `sol_signTransaction` request of key `[1; 32]` (an empty transaction list: the
 /// passphrase check comes before any other).
-fn sol_tx_kind() -> crate::browser::SiteKind {
-    crate::browser::SiteKind::SolTx {
+fn sol_tx_kind() -> yw_engine::browser::SiteKind {
+    yw_engine::browser::SiteKind::SolTx {
         public: [1; 32],
         cluster: yw_core::sol::SolCluster::Devnet,
         txs: Vec::new(),
@@ -173,12 +173,12 @@ fn sol_tx_kind() -> crate::browser::SiteKind {
 /// unaffected.
 #[test]
 fn unverified_passphrase_refuses_dapp_connect_and_signing() {
-    use crate::browser::{DappEvent, SiteKind, VaultView};
-    use crate::ui::approval::QueueOutcome;
+    use yw_engine::approval::QueueOutcome;
+    use yw_engine::browser::{DappEvent, SiteKind, VaultView};
     use yw_engine::wallet::AppMode;
 
     let mut app = app();
-    app.meta = Some(crate::meta::Meta::default());
+    app.meta = Some(yw_engine::meta::Meta::default());
     app.mode = AppMode::Unlocked {
         alt_passphrase: false,
     };
@@ -256,18 +256,18 @@ fn accounts_app(b_hidden: bool) -> App {
     app.mode = yw_engine::wallet::AppMode::Unlocked {
         alt_passphrase: false,
     };
-    let account = |index: u32, address: &str, hidden: bool| crate::meta::Account {
+    let account = |index: u32, address: &str, hidden: bool| yw_engine::meta::Account {
         index,
         label: format!("계정 {}", index + 1),
         address: address.to_owned(),
         hidden,
     };
-    app.meta = Some(crate::meta::Meta {
+    app.meta = Some(yw_engine::meta::Meta {
         evm_accounts: vec![
             account(0, ACCOUNT_A, false),
             account(1, ACCOUNT_B, b_hidden),
         ],
-        ..crate::meta::Meta::default()
+        ..yw_engine::meta::Meta::default()
     });
     app
 }
@@ -277,7 +277,7 @@ fn accounts_app(b_hidden: bool) -> App {
 /// shown one).
 #[test]
 fn connect_approval_rechecks_the_accounts_and_stores_the_shown_chain() {
-    use crate::browser::SiteKind;
+    use yw_engine::browser::SiteKind;
     let mut app = accounts_app(true);
     let core = Arc::clone(&app.browser.as_ref().unwrap().core);
     let request = site(1, SiteKind::RequestAccounts);
@@ -307,7 +307,7 @@ fn connect_approval_rechecks_the_accounts_and_stores_the_shown_chain() {
 /// request-time chain), the same value the approval then stores.
 #[test]
 fn connect_window_shows_the_origin_chain_of_now() {
-    use crate::browser::SiteKind;
+    use yw_engine::browser::SiteKind;
     let mut app = accounts_app(false);
     app.sync_browser();
     let core = Arc::clone(&app.browser.as_ref().unwrap().core);
@@ -338,7 +338,7 @@ fn connect_window_shows_the_origin_chain_of_now() {
 /// it (4100 `Revoked`); other accounts' requests stay queued.
 #[test]
 fn removing_an_account_revokes_its_waiting_signing_requests() {
-    use crate::browser::{DappEvent, SiteKind};
+    use yw_engine::browser::{DappEvent, SiteKind};
     let mut app = accounts_app(false);
     // Queued while locked: they wait.
     app.mode = yw_engine::wallet::AppMode::Locked;
@@ -366,17 +366,17 @@ fn removing_an_account_revokes_its_waiting_signing_requests() {
 /// which only the extension's requests open. Other origins' requests are untouched.
 #[test]
 fn walletconnect_requests_end_with_their_window_and_at_lock() {
-    use crate::ui::approval::{QueueOutcome, QueueSource};
+    use yw_engine::approval::{QueueOutcome, QueueSource};
     use yw_engine::wallet::app_evm::QueuedItem;
     let mut app = accounts_app(false);
     // The unlock merge (it moves the queue) is behind us, as in the app.
     app.sync_browser();
     let wc = |n: u8, session: u8| {
         let mut request = site(n, sign_kind());
-        request.origin = crate::walletconnect::session_origin(&[session; 32]).unwrap();
+        request.origin = yw_engine::walletconnect::session_origin(&[session; 32]).unwrap();
         request
     };
-    let enqueue = |app: &mut App, request: crate::browser::SiteRequest| {
+    let enqueue = |app: &mut App, request: yw_engine::browser::SiteRequest| {
         let source = QueueSource::Site {
             origin: request.origin.as_str().to_owned(),
             deadline_ms: u64::MAX,
@@ -388,7 +388,7 @@ fn walletconnect_requests_end_with_their_window_and_at_lock() {
     };
     let is_wc = |item: &QueuedItem| {
         matches!(item, QueuedItem::Site(site)
-            if crate::walletconnect::is_session_origin(&site.origin))
+            if yw_engine::walletconnect::is_session_origin(&site.origin))
     };
     for request in [wc(1, 1), wc(2, 1), site(3, sign_kind()), wc(4, 2), wc(5, 1)] {
         enqueue(&mut app, request);
@@ -426,9 +426,9 @@ fn walletconnect_requests_end_with_their_window_and_at_lock() {
 /// key may be imported beside a derived or added-phrase account).
 #[test]
 fn a_removed_key_or_phrase_keeps_the_grants_of_addresses_still_shown() {
-    use crate::meta::{Account, MnemonicEntry, RawAccount};
-    use crate::workers::key::mnemonics::MnOutcome;
     use yw_core::vault::RecordId;
+    use yw_engine::meta::{Account, MnemonicEntry, RawAccount};
+    use yw_engine::workers::key::mnemonics::MnOutcome;
     const ACCOUNT_C: &str = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
     let phrase = [7_u8; 16];
     let mut app = accounts_app(false);
@@ -486,22 +486,22 @@ fn a_removed_key_or_phrase_keeps_the_grants_of_addresses_still_shown() {
 /// enrolled from the same words) stays.
 #[test]
 fn a_reload_without_a_cards_accounts_drops_them_from_the_grants() {
-    use crate::browser::grants::{sites_from_values, sol_sites_from_values};
-    use crate::events::{KeyOutcome, KeyResult, MetaLoaded};
+    use yw_engine::browser::grants::{sites_from_values, sol_sites_from_values};
+    use yw_engine::events::{KeyOutcome, KeyResult, MetaLoaded};
     const ACCOUNT_YK: &str = "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0";
     const SOL_YK: &str = "FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z";
-    let card = |index: u32, address: &str| crate::meta::Account {
+    let card = |index: u32, address: &str| yw_engine::meta::Account {
         index,
         label: format!("YubiKey 계정 {}", index + 1),
         address: address.to_owned(),
         hidden: false,
     };
     let mut app = accounts_app(false);
-    let enrolled = |meta: &mut crate::meta::Meta| {
+    let enrolled = |meta: &mut yw_engine::meta::Meta| {
         meta.hw_accounts.evm = vec![card(0, ACCOUNT_YK), card(1, ACCOUNT_B)];
         meta.hw_accounts.sol = vec![card(0, SOL_YK)];
     };
-    let reload = |app: &mut App, meta: crate::meta::Meta| {
+    let reload = |app: &mut App, meta: yw_engine::meta::Meta| {
         app.on_key_result(KeyResult {
             epoch: app.lock_epoch,
             outcome: KeyOutcome::Meta(Ok(MetaLoaded {
@@ -563,10 +563,10 @@ fn a_reload_without_a_cards_accounts_drops_them_from_the_grants() {
 /// quiz passes it reaches its window.
 #[test]
 fn an_unconfirmed_phrase_account_is_tagged_and_refused_before_the_window() {
-    use crate::browser::SiteKind;
-    use crate::meta::{Account, EvmAccountPref, MnemonicEntry};
-    use crate::ui::approval::QueueOutcome;
     use yw_core::vault::{MnemonicInfo, RecordId};
+    use yw_engine::approval::QueueOutcome;
+    use yw_engine::browser::SiteKind;
+    use yw_engine::meta::{Account, EvmAccountPref, MnemonicEntry};
     const ACCOUNT_C: &str = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
     let phrase = RecordId::from_bytes([7; 16]);
     let mut app = accounts_app(false);
@@ -639,7 +639,7 @@ fn an_unconfirmed_phrase_account_is_tagged_and_refused_before_the_window() {
     assert_eq!(notices, 1);
     // A WalletConnect session's request: the notice names the dApp, never the session's
     // internal `….walletconnect.invalid` origin.
-    let session = crate::walletconnect::session_origin(&[9; 32]).unwrap();
+    let session = yw_engine::walletconnect::session_origin(&[9; 32]).unwrap();
     core.upsert_grant(
         yw_core::policy::ConnectedSite::new(
             session.clone(),
@@ -676,11 +676,11 @@ fn an_unconfirmed_phrase_account_is_tagged_and_refused_before_the_window() {
 /// this wallet is still refused (4100).
 #[test]
 fn a_yubikey_account_signs_for_a_connected_site() {
-    use crate::browser::SiteKind;
-    use crate::ui::approval::QueueOutcome;
+    use yw_engine::approval::QueueOutcome;
+    use yw_engine::browser::SiteKind;
     const ACCOUNT_YK: &str = "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0";
     let mut app = accounts_app(false);
-    app.meta.as_mut().unwrap().hw_accounts.evm = vec![crate::meta::Account {
+    app.meta.as_mut().unwrap().hw_accounts.evm = vec![yw_engine::meta::Account {
         index: 1,
         label: "YubiKey 계정 2".to_owned(),
         address: ACCOUNT_YK.to_owned(),
@@ -722,22 +722,22 @@ fn a_yubikey_account_signs_for_a_connected_site() {
 /// any window, with one notice; out of the defaults both open again.
 #[test]
 fn a_factory_pin_card_is_stopped_at_the_form_and_before_the_window() {
-    use crate::browser::SiteKind;
-    use crate::ui::approval::QueueOutcome;
     use yw_core::bip32::path::AccountIndex;
     use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PinPolicy, TouchPolicy};
     use yw_core::yubikey::record::{HwKeyRecord, HwPublicKey, RecordedSlot};
+    use yw_engine::approval::QueueOutcome;
+    use yw_engine::browser::SiteKind;
     const ACCOUNT_YK: &str = "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0";
     const SERIAL: u32 = 7_700_011;
     let mut app = accounts_app(false);
     let meta = app.meta.as_mut().unwrap();
-    meta.hw_accounts.evm = vec![crate::meta::Account {
+    meta.hw_accounts.evm = vec![yw_engine::meta::Account {
         index: 1,
         label: "YubiKey 계정 2".to_owned(),
         address: ACCOUNT_YK.to_owned(),
         hidden: false,
     }];
-    meta.prefs.evm_account = crate::meta::EvmAccountPref::Hardware(1);
+    meta.prefs.evm_account = yw_engine::meta::EvmAccountPref::Hardware(1);
     meta.hw_accounts.defaults = vec![SERIAL];
     app.card.records = vec![HwKeyRecord {
         serial: SERIAL,
@@ -818,7 +818,7 @@ fn a_factory_pin_card_is_stopped_at_the_form_and_before_the_window() {
 /// `RpcMismatch` are blocked with E34 (as sends are); an unchecked chain is not blocked.
 #[test]
 fn message_signing_is_blocked_on_a_mismatched_chain() {
-    use crate::flow::evm::{ChainCheck, MismatchKind};
+    use yw_engine::flow::evm::{ChainCheck, MismatchKind};
     let mut app = app();
     let sepolia = yw_core::evm::chain::SEPOLIA;
     assert!(app.message_chain_failure(sepolia).is_none());
@@ -827,7 +827,7 @@ fn message_signing_is_blocked_on_a_mismatched_chain() {
         .insert(sepolia, ChainCheck::Mismatch(MismatchKind::ConstantGenesis));
     let failure = app.message_chain_failure(sepolia).unwrap();
     assert_eq!(failure.rule(), yw_core::evm::risk::E34);
-    assert_eq!(failure.code, crate::errors::ErrorCode::Rpc006);
+    assert_eq!(failure.code, yw_engine::errors::ErrorCode::Rpc006);
     assert!(!failure.retryable);
     assert!(
         app.message_chain_failure(yw_core::evm::chain::ETHEREUM_MAINNET)

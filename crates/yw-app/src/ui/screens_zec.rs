@@ -9,14 +9,14 @@ use yw_core::lang::Lang;
 use yw_core::zec::{ZecKeySource, ZecNetwork, format_zec, format_zec_and_zats};
 
 use crate::app::App;
-use crate::settings::ZecIndexer;
-use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_accounts::AccountItem;
-use crate::zec::rpc::ZecRpcError;
+use yw_engine::badge::Badge;
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::Tone;
+use yw_engine::settings::ZecIndexer;
 use yw_engine::wallet::AppMode;
+use yw_engine::zec::rpc::ZecRpcError;
 
 /// Fixed texts of the S10 Zcash tab (spec/12 §11, spec/04 §2.6; English spec/14 §5).
 pub mod text {
@@ -316,7 +316,7 @@ fn offset(id: u16, base: u16, span: u16) -> Option<u16> {
 /// `YYYY-MM-DD HH:MM` in local time (UTC with a suffix if the conversion fails).
 fn local_time(unix_ms: u64) -> String {
     let wall = yw_win::time::local_wall_ms(unix_ms);
-    let text = crate::logging::format_utc(wall.unwrap_or(unix_ms));
+    let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
         short
@@ -592,7 +592,7 @@ impl App {
         ];
         if ZecNetwork::ALL.into_iter().all(|network| {
             self.apikeys
-                .rpc_url(crate::network::NetworkId::Zcash(network))
+                .rpc_url(yw_engine::network::NetworkId::Zcash(network))
                 .is_none()
         }) {
             row.push(Ctl::link(
@@ -623,13 +623,13 @@ impl App {
         }
         let has_endpoint = self
             .apikeys
-            .rpc_url(crate::network::NetworkId::Zcash(network))
+            .rpc_url(yw_engine::network::NetworkId::Zcash(network))
             .is_some();
         // A missing URL is already the network card's status line with `RPC 설정하기`; the same
         // E-KEY-005 is not repeated as a red band above it (review 2026-11-07 F6). Nor is what
         // the 보내기 card already says next to `검토`.
         if let Some(error) = self.zec.error.as_ref().filter(|error| {
-            (has_endpoint || **error != crate::errors::ErrorCode::Key005.text_in(lang))
+            (has_endpoint || **error != yw_engine::errors::ErrorCode::Key005.text_in(lang))
                 && self.zec.send_error.as_ref() != Some(*error)
         }) {
             items.push(Item::Banner(error.clone(), Tone::Danger));
@@ -774,7 +774,7 @@ impl App {
                 // the 2026-11-13 review the snapshot sum was "미확정 입금" whenever the list had
                 // no pending row, dust and our change from a send made elsewhere included.
                 let list = self
-                    .received_list(crate::received::RecvChain::Zec)
+                    .received_list(yw_engine::received::RecvChain::Zec)
                     .filter(|list| list.loaded && list.unsupported.is_none());
                 let incoming = list
                     .and_then(yw_engine::wallet::app_received::RecvList::pending_sum)
@@ -782,7 +782,7 @@ impl App {
                 let unclassified = others
                     .iter()
                     .filter(|(txid, zats)| {
-                        *zats >= crate::received::DUST_ZEC_ZATS
+                        *zats >= yw_engine::received::DUST_ZEC_ZATS
                             && !list.is_some_and(|list| list.knows(txid))
                     })
                     .map(|(_, zats)| *zats)
@@ -799,7 +799,7 @@ impl App {
                     }
                     None if !has_endpoint => crate::ui::screens::no_endpoint_text(
                         lang,
-                        &self.network_name(crate::network::NetworkId::Zcash(network)),
+                        &self.network_name(yw_engine::network::NetworkId::Zcash(network)),
                     ),
                     None if self.zec.error.is_some() && !self.zec.refreshing => {
                         crate::ui::screens::T_BALANCE_FAILED.get(lang).to_owned()
@@ -834,7 +834,7 @@ impl App {
                         ids::CARD_COPY,
                         !self.passphrase_unverified(),
                         self.explorer_address_icon(
-                            crate::network::NetworkId::Zcash(network),
+                            yw_engine::network::NetworkId::Zcash(network),
                             &address,
                             crate::ui::screens_explorer::ids::CARD_ZEC,
                         ),
@@ -983,7 +983,7 @@ impl App {
             row.push(Ctl::button(ids::RESULT_COPY, text::COPY_HASH.get(lang)));
             // 2026-11-11: the accepted txid on the network's explorer.
             row.extend(self.explorer_tx_buttons(
-                crate::network::NetworkId::Zcash(network),
+                yw_engine::network::NetworkId::Zcash(network),
                 &yw_core::zec::tx::txid_display(txid),
                 Some((
                     crate::ui::screens_explorer::ids::RESULT_ZEC_OPEN,
@@ -1070,7 +1070,7 @@ impl App {
                 ),
                 &txid,
                 self.explorer_tx_icons(
-                    crate::network::NetworkId::Zcash(network),
+                    yw_engine::network::NetworkId::Zcash(network),
                     &txid,
                     crate::ui::screens_explorer::ids::activity_ids(
                         crate::ui::screens_explorer::ids::ZEC_ACTIVITY_BASE,
@@ -1116,7 +1116,7 @@ impl App {
                 ));
             }
         }
-        self.received_items(crate::received::RecvChain::Zec, items);
+        self.received_items(yw_engine::received::RecvChain::Zec, items);
         items.push(Item::CardEnd);
     }
 }

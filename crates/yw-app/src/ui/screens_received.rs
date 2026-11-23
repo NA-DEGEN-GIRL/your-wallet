@@ -18,13 +18,13 @@ use yw_core::lang::Lang;
 use yw_core::sol::SolAddress;
 
 use crate::app::App;
-use crate::received::{Incoming, RecvChain};
 use crate::ui::main_window::{Ctl, Item};
+use yw_engine::received::{Incoming, RecvChain};
 use yw_engine::screen::Tone;
 
 /// Command ids of the received history (17,800–18,399; spec/04 §2.6, `ui::command_ids`).
 pub mod ids {
-    /// Chains (slots of [`crate::received::RecvChain::slot`]).
+    /// Chains (slots of [`yw_engine::received::RecvChain::slot`]).
     pub const CHAINS: u16 = 5;
     /// `받은 내역도 보기` of each chain's card (one setting; a card's own id).
     pub const TOGGLE_BASE: u16 = 17_800;
@@ -45,19 +45,19 @@ pub mod ids {
 
     /// The switch of `chain`'s card.
     #[must_use]
-    pub const fn toggle(chain: crate::received::RecvChain) -> u16 {
+    pub const fn toggle(chain: yw_engine::received::RecvChain) -> u16 {
         TOGGLE_BASE + chain.slot()
     }
 
     /// `더 보기` of `chain`'s card.
     #[must_use]
-    pub const fn more(chain: crate::received::RecvChain) -> u16 {
+    pub const fn more(chain: yw_engine::received::RecvChain) -> u16 {
         MORE_BASE + chain.slot()
     }
 
     /// The first id of `row` of `chain` (`None` past the 50 rows).
     #[must_use]
-    pub fn row(chain: crate::received::RecvChain, row: usize) -> Option<u16> {
+    pub fn row(chain: yw_engine::received::RecvChain, row: usize) -> Option<u16> {
         let row = u16::try_from(row)
             .ok()
             .filter(|row| *row < CHAIN_SPAN / ROW_STRIDE)?;
@@ -74,7 +74,7 @@ pub mod ids {
         use yw_engine::cmd::{ReceivedPress, Row};
         if let Some(chain) = id
             .checked_sub(TOGGLE_BASE)
-            .and_then(crate::received::RecvChain::of_slot)
+            .and_then(yw_engine::received::RecvChain::of_slot)
             .filter(|_| id < MORE_BASE)
         {
             return Some(ReceivedPress::Toggle {
@@ -85,14 +85,14 @@ pub mod ids {
         if let Some(chain) = id
             .checked_sub(MORE_BASE)
             .filter(|slot| *slot < CHAINS)
-            .and_then(crate::received::RecvChain::of_slot)
+            .and_then(yw_engine::received::RecvChain::of_slot)
         {
             return Some(ReceivedPress::More(chain));
         }
         let offset = id
             .checked_sub(ROW_BASE)
             .filter(|offset| *offset < ROW_SPAN)?;
-        let chain = crate::received::RecvChain::of_slot(offset / CHAIN_SPAN)?;
+        let chain = yw_engine::received::RecvChain::of_slot(offset / CHAIN_SPAN)?;
         let row = Row(offset % CHAIN_SPAN / ROW_STRIDE);
         Some(if offset % ROW_STRIDE == 0 {
             ReceivedPress::CopyHash(chain, row)
@@ -105,7 +105,7 @@ pub mod ids {
     #[must_use]
     pub const fn id_of(press: yw_engine::cmd::ReceivedPress) -> u16 {
         use yw_engine::cmd::{ReceivedPress, Row};
-        const fn row_id(chain: crate::received::RecvChain, Row(row): Row) -> u16 {
+        const fn row_id(chain: yw_engine::received::RecvChain, Row(row): Row) -> u16 {
             ROW_BASE
                 .wrapping_add(chain.slot().wrapping_mul(CHAIN_SPAN))
                 .wrapping_add(row.wrapping_mul(ROW_STRIDE))
@@ -198,7 +198,7 @@ pub fn dropped_line(lang: Lang, count: usize) -> String {
 
 fn local_time(unix_ms: u64) -> String {
     let wall = yw_win::time::local_wall_ms(unix_ms);
-    let text = crate::logging::format_utc(wall.unwrap_or(unix_ms));
+    let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
         short

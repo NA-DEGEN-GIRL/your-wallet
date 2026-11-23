@@ -13,11 +13,11 @@ use yw_win::ui::controls::{
 };
 use yw_win::ui::{Color, DrawFlags, PaintDc, Rect, Window, scale};
 
-use crate::ui::badge::{BADGE_DIP, BADGE_GAP_DIP, Badge, TITLE_BADGE_DIP};
 use crate::ui::cmd_table::edit_id_of;
 use crate::ui::theme::{self, FontRole, Fonts, wide};
 use yw_core::lang::Lang;
 use yw_core::secret::Zeroizing;
+use yw_engine::badge::{BADGE_DIP, BADGE_GAP_DIP, Badge, TITLE_BADGE_DIP};
 use yw_engine::form::{EditField, FormSnapshot};
 use yw_engine::screen::Tone;
 
@@ -67,7 +67,7 @@ pub struct Ctl {
     pub limit: Option<u32>,
     /// The color under the control (set by [`layout`]).
     pub backdrop: Option<Color>,
-    /// A chain badge drawn before a button's label (`crate::ui::badge`).
+    /// A chain badge drawn before a button's label (`yw_engine::badge`).
     pub badge: Option<Badge>,
     /// A small button (26 DIP tall, tighter padding): the actions inside a list row
     /// (2026-11-11, token rows and the address line's actions).

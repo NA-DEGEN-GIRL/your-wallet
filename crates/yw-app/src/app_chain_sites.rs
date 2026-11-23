@@ -21,18 +21,18 @@ mod tests {
 
     // `BtcRow`: the moved tests of `app_tests` name it as `super::BtcRow` (2026-11-21, S4 W0).
     use super::{BtcRow, ChainAnswer, ConnectChoice, chain_answer_value, default_protocol};
-    use crate::apikeys::ApiKeys;
     use crate::app::{App, Paths};
     use crate::app_browser::{BrowserUi, GrantWrite};
-    use crate::browser::envelope::{Correlation, Id16, Id32};
-    use crate::browser::{Reply, SiteKind, SiteRequest};
-    use crate::events::{ChainSignature, EventQueue};
-    use crate::settings::Settings;
-    use crate::ui::approval::QueueOutcome;
     use yw_core::approval::{ApprovalKind, RiskLevel};
     use yw_core::btc::msgsign::{BtcMessageProtocol, BtcMessageSignature};
     use yw_core::btc::{BtcPubKey, ScriptType};
     use yw_core::policy::{BrowserOrigin, BtcGrantAddress, BtcPurpose, Family, ProviderError};
+    use yw_engine::apikeys::ApiKeys;
+    use yw_engine::approval::QueueOutcome;
+    use yw_engine::browser::envelope::{Correlation, Id16, Id32};
+    use yw_engine::browser::{Reply, SiteKind, SiteRequest};
+    use yw_engine::events::{ChainSignature, EventQueue};
+    use yw_engine::settings::Settings;
     use yw_engine::wallet::app_approval::ConnectState;
 
     const SOL_KEY: &str = "FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z";
@@ -49,14 +49,14 @@ mod tests {
             ApiKeys::default(),
         );
         let events = Arc::new(EventQueue::new(Box::new(|| {})));
-        let core = crate::browser::BrowserCore::new(
+        let core = yw_engine::browser::BrowserCore::new(
             "abcdefghijklmnopabcdefghijklmnop",
-            events as Arc<dyn crate::browser::DappSink>,
+            events as Arc<dyn yw_engine::browser::DappSink>,
             Arc::clone(&app.clock),
         );
         app.browser = Some(BrowserUi {
             core,
-            reads: Arc::new(crate::browser::read::ReadContext::new(None)),
+            reads: Arc::new(yw_engine::browser::read::ReadContext::new(None)),
             connections: 0,
             waiters: HashMap::new(),
             broadcasts: HashMap::new(),
@@ -67,9 +67,9 @@ mod tests {
             grant_write: GrantWrite::default(),
             site_rows: crate::app_browser::SiteRows::default(),
         });
-        let mut meta = crate::meta::Meta::default();
+        let mut meta = yw_engine::meta::Meta::default();
         if with_sol {
-            meta.sol_accounts.push(crate::meta::Account {
+            meta.sol_accounts.push(yw_engine::meta::Account {
                 index: 0,
                 label: "SOL 1".to_owned(),
                 address: SOL_KEY.to_owned(),
@@ -157,14 +157,14 @@ mod tests {
         }
     }
 
-    fn core(app: &App) -> Arc<crate::browser::BrowserCore> {
+    fn core(app: &App) -> Arc<yw_engine::browser::BrowserCore> {
         Arc::clone(&app.browser.as_ref().unwrap().core)
     }
 
     /// The dispatcher view of an unlocked wallet with the app's current accounts.
-    fn unlocked_view(app: &App) -> crate::browser::WalletView {
-        crate::browser::WalletView {
-            vault: crate::browser::VaultView::Unlocked,
+    fn unlocked_view(app: &App) -> yw_engine::browser::WalletView {
+        yw_engine::browser::WalletView {
+            vault: yw_engine::browser::VaultView::Unlocked,
             sol_accounts: app.sol_dapp_rows().iter().map(|row| row.public).collect(),
             btc_enabled: true,
             btc_network: app.btc_network_now(),
@@ -173,7 +173,7 @@ mod tests {
                 .into_iter()
                 .map(|row| row.entry.address)
                 .collect(),
-            ..crate::browser::WalletView::default()
+            ..yw_engine::browser::WalletView::default()
         }
     }
 
@@ -184,8 +184,8 @@ mod tests {
         core.set_wallet(unlocked_view(app));
         let meta = app.meta.as_ref().unwrap();
         core.unlock_chains(
-            crate::browser::grants::sol_sites_from_values(&meta.chain_sites.sol),
-            crate::browser::grants::btc_sites_from_values(&meta.chain_sites.btc),
+            yw_engine::browser::grants::sol_sites_from_values(&meta.chain_sites.sol),
+            yw_engine::browser::grants::btc_sites_from_values(&meta.chain_sites.btc),
         )
     }
 
@@ -347,7 +347,7 @@ mod tests {
     }
 
     /// One preview entry per transaction (no tables, no simulation result).
-    fn preview(n: usize) -> crate::sol::flow::DappPreview {
+    fn preview(n: usize) -> yw_engine::sol::flow::DappPreview {
         let item = yw_core::sol::dapp::SolTxItemFacts {
             tables: Ok((0, Vec::new())),
             pre: Vec::new(),
@@ -357,7 +357,7 @@ mod tests {
             rpc_fee: Some(5_000),
             blockhash_valid: Some(true),
         };
-        crate::sol::flow::DappPreview {
+        yw_engine::sol::flow::DappPreview {
             items: vec![item; n],
             mints: Vec::new(),
             unread_mints: Vec::new(),
@@ -367,10 +367,10 @@ mod tests {
     /// A devnet wallet with a devnet endpoint (no request is ever sent: the RPC worker is a
     /// channel in these tests).
     fn devnet(app: &mut App) {
-        app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+        app.settings.solana.cluster = yw_engine::network::SolCluster::Devnet;
         let url = yw_platform::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
         app.apikeys.set_rpc(
-            crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
+            yw_engine::network::NetworkId::Solana(yw_engine::network::SolCluster::Devnet),
             &url,
         );
     }
@@ -393,7 +393,7 @@ mod tests {
     }
 
     /// The send waiter `sol_dapp_consumed` leaves for `site`.
-    fn send_waiter(app: &mut App, site: &SiteRequest) -> crate::events::SignTicket {
+    fn send_waiter(app: &mut App, site: &SiteRequest) -> yw_engine::events::SignTicket {
         app.push_sign_waiter(crate::app_browser::SignWaiter::Chain(
             site.reply,
             Box::new(ChainAnswer::SolTx {
@@ -410,8 +410,8 @@ mod tests {
         tx_id: [u8; 64],
         reused: bool,
         min_context_slot: Option<u64>,
-    ) -> crate::events::SolDappSignedSummary {
-        crate::events::SolDappSignedSummary {
+    ) -> yw_engine::events::SolDappSignedSummary {
+        yw_engine::events::SolDappSignedSummary {
             cluster: DEVNET,
             public: public(),
             tx_id,
@@ -428,9 +428,9 @@ mod tests {
     fn first_round(
         tx_id: [u8; 64],
         state: yw_core::sol::broadcast::LoopState,
-        outcome: Result<yw_core::sol::broadcast::Outcome, crate::errors::ErrorCode>,
-    ) -> crate::events::RpcEvent {
-        crate::events::RpcEvent::SolTracked(Box::new(crate::sol::flow::TrackResult {
+        outcome: Result<yw_core::sol::broadcast::Outcome, yw_engine::errors::ErrorCode>,
+    ) -> yw_engine::events::RpcEvent {
+        yw_engine::events::RpcEvent::SolTracked(Box::new(yw_engine::sol::flow::TrackResult {
             signature: tx_id,
             state,
             outcome,
@@ -464,13 +464,13 @@ mod tests {
         app: &mut App,
     ) -> (
         Arc<EventQueue>,
-        std::sync::mpsc::Receiver<crate::browser::Outbound>,
-        crate::browser::ConnId,
+        std::sync::mpsc::Receiver<yw_engine::browser::Outbound>,
+        yw_engine::browser::ConnId,
     ) {
         let events = Arc::new(EventQueue::new(Box::new(|| {})));
-        let core = crate::browser::BrowserCore::new(
+        let core = yw_engine::browser::BrowserCore::new(
             "abcdefghijklmnopabcdefghijklmnop",
-            Arc::clone(&events) as Arc<dyn crate::browser::DappSink>,
+            Arc::clone(&events) as Arc<dyn yw_engine::browser::DappSink>,
             Arc::clone(&app.clock),
         );
         core.set_wallet(unlocked_view(app));
@@ -514,9 +514,9 @@ mod tests {
             .drain()
             .into_iter()
             .find_map(|event| match event {
-                crate::events::UiEvent::Dapp(crate::browser::DappEvent::Request(request)) => {
-                    Some(*request)
-                }
+                yw_engine::events::UiEvent::Dapp(yw_engine::browser::DappEvent::Request(
+                    request,
+                )) => Some(*request),
                 _ => None,
             })
             .expect("queued")
@@ -524,13 +524,13 @@ mod tests {
 
     /// The answers recorded since the last call.
     fn answers(
-        frames: &std::sync::mpsc::Receiver<crate::browser::Outbound>,
+        frames: &std::sync::mpsc::Receiver<yw_engine::browser::Outbound>,
     ) -> Vec<Result<yw_json::Value, ProviderError>> {
         frames
             .try_iter()
             .filter_map(|frame| match frame {
-                crate::browser::Outbound::Response { body, .. } => Some(body),
-                crate::browser::Outbound::Event { .. } => None,
+                yw_engine::browser::Outbound::Response { body, .. } => Some(body),
+                yw_engine::browser::Outbound::Event { .. } => None,
             })
             .collect()
     }
@@ -638,8 +638,8 @@ mod tests {
     }
 
     /// The record fields of [`approved_card_tx`].
-    fn card_tx_info() -> crate::events::SignInfo {
-        crate::events::SignInfo {
+    fn card_tx_info() -> yw_engine::events::SignInfo {
+        yw_engine::events::SignInfo {
             origin: "https://app.example".to_owned(),
             label: "dApp 거래".to_owned(),
             role: yw_core::journal::evm::Role::Original,

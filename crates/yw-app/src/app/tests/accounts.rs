@@ -13,9 +13,9 @@ use yw_core::zec::ZecNetwork;
 
 use super::{has_text, unlocked_app};
 use crate::app::App;
-use crate::meta::{Account, RawAccount, Tab};
 use crate::ui::main_window::Item;
 use crate::ui::screens_links::ids::{PICKER_EVM, PICKER_SOL};
+use yw_engine::meta::{Account, RawAccount, Tab};
 
 const SERIAL_A: u32 = 7_700_021;
 const SERIAL_B: u32 = 7_700_022;
@@ -265,7 +265,7 @@ fn mixed_lists_give_every_item_a_source() {
         .as_mut()
         .unwrap()
         .sol_raw_accounts
-        .push(crate::meta::SolRawAccount {
+        .push(yw_engine::meta::SolRawAccount {
             record_id: [8; 16],
             label: "가져온 Solana 1".to_owned(),
             address: yw_core::sol::SolAddress::from_bytes([4; 32]).to_base58(),
@@ -292,17 +292,17 @@ fn owner_btc_app(tag: &str) -> (App, std::path::PathBuf, yw_core::btc::BtcAccoun
     use yw_core::btc::{BtcAccountKey, BtcMeta, BtcPubKey};
     let (mut app, dir) = owner_app(tag);
     app.settings.bitcoin.enabled = true;
-    app.settings.bitcoin.network = crate::network::BtcNet::Mainnet;
+    app.settings.bitcoin.network = yw_engine::network::BtcNet::Mainnet;
     // A usable tab (an endpoint, the journal read): the selected card shows its address.
     app.apikeys.set_rpc(
-        crate::network::NetworkId::Bitcoin(crate::network::BtcNet::Mainnet),
+        yw_engine::network::NetworkId::Bitcoin(yw_engine::network::BtcNet::Mainnet),
         &yw_platform::http::HttpsUrl::parse("https://btc.example.test/").unwrap(),
     );
-    app.evm.journal = Some(crate::events::JournalView {
+    app.evm.journal = Some(yw_engine::events::JournalView {
         room: true,
         sol_room: true,
         btc_room: true,
-        ..crate::events::JournalView::default()
+        ..yw_engine::events::JournalView::default()
     });
     let pubkey = yw_core::hex::decode_array::<33>(G).unwrap();
     let node = yw_core::bip32::AccountXpub {
@@ -326,7 +326,7 @@ fn owner_btc_app(tag: &str) -> (App, std::path::PathBuf, yw_core::btc::BtcAccoun
 }
 
 /// The key jobs queued since the last call.
-fn key_jobs(app: &App) -> Vec<crate::events::KeyJob> {
+fn key_jobs(app: &App) -> Vec<yw_engine::events::KeyJob> {
     std::iter::from_fn(|| {
         (!app.key_queue.is_empty())
             .then(|| app.key_queue.pop())
@@ -440,7 +440,7 @@ fn bitcoin_card_names_sources_and_card_a() {
 #[test]
 fn bitcoin_rename_hide_and_unhide() {
     use crate::ui::screens_btc::ids as btc_ids;
-    use crate::workers::journal::btc::BtcMetaOp;
+    use yw_engine::workers::journal::btc::BtcMetaOp;
     let (mut app, dir, card) = owner_btc_app("accounts-btc-hide");
     app.meta.as_mut().unwrap().btc_accounts.selected = Some(card);
     let network = BtcNetwork::Mainnet;
@@ -494,7 +494,7 @@ fn bitcoin_rename_hide_and_unhide() {
     let selects: Vec<_> = key_jobs(&app)
         .into_iter()
         .filter_map(|job| match job {
-            crate::events::KeyJob::BtcMeta {
+            yw_engine::events::KeyJob::BtcMeta {
                 op: BtcMetaOp::Select { network, account },
             } => Some((network, account)),
             _ => None,
@@ -521,7 +521,7 @@ fn bitcoin_rename_hide_and_unhide() {
     assert_eq!(entries(&mut app, Tab::Btc).len(), 4);
     // Read back: the name stays, nothing hidden.
     let text = app.meta.as_ref().unwrap().to_json();
-    let reread = crate::meta::parse(&text).unwrap().meta;
+    let reread = yw_engine::meta::parse(&text).unwrap().meta;
     assert_eq!(reread.btc_view, app.meta.as_ref().unwrap().btc_view);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -603,8 +603,10 @@ fn zec_key_sources(app: &App) -> Vec<yw_core::zec::ZecKeySource> {
     key_jobs(app)
         .into_iter()
         .filter_map(|job| match job {
-            crate::events::KeyJob::Zec(job) => match *job {
-                crate::workers::journal::zec::ZecKeyJob::PublicKey { source, .. } => Some(source),
+            yw_engine::events::KeyJob::Zec(job) => match *job {
+                yw_engine::workers::journal::zec::ZecKeyJob::PublicKey { source, .. } => {
+                    Some(source)
+                }
                 _ => None,
             },
             _ => None,

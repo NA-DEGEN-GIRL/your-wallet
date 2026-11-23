@@ -34,13 +34,13 @@ use yw_engine::secret::{
 };
 use yw_win::ui::{DrawFlags, PaintDc, Rect, scale};
 
-use crate::errors::ErrorCode;
-use crate::ui::secure_field::{
+use crate::ui::theme::{self, Fonts, wide};
+use yw_engine::errors::ErrorCode;
+use yw_engine::secure_field::{
     Charset, PushResult, RejectReason, SecretField, finalize_private_key, has_edge_space,
     mnemonic_words, normalize_paste,
 };
-use crate::ui::theme::{self, Fonts, wide};
-use crate::yubikey::PinTarget;
+use yw_engine::yubikey::PinTarget;
 
 /// Inactivity (input windows) or display (W08/W09) lifetime.
 pub const SECRET_WINDOW_TIMEOUT_MS: u64 = 300_000;

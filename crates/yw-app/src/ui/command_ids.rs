@@ -106,9 +106,9 @@ fn max_spl_tokens() -> usize {
 #[must_use]
 #[expect(clippy::too_many_lines, reason = "one entry per indexed list")]
 pub fn ranges() -> Vec<IdRange> {
-    use crate::meta::{MAX_ADDRESS_BOOK, MAX_EVM_ACCOUNTS, MAX_RAW_ACCOUNTS};
-    use crate::settings::MAX_CUSTOM_EVM_CHAINS;
-    let evm_chains = crate::network::BUILTIN_EVM.len() + MAX_CUSTOM_EVM_CHAINS;
+    use yw_engine::meta::{MAX_ADDRESS_BOOK, MAX_EVM_ACCOUNTS, MAX_RAW_ACCOUNTS};
+    use yw_engine::settings::MAX_CUSTOM_EVM_CHAINS;
+    let evm_chains = yw_engine::network::BUILTIN_EVM.len() + MAX_CUSTOM_EVM_CHAINS;
     // URL rows: every EVM chain, solana:mainnet/devnet, bitcoin:mainnet/testnet4,
     // zcash:mainnet/testnet (spec/04 §2.11.1).
     let url_rows = evm_chains + 2 + 2 + 2;
@@ -160,7 +160,7 @@ pub fn ranges() -> Vec<IdRange> {
             screens_walletconnect::ids::ROW_BASE,
             screens_walletconnect::ids::ROW_SPAN,
             1,
-            crate::walletconnect::engine::MAX_SESSIONS,
+            yw_engine::walletconnect::engine::MAX_SESSIONS,
         ),
         range(
             "hypercore.assets",
@@ -202,21 +202,21 @@ pub fn ranges() -> Vec<IdRange> {
             screens_evm::ids::TOKEN_SEND_BASE,
             screens_evm::ids::TOKEN_SEND_SPAN,
             1,
-            max_registry_tokens() + crate::meta::MAX_TOKENS_PER_NETWORK,
+            max_registry_tokens() + yw_engine::meta::MAX_TOKENS_PER_NETWORK,
         ),
         range(
             "evm.token_copy",
             screens_evm::ids::TOKEN_COPY_BASE,
             screens_evm::ids::TOKEN_COPY_SPAN,
             1,
-            max_registry_tokens() + crate::meta::MAX_TOKENS_PER_NETWORK,
+            max_registry_tokens() + yw_engine::meta::MAX_TOKENS_PER_NETWORK,
         ),
         range(
             "evm.send_assets",
             screens_evm::ids::SEND_ASSET_BASE,
             screens_evm::ids::SEND_ASSET_SPAN,
             1,
-            1 + max_registry_tokens() + crate::meta::MAX_TOKENS_PER_NETWORK,
+            1 + max_registry_tokens() + yw_engine::meta::MAX_TOKENS_PER_NETWORK,
         ),
         range(
             "evm.send_picker",
@@ -279,7 +279,7 @@ pub fn ranges() -> Vec<IdRange> {
             screens_evm::ids::TOKEN_ROW_BASE,
             screens_evm::ids::TOKEN_ROW_SPAN,
             screens_evm::ids::TOKEN_ROW_STRIDE,
-            max_registry_tokens() + crate::meta::MAX_TOKENS_PER_NETWORK,
+            max_registry_tokens() + yw_engine::meta::MAX_TOKENS_PER_NETWORK,
         ),
         range(
             "evm.activity",
@@ -549,7 +549,7 @@ pub fn ranges() -> Vec<IdRange> {
             screens_received::ids::ROW_BASE,
             screens_received::ids::ROW_SPAN,
             screens_received::ids::ROW_STRIDE,
-            crate::received::MAX_ENTRIES * usize::from(screens_received::ids::CHAINS),
+            yw_engine::received::MAX_ENTRIES * usize::from(screens_received::ids::CHAINS),
         ),
     ]
 }
@@ -603,7 +603,7 @@ mod tests {
             assert!(range.base > 2, "{} uses IDOK/IDCANCEL", range.name);
         }
         // The documented scan maximum covers what the app actually scans.
-        assert!(crate::sol::scan::scan_sources().len() <= SOL_SCAN_MAX_ROWS);
+        assert!(yw_engine::sol::scan::scan_sources().len() <= SOL_SCAN_MAX_ROWS);
     }
 
     #[test]
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn every_token_row_id_maps_back_to_its_row() {
         use crate::ui::screens_evm::ids::{TokenAction, token_action, token_row_id};
-        let rows = super::max_registry_tokens() + crate::meta::MAX_TOKENS_PER_NETWORK;
+        let rows = super::max_registry_tokens() + yw_engine::meta::MAX_TOKENS_PER_NETWORK;
         let mut seen = std::collections::BTreeSet::new();
         for row in 0..rows {
             for action in [TokenAction::ToggleHidden(row), TokenAction::Delete(row)] {

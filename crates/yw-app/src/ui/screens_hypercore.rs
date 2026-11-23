@@ -155,7 +155,7 @@ pub mod ids {
 
 fn local_time(unix_ms: u64) -> String {
     let wall = yw_win::time::local_wall_ms(unix_ms);
-    let text = crate::logging::format_utc(wall.unwrap_or(unix_ms));
+    let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..19).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
         short
@@ -289,7 +289,7 @@ impl App {
         };
         items.push(Item::CardStart(None));
         items.push(Item::Badged(
-            crate::ui::badge::Badge::hyperliquid(),
+            yw_engine::badge::Badge::hyperliquid(),
             Box::new(Item::Text(format!(
                 "Hyperliquid {} · {state}",
                 yw_core::hypercore::text::network_label(lang, network)
@@ -318,7 +318,7 @@ impl App {
         }
         items.push(Item::CardStart(None));
         items.push(Item::Badged(
-            crate::ui::badge::Badge::hyperliquid(),
+            yw_engine::badge::Badge::hyperliquid(),
             Box::new(Item::Subtitle(format!(
                 "Hyperliquid {}",
                 yw_core::hypercore::text::network_label(lang, network)
@@ -370,7 +370,7 @@ impl App {
                         .find(|balance| balance.token == index)
                         .map(|balance| balance.hold.clone())
                         .filter(|hold| {
-                            crate::hypercore::api_units(hold, 18)
+                            yw_engine::hypercore::api_units(hold, 18)
                                 .is_some_and(|units| !units.is_zero())
                         });
                     items.push(Item::Field(
@@ -407,7 +407,7 @@ impl App {
         // lists the account's actions.
         let explorer = account.and_then(|account| {
             self.explorer_address_link(
-                crate::explorer::ExplorerNet::HyperCore(network),
+                yw_engine::explorer::ExplorerNet::HyperCore(network),
                 &account.to_checksum(),
                 crate::ui::screens_explorer::ids::CARD_HC,
             )
@@ -441,7 +441,7 @@ impl App {
                 ));
             }
         }
-        self.received_items(crate::received::RecvChain::Hc, items);
+        self.received_items(yw_engine::received::RecvChain::Hc, items);
         items.push(Item::CardEnd);
     }
 
@@ -463,7 +463,7 @@ impl App {
         }
         .get(lang);
         items.push(Item::Badged(
-            crate::ui::badge::Badge::hyperliquid(),
+            yw_engine::badge::Badge::hyperliquid(),
             Box::new(Item::Title(format!(
                 "{title} — {}",
                 yw_core::hypercore::text::network_label(lang, network)
@@ -632,7 +632,7 @@ impl App {
         for note in &form.notes {
             // Withdrawing to the signing account's own Arbitrum address is the default.
             if form.kind == HcFormKind::Withdraw
-                && *note == crate::flow::evm::form::AddressNote::SameAsSender
+                && *note == yw_engine::flow::evm::form::AddressNote::SameAsSender
             {
                 items.push(Item::Banner(
                     yw_engine::wallet::app_hypercore::text::WITHDRAW_OWN
@@ -656,7 +656,7 @@ impl App {
         if form
             .notes
             .iter()
-            .any(crate::flow::evm::form::AddressNote::needs_ack)
+            .any(yw_engine::flow::evm::form::AddressNote::needs_ack)
         {
             items.push(Item::Row(vec![Ctl::check(
                 ids::ACK,

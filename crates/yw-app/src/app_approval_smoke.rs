@@ -31,18 +31,18 @@ use yw_win::ui::{
 };
 
 use super::{APPROVAL_CLASS, PANEL_CLASS};
-use crate::apikeys::ApiKeys;
 use crate::app::{App, Paths};
-use crate::events::JournalView;
-use crate::flow::evm::prepare::{SendIntent, prepare};
-use crate::flow::evm::{ChainCache, Clock, SharedTransport};
-use crate::network::NetworkId;
-use crate::rpc::{HttpReply, Transport};
-use crate::settings::Settings;
-use crate::ui::interaction::{PrepareState, ReadyContent};
-use crate::workers::rpc::RpcJob;
+use yw_engine::apikeys::ApiKeys;
+use yw_engine::approval::interaction::{PrepareState, ReadyContent};
+use yw_engine::events::JournalView;
+use yw_engine::flow::evm::prepare::{SendIntent, prepare};
+use yw_engine::flow::evm::{ChainCache, Clock, SharedTransport};
+use yw_engine::network::NetworkId;
+use yw_engine::rpc::{HttpReply, Transport};
+use yw_engine::settings::Settings;
 use yw_engine::wallet::AppMode;
 use yw_engine::wallet::app_evm::AppApproval;
+use yw_engine::workers::rpc::RpcJob;
 
 const TIMER_CLASS: &str = "YourWalletV3SmokeTimer";
 pub(crate) const S2_UNIX_MS: u64 = 0x6ac6_4ee0 * 1_000;
@@ -424,7 +424,7 @@ fn approval_hold_repaints_only_the_bottom_bar() {
         assert!(!holding);
         assert_eq!(
             interaction,
-            crate::ui::interaction::InteractionStatus::Pending
+            yw_engine::approval::interaction::InteractionStatus::Pending
         );
     }
     println!("hold 1 s: {frames} bottom-bar paints, 0 panel paints");

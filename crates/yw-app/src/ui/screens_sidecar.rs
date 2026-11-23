@@ -8,8 +8,8 @@ use yw_core::lang::Text;
 use yw_core::vault::FileKind;
 
 use crate::app::App;
-use crate::errors::ErrorCode;
 use crate::ui::main_window::{Ctl, Item};
+use yw_engine::errors::ErrorCode;
 use yw_engine::screen::Tone;
 use yw_engine::wallet::app_sidecar::{JournalHold, RESET_WATCH_SECS, SendChain, text};
 use yw_engine::wallet::{AppMode, Confirm, Screen};
@@ -62,7 +62,7 @@ pub mod ids {
 fn local_time(unix_secs: u64) -> String {
     let unix_ms = unix_secs.saturating_mul(1_000);
     let wall = yw_win::time::local_wall_ms(unix_ms);
-    let text = crate::logging::format_utc(wall.unwrap_or(unix_ms));
+    let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     if wall.is_some() {
         short

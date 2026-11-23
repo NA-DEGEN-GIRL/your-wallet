@@ -354,7 +354,7 @@ impl App {
     ) -> Vec<yw_engine::screen::RemovedAccount> {
         let mut accounts = Vec::new();
         for (pref, label, address, _) in self.mnemonic_account_rows() {
-            if let crate::meta::EvmAccountPref::Mnemonic(record, _) = pref
+            if let yw_engine::meta::EvmAccountPref::Mnemonic(record, _) = pref
                 && record == *id.as_bytes()
                 && let Ok(address) = yw_core::evm::address::parse_address(&address)
             {

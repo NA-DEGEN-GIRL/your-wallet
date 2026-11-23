@@ -72,17 +72,17 @@ use yw_platform::http::HttpsUrl;
 use yw_win::ui::{self, CaptureExclusion, ClassSpec, Msg};
 
 use super::{APPROVAL_CLASS, Focus, PANEL_CLASS};
-use crate::apikeys::ApiKeys;
 use crate::app::{App, Paths};
-use crate::events::{EventQueue, JournalView, KeyJob, UiEvent};
-use crate::flow::evm::prepare::{PrepareJob, SendIntent, prepare};
-use crate::flow::evm::{ChainCache, Clock, SharedTransport};
-use crate::network::NetworkId;
-use crate::settings::Settings;
-use crate::ui::interaction::InteractionEvent;
-use crate::workers::rpc::RpcJob;
+use yw_engine::apikeys::ApiKeys;
+use yw_engine::approval::interaction::InteractionEvent;
+use yw_engine::events::{EventQueue, JournalView, KeyJob, UiEvent};
+use yw_engine::flow::evm::prepare::{PrepareJob, SendIntent, prepare};
+use yw_engine::flow::evm::{ChainCache, Clock, SharedTransport};
+use yw_engine::network::NetworkId;
+use yw_engine::settings::Settings;
 use yw_engine::wallet::AppMode;
 use yw_engine::wallet::app_evm::AppApproval;
+use yw_engine::workers::rpc::RpcJob;
 
 /// The fixture clock's first reading (ms): far from zero, so no "now - x" saturates.
 pub(crate) const START_MS: u64 = 1_000_000;
@@ -530,9 +530,9 @@ impl Fixture {
     /// from now on (lifted from the `app_chain_sites` tests' `recorded()`).
     pub(crate) fn connect_outlet(&self) -> Outlet {
         let events = Arc::new(EventQueue::new(Box::new(|| {})));
-        let core = crate::browser::BrowserCore::new(
+        let core = yw_engine::browser::BrowserCore::new(
             EXTENSION_ID,
-            Arc::clone(&events) as Arc<dyn crate::browser::DappSink>,
+            Arc::clone(&events) as Arc<dyn yw_engine::browser::DappSink>,
             Arc::clone(&self.clock) as Arc<dyn Clock>,
         );
         let (sender, frames) = mpsc::channel();
@@ -541,7 +541,7 @@ impl Fixture {
             let mut app = self.app();
             app.browser = Some(yw_engine::wallet::app_browser::BrowserUi {
                 core,
-                reads: Arc::new(crate::browser::read::ReadContext::new(None)),
+                reads: Arc::new(yw_engine::browser::read::ReadContext::new(None)),
                 connections: 0,
                 waiters: std::collections::HashMap::new(),
                 broadcasts: std::collections::HashMap::new(),
@@ -635,8 +635,8 @@ impl Drop for Fixture {
 /// the connection id.
 pub(crate) struct Outlet {
     pub(crate) events: Arc<EventQueue>,
-    pub(crate) frames: Receiver<crate::browser::Outbound>,
-    pub(crate) conn: crate::browser::ConnId,
+    pub(crate) frames: Receiver<yw_engine::browser::Outbound>,
+    pub(crate) conn: yw_engine::browser::ConnId,
 }
 
 impl Outlet {
@@ -696,8 +696,8 @@ impl Outlet {
         self.frames
             .try_iter()
             .filter_map(|frame| match frame {
-                crate::browser::Outbound::Response { body, .. } => Some(body),
-                crate::browser::Outbound::Event { .. } => None,
+                yw_engine::browser::Outbound::Response { body, .. } => Some(body),
+                yw_engine::browser::Outbound::Event { .. } => None,
             })
             .collect()
     }
@@ -1028,7 +1028,7 @@ fn a_refused_approval_window_rejects_with_app009() {
         assert!(
             app.banners
                 .iter()
-                .any(|banner| banner.code == Some(crate::errors::ErrorCode::App009))
+                .any(|banner| banner.code == Some(yw_engine::errors::ErrorCode::App009))
         );
     }
     assert!(fixture.rpc_jobs().is_empty(), "no preparation");

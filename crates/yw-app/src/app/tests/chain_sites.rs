@@ -77,10 +77,10 @@ fn signing_preflight_and_drafts() {
         .issue(draft.clone(), 1, 1_793_074_713_000)
         .unwrap();
     let view =
-        crate::ui::approval_view::signing_view(&request, false, true, Vec::new(), true).unwrap();
+        yw_engine::approval::view::signing_view(&request, false, true, Vec::new(), true).unwrap();
     assert!(!view.blocks.iter().any(|block| matches!(
         block,
-        crate::ui::approval_view::Block::Section(title) if title.starts_with("자산 변화")
+        yw_engine::approval::view::Block::Section(title) if title.starts_with("자산 변화")
     )));
     // Transaction bytes are blocked in the window.
     let mut tx = vec![1, 0, 1, 2];
@@ -111,13 +111,13 @@ fn signing_preflight_and_drafts() {
 fn removed_or_hidden_solana_accounts_lose_their_grants_for_good() {
     let mut app = app(true);
     let key7 = yw_core::sol::SolAddress::from_bytes([7; 32]).to_base58();
-    let imported = crate::meta::SolRawAccount {
+    let imported = yw_engine::meta::SolRawAccount {
         record_id: [5; 16],
         label: "가져온 키".to_owned(),
         address: key7,
     };
     // A second imported copy of the derived account 0 key.
-    let duplicate = crate::meta::SolRawAccount {
+    let duplicate = yw_engine::meta::SolRawAccount {
         record_id: [6; 16],
         label: "같은 키".to_owned(),
         address: SOL_KEY.to_owned(),
@@ -156,7 +156,7 @@ fn removed_or_hidden_solana_accounts_lose_their_grants_for_good() {
     // Hiding a derived account (index 1) drops its grants the same way.
     let meta = app.meta.as_mut().unwrap();
     meta.sol_raw_accounts.clear();
-    meta.sol_accounts.push(crate::meta::Account {
+    meta.sol_accounts.push(yw_engine::meta::Account {
         index: 1,
         label: "SOL 2".to_owned(),
         address: yw_core::sol::SolAddress::from_bytes([9; 32]).to_base58(),
@@ -223,7 +223,7 @@ fn hidden_bitcoin_account_drops_its_grants_and_leaves_the_connect_list() {
     use yw_core::btc::{BtcAccountKey, BtcMeta, BtcNetwork};
     let mut app = app(false);
     app.settings.bitcoin.enabled = true;
-    app.settings.bitcoin.network = crate::network::BtcNet::Mainnet;
+    app.settings.bitcoin.network = yw_engine::network::BtcNet::Mainnet;
     let node = yw_core::bip32::AccountXpub {
         pubkey: yw_core::hex::decode_array::<33>(
             "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
@@ -318,12 +318,12 @@ fn hidden_bitcoin_account_drops_its_grants_and_leaves_the_connect_list() {
 /// grants.
 #[test]
 fn removed_recovery_phrase_drops_its_chain_grants_for_good() {
-    use crate::workers::key::mnemonics::MnOutcome;
     use yw_core::btc::{BtcAccountKey, BtcMeta, BtcNetwork};
     use yw_core::vault::RecordId;
+    use yw_engine::workers::key::mnemonics::MnOutcome;
     let mut app = app(false);
     let first = RecordId::from_bytes([4; 16]);
-    let sol = crate::meta::Account {
+    let sol = yw_engine::meta::Account {
         index: 0,
         label: "SOL 1".to_owned(),
         address: yw_core::sol::SolAddress::from_bytes([7; 32]).to_base58(),
@@ -394,7 +394,7 @@ fn removed_recovery_phrase_drops_its_chain_grants_for_good() {
 #[test]
 fn a_solana_connect_waits_for_account_zero() {
     use crate::app_evm::QueuedItem;
-    use crate::ui::approval::QueueSource;
+    use yw_engine::approval::QueueSource;
     let mut app = app(false);
     app.mode = crate::app::AppMode::Unlocked {
         alt_passphrase: false,
@@ -420,7 +420,7 @@ fn a_solana_connect_waits_for_account_zero() {
     assert!(app.evm.queue.shown().is_none(), "the queue waits");
     // The account arrives: the connect gets its window with it.
     app.on_sol_keys(
-        crate::events::SolKeysPurpose::AddAccount { index: 0 },
+        yw_engine::events::SolKeysPurpose::AddAccount { index: 0 },
         Ok(vec![(
             yw_core::slip10::SolKeySource::Standard(
                 yw_core::bip32::path::AccountIndex::new(0).unwrap(),
@@ -715,8 +715,8 @@ fn site_rows_disconnect_the_grant_they_were_drawn_for_and_page() {
 #[test]
 fn chain_message_windows_follow_each_other_after_a_rejection() {
     use crate::app_evm::QueuedItem;
-    use crate::ui::approval::{QueueSource, field_label, validate_for_display};
     use yw_core::btc::{BtcAccountKey, BtcMeta};
+    use yw_engine::approval::{QueueSource, field_label, validate_for_display};
     for key in 0..=u16::MAX {
         let key = yw_core::approval::FieldKey(key);
         assert!(
@@ -824,7 +824,7 @@ fn chain_message_windows_follow_each_other_after_a_rejection() {
 fn sol_tx_preflight_refusals() {
     use yw_core::sol::dapp::SolTxMode;
     let mut app = app(true);
-    app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+    app.settings.solana.cluster = yw_engine::network::SolCluster::Devnet;
     let sign = site(sol_tx_kind(SolTxMode::SignOnly));
     assert_eq!(
         app.chain_site_preflight(&sign),
@@ -845,7 +845,7 @@ fn sol_tx_preflight_refusals() {
     );
     let url = yw_platform::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
     app.apikeys.set_rpc(
-        crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
+        yw_engine::network::NetworkId::Solana(yw_engine::network::SolCluster::Devnet),
         &url,
     );
     assert_eq!(
@@ -860,9 +860,9 @@ fn sol_tx_preflight_refusals() {
     );
     assert_eq!(app.chain_site_preflight(&send), Some(None));
     // 15 pending sends of the key still open the window; the 16th is the cap.
-    let mut journal = crate::events::JournalView {
+    let mut journal = yw_engine::events::JournalView {
         sol_records: vec![dapp_pending(public()); 15],
-        ..crate::events::JournalView::default()
+        ..yw_engine::events::JournalView::default()
     };
     app.evm.journal = Some(journal.clone());
     assert_eq!(
@@ -893,10 +893,10 @@ fn sol_tx_preflight_refusals() {
     );
     // The wallet switched to mainnet while a devnet request waited (an endpoint for both).
     app.apikeys.set_rpc(
-        crate::network::NetworkId::Solana(crate::network::SolCluster::Mainnet),
+        yw_engine::network::NetworkId::Solana(yw_engine::network::SolCluster::Mainnet),
         &url,
     );
-    app.settings.solana.cluster = crate::network::SolCluster::Mainnet;
+    app.settings.solana.cluster = yw_engine::network::SolCluster::Mainnet;
     assert_eq!(
         app.sol_dapp_refusal(&public(), DEVNET, SolTxMode::SignOnly),
         Some(ProviderError::InvalidParams)
@@ -920,15 +920,15 @@ fn sol_tx_preflight_backup_and_card_gates() {
     use yw_core::yubikey::record::{HwKeyRecord, HwPublicKey, RecordedSlot};
     const SERIAL: u32 = 7_700_011;
     let mut app = app(false);
-    app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+    app.settings.solana.cluster = yw_engine::network::SolCluster::Devnet;
     let url = yw_platform::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
     app.apikeys.set_rpc(
-        crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
+        yw_engine::network::NetworkId::Solana(yw_engine::network::SolCluster::Devnet),
         &url,
     );
     core(&app).upsert_sol_grant(sol_grant("https://app.example", public()));
     let sign = site(sol_tx_kind(SolTxMode::SignOnly));
-    let account = || crate::meta::Account {
+    let account = || yw_engine::meta::Account {
         index: 0,
         label: "SOL 1".to_owned(),
         address: SOL_KEY.to_owned(),
@@ -1814,7 +1814,7 @@ fn a_card_step_waiting_for_its_pin_ends_when_its_site_goes() {
 fn each_card_step_kind_ends_on_its_own_familys_revoke() {
     use crate::app_browser::SignWaiter;
     use crate::app_card::{CardJobKind, T_CARD_SITE_REVOKED};
-    use crate::browser::{DappEvent, GrantChange};
+    use yw_engine::browser::{DappEvent, GrantChange};
     let mut app = app(true);
     let (events, frames, conn) = recorded(&mut app);
     let origin = BrowserOrigin::parse("https://app.example").unwrap();
@@ -2083,7 +2083,7 @@ impl App {
     fn push_sign_waiter(
         &mut self,
         waiter: crate::app_browser::SignWaiter,
-    ) -> crate::events::SignTicket {
+    ) -> yw_engine::events::SignTicket {
         self.wallet.push_sign_waiter(waiter)
     }
 

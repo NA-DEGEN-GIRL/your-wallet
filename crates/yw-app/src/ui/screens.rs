@@ -10,19 +10,19 @@ use core::fmt::Write as _;
 use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::display::format_address;
 
-use crate::apikeys::{KeyName, mask_url, template_entry};
 use crate::app::App;
-use crate::errors::ErrorCode;
-use crate::meta::EvmAccountPref;
-use crate::network::NetworkId;
-use crate::settings::{LogLevel, RpcTemplate};
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_accounts::{AccountCard, AccountItem, SelectedLine};
 use crate::ui::theme::AddressKind;
 use yw_core::lang::{Lang, Text};
+use yw_engine::apikeys::{KeyName, mask_url, template_entry};
+use yw_engine::errors::ErrorCode;
+use yw_engine::meta::EvmAccountPref;
+use yw_engine::network::NetworkId;
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::SettingsSection;
 use yw_engine::screen::Tone;
+use yw_engine::settings::{LogLevel, RpcTemplate};
 use yw_engine::wallet::{AppMode, CREATE_STEPS, Confirm, IMPORT_STEPS, Screen, TestState};
 
 pub mod text;
@@ -593,7 +593,7 @@ pub fn no_endpoint_text(lang: Lang, network: &str) -> String {
 #[must_use]
 pub fn local_hh_mm(unix_ms: u64) -> String {
     let wall = yw_win::time::local_wall_ms(unix_ms);
-    let text = crate::logging::format_utc(wall.unwrap_or(unix_ms));
+    let text = yw_engine::logging::format_utc(wall.unwrap_or(unix_ms));
     let time = text.get(11..16).unwrap_or("--:--").to_owned();
     if wall.is_some() {
         time
@@ -723,7 +723,7 @@ fn disable_receive(items: &mut [Item]) {
 #[must_use]
 pub fn vault_file_text(lang: Lang, generation: u64, written_unix_ms: u64) -> String {
     let wall = yw_win::time::local_wall_ms(written_unix_ms);
-    let text = crate::logging::format_utc(wall.unwrap_or(written_unix_ms));
+    let text = yw_engine::logging::format_utc(wall.unwrap_or(written_unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
     let when = if wall.is_some() {
         short
@@ -747,8 +747,10 @@ fn header(app: &App, items: &mut Vec<Item>) {
         // What differs, in plain words with both values (2026-11-08); the safe choice is the
         // primary button and `파일 값 사용…` asks once more (spec/04 §6.7).
         items.push(Item::Banner(
-            text::SETTINGS_TAMPERED_BANNER
-                .fill(lang, [crate::settings::SETTINGS_TAMPERED_TEXT.get(lang)]),
+            text::SETTINGS_TAMPERED_BANNER.fill(
+                lang,
+                [yw_engine::settings::SETTINGS_TAMPERED_TEXT.get(lang)],
+            ),
             Tone::Warn,
         ));
         for line in app.settings_file_lines() {
@@ -777,11 +779,11 @@ fn header(app: &App, items: &mut Vec<Item>) {
     }
 }
 
-fn indexer_name(indexer: crate::settings::BtcIndexer) -> &'static str {
+fn indexer_name(indexer: yw_engine::settings::BtcIndexer) -> &'static str {
     match indexer {
-        crate::settings::BtcIndexer::Esplora => "Esplora",
-        crate::settings::BtcIndexer::BbRpc => "Blockbook RPC",
-        crate::settings::BtcIndexer::BbRest => "Blockbook REST",
+        yw_engine::settings::BtcIndexer::Esplora => "Esplora",
+        yw_engine::settings::BtcIndexer::BbRpc => "Blockbook RPC",
+        yw_engine::settings::BtcIndexer::BbRest => "Blockbook REST",
     }
 }
 
@@ -808,14 +810,14 @@ impl App {
         let mut lines = Vec::new();
         for kind in differing {
             match kind {
-                crate::settings::Differing::AutoLock => lines.push(text::DIFF_AUTO_LOCK.fill(
+                yw_engine::settings::Differing::AutoLock => lines.push(text::DIFF_AUTO_LOCK.fill(
                     lang,
                     [
                         &current.auto_lock_minutes.to_string(),
                         &file.auto_lock_minutes.to_string(),
                     ],
                 )),
-                crate::settings::Differing::FeeCaps => {
+                yw_engine::settings::Differing::FeeCaps => {
                     let mut chains: Vec<u64> = current
                         .fee_caps
                         .iter()
@@ -825,7 +827,7 @@ impl App {
                     chains.sort_unstable();
                     chains.dedup();
                     for id in chains {
-                        let caps_of = |settings: &crate::settings::Settings| {
+                        let caps_of = |settings: &yw_engine::settings::Settings| {
                             settings
                                 .fee_caps
                                 .iter()
@@ -836,8 +838,8 @@ impl App {
                         if now == then {
                             continue;
                         }
-                        let part = |caps: Option<&crate::settings::FeeCapsText>,
-                                    pick: fn(&crate::settings::FeeCapsText) -> &str| {
+                        let part = |caps: Option<&yw_engine::settings::FeeCapsText>,
+                                    pick: fn(&yw_engine::settings::FeeCapsText) -> &str| {
                             caps.map_or(text::DEFAULT_VALUE.get(lang), |caps| {
                                 cap_value(lang, pick(caps))
                             })
@@ -857,8 +859,8 @@ impl App {
                         ));
                     }
                 }
-                crate::settings::Differing::Indexer => {
-                    let server = |bitcoin: &crate::settings::BitcoinSettings| {
+                yw_engine::settings::Differing::Indexer => {
+                    let server = |bitcoin: &yw_engine::settings::BitcoinSettings| {
                         format!(
                             "{} (mainnet {} · testnet4 {})",
                             indexer_name(bitcoin.indexer),
@@ -871,7 +873,7 @@ impl App {
                             .fill(lang, [&server(&current.bitcoin), &server(&file.bitcoin)]),
                     );
                 }
-                crate::settings::Differing::NewChains => {
+                yw_engine::settings::Differing::NewChains => {
                     for chain in file.evm_chains.iter().filter(|chain| {
                         !current
                             .evm_chains
@@ -1039,7 +1041,7 @@ impl App {
                     continue;
                 }
                 seen.push(identity);
-                let holders = crate::yubikey::holders(&self.card.records, slot.role);
+                let holders = yw_engine::yubikey::holders(&self.card.records, slot.role);
                 let cards = self.card_name_list(&holders, "·");
                 let title = slot.role.title_in(lang);
                 lines.push(
@@ -1785,7 +1787,7 @@ impl App {
         let tokens: Vec<String> = self
             .evm_token_rows(chain_id)
             .iter()
-            .filter(|row| row.place == crate::token_view::RowPlace::Shown)
+            .filter(|row| row.place == yw_engine::token_view::RowPlace::Shown)
             .filter_map(|row| {
                 row.balance.filter(|value| !value.is_zero()).map(|value| {
                     yw_core::evm::amount::format_amount(&value, row.decimals, &row.symbol)

@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use yw_engine::approval::flow::{ApprovalEffect, OpenOutcome, ShownId};
 use yw_engine::cmd::Cmd;
 
-use crate::errors::ErrorCode;
+use yw_engine::errors::ErrorCode;
 
 /// How the headless host answers an open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

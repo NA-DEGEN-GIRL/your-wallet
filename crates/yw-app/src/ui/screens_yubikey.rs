@@ -1640,7 +1640,7 @@ impl App {
                 &line.addresses,
                 items,
             );
-            let holders = crate::yubikey::holders(&self.card.records, planned.role);
+            let holders = yw_engine::yubikey::holders(&self.card.records, planned.role);
             let relation = if holders.is_empty() {
                 t::RELATION_NEW.get(lang).to_owned()
             } else {
@@ -1781,10 +1781,10 @@ impl App {
         if let Some(card) = wizard.card {
             let mut kinds = Vec::new();
             if pgp {
-                kinds.push(crate::yubikey::PinKind::OpenPgpAdmin);
+                kinds.push(yw_engine::yubikey::PinKind::OpenPgpAdmin);
             }
             if piv && wizard.management_protected() {
-                kinds.push(crate::yubikey::PinKind::PivPin);
+                kinds.push(yw_engine::yubikey::PinKind::PivPin);
             }
             for line in card.counters.lines(lang, &kinds) {
                 items.push(Item::Help(line));
@@ -1975,7 +1975,7 @@ impl App {
         reason = "the PIN card's first line, defaults, modes and guide in order"
     )]
     pub fn yk_pin_items(&self, serial: u32, items: &mut Vec<Item>) {
-        use crate::yubikey::PinTarget;
+        use yw_engine::yubikey::PinTarget;
         let lang = self.settings.language;
         let seen = self.yk_pin_defaults(serial);
         // The mode follows the factory values seen this run until the user picks one
@@ -2154,7 +2154,7 @@ impl App {
             .iter()
             .map(|slot| {
                 let mut account = self.card_removed(slot, &others, false);
-                if crate::yubikey::holders(&others, slot.role).is_empty() {
+                if yw_engine::yubikey::holders(&others, slot.role).is_empty() {
                     // Only on this card: how the account comes back after the record goes.
                     let back = if yw_core::yubikey::plan::is_unknown_index(slot.role.index()) {
                         t::BACK_UNKNOWN

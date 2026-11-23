@@ -27,8 +27,8 @@ use super::{
     UNLOCKED, entry, main_hwnd, pump, register_classes, tour_apikeys, tour_meta, tour_settings,
 };
 use crate::app::{App, Paths};
-use crate::events::{EventQueue, RpcEvent, UiEvent};
 use crate::shell_msg::WM_YW_EVENTS;
+use yw_engine::events::{EventQueue, RpcEvent, UiEvent};
 use yw_engine::screen::SettingsSection;
 use yw_engine::wallet::Screen;
 

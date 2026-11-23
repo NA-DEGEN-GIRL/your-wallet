@@ -1,7 +1,7 @@
 //! Win32 input of the approval window (spec/04 §3.4): the window messages that count as presses
-//! for [`ApprovalInteraction`](crate::ui::interaction::ApprovalInteraction). 2026-11-17 (spec/15
-//! §11.4 S2): [`stray_press`] moved here from `ui::interaction`, which no longer names a `yw_win`
-//! type; the interaction rules themselves are unchanged.
+//! for [`ApprovalInteraction`](yw_engine::approval::interaction::ApprovalInteraction).
+//! 2026-11-17 (spec/15 §11.4 S2): [`stray_press`] moved here from `ui::interaction`, which no
+//! longer names a `yw_win` type; the interaction rules themselves are unchanged.
 //!
 //! 2026-11-19 (spec/15 §11.4 S4 B2): the approval window's trusted input is sampled into
 //! [`TrustedSignals`] — only by its `sample*` functions, each read at the program point the window
@@ -33,7 +33,7 @@
 use yw_engine::approval::flow::{ApprovalInput, ApprovalSignal, ShownId};
 use yw_win::ui::{Msg, Rect, Reply, Window};
 
-use crate::ui::interaction::InteractionEvent;
+use yw_engine::approval::interaction::InteractionEvent;
 
 /// A01's 50 ms timer (the `Tick` input, spec/04 §3.4).
 pub const APPROVAL_TIMER_ID: usize = 7;

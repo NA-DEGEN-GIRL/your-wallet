@@ -30,7 +30,7 @@ const WALLET_BASES: [&str; 3] = ["vault.ywv", "meta.ywm", "journal.ywj"];
 const SETTINGS_BASES: [&str; 2] = ["settings.json", "apikeys.dpapi"];
 
 /// The reset names and report (2026-11-17: defined in `wallet_files`, spec/15 §11.4 S2).
-pub use crate::wallet_files::{FOLDER_PREFIX, README_NAME, ResetError, ResetReport};
+pub use yw_engine::wallet_files::{FOLDER_PREFIX, README_NAME, ResetError, ResetReport};
 
 fn storage(error: FileError) -> StorageError {
     match error {

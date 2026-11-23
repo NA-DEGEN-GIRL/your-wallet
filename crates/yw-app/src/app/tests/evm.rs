@@ -38,11 +38,11 @@ fn record(flags: u8) -> yw_core::journal::evm::EvmRecord {
 /// entries are not repeated and history is not offered by the picker.
 #[test]
 fn past_recipients_join_the_known_addresses_as_history() {
-    use crate::apikeys::ApiKeys;
     use crate::app::{App, Paths};
-    use crate::events::JournalView;
-    use crate::meta::{ActivityEntry, BookEntry, Meta};
-    use crate::settings::Settings;
+    use yw_engine::apikeys::ApiKeys;
+    use yw_engine::events::JournalView;
+    use yw_engine::meta::{ActivityEntry, BookEntry, Meta};
+    use yw_engine::settings::Settings;
     use yw_engine::wallet::AppMode;
 
     let dir = std::env::temp_dir().join(format!("yw-app-evm-known-{}", std::process::id()));
@@ -121,13 +121,13 @@ fn past_recipients_join_the_known_addresses_as_history() {
 /// it is off while an edit awaits validation; the item is built from the fresh result only.
 #[test]
 fn review_revalidates_and_refuses_an_edit_inside_the_debounce() {
-    use crate::apikeys::ApiKeys;
     use crate::app::{App, Paths};
-    use crate::events::JournalView;
-    use crate::flow::evm::form::Quote;
-    use crate::meta::{Account, Meta};
-    use crate::settings::Settings;
     use yw_core::evm::amount::U256;
+    use yw_engine::apikeys::ApiKeys;
+    use yw_engine::events::JournalView;
+    use yw_engine::flow::evm::form::Quote;
+    use yw_engine::meta::{Account, Meta};
+    use yw_engine::settings::Settings;
     use yw_engine::wallet::AppMode;
     use yw_engine::wallet::app_sol::{ReviewRefusal, SOL_REVIEW_CHANGED_TEXT};
 
@@ -219,15 +219,15 @@ fn review_revalidates_and_refuses_an_edit_inside_the_debounce() {
 /// asked again by itself (a failing or rate-limited RPC used to loop quote → refresh).
 #[test]
 fn max_with_a_failing_quote_asks_once() {
-    use crate::apikeys::ApiKeys;
     use crate::app::{App, Paths};
-    use crate::errors::ErrorCode;
-    use crate::events::JournalView;
-    use crate::meta::{Account, Meta};
-    use crate::network::NetworkId;
-    use crate::settings::Settings;
-    use crate::workers::rpc::RpcJob;
+    use yw_engine::apikeys::ApiKeys;
+    use yw_engine::errors::ErrorCode;
+    use yw_engine::events::JournalView;
+    use yw_engine::meta::{Account, Meta};
+    use yw_engine::network::NetworkId;
+    use yw_engine::settings::Settings;
     use yw_engine::wallet::AppMode;
+    use yw_engine::workers::rpc::RpcJob;
 
     let dir = std::env::temp_dir().join(format!("yw-app-evm-max-{}", std::process::id()));
     let mut app = App::new(
@@ -290,12 +290,12 @@ fn replacing_a_group_uses_the_account_key_or_refuses() {
     use yw_core::bip32::path::AccountIndex;
     use yw_core::vault::EvmKeySource;
 
-    use crate::apikeys::ApiKeys;
     use crate::app::{App, Paths};
-    use crate::events::JournalView;
-    use crate::flow::evm::prepare::ReplaceMode;
-    use crate::meta::{Account, Meta};
-    use crate::settings::Settings;
+    use yw_engine::apikeys::ApiKeys;
+    use yw_engine::events::JournalView;
+    use yw_engine::flow::evm::prepare::ReplaceMode;
+    use yw_engine::meta::{Account, Meta};
+    use yw_engine::settings::Settings;
     use yw_engine::wallet::AppMode;
     use yw_engine::wallet::app_evm::QueuedItem;
 

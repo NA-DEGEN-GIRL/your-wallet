@@ -277,7 +277,7 @@ impl App {
         }
         // E-VLT-006: the file did not open or this build cannot read it. Its own overlay (and the
         // choice being carried out) says so; once closed, this form says nothing was changed.
-        let unreadable = code == crate::errors::ErrorCode::Vlt006;
+        let unreadable = code == yw_engine::errors::ErrorCode::Vlt006;
         if unreadable
             && matches!(
                 self.screen,
@@ -452,7 +452,8 @@ impl App {
         items.push(Item::Text(text::EXT_STEP_1.get(lang).to_owned()));
         items.push(Item::Text(text::EXT_STEP_2.get(lang).to_owned()));
         // The id the app accepts (`extension-id.txt`, compiled in, spec/05 §2.3).
-        let id = crate::browser::pinned_extension_id().unwrap_or(text::EXT_ID_UNKNOWN.get(lang));
+        let id =
+            yw_engine::browser::pinned_extension_id().unwrap_or(text::EXT_ID_UNKNOWN.get(lang));
         items.push(Item::Text(text::EXT_STEP_3.fill(lang, [id])));
         items.push(Item::Text(text::EXT_STEP_4.get(lang).to_owned()));
         items.push(Item::Text(T_EXT_STEP_5.get(lang).to_owned()));
@@ -509,10 +510,10 @@ impl App {
 mod tests {
     use yw_core::lang::{Lang, has_hangul};
 
-    use crate::apikeys::ApiKeys;
     use crate::app::{App, Paths};
-    use crate::settings::Settings;
     use crate::ui::main_window::Item;
+    use yw_engine::apikeys::ApiKeys;
+    use yw_engine::settings::Settings;
 
     /// Every fixed text of `items` (titles, lines, field labels, control labels); field values
     /// are data (paths, file names) and left out.

@@ -32,15 +32,15 @@ use super::{App, AppMode, Screen, app_at, unlocked_at};
 use crate::app_extension::TOUR_EXTENSION_DIR;
 use crate::app_rpc_import::{TEST_RPC_JSON, rpc_json_path};
 use crate::explorer_launcher::Launcher;
-use crate::meta::Tab;
 use crate::ui::command_ids::{fixed, ranges};
 use crate::ui::{
     screens, screens_book, screens_btc, screens_evm, screens_explorer, screens_hypercore,
     screens_llm, screens_mnemonics, screens_received, screens_reset, screens_sol,
     screens_walletconnect, screens_yubikey, screens_zec,
 };
-use crate::workers::rpc::RpcJob;
+use yw_engine::meta::Tab;
 use yw_engine::screen::SettingsSection;
+use yw_engine::workers::rpc::RpcJob;
 
 const COMMANDS: &str = include_str!("s3_census/commands.txt");
 const EDITS: &str = include_str!("s3_census/edits.txt");
@@ -312,7 +312,7 @@ impl Census {
             },
         );
         let jobs = if keys { key_jobs(app) } else { Vec::new() };
-        let names: Vec<&str> = jobs.iter().map(crate::events::KeyJob::name).collect();
+        let names: Vec<&str> = jobs.iter().map(yw_engine::events::KeyJob::name).collect();
         let rpc: Vec<&str> = rx.try_iter().map(|job| job.name()).collect();
         let launched = match &app.launcher {
             Launcher::Record(urls) => urls.len(),
@@ -413,7 +413,7 @@ fn redact_corrupt(text: &str) -> String {
 }
 
 /// The key jobs queued since the last call (never run: no worker, no card reader).
-fn key_jobs(app: &App) -> Vec<crate::events::KeyJob> {
+fn key_jobs(app: &App) -> Vec<yw_engine::events::KeyJob> {
     std::iter::from_fn(|| {
         (!app.key_queue.is_empty())
             .then(|| app.key_queue.pop())
@@ -1027,7 +1027,7 @@ pub(crate) fn done_screen(app: &mut App) {
 pub(crate) fn btc_wallet(app: &mut App) {
     use yw_core::btc::BtcNetwork;
     app.settings.bitcoin.enabled = true;
-    app.settings.bitcoin.network = crate::network::BtcNet::Mainnet;
+    app.settings.bitcoin.network = yw_engine::network::BtcNet::Mainnet;
     let account = yw_core::bip32::AccountXpub {
         pubkey: yw_core::hex::decode_array::<33>(
             "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
@@ -1040,17 +1040,17 @@ pub(crate) fn btc_wallet(app: &mut App) {
             BtcNetwork::Mainnet,
             account,
         )));
-        meta.prefs.tab = crate::meta::Tab::Btc;
+        meta.prefs.tab = yw_engine::meta::Tab::Btc;
     }
     app.apikeys.set_rpc(
-        crate::network::NetworkId::Bitcoin(crate::network::BtcNet::Mainnet),
+        yw_engine::network::NetworkId::Bitcoin(yw_engine::network::BtcNet::Mainnet),
         &yw_platform::http::HttpsUrl::parse("https://btc.example.test/").unwrap(),
     );
-    app.evm.journal = Some(crate::events::JournalView {
+    app.evm.journal = Some(yw_engine::events::JournalView {
         room: true,
         sol_room: true,
         btc_room: true,
-        ..crate::events::JournalView::default()
+        ..yw_engine::events::JournalView::default()
     });
 }
 
@@ -1063,7 +1063,7 @@ pub(crate) fn evm_quote(app: &mut App) {
     app.evm.balances.insert(
         chain,
         yw_engine::wallet::app_evm::BalanceState {
-            snapshot: Some(crate::events::BalanceSnapshot {
+            snapshot: Some(yw_engine::events::BalanceSnapshot {
                 block: 7,
                 native: vec![(owner, U256::from_u64(5_000_000_000_000_000))],
                 tokens: Vec::new(),
@@ -1072,7 +1072,7 @@ pub(crate) fn evm_quote(app: &mut App) {
             ..yw_engine::wallet::app_evm::BalanceState::default()
         },
     );
-    app.evm.send.quote = Some(crate::flow::evm::form::Quote {
+    app.evm.send.quote = Some(yw_engine::flow::evm::form::Quote {
         gas_limit: 21_000,
         max_fee_per_gas: U256::from_u64(3_000_000_000),
         max_total: U256::from_u64(63_000_000_000_000),
@@ -1089,7 +1089,7 @@ pub(crate) fn hc_withdraw(app: &mut App) {
     app.hypercore.balances = Some((
         yw_core::hypercore::HcNetwork::Mainnet,
         owner,
-        crate::hypercore::HcBalances {
+        yw_engine::hypercore::HcBalances {
             spot: Vec::new(),
             perp: yw_core::hypercore::HcPerpState {
                 account_value: "100.0".to_owned(),
@@ -1414,10 +1414,10 @@ fn no_check_box_is_pressed_by_the_logic() {
 #[cfg(debug_assertions)]
 #[test]
 fn credential_capture_covers_every_read() {
-    use crate::network::NetworkId;
     use crate::ui::cmd_table::creds_for;
     use Step::{Call, Press, Type, TypeWith};
     use yw_engine::form::CredField;
+    use yw_engine::network::NetworkId;
     fn replace_evm(app: &mut App) {
         app.replace_target = Some(NetworkId::Eip155(app.settings.evm_chain_id));
     }
@@ -1699,8 +1699,8 @@ fn harness(census: &Census) -> (super::Harness, Receiver<RpcJob>) {
     let mut app = app_at(&census.data);
     let (tx, rx) = channel();
     app.rpc_tx = Some(tx);
-    let worker = crate::workers::key::KeyWorker::new(&census.data, super::file_deps());
-    app.key(crate::events::KeyJob::Load);
+    let worker = yw_engine::workers::key::KeyWorker::new(&census.data, super::file_deps());
+    app.key(yw_engine::events::KeyJob::Load);
     let mut harness = super::Harness {
         app,
         worker,
@@ -1797,14 +1797,14 @@ fn scenarios_golden() -> String {
 /// A dispatcher with no pipe server and no read workers (as `app_browser`'s tests build it).
 fn headless_browser() -> yw_engine::wallet::app_browser::BrowserUi {
     use std::sync::Arc;
-    let events = Arc::new(crate::events::EventQueue::new(Box::new(|| {})));
+    let events = Arc::new(yw_engine::events::EventQueue::new(Box::new(|| {})));
     yw_engine::wallet::app_browser::BrowserUi {
-        core: crate::browser::BrowserCore::new(
+        core: yw_engine::browser::BrowserCore::new(
             "abcdefghijklmnopabcdefghijklmnop",
-            events as Arc<dyn crate::browser::DappSink>,
+            events as Arc<dyn yw_engine::browser::DappSink>,
             Arc::new(crate::system_clock::SystemClock),
         ),
-        reads: Arc::new(crate::browser::read::ReadContext::new(None)),
+        reads: Arc::new(yw_engine::browser::read::ReadContext::new(None)),
         connections: 0,
         waiters: std::collections::HashMap::new(),
         broadcasts: std::collections::HashMap::new(),
@@ -1844,7 +1844,7 @@ fn dapp_view_follows_every_step_without_a_manual_sync() {
     assert!(!h.app.settings.bitcoin.enabled);
     let network = h.app.settings.bitcoin.network;
     h.app.apikeys.set_rpc(
-        crate::network::NetworkId::Bitcoin(network),
+        yw_engine::network::NetworkId::Bitcoin(network),
         &yw_platform::http::HttpsUrl::parse("https://btc.example.test/").unwrap(),
     );
     h.app.on_command(screens_btc::ids::SECTION_BTC);

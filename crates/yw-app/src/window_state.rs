@@ -18,7 +18,7 @@ use yw_win::ui::{MonitorArea, Rect, scale};
 
 use crate::app::App;
 use crate::app_scroll::rescale;
-use crate::logging;
+use yw_engine::logging;
 
 /// The file name in the data folder.
 pub const WINDOW_FILE: &str = "window.json";

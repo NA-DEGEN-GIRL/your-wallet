@@ -1514,7 +1514,7 @@ fn an_openers_later_steps_follow_the_answer_to_its_open() {
     use yw_engine::approval::flow::{OpenOutcome, ShownId};
     use yw_engine::cmd::Cmd;
 
-    use crate::errors::ErrorCode;
+    use yw_engine::errors::ErrorCode;
     use yw_engine::wallet::app_approval::AfterOpen;
 
     let (mut app, dir) = super::unlocked_app("after-open", false);
@@ -1567,7 +1567,7 @@ fn steps_after_an_open_wait_for_its_answer() {
     use yw_engine::approval::flow::{OpenOutcome, ShownId};
     use yw_engine::cmd::Cmd;
 
-    use crate::errors::ErrorCode;
+    use yw_engine::errors::ErrorCode;
     use yw_engine::wallet::app_approval::AfterOpen;
 
     let (mut app, dir) = super::unlocked_app("after-pending", false);
@@ -1614,7 +1614,7 @@ fn steps_after_an_open_wait_for_its_answer() {
             "{:?}",
             AfterOpen::Steps(vec![
                 AfterOpen::EvmTickRest(7),
-                AfterOpen::Finish(crate::ui::approval::QueueOutcome::Approved),
+                AfterOpen::Finish(yw_engine::approval::QueueOutcome::Approved),
                 AfterOpen::SetScreen(yw_engine::wallet::Screen::Main),
             ])
         ),

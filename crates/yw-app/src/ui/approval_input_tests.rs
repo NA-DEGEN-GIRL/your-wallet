@@ -12,8 +12,8 @@ use super::{
     VK_ESCAPE, VK_HOME, VK_NEXT, VK_PRIOR, VK_RETURN, VK_SPACE, VK_TAB, VK_UP, map_key, map_msg,
     panel_click, panel_hit, stray_press, tab_order, tab_target, wheel_delta, window_input,
 };
-use crate::ui::interaction::InteractionEvent;
 use yw_engine::approval::flow::{ApprovalInput, ApprovalSignal, ShownId, is_release};
+use yw_engine::approval::interaction::InteractionEvent;
 
 const OTHER: Step = Step::Event(InteractionEvent::OtherPress);
 const VK_A: u16 = 0x41;

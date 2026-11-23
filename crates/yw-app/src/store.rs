@@ -36,10 +36,10 @@ use yw_win::file::{
 };
 use yw_win::mem::LockedBox;
 
-pub use crate::wallet_files::file_name;
-use crate::wallet_files::{ResetError, ResetReport, is_set_aside, with_suffix};
-use crate::workers::key::platform::{KeyDeps, KeyPlatform, WalletStore};
-use crate::yubikey::CardSource;
+pub use yw_engine::wallet_files::file_name;
+use yw_engine::wallet_files::{ResetError, ResetReport, is_set_aside, with_suffix};
+use yw_engine::workers::key::platform::{KeyDeps, KeyPlatform, WalletStore};
+use yw_engine::yubikey::CardSource;
 
 const VAULT_MAX: u64 = 65_536;
 const META_MAX: u64 = 8 * 1_048_576 + 80;
