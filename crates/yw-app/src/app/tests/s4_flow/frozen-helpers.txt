@@ -395,7 +395,7 @@ yw-app/src/app_approval_lifecycle_tests.rs fn sol_record f5252002e6fc4a3e mutabl
 yw-app/src/app_approval_lifecycle_tests.rs const QN_TOKEN 065707a983136886 mutable
 yw-app/src/app_approval_lifecycle_tests.rs struct RpcJsonSeam d01d3db6782b4a0b mutable
 yw-app/src/app_approval_lifecycle_tests.rs impl DropforRpcJsonSeam a6683934f42c27ae mutable
-yw-app/src/app_approval_lifecycle_tests.rs fn rpc_import_on_temp_data 3635972bf58a1cb0 mutable
+yw-app/src/app_approval_lifecycle_tests.rs fn rpc_import_on_temp_data ddf23c403c79ef14 mutable
 yw-app/src/app_approval_lifecycle_tests.rs fn polling_while_hidden 7826e5ada702c7c5 mutable
 yw-app/src/app_approval_lifecycle_tests.rs type Scenario 58387d5ab13f655b mutable
 yw-app/src/app_approval_lifecycle_tests.rs const SCENARIOS 9a5e22148d4fa050 mutable

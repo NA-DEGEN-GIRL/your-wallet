@@ -35,7 +35,8 @@
 //! and `form` were added. 2026-11-20 (S4 P1): `app_store` was added; (S4 P2) `services`;
 //! (S4 P7a1) `secret`; (S4 P10a) `screen`. 2026-11-22 (S4d E0a): the types, texts and pure helpers
 //! the wallet code took from yw-app shell files moved into `screen`, `secret`, `meta`,
-//! `wallet_files`, `text`, `badge`, `approval::flow` and `explain::config`.
+//! `wallet_files`, `text`, `badge`, `approval::flow` and `explain::config`. 2026-11-23 (S4d E0b):
+//! `probe` (hidden) was added, the wallet code's test observation points.
 #![forbid(unsafe_code)]
 
 pub mod apikeys;
@@ -57,6 +58,10 @@ pub mod hypercore;
 pub mod logging;
 pub mod meta;
 pub mod network;
+// 2026-11-23 (spec/15 §11.4 S4d E0b): the wallet code's test observation points (a sink only a
+// test seam installs; source check `the_probe_is_installed_only_by_tests`).
+#[doc(hidden)]
+pub mod probe;
 pub mod received;
 pub mod rpc;
 pub mod screen;

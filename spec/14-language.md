@@ -52,6 +52,8 @@
 
 (2026-11-22, [15] §11.4 S4d E0a) 지갑 코드가 셸 파일에서 가져다 쓰던 문구가 그 셸 파일을 떠났다. 문구와 항목 이름은 그대로이고 카탈로그 자리만 바뀌었다. 새 엔진 카탈로그 `yw_engine::screen::text`: 띠 꼬리표 `TONE_*` 7개(전에는 `yw_app::ui::main_window::text`), 받기 QR 선택 `QR_WALLET_APP`·`QR_ADDRESS_ONLY`(전에는 `yw_app::ui::qr::text`), 계정 출처 `SOURCE_WORDS`·`SOURCE_IMPORTED`·`SOURCE_EVM_KEY`(전에는 `yw_app::ui::screens_accounts::text`). `yw_engine::secret::text`에 `BACKUP_RETRY`·`BACKUP_RETRY_WORDS_AGAIN`·`BACKUP_RETRY_NO_WORDS`, `yw_engine::meta::text`에 `ROLLBACK`(둘 다 전에는 `yw_app::ui::screens::text`). 옮겨 갈 지갑 파일의 카탈로그로: `yw_app::app::text`에 단계 이름 `STEP_PASSWORD`·`STEP_WRITE_WORDS`·`STEP_BACKUP_CHECK`·`STEP_ENTER_WORDS`·`STEP_FIRST_ADDRESS`와 `T_ALT_PASS_RECEIVE`·`T_WER_UNPROTECTED`(전에는 `yw_app::ui::screens::text`), `T_EXT_MISSING`(전에는 `yw_app::ui::screens_reset::text`); `yw_app::app_evm::text`에 `REOWN_COPIED`(전에는 `yw_app::ui::screens_walletconnect::text`)와 `PATH_COPIED`·`URL_COPIED`(전에는 `yw_app::app_extension::text`); `yw_app::app_yubikey::text`에 단계 이름 `STEP_PASSWORD`·`STEP_WRITE_WORDS`·`STEP_BACKUP_CHECK`·`STEP_PUT_ON_CARD`·`STEP_SET_PIN`과 `CARD_NAME_INVALID`·`CARD_NAME_TAKEN`(전에는 `yw_app::ui::screens_yubikey::text`). 화면 코드는 그 문구를 새 자리에서 읽는다. 아래 표는 그대로 `print_spec14_tables` 출력이다.
 
+(2026-11-23, [15] §11.4 S4d E0b) 지갑 코드(`impl Wallet`)가 화면 파일과 셸 파일을 떠나 옮겨 갈 지갑 파일로 갔고, 그 코드가 쓰던 문구가 함께 갔다. 문구와 항목 이름은 그대로이고 카탈로그 자리만 바뀌었다. `yw_app::app_evm::text`에 활동 상태 `STATUS_SUCCEEDED`·`STATUS_FAILED`·`STATUS_DROPPED`·`STATUS_REPLACED`·`STATUS_EXPIRED`·`STATUS_REJECTED`·`STATUS_CONFLICTED`·`STATUS_STOPPED`, 기록 상태 `REC_HASH_MISMATCH`·`REC_SEND_FAILED`·`REC_CONFIRMING`·`REC_SIGNED`·`REC_BROADCAST`·`REC_FINAL_FAILED`·`REC_FINAL`·`REC_NONCE_USED`, `RAW_UNITS`·`HIDDEN_TOKEN_TAG`·`BLOCKED_TAG`(전에는 `yw_app::ui::screens_evm::text`); `yw_app::app_browser::text`에 `DISCONNECTED`(전에는 `yw_app::ui::screens_sites::text`); `yw_app::app_hypercore::text`에 `API_INVALID`·`API_SAVED`(전에는 `yw_app::ui::screens_hypercore::text`); `yw_app::app_sol::text`에 `PICK_BOOK_ENTRY`·`PICK_OWN`(전에는 `yw_app::ui::screens_sol::text`); `yw_app::app_card::text`에 `SOURCE_CARDS`·`MORE_CARDS`(전에는 `yw_app::ui::screens_accounts::text`, 그 카탈로그는 비어 없어졌다). 새 카탈로그 `yw_app::app_rpc_plan::text`(`rpc.json` 가져오기의 지갑 쪽): `ALCHEMY`·`DELETED`·`DELETE_FAILED`·`DELETE_LINK`·`FILLED`·`FORMAT`·`IGNORED`·`IMPORTED`·`IMPORTED_KEPT`·`IMPORTED_TEMPLATE`·`IMPORT_KEPT`·`NOTHING_TO_IMPORT`·`REJECTED`·`TESTING`·`UNREADABLE`(전에는 `yw_app::app_rpc_import::text`, 카드의 나머지 문구는 거기 남는다). 아래 표는 그대로 `print_spec14_tables` 출력이다.
+
 <!-- 아래 표는 print_spec14_tables 출력이다. -->
 
 <!-- catalogue: yw_core::evm::risk (rules) -->
@@ -1971,6 +1973,7 @@
 | REFUSED_NO_EVM | {0}의 연결 요청을 거부했습니다: 지갑에 EVM 계정이 없습니다. EVM 개인키를 가져온 뒤 다시 연결하세요. | Refused the connect request of {0}: the wallet has no EVM account. Import an EVM private key, then connect again. |
 | REFUSED_TOO_MANY | {0}의 연결 요청을 거부했습니다: 이 체인에 연결된 사이트가 이미 256개입니다. 연결된 사이트 화면에서 하나를 해제한 뒤 다시 연결하세요. | Refused the connect request of {0}: 256 sites are already connected on this chain. Disconnect one on the Connected sites screen, then connect again. |
 | MESSAGE_SIGN_FAILED | 사이트의 메시지에 서명하지 못했습니다: {0} | Could not sign the site's message: {0} |
+| DISCONNECTED | {0} 연결을 해제했습니다. | Disconnected {0}. |
 
 <!-- catalogue: yw_app::app_btc::text -->
 
@@ -2093,6 +2096,8 @@
 | DETAIL_HOLDERS | 이 키를 가진 YubiKey: {0} | YubiKeys holding this key: {0} |
 | STEP_EXPIRED | YubiKey 단계 시간(120초)이 지나 서명하지 않았습니다. | The YubiKey step time (120 s) ran out, so nothing was signed. |
 | STEP_EXPIRED_CANCELLED | YubiKey 단계 시간(120초)이 지나 서명을 취소했습니다. | The YubiKey step time (120 s) ran out, so signing was cancelled. |
+| SOURCE_CARDS | YubiKey: {0} | YubiKey: {0} |
+| MORE_CARDS |  +{0} |  +{0} |
 
 <!-- catalogue: yw_app::app_chain_sites::text -->
 
@@ -2124,6 +2129,25 @@
 | REOWN_COPIED | dashboard.reown.com 주소를 복사했습니다. 브라우저 주소창에 붙여넣으세요. | Copied the dashboard.reown.com address. Paste it into your browser's address bar. |
 | PATH_COPIED | 경로를 복사했습니다. 폴더 선택 창 위쪽 주소 칸에 Ctrl+V 하세요. | Path copied. Press Ctrl+V in the address box at the top of the folder picker. |
 | URL_COPIED | chrome://extensions 주소를 복사했습니다. Chrome 주소창에 붙여넣으세요. | Copied chrome://extensions. Paste it into the Chrome address bar. |
+| BLOCKED_TAG |  (차단됨) |  (blocked) |
+| HIDDEN_TOKEN_TAG |  · [숨긴 토큰] |  · [hidden token] |
+| RAW_UNITS | {0} (원시 단위) | {0} (raw units) |
+| REC_BROADCAST | 전송됨 | Sent |
+| REC_CONFIRMING | 전송 확인 중 | Confirming the send |
+| REC_FINAL | 확정 (블록 {0}) | Final (block {0}) |
+| REC_FINAL_FAILED | 확정 (실행 실패, 블록 {0}) | Final (execution failed, block {0}) |
+| REC_HASH_MISMATCH | RPC가 다른 거래 해시를 반환했습니다 (재전송·폐기) | The RPC returned a different transaction hash (rebroadcast/discard) |
+| REC_NONCE_USED | 다른 거래가 이 nonce를 사용 | Another transaction used this nonce |
+| REC_SEND_FAILED | 전송 실패 — 재전송하거나 폐기하세요 | Send failed — rebroadcast or discard it |
+| REC_SIGNED | 서명됨 | Signed |
+| STATUS_SUCCEEDED | 성공 | Succeeded |
+| STATUS_FAILED | 실패 | Failed |
+| STATUS_DROPPED | 폐기됨 | Discarded |
+| STATUS_REPLACED | 대체됨 | Replaced |
+| STATUS_EXPIRED | 만료 | Expired |
+| STATUS_REJECTED | 거부됨 | Rejected |
+| STATUS_CONFLICTED | 충돌 | Conflicted |
+| STATUS_STOPPED | 중단됨 | Stopped |
 
 <!-- catalogue: yw_app::app_explorer::text -->
 
@@ -2192,6 +2216,8 @@
 | ADDRESS_2222_HYPE | 0x2222…2222는 HYPE 전용 시스템 주소입니다 — 토큰을 보내면 잃을 수 있습니다 | 0x2222…2222 is the system address for HYPE only — tokens sent there may be lost |
 | NO_TOKEN_INFO | HyperCore 토큰 정보를 확인할 수 없어 시스템 주소를 검증하지 못했습니다 — EVM 탭의 HyperCore 카드에서 새로고침하세요 | The HyperCore token information cannot be checked, so the system address was not verified — refresh on the HyperCore card of the EVM tab |
 | WRONG_SYSTEM | 이 시스템 주소(토큰 index {0})에 연결된 토큰이 아닙니다 — 보내면 잃을 수 있습니다 | This token is not the one linked to this system address (token index {0}) — sending it may lose it |
+| API_INVALID | HTTPS 주소가 아닙니다 (https://…, ?·# 없이). | Not an HTTPS address (https://…, without ? or #). |
+| API_SAVED | 테스트넷 API 주소를 저장했습니다. | Saved the testnet API address. |
 
 <!-- catalogue: yw_app::app_keys::text -->
 
@@ -2264,24 +2290,9 @@
 
 | 이름 | 한국어 | English |
 |---|---|---|
-| IMPORT_KEPT | 주소는 %LOCALAPPDATA%\\YourWallet\\v3\\apikeys.dpapi에 이 Windows 사용자만 풀 수 있게 암호화해 저장했습니다. 재설치해도 유지됩니다. 지갑 초기화 때 '설정과 API 키도 함께 옮기기'를 켜지 않으면 그대로 남습니다. | The addresses are saved in %LOCALAPPDATA%\\YourWallet\\v3\\apikeys.dpapi, encrypted so that only this Windows user can open them. They stay after a reinstall. A wallet reset leaves them in place unless 'Also move settings and API keys' is on. |
 | JSON_PLAINTEXT | 이 파일에는 RPC 주소와 그 토큰이 암호화되지 않은 채 들어 있어, 이 Windows 사용자로 도는 다른 프로그램도 읽을 수 있습니다. 가져온 뒤 개발 스크립트에 더 쓰지 않으면 지우세요. | This file holds RPC addresses and their tokens unencrypted, so other programs running as this Windows user can read it. After importing, delete it unless development scripts still need it. |
 | JSON_LEFT | 가져오기를 마쳤습니다. 앱에는 암호화해 저장했지만 rpc.json에는 같은 주소·토큰이 암호화되지 않은 채 남아 있습니다. 개발 스크립트(probe-rpc 등)에 더 쓰지 않으면 지우세요. | Import finished. The app saved them encrypted, but rpc.json still holds the same addresses and tokens unencrypted. Delete it unless development scripts (probe-rpc and others) still need it. |
 | JSON_DELETE_CONFIRM | rpc.json을 지웁니다. 휴지통으로 가지 않아 되돌릴 수 없습니다. 앱에 저장한 RPC 주소는 그대로이고, 개발 스크립트가 이 파일을 쓴다면 scripts\\dev-rpc-setup.ps1로 다시 만들어야 합니다. | rpc.json will be deleted. It does not go to the Recycle Bin, so this cannot be undone. The RPC addresses saved in the app stay; if development scripts use this file, recreate it with scripts\\dev-rpc-setup.ps1. |
-| UNREADABLE | rpc.json을 읽을 수 없습니다. 파일이 없거나, 64 KiB보다 크거나, 바로가기·링크입니다. | rpc.json cannot be read. The file is missing, larger than 64 KiB, or a shortcut or link. |
-| FORMAT | rpc.json 형식이 올바르지 않습니다. UTF-8 JSON 객체 하나({"eip155:1": "https://…", …} 모양, 같은 키 두 번 금지)여야 합니다. | rpc.json is not in the right format. It must be one UTF-8 JSON object (shaped like {"eip155:1": "https://…", …}, no key twice). |
-| ALCHEMY | 알케미 | Alchemy |
-| DELETED | rpc.json을 지웠습니다. 앱에 저장한 RPC 주소는 그대로입니다. | rpc.json was deleted. The RPC addresses saved in the app stay. |
-| DELETE_LINK | rpc.json이 링크(심볼릭 링크)이거나 파일이 아니라 지우지 않았습니다. 링크가 가리키는 파일에 토큰이 있으니 탐색기에서 확인해 직접 지우세요. | rpc.json is a link (symbolic link) or not a file, so it was not deleted. The file the link points to holds the tokens; check it in Explorer and delete it yourself. |
-| DELETE_FAILED | rpc.json을 지우지 못했습니다. 다른 프로그램이 열고 있거나 권한이 없습니다. 탐색기에서 직접 지우세요. | rpc.json could not be deleted. Another program has it open or there is no permission. Delete it yourself in Explorer. |
-| NOTHING_TO_IMPORT | rpc.json에 가져올 수 있는 RPC 주소가 없습니다. | rpc.json has no RPC addresses that can be imported. |
-| IMPORTED | rpc.json에서 RPC 주소 {0}개를 가져왔습니다 | Imported {0} RPC addresses from rpc.json |
-| IMPORTED_KEPT | (이미 주소가 있는 {0}개는 그대로 두었습니다) |  ({0} that already had an address were left as is) |
-| IMPORTED_TEMPLATE |  모두 같은 QuickNode 엔드포인트라 RPC 공급자를 'QuickNode 멀티체인'으로 하고 이름·토큰을 템플릿 자격 정보로 저장했습니다. |  They all use the same QuickNode endpoint, so the RPC provider was set to 'QuickNode multichain' and the name and token were saved as the template credentials. |
-| FILLED |  파일에 없던 {0}개 네트워크는 저장된 RPC 공급자 템플릿으로 주소를 만들었습니다. |  For {0} networks not in the file, addresses were made from the saved RPC provider template. |
-| TESTING |  연결을 확인하는 중입니다 — 결과는 아래 각 행에 나옵니다. |  Checking the connections — the results appear in each row below. |
-| REJECTED | \n가져오지 않음(https QuickNode·알케미 주소가 아니거나 형식 오류): {0} | \nNot imported (not an https QuickNode or Alchemy address, or a format error): {0} |
-| IGNORED | \n이 앱의 네트워크 목록에 없는 키 {0}개는 건너뜁니다. | \n{0} keys that are not in this app's network list are skipped. |
 | CARD_TITLE | rpc.json에서 가져오기 | Import from rpc.json |
 | CARD_HELP | 개발용 설정 파일(%USERPROFILE%\\.yw-dev\\rpc.json)에 있는 RPC 주소를 읽어 위 '네트워크별 RPC 주소' 목록에 넣습니다. 저장하기 전에 가린 목록으로 한 번 더 확인합니다. | Reads the RPC addresses in the development settings file (%USERPROFILE%\\.yw-dev\\rpc.json) into the 'RPC address per network' list above. A masked list is shown for one more check before saving. |
 | DELETE | 지우기 | Delete |
@@ -2298,6 +2309,26 @@
 | FILL_EMPTY | 비어 있는 네트워크만 | Empty networks only |
 | IMPORT | 가져오기 | Import |
 | SAVE_NOTE | 저장은 '교체'와 같습니다: Windows가 이 사용자 계정에서만 풀 수 있게 암호화해 apikeys.dpapi에 둡니다. | Saving works like 'Replace': Windows encrypts it so only this user account can open it, in apikeys.dpapi. |
+
+<!-- catalogue: yw_app::app_rpc_plan::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| ALCHEMY | 알케미 | Alchemy |
+| DELETED | rpc.json을 지웠습니다. 앱에 저장한 RPC 주소는 그대로입니다. | rpc.json was deleted. The RPC addresses saved in the app stay. |
+| DELETE_FAILED | rpc.json을 지우지 못했습니다. 다른 프로그램이 열고 있거나 권한이 없습니다. 탐색기에서 직접 지우세요. | rpc.json could not be deleted. Another program has it open or there is no permission. Delete it yourself in Explorer. |
+| DELETE_LINK | rpc.json이 링크(심볼릭 링크)이거나 파일이 아니라 지우지 않았습니다. 링크가 가리키는 파일에 토큰이 있으니 탐색기에서 확인해 직접 지우세요. | rpc.json is a link (symbolic link) or not a file, so it was not deleted. The file the link points to holds the tokens; check it in Explorer and delete it yourself. |
+| FILLED |  파일에 없던 {0}개 네트워크는 저장된 RPC 공급자 템플릿으로 주소를 만들었습니다. |  For {0} networks not in the file, addresses were made from the saved RPC provider template. |
+| FORMAT | rpc.json 형식이 올바르지 않습니다. UTF-8 JSON 객체 하나({"eip155:1": "https://…", …} 모양, 같은 키 두 번 금지)여야 합니다. | rpc.json is not in the right format. It must be one UTF-8 JSON object (shaped like {"eip155:1": "https://…", …}, no key twice). |
+| IGNORED | \n이 앱의 네트워크 목록에 없는 키 {0}개는 건너뜁니다. | \n{0} keys that are not in this app's network list are skipped. |
+| IMPORTED | rpc.json에서 RPC 주소 {0}개를 가져왔습니다 | Imported {0} RPC addresses from rpc.json |
+| IMPORTED_KEPT | (이미 주소가 있는 {0}개는 그대로 두었습니다) |  ({0} that already had an address were left as is) |
+| IMPORTED_TEMPLATE |  모두 같은 QuickNode 엔드포인트라 RPC 공급자를 'QuickNode 멀티체인'으로 하고 이름·토큰을 템플릿 자격 정보로 저장했습니다. |  They all use the same QuickNode endpoint, so the RPC provider was set to 'QuickNode multichain' and the name and token were saved as the template credentials. |
+| IMPORT_KEPT | 주소는 %LOCALAPPDATA%\\YourWallet\\v3\\apikeys.dpapi에 이 Windows 사용자만 풀 수 있게 암호화해 저장했습니다. 재설치해도 유지됩니다. 지갑 초기화 때 '설정과 API 키도 함께 옮기기'를 켜지 않으면 그대로 남습니다. | The addresses are saved in %LOCALAPPDATA%\\YourWallet\\v3\\apikeys.dpapi, encrypted so that only this Windows user can open them. They stay after a reinstall. A wallet reset leaves them in place unless 'Also move settings and API keys' is on. |
+| NOTHING_TO_IMPORT | rpc.json에 가져올 수 있는 RPC 주소가 없습니다. | rpc.json has no RPC addresses that can be imported. |
+| REJECTED | \n가져오지 않음(https QuickNode·알케미 주소가 아니거나 형식 오류): {0} | \nNot imported (not an https QuickNode or Alchemy address, or a format error): {0} |
+| TESTING |  연결을 확인하는 중입니다 — 결과는 아래 각 행에 나옵니다. |  Checking the connections — the results appear in each row below. |
+| UNREADABLE | rpc.json을 읽을 수 없습니다. 파일이 없거나, 64 KiB보다 크거나, 바로가기·링크입니다. | rpc.json cannot be read. The file is missing, larger than 64 KiB, or a shortcut or link. |
 
 <!-- catalogue: yw_app::app_sidecar::text -->
 
@@ -2376,6 +2407,8 @@
 | STATUS_LANDED | 성공 | Succeeded |
 | STATUS_FAILED | 실패: {0} | Failed: {0} |
 | STATUS_EXPIRED | 만료 (전송되지 않음) | Expired (not sent) |
+| PICK_BOOK_ENTRY | 주소록: {0} | Address book: {0} |
+| PICK_OWN | 내 계정: {0} | My account: {0} |
 
 <!-- catalogue: yw_app::app_sol_commands::text -->
 
@@ -2951,13 +2984,6 @@
 | C_GENERATE_EXISTING |  — 기존 주소 있음 |  — has an address |
 | C_GENERATE_SKIPPED | \n건너뜀(템플릿 항목 없음): | \nSkipped (no template entry): |
 
-<!-- catalogue: yw_app::ui::screens_accounts::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| SOURCE_CARDS | YubiKey: {0} | YubiKey: {0} |
-| MORE_CARDS |  +{0} |  +{0} |
-
 <!-- catalogue: yw_app::ui::screens_book::text -->
 
 | 이름 | 한국어 | English |
@@ -3175,27 +3201,9 @@
 | CHAIN_ADD_HELP | 다른 EVM 체인(L1·L2)은 여기서 추가합니다 — chainId·RPC 주소를 넣으면 chainId와 블록 0을 확인해 등록합니다. | Add other EVM chains (L1·L2) here — enter the chainId and RPC address, and the chainId and block 0 are checked before the chain is registered. |
 | CHAIN_ADD | EVM 체인 추가 | Add EVM chain |
 | CHAIN_EDIT_TITLE | EVM 체인 편집 | Edit EVM chain |
-| STATUS_SUCCEEDED | 성공 | Succeeded |
-| STATUS_FAILED | 실패 | Failed |
-| STATUS_DROPPED | 폐기됨 | Discarded |
-| STATUS_REPLACED | 대체됨 | Replaced |
-| STATUS_EXPIRED | 만료 | Expired |
-| STATUS_REJECTED | 거부됨 | Rejected |
-| STATUS_CONFLICTED | 충돌 | Conflicted |
-| STATUS_STOPPED | 중단됨 | Stopped |
 | RECIPIENT | 받는 주소{0} | Recipient{0} |
 | TO_BOOK |  → 주소록: {0} |  → Address book: {0} |
 | TO_MINE |  → 내 계정: {0} |  → My account: {0} |
-| REC_HASH_MISMATCH | RPC가 다른 거래 해시를 반환했습니다 (재전송·폐기) | The RPC returned a different transaction hash (rebroadcast/discard) |
-| REC_SEND_FAILED | 전송 실패 — 재전송하거나 폐기하세요 | Send failed — rebroadcast or discard it |
-| REC_CONFIRMING | 전송 확인 중 | Confirming the send |
-| REC_SIGNED | 서명됨 | Signed |
-| REC_BROADCAST | 전송됨 | Sent |
-| REC_FINAL_FAILED | 확정 (실행 실패, 블록 {0}) | Final (execution failed, block {0}) |
-| REC_FINAL | 확정 (블록 {0}) | Final (block {0}) |
-| REC_NONCE_USED | 다른 거래가 이 nonce를 사용 | Another transaction used this nonce |
-| RAW_UNITS | {0} (원시 단위) | {0} (raw units) |
-| HIDDEN_TOKEN_TAG |  · [숨긴 토큰] |  · [hidden token] |
 | SENT_TITLE | 보낸 거래 | Sent transactions |
 | SENT_NONE | 아직 보낸 거래가 없습니다. | No transactions sent yet. |
 | SPEED_UP | 수수료 올리기 | Speed up |
@@ -3208,7 +3216,6 @@
 | RPC_BLOCKED | RPC: 차단 {0}   ·   {1} | RPC: blocked {0}   ·   {1} |
 | CONNECTED | 연결됨 | Connected |
 | UNCHECKED | 확인 전 | Not checked |
-| BLOCKED_TAG |  (차단됨) |  (blocked) |
 | BLOCKED_CODE | 차단 {0} | Blocked {0} |
 | MAINNET_WORD | 메인넷 | Mainnet |
 | MAINNET_SUFFIX | {0} (메인넷) | {0} (Mainnet) |
@@ -3413,8 +3420,6 @@
 | SAVE | 저장 | Save |
 | OFFICIAL | 공식 주소로 | Use official |
 | API_HELP | HTTPS만 됩니다. /info와 /exchange가 이 주소 뒤에 붙습니다. | HTTPS only. /info and /exchange are appended to this address. |
-| API_SAVED | 테스트넷 API 주소를 저장했습니다. | Saved the testnet API address. |
-| API_INVALID | HTTPS 주소가 아닙니다 (https://…, ?·# 없이). | Not an HTTPS address (https://…, without ? or #). |
 
 <!-- catalogue: yw_app::ui::screens_keys::text -->
 
@@ -3667,7 +3672,6 @@
 | DISCONNECT_ALL | 모든 사이트 연결 해제 | Disconnect all sites |
 | PENDING_MORE |  외 {0}건 |  and {0} more |
 | PENDING | 잠금 해제를 기다리는 요청 {0}건: {1} | Requests waiting for unlock ({0}): {1} |
-| DISCONNECTED | {0} 연결을 해제했습니다. | Disconnected {0}. |
 
 <!-- catalogue: yw_app::ui::screens_sol::text -->
 
@@ -3760,8 +3764,6 @@
 | FEE_SHOW | 수수료 계산 보기 (lamports·CU) ▸ | Show fee calculation (lamports·CU) ▸ |
 | ATA_NOTE | 받는 사람에게 {0} 토큰 계정이 없으면 이 거래가 만들고, 생성 비용(rent)을 보내는 계정의 SOL로 냅니다. 금액은 승인 창에서 확인하세요. 보낸 뒤에도 SOL이 조금 남아야 합니다. | If the recipient has no {0} token account, this transaction creates it and the sending account pays its creation cost (rent) in SOL. Check the amount in the approval window. Some SOL must remain after sending. |
 | NO_MATCH | 일치하는 주소록·내 계정이 없습니다. | No matching address book entry·own account. |
-| PICK_BOOK_ENTRY | 주소록: {0} | Address book: {0} |
-| PICK_OWN | 내 계정: {0} | My account: {0} |
 | RESULT_TITLE | 보내기 결과 | Send result |
 | RESULT_SENT | 서명하고 저널에 기록한 뒤 전송했습니다. | Signed, recorded in the journal, then sent. |
 | RESULT_ENDED | 종결 (활동 참고) | Ended (see activity) |

@@ -11,11 +11,10 @@
 use yw_core::lang::Lang;
 use yw_core::policy::{BrowserOrigin, Family};
 
-use crate::app::{App, Confirm, Wallet};
+use crate::app::App;
 use crate::meta::BookChain;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_book::shown_address;
-use yw_engine::cmd::{Row, SitesPress};
 use yw_engine::screen::Tone;
 
 /// Control ids (6,700–6,965; the whole map is `ui::command_ids`).
@@ -32,8 +31,9 @@ pub mod ids {
     pub const SITE_ROW_BASE: u16 = 6_710;
     /// Row span (reserved ids; a page uses [`SITES_PAGE_ROWS`]).
     pub const SITE_ROW_SPAN: u16 = 256;
-    /// Cards per page.
-    pub const SITES_PAGE_ROWS: usize = 50;
+    /// Cards per page. 2026-11-23 (S4d E0b): the wallet's `app_browser::SITES_PAGE_ROWS` (the S13
+    /// handler pages with it), re-used here; before, defined here.
+    pub const SITES_PAGE_ROWS: usize = crate::app_browser::SITES_PAGE_ROWS;
     /// Every fixed id of this module.
     pub const FIXED: &[u16] = &[SITES_OPEN, SITES_REVOKE_ALL, SITES_PREV, SITES_NEXT];
 
@@ -96,12 +96,6 @@ impl Page<'_> {
     }
 }
 
-/// Pages of `total` cards and the page shown for the wanted one (clamped to the last page).
-fn page_of(total: usize, wanted: usize) -> (usize, usize) {
-    let pages = total.div_ceil(ids::SITES_PAGE_ROWS).max(1);
-    (pages, wanted.min(pages - 1))
-}
-
 /// The page line and `이전 쪽`/`다음 쪽` (only with more than one page).
 fn page_nav(lang: Lang, items: &mut Vec<Item>, total: usize, pages: usize, shown: usize) {
     if pages <= 1 {
@@ -135,12 +129,6 @@ fn local_time(unix_ms: u64) -> String {
     } else {
         format!("{short} UTC")
     }
-}
-
-/// A site card title: the full origin, then the chain family (one site may be connected on
-/// several chains and gets one card per family).
-fn card_title(origin: &BrowserOrigin, family: Family) -> String {
-    format!("{}  ·  {}", origin.as_str(), family_name(family))
 }
 
 /// S13 texts and T-UNLOCK-PENDING (spec/04 §2.5, §2.9; English spec/14 §5).
@@ -177,16 +165,6 @@ pub mod text {
         PENDING_MORE(1) = " 외 {0}건" / " and {0} more";
         /// T-UNLOCK-PENDING (`{0}` count, `{1}` origins).
         PENDING(2) = "잠금 해제를 기다리는 요청 {0}건: {1}" / "Requests waiting for unlock ({0}): {1}";
-        DISCONNECTED(1) = "{0} 연결을 해제했습니다." / "Disconnected {0}.";
-    }
-}
-
-/// The family name of a card title and of the `연결 해제` notice.
-const fn family_name(family: Family) -> &'static str {
-    match family {
-        Family::Evm => "EVM",
-        Family::Solana => "Solana",
-        Family::Bitcoin => "Bitcoin",
     }
 }
 
@@ -215,7 +193,8 @@ impl App {
     /// page index and `total`.
     fn sites_page(&self, total: usize) -> (Page<'_>, usize, usize, usize) {
         let browser = self.browser.as_ref();
-        let (pages, shown) = page_of(total, browser.map_or(0, |browser| browser.site_rows.page));
+        let (pages, shown) =
+            crate::app_browser::page_of(total, browser.map_or(0, |browser| browser.site_rows.page));
         let page = Page {
             start: shown * ids::SITES_PAGE_ROWS,
             end: (shown + 1) * ids::SITES_PAGE_ROWS,
@@ -271,7 +250,10 @@ impl App {
             if !page.shows(index) {
                 continue;
             }
-            items.push(Item::CardStart(Some(card_title(&site.origin, Family::Evm))));
+            items.push(Item::CardStart(Some(crate::app_browser::card_title(
+                &site.origin,
+                Family::Evm,
+            ))));
             if site.origin.is_http() {
                 items.push(Item::Banner(
                     text::LOCAL_HTTP.get(lang).to_owned(),
@@ -330,7 +312,7 @@ impl App {
             if !page.shows(first + offset) {
                 continue;
             }
-            items.push(Item::CardStart(Some(card_title(
+            items.push(Item::CardStart(Some(crate::app_browser::card_title(
                 &grant.origin,
                 Family::Solana,
             ))));
@@ -366,7 +348,7 @@ impl App {
             if !page.shows(first + sol_grants.len() + offset) {
                 continue;
             }
-            items.push(Item::CardStart(Some(card_title(
+            items.push(Item::CardStart(Some(crate::app_browser::card_title(
                 &grant.origin,
                 Family::Bitcoin,
             ))));
@@ -413,65 +395,6 @@ impl App {
             list.push_str(&text::PENDING_MORE.fill(lang, [&(origins.len() - 5).to_string()]));
         }
         Some(text::PENDING.fill(lang, [&count.to_string(), &list]))
-    }
-}
-
-impl Wallet {
-    /// Presses of S13 (2026-11-18, S3 C2: a `SitesPress`; before, the control id).
-    pub(crate) fn on_sites(&mut self, press: SitesPress) {
-        match press {
-            SitesPress::Open => {
-                self.set_screen(crate::app::Screen::Sites);
-            }
-            SitesPress::RevokeAll => {
-                self.set_screen(crate::app::Screen::Confirm(Confirm::DisconnectAll));
-            }
-            SitesPress::Prev | SitesPress::Next => {
-                let total = self
-                    .browser_grants()
-                    .iter()
-                    .filter(|grant| !crate::walletconnect::is_session_origin(&grant.origin))
-                    .count()
-                    + {
-                        let (sol, btc) = self.chain_grants();
-                        sol.len() + btc.len()
-                    };
-                if let Some(browser) = self.browser.as_mut() {
-                    let (pages, shown) = page_of(total, browser.site_rows.page);
-                    browser.site_rows.page = if press == SitesPress::Prev {
-                        shown.saturating_sub(1)
-                    } else {
-                        (shown + 1).min(pages - 1)
-                    };
-                }
-                self.refresh();
-            }
-            SitesPress::Disconnect(Row(offset)) => {
-                // The grant this button was drawn for (a list that changed since does not move
-                // the click to another site).
-                let key = self.browser.as_ref().and_then(|browser| {
-                    browser
-                        .site_rows
-                        .keys
-                        .borrow()
-                        .get(usize::from(offset))
-                        .cloned()
-                });
-                if let Some((origin, family)) = key {
-                    // The card just disappears: say which one went (2026-11-12).
-                    self.info = Some(
-                        text::DISCONNECTED
-                            .fill(self.settings.language, [&card_title(&origin, family)]),
-                    );
-                    match family {
-                        Family::Evm => self.disconnect_site(&origin),
-                        Family::Solana | Family::Bitcoin => {
-                            self.disconnect_chain_site(&origin, family);
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 

@@ -31,6 +31,9 @@ use crate::hypercore::{HcBalances, HcEndpoint, HcEvent, HcRpcJob, api_units};
 use crate::logging::{self, Field};
 use crate::ui::approval::{QueueOutcome, QueueSource};
 use crate::workers::rpc::RpcJob;
+use yw_engine::cmd::HcPress;
+use yw_engine::cmd::Row;
+use yw_engine::form::EditField;
 
 /// Balance refresh while the card or S-HC is visible.
 pub const HC_REFRESH_MS: u64 = 15_000;
@@ -85,6 +88,11 @@ pub mod text {
             / "The HyperCore token information cannot be checked, so the system address was not verified — refresh on the HyperCore card of the EVM tab";
         WRONG_SYSTEM(1) = "이 시스템 주소(토큰 index {0})에 연결된 토큰이 아닙니다 — 보내면 잃을 수 있습니다"
             / "This token is not the one linked to this system address (token index {0}) — sending it may lose it";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_hypercore::text` (the panel handler's notices).
+        API_INVALID = "HTTPS 주소가 아닙니다 (https://…, ?·# 없이)."
+            / "Not an HTTPS address (https://…, without ? or #).";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_hypercore::text` (the panel handler's notices).
+        API_SAVED = "테스트넷 API 주소를 저장했습니다." / "Saved the testnet API address.";
     }
 }
 
@@ -1070,5 +1078,151 @@ impl Wallet {
                 (!ok).then(|| text::WRONG_SYSTEM.fill(lang, [&index.to_string()]))
             }
         }
+    }
+}
+
+/// The EVM chains next to which the `HyperCore` card is always unfolded: `HyperEVM` mainnet and
+/// testnet (`HyperEVM으로 이동`·`HyperEVM에서 Core로 이동`) and Arbitrum One and Sepolia (withdrawals
+/// arrive there, spec/11 §8). 2026-11-23 (S4d E0b): moved here unchanged from
+/// `ui::screens_hypercore` with `hc_foldable`.
+pub const HC_UNFOLDED_CHAINS: [u64; 4] = [999, 998, 42_161, 421_614];
+
+// 2026-11-23 (spec/15 §11.4 S4d E0b): moved here unchanged from `ui::screens_hypercore` (wallet code in a
+// render file): the panel's handlers and the folding rule.
+
+impl Wallet {
+    /// Whether the `HyperCore` card may be folded to one line (2026-11-10): the selected EVM
+    /// chain is not one the card works with ([`HC_UNFOLDED_CHAINS`]) and no `HyperCore` action of
+    /// the selected account is being signed or sent.
+    #[must_use]
+    pub fn hc_foldable(&self) -> bool {
+        let account = self.selected_account().map(|(account, ..)| account);
+        let network = self.hc_network();
+        !HC_UNFOLDED_CHAINS.contains(&self.settings.evm_chain_id)
+            && !self.hypercore.activity.iter().any(|row| {
+                row.network == network
+                    && Some(row.account) == account
+                    && matches!(
+                        row.status,
+                        crate::app_hypercore::HcStatus::Signing
+                            | crate::app_hypercore::HcStatus::Submitting
+                    )
+            })
+    }
+}
+
+impl Wallet {
+    /// `HyperCore` presses (2026-11-18, S3 C7: an `HcPress`; before, the control id, and
+    /// `false` for an id that was not one of them).
+    pub(crate) fn on_hc(&mut self, press: HcPress) {
+        match press {
+            HcPress::Refresh => {
+                self.hc_refresh();
+                if matches!(self.screen, crate::app::Screen::HyperCore) {
+                    self.hc_validate();
+                }
+                self.refresh();
+            }
+            HcPress::Max => self.hc_fill_max(),
+            HcPress::OpenSend => self.hc_open_form(HcFormKind::Send),
+            HcPress::OpenClass => self.hc_open_form(HcFormKind::ClassTransfer),
+            HcPress::OpenWithdraw => self.hc_open_form(HcFormKind::Withdraw),
+            HcPress::OpenToEvm => self.hc_open_form(HcFormKind::ToEvm),
+            HcPress::OpenFromEvm => self.hc_open_from_evm(),
+            HcPress::NetMainnet | HcPress::NetTestnet => {
+                let network = if press == HcPress::NetMainnet {
+                    HcNetwork::Mainnet
+                } else {
+                    HcNetwork::Testnet
+                };
+                if network != self.settings.hypercore.network {
+                    let mut settings = self.settings.clone();
+                    settings.hypercore.network = network;
+                    self.save_settings(settings, "hypercore");
+                    self.hypercore.balances = None;
+                    self.hypercore.error = None;
+                    self.hc_refresh();
+                }
+            }
+            HcPress::Ack => self.hc_toggle_ack(),
+            HcPress::Review => self.hc_review(),
+            HcPress::Cancel => self.return_to(crate::app::Screen::Main),
+            HcPress::Expand | HcPress::Collapse => {
+                self.hypercore.unfolded = press == HcPress::Expand;
+                self.refresh();
+            }
+            HcPress::DirToPerp | HcPress::DirToSpot => {
+                self.hypercore.form.to_perp = press == HcPress::DirToPerp;
+                self.hc_validate();
+                self.refresh();
+            }
+            HcPress::AssetPerp => {
+                self.hypercore.form.asset = HcAsset::PerpUsdc;
+                self.hc_validate();
+                self.refresh();
+            }
+            HcPress::Enabled => {
+                let mut settings = self.settings.clone();
+                settings.hypercore.enabled = !settings.hypercore.enabled;
+                self.save_settings(settings, "hypercore");
+                self.hc_refresh();
+            }
+            HcPress::ApiSave | HcPress::ApiDefault => {
+                let text = if press == HcPress::ApiDefault {
+                    yw_core::hypercore::TESTNET_API.to_owned()
+                } else {
+                    self.hypercore
+                        .api_text
+                        .clone()
+                        .unwrap_or_else(|| self.settings.hypercore.testnet_api.clone())
+                };
+                if let Some(api) = crate::settings::validate_hypercore_api(&text) {
+                    let mut settings = self.settings.clone();
+                    settings.hypercore.testnet_api = api;
+                    self.hypercore.api_text = None;
+                    self.hypercore.settings_message =
+                        Some(text::API_SAVED.get(self.settings.language).to_owned());
+                    self.save_settings(settings, "hypercore");
+                } else {
+                    self.hypercore.settings_message =
+                        Some(text::API_INVALID.get(self.settings.language).to_owned());
+                    self.refresh();
+                }
+            }
+            HcPress::Asset(Row(row)) => {
+                let row = usize::from(row);
+                let index = match self.hypercore.form.kind {
+                    HcFormKind::ToEvm => self.hc_evm_tokens().get(row).map(|token| token.index),
+                    _ => self.hc_spot_rows().get(row).map(|(index, ..)| *index),
+                };
+                if let Some(index) = index {
+                    self.hypercore.form.asset = HcAsset::Spot(index);
+                    self.hc_validate();
+                    self.refresh();
+                }
+            }
+        }
+    }
+
+    /// `EN_CHANGE` of a `HyperCore` edit (2026-11-18, S3 C7: the field and its text from
+    /// `Cmd::Edit`; before, the control id and a read of the edit here); `false` when `field`
+    /// is not one of them.
+    pub(crate) fn on_hc_edit(&mut self, field: EditField, text: &str) -> bool {
+        if ![EditField::HcTo, EditField::HcAmount, EditField::HcApi].contains(&field) {
+            return false;
+        }
+        let now = self.clock.now_ms();
+        match field {
+            EditField::HcTo => {
+                text.clone_into(&mut self.hypercore.form.to_text);
+                self.hypercore.form.dirty_ms = Some(now);
+            }
+            EditField::HcAmount => {
+                text.clone_into(&mut self.hypercore.form.amount_text);
+                self.hypercore.form.dirty_ms = Some(now);
+            }
+            _ => self.hypercore.api_text = Some(text.to_owned()),
+        }
+        true
     }
 }

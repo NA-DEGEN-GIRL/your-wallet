@@ -172,7 +172,7 @@ fn english_side_file_overlays_and_notices() {
 
 #[test]
 fn english_rpc_import_texts() {
-    use crate::app_rpc_import::ImportError;
+    use crate::app_rpc_plan::ImportError;
     for error in [ImportError::Unreadable, ImportError::Format] {
         assert!(!has_hangul(error.text(Lang::En)));
         assert!(has_hangul(error.text(Lang::Ko)));

@@ -6,19 +6,16 @@ use yw_core::evm::address::{Address, parse_address};
 use yw_core::evm::amount::{U256, format_amount, format_units};
 use yw_core::evm::chain::{HYPEREVM_MAINNET, SEPOLIA, builtin_chain};
 use yw_core::evm::display::format_address;
-use yw_core::journal::evm::{EvmRecord, ReceiptStatus, TxState, groups};
 use yw_core::lang::Lang;
 
-use crate::app::{App, AppMode, Wallet};
+use crate::app::{App, AppMode};
 use crate::app_book::{BookTarget, PromptPlace};
 use crate::app_evm::{SendAsset, hash_text};
 use crate::app_tokens::EvmTokenRow;
 use crate::errors::ErrorCode;
 use crate::flow::evm::MismatchKind;
-use crate::flow::evm::form::tx_recipients;
-use crate::flow::evm::track::BroadcastOutcome;
 use crate::logging::format_utc;
-use crate::meta::{ActivityEntry, BookChain};
+use crate::meta::BookChain;
 use crate::network::NetworkId;
 use crate::token_view::RowPlace;
 use crate::ui::badge::Badge;
@@ -426,21 +423,6 @@ pub mod ids {
     }
 }
 
-/// Status words of activity rows.
-fn activity_status(lang: Lang, word: &str) -> &'static str {
-    match word {
-        "succeeded" => text::STATUS_SUCCEEDED,
-        "failed" => text::STATUS_FAILED,
-        "dropped" => text::STATUS_DROPPED,
-        "replaced" => text::STATUS_REPLACED,
-        "expired" => text::STATUS_EXPIRED,
-        "rejected" => text::STATUS_REJECTED,
-        "conflicted" => text::STATUS_CONFLICTED,
-        _ => text::STATUS_STOPPED,
-    }
-    .get(lang)
-}
-
 impl App {
     /// The heading line of an activity row's recipient (2026-11-08, like Solana and Zcash):
     /// "받는 주소" with, display only, the address-book or own-account name. The address follows
@@ -468,175 +450,6 @@ impl App {
             })
             .unwrap_or_default();
         items.push(Item::Help(text::RECIPIENT.fill(lang, [&name])));
-    }
-}
-
-impl Wallet {
-    /// An account row's name with its recovery phrase while the wallet has several.
-    fn evm_pref_title(&self, pref: crate::meta::EvmAccountPref, label: &str) -> String {
-        match pref {
-            crate::meta::EvmAccountPref::Index(_) => self.mnemonic_tagged(label, None),
-            crate::meta::EvmAccountPref::Mnemonic(id, _) => self.mnemonic_tagged(label, Some(id)),
-            crate::meta::EvmAccountPref::Record(_) | crate::meta::EvmAccountPref::Hardware(_) => {
-                label.to_owned()
-            }
-        }
-    }
-
-    fn account_label(&self, address: &str) -> String {
-        self.account_rows()
-            .into_iter()
-            .find(|(_, _, shown, _)| shown.eq_ignore_ascii_case(address))
-            .map_or_else(
-                || address.to_owned(),
-                |(pref, label, _, _)| self.evm_pref_title(pref, &label),
-            )
-    }
-
-    fn record_status(&self, record: &EvmRecord) -> String {
-        let lang = self.settings.language;
-        let note = self.evm.notes.get(&record.tx_hash).copied();
-        match record.state {
-            TxState::Signed => match note {
-                Some(BroadcastOutcome::HashMismatch) => text::REC_HASH_MISMATCH,
-                Some(BroadcastOutcome::Rejected { known: false }) => text::REC_SEND_FAILED,
-                Some(BroadcastOutcome::Unconfirmed { .. }) | None => text::REC_CONFIRMING,
-                _ => text::REC_SIGNED,
-            }
-            .get(lang)
-            .to_owned(),
-            TxState::Broadcast => text::REC_BROADCAST.get(lang).to_owned(),
-            // One confirmation is final; `Included` only remains in records of older builds
-            // until the next tracking round finalizes them.
-            TxState::Included | TxState::Finalized => {
-                if record.receipt_status == ReceiptStatus::Failure {
-                    text::REC_FINAL_FAILED
-                } else {
-                    text::REC_FINAL
-                }
-                .fill(lang, [&record.included_block_number.to_string()])
-            }
-            TxState::Dropped => {
-                if record.has_flag(yw_core::journal::evm::FLAG_USER_DISCARDED) {
-                    text::STATUS_DROPPED.get(lang).to_owned()
-                } else {
-                    text::REC_NONCE_USED.get(lang).to_owned()
-                }
-            }
-            TxState::Replaced => text::STATUS_REPLACED.get(lang).to_owned(),
-        }
-    }
-
-    /// Activity rows of the active chain: journal groups first, then meta activity.
-    /// 2026-11-22 (S4d E0c): a row carries its time as `time_unix_ms` and the render code
-    /// (`evm_main_sections`) prints it as local time; before, `head` began with
-    /// `format_local` of it (plan D-30: no wallet fn formats a local time).
-    #[must_use]
-    pub fn activity_rows(&self) -> Vec<ActivityRowView> {
-        let chain_id = self.settings.evm_chain_id;
-        let mut rows = Vec::new();
-        let records: Vec<EvmRecord> = self
-            .evm
-            .records()
-            .iter()
-            .filter(|record| record.chain_id == chain_id)
-            .cloned()
-            .collect();
-        let mut seen: Vec<String> = Vec::new();
-        let mut grouped = groups(&records);
-        grouped.sort_by_key(|(_, members)| {
-            std::cmp::Reverse(members.iter().map(|record| record.created_unix_ms).max())
-        });
-        for (key, members) in grouped {
-            let open = members.iter().any(|record| !record.is_terminal());
-            let shown = members
-                .iter()
-                .find(|record| matches!(record.state, TxState::Included | TxState::Finalized))
-                .or_else(|| members.iter().max_by_key(|record| record.created_unix_ms))
-                .copied();
-            let Some(shown) = shown else { continue };
-            let hash = hash_text(&shown.tx_hash);
-            for member in &members {
-                seen.push(hash_text(&member.tx_hash));
-            }
-            let manual = members.iter().any(|record| {
-                record.state == TxState::Signed
-                    && matches!(
-                        self.evm.notes.get(&record.tx_hash),
-                        Some(
-                            BroadcastOutcome::Rejected { known: false }
-                                | BroadcastOutcome::HashMismatch
-                        )
-                    )
-            });
-            // The nonce only matters while the group is open (speed-up, cancel).
-            let nonce = if open {
-                format!(" · nonce {}", key.nonce)
-            } else {
-                String::new()
-            };
-            rows.push(ActivityRowView {
-                time_unix_ms: shown.created_unix_ms,
-                head: format!(
-                    "{} · {}{nonce}",
-                    self.account_label(&shown.account.to_lower_hex()),
-                    shown.label,
-                ),
-                status: self.record_status(shown),
-                hash,
-                open: open.then_some(key),
-                manual,
-                counterparty: shown.tx().and_then(|tx| tx_recipients(&tx).last().copied()),
-            });
-        }
-        if let Some(meta) = self.meta.as_ref() {
-            let network = NetworkId::Eip155(chain_id).to_string();
-            for entry in meta.activity_of(&network) {
-                if seen.contains(&entry.tx_id) {
-                    continue;
-                }
-                rows.push(self.meta_activity_row(&entry, chain_id));
-            }
-        }
-        rows.truncate(crate::app_evm::MAX_ACTIVITY_ROWS);
-        rows
-    }
-
-    fn meta_activity_row(&self, entry: &ActivityEntry, chain_id: u64) -> ActivityRowView {
-        let lang = self.settings.language;
-        let amount = U256::from_decimal_str(&entry.amount).unwrap_or(U256::ZERO);
-        let mut value = if entry.asset == "native" {
-            self.native_text(chain_id, &amount)
-        } else {
-            let token = parse_address(&entry.asset).ok();
-            token
-                .and_then(|token| {
-                    self.chain_tokens(chain_id)
-                        .into_iter()
-                        .find(|(address, ..)| *address == token)
-                })
-                .map_or_else(
-                    || text::RAW_UNITS.fill(lang, [&amount.to_decimal_string()]),
-                    |(_, symbol, decimals, _)| format_amount(&amount, decimals, &symbol),
-                )
-        };
-        // History stays visible for hidden tokens, tagged so the row is not a surprise.
-        if parse_address(&entry.asset).is_ok_and(|token| self.evm_token_hidden(chain_id, &token)) {
-            value.push_str(text::HIDDEN_TOKEN_TAG.get(lang));
-        }
-        ActivityRowView {
-            time_unix_ms: entry.time_unix_ms,
-            head: format!(
-                "{} · {} · {value}",
-                self.account_label(&entry.account),
-                entry.title
-            ),
-            status: activity_status(lang, &entry.status).to_owned(),
-            hash: entry.tx_id.clone(),
-            open: None,
-            manual: false,
-            counterparty: parse_address(&entry.counterparty).ok(),
-        }
     }
 }
 
@@ -696,27 +509,6 @@ impl App {
             text::UNCHECKED.get(lang)
         };
         format!("RPC: {rpc}   ·   {browser}")
-    }
-}
-
-impl Wallet {
-    /// Network radios with "(차단됨)".
-    #[must_use]
-    pub fn network_label(&self, chain_id: u64) -> String {
-        let mut name = self.network_name(NetworkId::Eip155(chain_id));
-        if self
-            .settings
-            .evm_chains
-            .iter()
-            .any(|def| def.chain_id == chain_id)
-        {
-            name.push_str(" · ");
-            name.push_str(&custom_chain_badge(self.settings.language, chain_id));
-        }
-        if self.evm.blocked(chain_id).is_some() {
-            name.push_str(text::BLOCKED_TAG.get(self.settings.language));
-        }
-        name
     }
 }
 
@@ -1550,37 +1342,6 @@ impl App {
     }
 }
 
-impl Wallet {
-    /// The picker rows in display order: book entries and own accounts matching the filter of
-    /// the rows on screen (`SendForm::picker_filter`), at most [`crate::app_evm::SEND_PICK_ROWS`].
-    fn picker_known(&self) -> Vec<crate::flow::evm::form::KnownAddress> {
-        let filter = self.evm.send.picker_filter.trim().to_ascii_lowercase();
-        self.known_addresses()
-            .into_iter()
-            .filter(|entry| !entry.history)
-            .filter(|entry| {
-                filter.is_empty()
-                    || entry
-                        .address
-                        .to_lower_hex()
-                        .contains(filter.trim_start_matches("0x"))
-                    || entry.name.to_ascii_lowercase().contains(&filter)
-            })
-            .take(usize::from(crate::app_evm::SEND_PICK_ROWS))
-            .collect()
-    }
-
-    /// The picker entries in display order (for the command handler): the same rows as drawn,
-    /// so a click picks the row it was drawn for even when the recipient text changed since.
-    #[must_use]
-    pub fn picker_entries(&self) -> Vec<Address> {
-        self.picker_known()
-            .into_iter()
-            .map(|entry| entry.address)
-            .collect()
-    }
-}
-
 impl App {
     /// S11 result.
     pub fn send_result_screen(&self, items: &mut Vec<Item>) {
@@ -1598,7 +1359,7 @@ impl App {
                 .iter()
                 .find(|record| record.tx_hash == sent.tx_hash)
                 .map_or_else(
-                    || text::REC_CONFIRMING.get(lang).to_owned(),
+                    || crate::app_evm::text::REC_CONFIRMING.get(lang).to_owned(),
                     |record| self.record_status(record),
                 );
             items.push(Item::Badged(

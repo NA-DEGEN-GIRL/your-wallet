@@ -11,29 +11,10 @@ yw_core::texts! {
     CHAIN_EDIT_TITLE = "EVM 체인 편집" / "Edit EVM chain";
 
     // ----- activity -----------------------------------------------------------------------------
-    STATUS_SUCCEEDED = "성공" / "Succeeded";
-    STATUS_FAILED = "실패" / "Failed";
-    STATUS_DROPPED = "폐기됨" / "Discarded";
-    STATUS_REPLACED = "대체됨" / "Replaced";
-    STATUS_EXPIRED = "만료" / "Expired";
-    STATUS_REJECTED = "거부됨" / "Rejected";
-    STATUS_CONFLICTED = "충돌" / "Conflicted";
-    STATUS_STOPPED = "중단됨" / "Stopped";
     /// The recipient heading (`{0}` = a `TO_*` part or empty).
     RECIPIENT(1) = "받는 주소{0}" / "Recipient{0}";
     TO_BOOK(1) = " → 주소록: {0}" / " → Address book: {0}";
     TO_MINE(1) = " → 내 계정: {0}" / " → My account: {0}";
-    REC_HASH_MISMATCH = "RPC가 다른 거래 해시를 반환했습니다 (재전송·폐기)"
-        / "The RPC returned a different transaction hash (rebroadcast/discard)";
-    REC_SEND_FAILED = "전송 실패 — 재전송하거나 폐기하세요" / "Send failed — rebroadcast or discard it";
-    REC_CONFIRMING = "전송 확인 중" / "Confirming the send";
-    REC_SIGNED = "서명됨" / "Signed";
-    REC_BROADCAST = "전송됨" / "Sent";
-    REC_FINAL_FAILED(1) = "확정 (실행 실패, 블록 {0})" / "Final (execution failed, block {0})";
-    REC_FINAL(1) = "확정 (블록 {0})" / "Final (block {0})";
-    REC_NONCE_USED = "다른 거래가 이 nonce를 사용" / "Another transaction used this nonce";
-    RAW_UNITS(1) = "{0} (원시 단위)" / "{0} (raw units)";
-    HIDDEN_TOKEN_TAG = " · [숨긴 토큰]" / " · [hidden token]";
     SENT_TITLE = "보낸 거래" / "Sent transactions";
     SENT_NONE = "아직 보낸 거래가 없습니다." / "No transactions sent yet.";
     /// Replace-by-fee has one name on every chain (Bitcoin's `수수료 올리기`).
@@ -50,7 +31,6 @@ yw_core::texts! {
     RPC_BLOCKED(2) = "RPC: 차단 {0}   ·   {1}" / "RPC: blocked {0}   ·   {1}";
     CONNECTED = "연결됨" / "Connected";
     UNCHECKED = "확인 전" / "Not checked";
-    BLOCKED_TAG = " (차단됨)" / " (blocked)";
     BLOCKED_CODE(1) = "차단 {0}" / "Blocked {0}";
     /// What a built-in mainnet's name is checked for before `MAINNET_SUFFIX` is added.
     MAINNET_WORD = "메인넷" / "Mainnet";

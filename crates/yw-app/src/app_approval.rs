@@ -2329,13 +2329,12 @@ impl Wallet {
         // 2026-11-18 (S4 A7, critique A-2): the secret characterization's lock order.
         // 2026-11-20 (S4 P10b): logged after the effects queued before it are applied
         // (`secret_seam::log_after`), where the shell closes this window too.
-        #[cfg(test)]
-        crate::app::secret_seam::log_after(
-            self.outbox.len(),
-            crate::app::secret_seam::Op::ApprovalClose {
-                shown: self.evm.approval.is_some(),
-            },
-        );
+        // 2026-11-23 (S4d E0b, preflight O-4): a probe note with the queued count, which the
+        // tests' secret seam logs that way (before, a `cfg(test)` call of that seam).
+        yw_engine::probe::note(yw_engine::probe::Probe::ApprovalClose {
+            shown: self.evm.approval.is_some(),
+            queued: self.outbox.len(),
+        });
         // 2026-11-19 (S4 B4b): the flow and the shell state are taken together; the steps keep
         // their order (reject, AI close and its log, AI body, timer, panel, window).
         // 2026-11-19 (S4 B5): the flow ends here (reject, AI close and its log) and emits

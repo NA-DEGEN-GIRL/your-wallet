@@ -18,6 +18,10 @@ use crate::walletconnect::worker::{
     ProposalEnd, RelayStatus, SessionView, WcCommand, WcEvent, WcHandle,
 };
 use crate::walletconnect::{Metadata, VerifyStatus, is_session_origin};
+use yw_core::secret::Zeroizing;
+use yw_engine::cmd::Row;
+use yw_engine::cmd::WcPress;
+use yw_engine::form::EditField;
 
 /// The panel texts of the UI side (spec/13 §6; English spec/14).
 pub mod text {
@@ -705,6 +709,100 @@ impl Wallet {
         for topic in topics {
             self.wc_disconnect(topic);
         }
+    }
+}
+
+// 2026-11-23 (spec/15 §11.4 S4d E0b): moved here unchanged from `ui::screens_walletconnect` (wallet code
+// in a render file): the panel's handlers.
+
+impl Wallet {
+    /// Presses of the panel (2026-11-18, S3 C2: a `WcPress`, the edits' text from the form
+    /// state; before, the control id and reads of the edits here).
+    pub(crate) fn on_wc(&mut self, press: WcPress) {
+        match press {
+            WcPress::Pair => {
+                // 2026-11-20 (S4 P5, critique B-12(c)): a wiped string (the link holds the
+                // pairing `symKey`); before, a plain `String` from `form_text`.
+                let text = self
+                    .form_text_wiping(EditField::WcUri)
+                    .unwrap_or_else(|| Zeroizing::new(self.wc.uri_text.clone()));
+                self.wc_pair(&text);
+            }
+            // 2026-11-18 (S3 D1): what the shell read from the clipboard with the press; a
+            // press without it (none captured) reads nothing, as without a main window.
+            WcPress::ClipboardQr => {
+                if let Some(clip) = self.input.take_clip() {
+                    self.wc_clipboard_qr(clip);
+                }
+            }
+            WcPress::ClipboardConnect => {
+                if let Some(clip) = self.input.take_clip() {
+                    self.wc_clipboard_connect(clip);
+                }
+            }
+            WcPress::FileToggle => self.wc.file_open = !self.wc.file_open,
+            WcPress::FileQr => {
+                if let Some(text) = self.form_text(EditField::WcFile) {
+                    self.wc.file_text = text;
+                }
+                // 2026-11-20 (S4 P5): the image file the shell read and decoded with the press
+                // (from the same path); before, `wc_file_qr` opened `wc.file_text` itself. A
+                // press without it (none captured) reads nothing.
+                if let Some(image) = self.input.take_image() {
+                    self.wc_file_qr(image);
+                }
+            }
+            WcPress::ProjectSave => {
+                if let Some(text) = self.form_text(EditField::WcProject) {
+                    self.wc.project_text = Some(text);
+                }
+                self.wc_save_project();
+            }
+            WcPress::DisconnectAll => {
+                // Every session at once: confirmed first, like `모든 사이트 연결 해제`.
+                if !self.wc.sessions.is_empty() {
+                    self.set_screen(crate::app::Screen::Confirm(
+                        crate::app::Confirm::WcDisconnectAll,
+                    ));
+                }
+                return;
+            }
+            WcPress::ProjectToggle => {
+                let open = self.wc.project_open || self.wc.project_text.is_some();
+                self.wc.project_open = !open;
+                self.wc.project_text = None;
+            }
+            WcPress::ReownCopy => {
+                // Only the address string: no browser is started (2026-11-10).
+                // A setup step: its instruction stays a band (not the mark at the button).
+                // 2026-11-20 (S4 P6): the band rides in the copy's mark and is set when the
+                // result arrives (`Wallet::copy_done`; the layout follows at the end of this press);
+                // before, this read the result right after the copy (`copied.take()`).
+                self.copy_with_band(
+                    "https://dashboard.reown.com",
+                    yw_engine::cmd::CopyBand::ReownAddress,
+                );
+            }
+            WcPress::Disconnect(Row(offset)) => {
+                let topic = self.wc.rows.borrow().get(usize::from(offset)).copied();
+                if let Some(topic) = topic {
+                    self.wc_disconnect(topic);
+                }
+            }
+        }
+        self.refresh();
+    }
+
+    /// Edit changes of the panel: `text` is the field's text now (2026-11-18, S3 C2: from
+    /// `Cmd::Edit`; before, a read of the edit by id); `false` when `field` is not one of them.
+    pub(crate) fn on_wc_edit(&mut self, field: EditField, text: &str) -> bool {
+        match field {
+            EditField::WcUri => text.clone_into(&mut self.wc.uri_text),
+            EditField::WcFile => text.clone_into(&mut self.wc.file_text),
+            EditField::WcProject => self.wc.project_text = Some(text.to_owned()),
+            _ => return false,
+        }
+        true
     }
 }
 

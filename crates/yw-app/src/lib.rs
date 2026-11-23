@@ -37,8 +37,12 @@ pub mod app_keys;
 pub mod app_llm;
 pub mod app_mnemonics;
 pub mod app_received;
+// 2026-11-23 (S4d E0b): the wallet half of the removal block (was `ui::removed`'s `impl Wallet`).
+pub mod app_removed;
 pub mod app_reset;
 pub mod app_rpc_import;
+// 2026-11-23 (S4d E0b): the wallet half of the `rpc.json` import (was part of `app_rpc_import`).
+pub mod app_rpc_plan;
 pub mod app_scroll;
 pub mod app_sidecar;
 pub mod app_sol;

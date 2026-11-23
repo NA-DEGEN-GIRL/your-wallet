@@ -184,6 +184,27 @@ pub(crate) fn applied() {
     }
 }
 
+/// Installs this thread's sink of the wallet code's probe notes ([`probe_sink`]); every test
+/// `App` does when it is built (`App::with_clock`). 2026-11-23 (spec/15 §11.4 S4d E0b, preflight
+/// O-4): the wallet code notes `yw_engine::probe::Probe`s where it called this seam under
+/// `cfg(test)` before (`drop_display_secret`, `close_approval_window`); the only installer of a
+/// probe sink (source check `the_probe_is_installed_only_by_tests`).
+pub(crate) fn install_probe() {
+    let _ = yw_engine::probe::install(Some(probe_sink));
+}
+
+/// The probe sink: each note is logged as the seam call it replaced, at the same point
+/// (2026-11-23, S4d E0b): `DisplayDropped` with [`log`], `ApprovalClose` with [`log_after`] and
+/// the count of effects queued before it.
+fn probe_sink(probe: yw_engine::probe::Probe) {
+    match probe {
+        yw_engine::probe::Probe::DisplayDropped => log(Op::DisplayDropped),
+        yw_engine::probe::Probe::ApprovalClose { shown, queued } => {
+            log_after(queued, Op::ApprovalClose { shown });
+        }
+    }
+}
+
 /// Appends to the log while it runs.
 pub(crate) fn log(op: Op) {
     let _ = TEST_SECRET_LOG.try_with(|slot| {

@@ -1620,13 +1620,13 @@ fn rpc_import_on_temp_data() -> Vec<String> {
     let key = |fx: &Fixture| -> &'static str {
         let app = fx.app.borrow();
         let lang = app.settings.language;
-        let imported = crate::app_rpc_import::text::IMPORTED.fill(lang, ["1"]);
+        let imported = crate::app_rpc_plan::text::IMPORTED.fill(lang, ["1"]);
         match app.info.as_deref() {
             None => "-",
             Some(info) if info.starts_with(&imported) => "IMPORTED",
-            Some(info) if info == crate::app_rpc_import::text::DELETED.get(lang) => "DELETED",
-            Some(info) if info == crate::app_rpc_import::text::UNREADABLE.get(lang) => "UNREADABLE",
-            Some(info) if info == crate::app_rpc_import::text::FORMAT.get(lang) => "FORMAT",
+            Some(info) if info == crate::app_rpc_plan::text::DELETED.get(lang) => "DELETED",
+            Some(info) if info == crate::app_rpc_plan::text::UNREADABLE.get(lang) => "UNREADABLE",
+            Some(info) if info == crate::app_rpc_plan::text::FORMAT.get(lang) => "FORMAT",
             Some(_) => "other",
         }
     };

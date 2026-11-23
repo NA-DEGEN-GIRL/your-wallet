@@ -39,12 +39,18 @@ use crate::flow::evm::{
     ChainCheck, ChainJob, MismatchKind, chain_info, default_caps_text, fee_caps, parse_caps,
 };
 use crate::logging::{self, Field};
+use crate::meta::ActivityEntry;
 use crate::meta::{EvmAccountPref, ListError, TokenEntry};
 use crate::network::NetworkId;
 use crate::settings::{EvmChainDef, FeeCapsText, Settings, validate_fee_caps};
 use crate::text::{hash32_text, is_valid_label, json_object, json_str};
 use crate::ui::approval::{ApprovalQueue, QueueOutcome, QueueSource};
 use crate::workers::rpc::RpcJob;
+use yw_core::journal::evm::ReceiptStatus;
+use yw_core::journal::evm::TxState;
+use yw_core::lang::Lang;
+use yw_engine::badge::custom_chain_badge;
+use yw_engine::screen::ActivityRowView;
 use yw_engine::screen::SettingsSection;
 
 /// Balance refresh while S10 is visible and the window is not hidden or minimized
@@ -104,6 +110,45 @@ pub mod text {
             / "Path copied. Press Ctrl+V in the address box at the top of the folder picker.";
         URL_COPIED = "chrome://extensions 주소를 복사했습니다. Chrome 주소창에 붙여넣으세요."
             / "Copied chrome://extensions. Paste it into the Chrome address bar.";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        BLOCKED_TAG = " (차단됨)" / " (blocked)";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        HIDDEN_TOKEN_TAG = " · [숨긴 토큰]" / " · [hidden token]";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        RAW_UNITS(1) = "{0} (원시 단위)" / "{0} (raw units)";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_BROADCAST = "전송됨" / "Sent";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_CONFIRMING = "전송 확인 중" / "Confirming the send";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_FINAL(1) = "확정 (블록 {0})" / "Final (block {0})";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_FINAL_FAILED(1) = "확정 (실행 실패, 블록 {0})" / "Final (execution failed, block {0})";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_HASH_MISMATCH = "RPC가 다른 거래 해시를 반환했습니다 (재전송·폐기)"
+            / "The RPC returned a different transaction hash (rebroadcast/discard)";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_NONCE_USED = "다른 거래가 이 nonce를 사용" / "Another transaction used this nonce";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_SEND_FAILED = "전송 실패 — 재전송하거나 폐기하세요" / "Send failed — rebroadcast or discard it";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        REC_SIGNED = "서명됨" / "Signed";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_SUCCEEDED = "성공" / "Succeeded";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_FAILED = "실패" / "Failed";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_DROPPED = "폐기됨" / "Discarded";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_REPLACED = "대체됨" / "Replaced";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_EXPIRED = "만료" / "Expired";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_REJECTED = "거부됨" / "Rejected";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_CONFLICTED = "충돌" / "Conflicted";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_evm::text` (the wallet's activity rows use it).
+        STATUS_STOPPED = "중단됨" / "Stopped";
     }
 }
 
@@ -2723,6 +2768,245 @@ pub const fn outcome_name(outcome: QueueOutcome) -> &'static str {
         QueueOutcome::PassphraseUnverified => "PassphraseUnverified",
         QueueOutcome::Shutdown => "Shutdown",
     }
+}
+
+// 2026-11-23 (spec/15 §11.4 S4d E0b): moved here unchanged from `ui::screens_evm` (wallet code in
+// a render file): the activity rows, the account and network labels and the send picker.
+
+impl Wallet {
+    /// An account row's name with its recovery phrase while the wallet has several.
+    pub(crate) fn evm_pref_title(&self, pref: crate::meta::EvmAccountPref, label: &str) -> String {
+        match pref {
+            crate::meta::EvmAccountPref::Index(_) => self.mnemonic_tagged(label, None),
+            crate::meta::EvmAccountPref::Mnemonic(id, _) => self.mnemonic_tagged(label, Some(id)),
+            crate::meta::EvmAccountPref::Record(_) | crate::meta::EvmAccountPref::Hardware(_) => {
+                label.to_owned()
+            }
+        }
+    }
+
+    fn account_label(&self, address: &str) -> String {
+        self.account_rows()
+            .into_iter()
+            .find(|(_, _, shown, _)| shown.eq_ignore_ascii_case(address))
+            .map_or_else(
+                || address.to_owned(),
+                |(pref, label, _, _)| self.evm_pref_title(pref, &label),
+            )
+    }
+
+    pub(crate) fn record_status(&self, record: &EvmRecord) -> String {
+        let lang = self.settings.language;
+        let note = self.evm.notes.get(&record.tx_hash).copied();
+        match record.state {
+            TxState::Signed => match note {
+                Some(BroadcastOutcome::HashMismatch) => text::REC_HASH_MISMATCH,
+                Some(BroadcastOutcome::Rejected { known: false }) => text::REC_SEND_FAILED,
+                Some(BroadcastOutcome::Unconfirmed { .. }) | None => text::REC_CONFIRMING,
+                _ => text::REC_SIGNED,
+            }
+            .get(lang)
+            .to_owned(),
+            TxState::Broadcast => text::REC_BROADCAST.get(lang).to_owned(),
+            // One confirmation is final; `Included` only remains in records of older builds
+            // until the next tracking round finalizes them.
+            TxState::Included | TxState::Finalized => {
+                if record.receipt_status == ReceiptStatus::Failure {
+                    text::REC_FINAL_FAILED
+                } else {
+                    text::REC_FINAL
+                }
+                .fill(lang, [&record.included_block_number.to_string()])
+            }
+            TxState::Dropped => {
+                if record.has_flag(yw_core::journal::evm::FLAG_USER_DISCARDED) {
+                    text::STATUS_DROPPED.get(lang).to_owned()
+                } else {
+                    text::REC_NONCE_USED.get(lang).to_owned()
+                }
+            }
+            TxState::Replaced => text::STATUS_REPLACED.get(lang).to_owned(),
+        }
+    }
+
+    /// Activity rows of the active chain: journal groups first, then meta activity.
+    /// 2026-11-22 (S4d E0c): a row carries its time as `time_unix_ms` and the render code
+    /// (`evm_main_sections`) prints it as local time; before, `head` began with
+    /// `format_local` of it (plan D-30: no wallet fn formats a local time).
+    #[must_use]
+    pub fn activity_rows(&self) -> Vec<ActivityRowView> {
+        let chain_id = self.settings.evm_chain_id;
+        let mut rows = Vec::new();
+        let records: Vec<EvmRecord> = self
+            .evm
+            .records()
+            .iter()
+            .filter(|record| record.chain_id == chain_id)
+            .cloned()
+            .collect();
+        let mut seen: Vec<String> = Vec::new();
+        let mut grouped = groups(&records);
+        grouped.sort_by_key(|(_, members)| {
+            std::cmp::Reverse(members.iter().map(|record| record.created_unix_ms).max())
+        });
+        for (key, members) in grouped {
+            let open = members.iter().any(|record| !record.is_terminal());
+            let shown = members
+                .iter()
+                .find(|record| matches!(record.state, TxState::Included | TxState::Finalized))
+                .or_else(|| members.iter().max_by_key(|record| record.created_unix_ms))
+                .copied();
+            let Some(shown) = shown else { continue };
+            let hash = hash_text(&shown.tx_hash);
+            for member in &members {
+                seen.push(hash_text(&member.tx_hash));
+            }
+            let manual = members.iter().any(|record| {
+                record.state == TxState::Signed
+                    && matches!(
+                        self.evm.notes.get(&record.tx_hash),
+                        Some(
+                            BroadcastOutcome::Rejected { known: false }
+                                | BroadcastOutcome::HashMismatch
+                        )
+                    )
+            });
+            // The nonce only matters while the group is open (speed-up, cancel).
+            let nonce = if open {
+                format!(" · nonce {}", key.nonce)
+            } else {
+                String::new()
+            };
+            rows.push(ActivityRowView {
+                time_unix_ms: shown.created_unix_ms,
+                head: format!(
+                    "{} · {}{nonce}",
+                    self.account_label(&shown.account.to_lower_hex()),
+                    shown.label,
+                ),
+                status: self.record_status(shown),
+                hash,
+                open: open.then_some(key),
+                manual,
+                counterparty: shown.tx().and_then(|tx| tx_recipients(&tx).last().copied()),
+            });
+        }
+        if let Some(meta) = self.meta.as_ref() {
+            let network = NetworkId::Eip155(chain_id).to_string();
+            for entry in meta.activity_of(&network) {
+                if seen.contains(&entry.tx_id) {
+                    continue;
+                }
+                rows.push(self.meta_activity_row(&entry, chain_id));
+            }
+        }
+        rows.truncate(crate::app_evm::MAX_ACTIVITY_ROWS);
+        rows
+    }
+
+    fn meta_activity_row(&self, entry: &ActivityEntry, chain_id: u64) -> ActivityRowView {
+        let lang = self.settings.language;
+        let amount = U256::from_decimal_str(&entry.amount).unwrap_or(U256::ZERO);
+        let mut value = if entry.asset == "native" {
+            self.native_text(chain_id, &amount)
+        } else {
+            let token = parse_address(&entry.asset).ok();
+            token
+                .and_then(|token| {
+                    self.chain_tokens(chain_id)
+                        .into_iter()
+                        .find(|(address, ..)| *address == token)
+                })
+                .map_or_else(
+                    || text::RAW_UNITS.fill(lang, [&amount.to_decimal_string()]),
+                    |(_, symbol, decimals, _)| format_amount(&amount, decimals, &symbol),
+                )
+        };
+        // History stays visible for hidden tokens, tagged so the row is not a surprise.
+        if parse_address(&entry.asset).is_ok_and(|token| self.evm_token_hidden(chain_id, &token)) {
+            value.push_str(text::HIDDEN_TOKEN_TAG.get(lang));
+        }
+        ActivityRowView {
+            time_unix_ms: entry.time_unix_ms,
+            head: format!(
+                "{} · {} · {value}",
+                self.account_label(&entry.account),
+                entry.title
+            ),
+            status: activity_status(lang, &entry.status).to_owned(),
+            hash: entry.tx_id.clone(),
+            open: None,
+            manual: false,
+            counterparty: parse_address(&entry.counterparty).ok(),
+        }
+    }
+}
+
+impl Wallet {
+    /// Network radios with "(차단됨)".
+    #[must_use]
+    pub fn network_label(&self, chain_id: u64) -> String {
+        let mut name = self.network_name(NetworkId::Eip155(chain_id));
+        if self
+            .settings
+            .evm_chains
+            .iter()
+            .any(|def| def.chain_id == chain_id)
+        {
+            name.push_str(" · ");
+            name.push_str(&custom_chain_badge(self.settings.language, chain_id));
+        }
+        if self.evm.blocked(chain_id).is_some() {
+            name.push_str(text::BLOCKED_TAG.get(self.settings.language));
+        }
+        name
+    }
+}
+
+impl Wallet {
+    /// The picker rows in display order: book entries and own accounts matching the filter of
+    /// the rows on screen (`SendForm::picker_filter`), at most [`crate::app_evm::SEND_PICK_ROWS`].
+    pub(crate) fn picker_known(&self) -> Vec<crate::flow::evm::form::KnownAddress> {
+        let filter = self.evm.send.picker_filter.trim().to_ascii_lowercase();
+        self.known_addresses()
+            .into_iter()
+            .filter(|entry| !entry.history)
+            .filter(|entry| {
+                filter.is_empty()
+                    || entry
+                        .address
+                        .to_lower_hex()
+                        .contains(filter.trim_start_matches("0x"))
+                    || entry.name.to_ascii_lowercase().contains(&filter)
+            })
+            .take(usize::from(crate::app_evm::SEND_PICK_ROWS))
+            .collect()
+    }
+
+    /// The picker entries in display order (for the command handler): the same rows as drawn,
+    /// so a click picks the row it was drawn for even when the recipient text changed since.
+    #[must_use]
+    pub fn picker_entries(&self) -> Vec<Address> {
+        self.picker_known()
+            .into_iter()
+            .map(|entry| entry.address)
+            .collect()
+    }
+}
+
+/// Status words of activity rows.
+fn activity_status(lang: Lang, word: &str) -> &'static str {
+    match word {
+        "succeeded" => text::STATUS_SUCCEEDED,
+        "failed" => text::STATUS_FAILED,
+        "dropped" => text::STATUS_DROPPED,
+        "replaced" => text::STATUS_REPLACED,
+        "expired" => text::STATUS_EXPIRED,
+        "rejected" => text::STATUS_REJECTED,
+        "conflicted" => text::STATUS_CONFLICTED,
+        _ => text::STATUS_STOPPED,
+    }
+    .get(lang)
 }
 
 // 2026-11-22 (S4d E0c): `pub(crate)` so that a test of `app::tests` (this file's App-building

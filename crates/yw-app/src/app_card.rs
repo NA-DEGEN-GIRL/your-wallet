@@ -208,6 +208,12 @@ pub mod text {
             / "The YubiKey step time (120 s) ran out, so nothing was signed.";
         STEP_EXPIRED_CANCELLED = "YubiKey 단계 시간(120초)이 지나 서명을 취소했습니다."
             / "The YubiKey step time (120 s) ran out, so signing was cancelled.";
+        /// The source of a `YubiKey` account: {0} the cards holding its key (names, `#serial`
+        /// when unnamed). 2026-11-23 (S4d E0b): was `ui::screens_accounts::text`.
+        SOURCE_CARDS(1) = "YubiKey: {0}" / "YubiKey: {0}";
+        /// After the first two cards: {0} how many more. 2026-11-23 (S4d E0b): was
+        /// `ui::screens_accounts::text`.
+        MORE_CARDS(1) = " +{0}" / " +{0}";
     }
 }
 
@@ -1675,6 +1681,41 @@ impl Wallet {
         }
         self.card_notice_clear();
         self.card.clear();
+    }
+}
+
+/// Holder cards named in a source before ` +N`. 2026-11-23 (spec/15 §11.4 S4d E0b): moved here
+/// with `Wallet::card_source` from `ui::screens_accounts` (unchanged).
+const SHOWN_CARDS: usize = 2;
+
+impl Wallet {
+    /// The source of a `YubiKey` account (2026-11-15): `YubiKey: 메인·백업` — the cards holding
+    /// the key of `role` by name (`#serial` when unnamed; the serial stays in Settings and the
+    /// PIN window, the item is kept short), more than two as the first two + ` +N`. `YubiKey`
+    /// alone when no card record holds it (or the role is not known).
+    #[must_use]
+    pub fn card_source(&self, role: Option<KeyRole>) -> String {
+        let lang = self.settings.language;
+        let serials = role.map_or_else(Vec::new, |role| {
+            crate::yubikey::holders(&self.card.records, role)
+        });
+        if serials.is_empty() {
+            return "YubiKey".to_owned();
+        }
+        let mut cards = serials
+            .iter()
+            .take(SHOWN_CARDS)
+            .map(|serial| crate::yubikey::card_short_label(self.card_names(), *serial))
+            .collect::<Vec<_>>()
+            .join("·");
+        if let Some(more) = serials
+            .len()
+            .checked_sub(SHOWN_CARDS)
+            .filter(|more| *more > 0)
+        {
+            cards.push_str(&text::MORE_CARDS.fill(lang, [&more.to_string()]));
+        }
+        text::SOURCE_CARDS.fill(lang, [&cards])
     }
 }
 

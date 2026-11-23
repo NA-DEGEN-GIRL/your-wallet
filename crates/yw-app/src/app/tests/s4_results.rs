@@ -1101,7 +1101,9 @@ const KINDS: [Kind; 4] = [
             "shortcut_target",
             "tab_shortcut_target",
             "take_display_secret",
-            "with_clock",
+            // 2026-11-23 (S4d E0b): `Wallet::new` builds the session field (was `with_clock`'s
+            // `Wallet` literal).
+            "new",
             "yk_connect_pin_submit",
             "yk_pin_job",
             "yk_show_counters",
@@ -1259,14 +1261,14 @@ const READS_NO_ANSWER: [&str; 9] = [
     // `take_cred` (core, RPC, LLM and EVM settings handlers) and `take_clip`/`take_image` (the
     // `WalletConnect` pair press) are press handlers, none reached from `on_approval_opened`,
     // `start_prepare` or an `AfterOpen` step.
-    "approval app.rs on_cmd on_press 1",
+    "approval app/wallet.rs on_cmd on_press 1",
     // `sync_browser` opens only at the first sync of an unlocked dApp view (`browser.unlocked`
     // false → true: `after_browser_unlock` → `show_next_approval`); after it, `refresh` emits
     // `Effect::Render`, which reads nothing here: queued behind the open, it is applied after the
     // answer, laying out the state after it. That first sync is the meta load's screen change or
     // repaint (`KeyOutcome::Meta(Ok)`, which hands its later chain hooks to the answer:
     // `AfterOpen::AfterMeta`) or a backup confirmation's last step (`set_screen(Screen::Done)`).
-    "approval app.rs refresh sync_browser 1",
+    "approval app/wallet.rs refresh sync_browser 1",
     // `revoke_waiting` opens the next window only when it ends the shown request (a signing
     // request of that origin and family) and hands its card check to the open; then the grants
     // are written to meta (the answer reads no grant or site of meta), `site.disconnected` is
@@ -1305,13 +1307,13 @@ const ENDS_ON_ITS_PATH: [&str; 3] = [
     // `None` (`let Some(outcome) = … else { return; }`), so its later session reads never run
     // after that open.
     // 2026-11-20 (S4 P10b): `on_key_result`'s handler is `key_result` (the entry drains).
-    "secret app.rs key_result card_filter 1",
+    "secret app/wallet.rs key_result card_filter 1",
     // 2026-11-20 (S4 P10a; was a `PENDING_P10` line): `browser_lock_begin` sets
     // `browser.locking` before its `sync_browser` (and returns before it without a browser), so
     // `vault_view` is never `Unlocked` or `PassphraseUnverified` there and the unlock arm
     // (`after_browser_unlock`, the only open in `sync_browser`) never runs. (2026-11-21, S4 W3a:
     // in the lock's first half `lock_steps`; before, in `lock`.)
-    "approval app.rs lock_steps browser_lock_begin 1",
+    "approval app/wallet.rs lock_steps browser_lock_begin 1",
     // 2026-11-20 (S4 P10a; was a `PENDING_P10` line): `btc_url_changed`'s controller call
     // (`BtcUi::url_changed`) returns one `BtcAction::Rpc` (the session reset), which `btc_apply`
     // sends; only `BtcAction::Enqueue` and `SetMeta`'s grant removal open an approval window.
@@ -1649,6 +1651,21 @@ fn form_steps_wait_for_the_shown_window() {
 // ---- The outbox's source checks (2026-11-20, S4 P10b; plan §4.4 S4, critique A-14 S9, A-16 S10) --
 
 /// The scanned source `file` (`crate/src/path`); fails when it was not scanned (A-20).
+/// `app.rs` and its wallet half `app/wallet.rs` as one source (2026-11-23, S4d E0b: split there),
+/// for the checks that find a fn or the `Wallet` fields of either; it keeps `app.rs`'s name.
+fn app_and_wallet(files: &[Src]) -> Src {
+    let app = src_of(files, "yw-app/src/app.rs");
+    let wallet = src_of(files, "yw-app/src/app/wallet.rs");
+    Src::new(
+        "yw-app/src/app.rs".to_owned(),
+        format!(
+            "{}
+{}",
+            app.code, wallet.code
+        ),
+    )
+}
+
 fn src_of<'a>(files: &'a [Src], file: &str) -> &'a Src {
     let found = files.iter().find(|src| src.file == file);
     assert!(found.is_some(), "{file} not scanned");
@@ -1734,7 +1751,10 @@ fn effects_are_never_posted() {
             "app_effects.rs names {banned}"
         );
     }
-    let emit = fn_bodies(effects, "emit");
+    // 2026-11-23 (S4d E0b): `emit` and `next_effect` are in the wallet half `app/wallet.rs`
+    // (were `app_effects.rs`'s `impl Wallet` block).
+    let wallet_src = src_of(&files, "yw-app/src/app/wallet.rs");
+    let emit = fn_bodies(wallet_src, "emit");
     assert_eq!(emit.len(), 1, "one emit");
     assert!(
         emit[0].contains("self.outbox.push_back(effect);")
@@ -1747,7 +1767,7 @@ fn effects_are_never_posted() {
     // 2026-11-21 (S4 W3, plan §3.4): the queue is the wallet's — `emit` and `next_effect` are
     // `impl Wallet` fns, and the drain takes one effect at a time through `next_effect` (before,
     // `while let Some(effect) = self.outbox.pop_front()` on `App`'s queue).
-    let next = fn_bodies(effects, "next_effect");
+    let next = fn_bodies(wallet_src, "next_effect");
     assert_eq!(next.len(), 1, "one next_effect");
     let next_flat: String = next[0].split_whitespace().collect();
     assert!(
@@ -1755,31 +1775,28 @@ fn effects_are_never_posted() {
         "next_effect takes the oldest effect: {}",
         next[0]
     );
-    let wallet_impl = effects.code.find("impl Wallet {");
-    let app_impl = effects.code.find("impl App {");
-    assert!(
-        wallet_impl.is_some() && app_impl.is_some(),
-        "an impl Wallet and an impl App"
-    );
-    let (wallet_at, app_at) = (
-        wallet_impl.unwrap_or_default(),
-        app_impl.unwrap_or_default(),
-    );
-    let wallet_end = close_of(effects.code.as_bytes(), wallet_at + "impl Wallet ".len());
+    // 2026-11-23 (S4d E0b): each is inside an `impl Wallet` block of `app/wallet.rs`, and
+    // `app_effects.rs` has no `impl Wallet` block left (before, both were checked in its own
+    // `impl Wallet` block).
     for (name, body) in [("emit", emit[0]), ("next_effect", next[0])] {
-        let at = effects.code.find(body).unwrap_or_default();
-        assert!(
-            wallet_at < at && at < wallet_end,
-            "{name} is an impl Wallet fn"
-        );
+        let at = wallet_src.code.find(body).unwrap_or_default();
+        let block = wallet_src.code[..at].rfind("impl Wallet {");
+        assert!(block.is_some(), "{name} is an impl Wallet fn");
+        let block = block.unwrap_or_default();
+        let end = close_of(wallet_src.code.as_bytes(), block + "impl Wallet ".len());
+        assert!(block < at && at < end, "{name} is an impl Wallet fn");
     }
+    assert!(
+        !effects.code.contains("impl Wallet {"),
+        "app_effects.rs holds no wallet code"
+    );
+    let app_impl = effects.code.find("impl App {");
+    assert!(app_impl.is_some(), "an impl App");
+    let app_at = app_impl.unwrap_or_default();
     let drain = fn_bodies(effects, "drain");
     assert_eq!(drain.len(), 1, "one drain");
     let drain_at = effects.code.find(drain[0]).unwrap_or_default();
-    assert!(
-        app_at < drain_at && !(wallet_at < drain_at && drain_at < wallet_end),
-        "drain is the shell's (impl App)"
-    );
+    assert!(app_at < drain_at, "drain is the shell's (impl App)");
     assert!(
         drain[0].contains("while let Some(effect) = self.wallet.next_effect()")
             && !drain[0].contains("outbox.pop_front()")
@@ -2108,7 +2125,8 @@ const EXECUTOR_TARGETS: [&str; 24] = [
     "overlay_closed_in_place",
 ];
 
-/// The wallet's fields: the names declared in `pub struct Wallet { … }` of `app.rs`.
+/// The wallet's fields: the names declared in `pub struct Wallet { … }` of `app.rs` (2026-11-23,
+/// S4d E0b: of its wallet half `app/wallet.rs`; callers pass [`app_and_wallet`]).
 fn wallet_fields(app: &Src) -> BTreeSet<String> {
     let start = app.code.find("pub struct Wallet {");
     assert!(start.is_some(), "pub struct Wallet found");
@@ -2118,6 +2136,8 @@ fn wallet_fields(app: &Src) -> BTreeSet<String> {
     for line in body.lines() {
         let line = line.trim();
         let line = line.strip_prefix("pub(crate) ").unwrap_or(line);
+        // 2026-11-23 (S4d E0b): the private fields are `pub(super)` in `app::wallet`.
+        let line = line.strip_prefix("pub(super) ").unwrap_or(line);
         if let Some((name, _)) = line.split_once(':')
             && !name.is_empty()
             && name.bytes().all(is_ident)
@@ -2509,7 +2529,7 @@ fn the_executor_writes_no_wallet_state() {
         .into_iter()
         .filter(|src| src.file.starts_with("yw-app/"))
         .collect();
-    let app = src_of(&files, "yw-app/src/app.rs");
+    let app = &app_and_wallet(&files);
     let fields = wallet_fields(app);
     for field in [
         "mode",
@@ -3086,7 +3106,7 @@ fn the_shell_writes_wallet_state_only_through_entries() {
         .into_iter()
         .filter(|src| src.file.starts_with("yw-app/"))
         .collect();
-    let app = src_of(&files, "yw-app/src/app.rs");
+    let app = &app_and_wallet(&files);
     assert!(
         app.code.contains("impl core::ops::Deref for App {"),
         "App derefs to the wallet"
@@ -3470,7 +3490,7 @@ fn wallet_chains_on_made_up_code() {
 /// `toggle_ai_panel` (`Step::AiExpand`), `hold_shown_ai_for_ack` (the AI body's paint) and the
 /// start steps `install_commit_read`, `wer_unprotected_noted`, `browser_attached`,
 /// `workers_attached`. Each is called from the shell only as [`SHELL_WALLET_CALLS`] lists.
-static WALLET_FNS: [(&str, &str); 979] = [
+static WALLET_FNS: [(&str, &str); 980] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -4450,6 +4470,9 @@ static WALLET_FNS: [(&str, &str); 979] = [
     ("W15", "wer_unprotected_noted"),
     ("W15", "browser_attached"),
     ("W15", "workers_attached"),
+    // 2026-11-23 (S4d E0b): the wallet's constructor (the field initializers of
+    // `App::with_clock`'s `Wallet` literal).
+    ("E0b", "new"),
 ];
 
 /// The shell's composition and entries, which no wallet fn calls (2026-11-21, S4 W3): the
@@ -4476,6 +4499,8 @@ fn shell_fields(app: &Src) -> BTreeSet<String> {
     for line in body.lines() {
         let line = line.trim();
         let line = line.strip_prefix("pub(crate) ").unwrap_or(line);
+        // 2026-11-23 (S4d E0b): the private fields are `pub(super)` in `app::wallet`.
+        let line = line.strip_prefix("pub(super) ").unwrap_or(line);
         if let Some((name, _)) = line.split_once(':')
             && !name.is_empty()
             && name.bytes().all(is_ident)
@@ -4865,7 +4890,9 @@ fn wallet_fns_name_no_shell() {
     let shell_fns = shell_closure(&fns, seed);
     let mut errors = Vec::new();
     for &(row, name) in &WALLET_FNS {
-        if fns.contains_key(name) {
+        // 2026-11-23 (S4d E0b): `new` is both types' constructor (`App::new`, `Wallet::new`),
+        // two fns of one name; any other name in both is a fn not flipped.
+        if fns.contains_key(name) && name != "new" {
             errors.push(format!("{row} {name}: still a fn of impl App"));
         }
         let Some(bodies) = wallet.get(name) else {
@@ -5112,7 +5139,7 @@ fn the_only_consume_is_wallet_code() {
 #[test]
 fn the_secret_form_action_splits_at_on_secret_action() {
     let files = production_code();
-    let app = src_of(&files, "yw-app/src/app.rs");
+    let app = &app_and_wallet(&files);
     let shell = fn_bodies(app, "apply_form_action");
     assert_eq!(shell.len(), 1, "one apply_form_action");
     let wallet = fn_bodies(app, "on_secret_action");
@@ -5192,10 +5219,11 @@ fn the_secret_form_action_splits_at_on_secret_action() {
         ["yw-app/src/app.rs:apply_form_action"]
     );
     // 2026-11-22 (S4c W12 review): the submission and the purpose enter only through it.
+    // 2026-11-23 (S4d E0b): `on_secret_action` is in the wallet half `app/wallet.rs`.
     for purpose_step in ["on_submit", "on_cancel"] {
         assert_eq!(
             callers_of(purpose_step),
-            ["yw-app/src/app.rs:on_secret_action"],
+            ["yw-app/src/app/wallet.rs:on_secret_action"],
             "{purpose_step} has a production caller other than on_secret_action"
         );
     }
@@ -5313,8 +5341,15 @@ const RPC_IMPORT_WALLET_FNS: [&str; 6] = [
 #[test]
 fn the_rpc_import_plan_enters_the_wallet_typed() {
     let files = production_code();
-    let app = src_of(&files, "yw-app/src/app.rs");
+    let app = &app_and_wallet(&files);
     let import = src_of(&files, "yw-app/src/app_rpc_import.rs");
+    // 2026-11-23 (S4d E0b): the wallet's halves are in `app_rpc_plan.rs` (were `app_rpc_import.rs`'s
+    // `impl Wallet` blocks), which also holds the plan and its checks.
+    let plan = src_of(&files, "yw-app/src/app_rpc_plan.rs");
+    assert!(
+        !import.code.contains("impl Wallet {"),
+        "app_rpc_import.rs holds no wallet code"
+    );
     let wallet_state = wallet_fields(app);
     assert!(
         wallet_state.contains("rpc_import"),
@@ -5340,7 +5375,7 @@ fn the_rpc_import_plan_enters_the_wallet_typed() {
             WALLET_FNS.contains(&("W13", wallet_fn)),
             "{wallet_fn} is W13 wallet code"
         );
-        let bodies = fn_bodies(import, wallet_fn);
+        let bodies = fn_bodies(plan, wallet_fn);
         assert_eq!(bodies.len(), 1, "one {wallet_fn}");
         let text = normalized(bodies[0]);
         for file_step in [
@@ -5360,7 +5395,7 @@ fn the_rpc_import_plan_enters_the_wallet_typed() {
             assert!(!calls.contains(shell_fn), "{wallet_fn} calls {shell_fn}");
         }
     }
-    finish_rpc_import_keeps_its_order(import);
+    finish_rpc_import_keeps_its_order(plan);
     let callers_of = |wanted: &str| {
         files
             .iter()
@@ -5682,7 +5717,7 @@ fn the_lock_composition_drains_only_for_suspend() {
         .into_iter()
         .filter(|src| src.file.starts_with("yw-app/"))
         .collect();
-    let app = src_of(&files, "yw-app/src/app.rs");
+    let app = &app_and_wallet(&files);
     let one = |name: &str| -> String {
         let bodies = fn_bodies(app, name);
         assert_eq!(bodies.len(), 1, "one fn {name} in app.rs");
@@ -5774,7 +5809,7 @@ fn the_lock_composition_drains_only_for_suspend() {
 /// 2026-11-22 (S4c W3b review): it also pins the order of the statements inside each half (the
 /// lock count read before the wallet's lock above all); before, only the composition's order.
 fn the_shutdown_composition_runs_from_the_shell(files: &[Src]) {
-    let app = src_of(files, "yw-app/src/app.rs");
+    let app = &app_and_wallet(files);
     let flat = |name: &str| -> String {
         let bodies = fn_bodies(app, name);
         assert_eq!(bodies.len(), 1, "one fn {name} in app.rs");
@@ -5915,7 +5950,7 @@ fn the_main_hidden_mirror_changes_where_the_window_does() {
         .into_iter()
         .filter(|src| src.file.starts_with("yw-app/"))
         .collect();
-    let app = src_of(&files, "yw-app/src/app.rs");
+    let app = &app_and_wallet(&files);
     let named = |src: &Src, pattern: &str| -> Vec<String> {
         fns_naming(src, pattern)
             .into_iter()
@@ -6057,7 +6092,12 @@ fn the_main_hidden_mirror_follows_its_cmd_and_the_sync() {
 /// covers its flow fns), so S11 leaves them out (preflight critic C10). A moving file's non-test
 /// submodules move with it and are listed too (`app_btc/text.rs` since 2026-11-22, S4d E0c
 /// review: before, it was left out; [`moving_files_name_no_shell`] now fails on an unlisted one).
-const MOVING_FILES: [&str; 31] = [
+const MOVING_FILES: [&str; 34] = [
+    // 2026-11-23 (S4d E0b): the wallet half of `app.rs`, the removal block's wallet half (was
+    // `ui::removed`'s) and the `rpc.json` import's wallet half (was part of `app_rpc_import`).
+    "app/wallet.rs",
+    "app_removed.rs",
+    "app_rpc_plan.rs",
     "app_book.rs",
     "app_browser.rs",
     "app_btc.rs",
@@ -6095,10 +6135,15 @@ const MOVING_FILES: [&str; 31] = [
 /// yw-app `ui::secret` until E1, because the `mutable` frozen helper `app/secret_seam.rs`
 /// (`impl super::App`, `test_submit`) names that path and E1 re-records it anyway (S4d E0a,
 /// preflight critic C2 i).
-const MOVING_FILE_EXCEPTIONS: [(&str, &str); 1] = [(
-    "yw-app/src/secret_session.rs",
-    "crate::ui::secret::Submission",
-)];
+/// 2026-11-23 (S4d E0b): and the wallet half `app/wallet.rs`, which names the same type
+/// (`on_submit`) until E1 moves `Submission` with it.
+const MOVING_FILE_EXCEPTIONS: [(&str, &str); 2] = [
+    (
+        "yw-app/src/secret_session.rs",
+        "crate::ui::secret::Submission",
+    ),
+    ("yw-app/src/app/wallet.rs", "crate::ui::secret::Submission"),
+];
 
 /// The `crate::ui` names of the S2 facade (yw-engine modules re-exported in `ui/mod.rs` until
 /// S4d E3), which a moving file may still name: they are engine code.
@@ -6353,9 +6398,12 @@ fn child_files(code: &str, file: &str) -> Vec<String> {
 /// before, they got past it, though no moving file named them; the plan's E0b, which E0c absorbed: no
 /// wallet fn used them, and the shell items that did, `Launcher` and the `WalletConnect`
 /// platform, moved to `crate::explorer_launcher` and `crate::wc_platform`). The listed exceptions
-/// ([`MOVING_FILE_EXCEPTIONS`]) must still be there (a stale one fails). The type name `App` and
-/// the `#[cfg(test)]` seam calls join at S4d E0b (critic C10); E1 removes the check, because
-/// from then on the compiler enforces it (yw-engine does not depend on yw-app or yw-win).
+/// ([`MOVING_FILE_EXCEPTIONS`]) must still be there (a stale one fails). Since 2026-11-23 (S4d
+/// E0b, critic C10) also no type name `App` ([`names_the_app_type`]) outside test items and no
+/// `secret_seam` anywhere, test items included (the `#[cfg(test)]` calls into the yw-app seam
+/// became `yw_engine::probe` notes), and the files of the wallet half of `app.rs` and of the
+/// removal block and the `rpc.json` import are listed. E1 removes the check, because from then
+/// on the compiler enforces it (yw-engine does not depend on yw-app or yw-win).
 #[test]
 fn moving_files_name_no_shell() {
     let files = production_code();
@@ -6389,9 +6437,75 @@ fn moving_files_name_no_shell() {
         if !names.is_empty() {
             errors.push(format!("{path} names {names:?}"));
         }
+        if names_the_shell_type(&code) {
+            errors.push(format!("{path} names the type App"));
+        }
+        let with_tests = code_only(
+            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(name))
+                .unwrap(),
+        );
+        if has_word(&with_tests, "secret_seam") {
+            errors.push(format!("{path} names the test seam secret_seam"));
+        }
     }
     assert_eq!(seen, MOVING_FILES.len(), "every moving file found");
     assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+/// Whether `code` names the shell's type `App` (2026-11-23, S4d E0b; S11): `crate::app::App`,
+/// `impl App`, or `App` after `&`, `&mut `, `<`, `:` or `(` (a reference, a generic, a binding's
+/// or a parameter's type). An enum's variant `App` (`App,`, `App(…)` in its definition,
+/// `QueueSource::App`) is not the type; [`names_app`] is the stricter check of the `impl Wallet`
+/// fns.
+fn names_the_shell_type(code: &str) -> bool {
+    let bytes = code.as_bytes();
+    code.match_indices("App").any(|(at, word)| {
+        let alone = (at == 0 || !is_ident(bytes[at - 1]))
+            && bytes.get(at + word.len()).is_none_or(|&b| !is_ident(b));
+        if !alone {
+            return false;
+        }
+        let before = code[..at].trim_end();
+        before.ends_with("crate::app::")
+            || before.ends_with("impl")
+            || before.ends_with('&')
+            || before.ends_with("&mut")
+            || before.ends_with('<')
+            || before.ends_with(':') && !before.ends_with("::")
+            || before.ends_with('(') && !before.ends_with("App(")
+    })
+}
+
+/// [`names_the_shell_type`] on made-up code (A-20, 2026-11-23 S4d E0b).
+#[test]
+fn names_the_shell_type_on_made_up_code() {
+    for code in [
+        "use crate::app::App;",
+        "impl App {",
+        "fn f(app: &App) {}",
+        "fn f(app: &mut App) {}",
+        "let x: Option<App> = None;",
+        "let app: App = todo;",
+        "fn f(_: Box<dyn FnOnce(App)>) {}",
+    ] {
+        assert!(names_the_shell_type(code), "{code}");
+    }
+    for code in [
+        "enum S {
+    App,
+    Site,
+}",
+        "enum Q {
+    App(Box<AppApproval>),
+}",
+        "QueueSource::App",
+        "Self::App => None,",
+        "SignWaiter::App => true,",
+        "AppMode::Unlocked",
+        "Apple",
+    ] {
+        assert!(!names_the_shell_type(code), "{code}");
+    }
 }
 
 /// [`shell_names`] on made-up code (A-20): it finds every kind it checks and lets the facade,
@@ -6519,5 +6633,69 @@ fn super_paths_and_whole_modules_on_made_up_code() {
             "app_x.rs"
         ),
         ["app_x/text.rs", "app_x/connect.rs", "app_x/a_b.rs"]
+    );
+}
+
+/// Source check `the_probe_is_installed_only_by_tests` (2026-11-23, S4d E0b, preflight O-4): the
+/// wallet code's probe notes (`yw_engine::probe`) reach a sink only in tests. The only install of
+/// a sink in yw-app's and yw-engine's sources, test files included, is the yw-app test seam
+/// `app/secret_seam.rs` (a `cfg(test)` module) besides the definition in `probe.rs`, and the
+/// notes are the two the secret characterization logs. Finds what it checks (A-20).
+#[test]
+fn the_probe_is_installed_only_by_tests() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut installs = Vec::new();
+    let mut notes = Vec::new();
+    let mut scanned = 0_usize;
+    for krate in ["yw-app", "yw-engine"] {
+        let root = crates.join(krate);
+        let mut stack = vec![root.join("src"), root.join("tests")];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    scanned += 1;
+                    let rel = path
+                        .strip_prefix(&crates)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let code = code_only(&std::fs::read_to_string(&path).unwrap());
+                    for (at, _) in code.match_indices("install(") {
+                        let before = code[..at].trim_end();
+                        if before.ends_with("probe::")
+                            || before.ends_with("fn") && rel.ends_with("probe.rs")
+                        {
+                            installs.push(rel.clone());
+                        }
+                    }
+                    notes.extend(code.match_indices("probe::note(").map(|_| rel.clone()));
+                }
+            }
+        }
+    }
+    assert!(scanned > 100, "scanned {scanned} files");
+    installs.sort_unstable();
+    assert_eq!(
+        installs,
+        ["yw-app/src/app/secret_seam.rs", "yw-engine/src/probe.rs"],
+        "who installs a probe sink"
+    );
+    notes.sort_unstable();
+    assert_eq!(
+        notes,
+        ["yw-app/src/app/wallet.rs", "yw-app/src/app_approval.rs"],
+        "who notes a probe"
+    );
+    let seam =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs")).unwrap();
+    assert!(
+        seam.contains("#[cfg(test)]\npub(crate) mod secret_seam;"),
+        "the seam module is cfg(test)"
     );
 }

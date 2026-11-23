@@ -18,27 +18,12 @@
 //! `SOURCE_EVM_KEY` moved to `yw_engine::screen` unchanged (the wallet's Bitcoin and hidden-account
 //! code names them); the card is drawn here.
 
-use crate::app::{App, Wallet};
+use crate::app::App;
 use crate::app_hidden::Family;
 use crate::ui::main_window::{Ctl, Item};
 use crate::ui::screens_links::PickerEntry;
-use yw_core::yubikey::plan::KeyRole;
 use yw_engine::screen::AccountSource;
 use yw_engine::screen::text::{SOURCE_EVM_KEY, SOURCE_IMPORTED, SOURCE_WORDS};
-
-/// The fixed texts of the account card (spec/14).
-pub mod text {
-    yw_core::texts! {
-        /// The source of a `YubiKey` account: {0} the cards holding its key (names, `#serial`
-        /// when unnamed).
-        SOURCE_CARDS(1) = "YubiKey: {0}" / "YubiKey: {0}";
-        /// After the first two cards: {0} how many more.
-        MORE_CARDS(1) = " +{0}" / " +{0}";
-    }
-}
-
-/// Holder cards named in a source before ` +N`.
-const SHOWN_CARDS: usize = 2;
 
 /// One account of the card's drop-down.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,37 +183,6 @@ impl App {
                 )
             })
             .collect()
-    }
-}
-
-impl Wallet {
-    /// The source of a `YubiKey` account (2026-11-15): `YubiKey: 메인·백업` — the cards holding
-    /// the key of `role` by name (`#serial` when unnamed; the serial stays in Settings and the
-    /// PIN window, the item is kept short), more than two as the first two + ` +N`. `YubiKey`
-    /// alone when no card record holds it (or the role is not known).
-    #[must_use]
-    pub fn card_source(&self, role: Option<KeyRole>) -> String {
-        let lang = self.settings.language;
-        let serials = role.map_or_else(Vec::new, |role| {
-            crate::yubikey::holders(&self.card.records, role)
-        });
-        if serials.is_empty() {
-            return "YubiKey".to_owned();
-        }
-        let mut cards = serials
-            .iter()
-            .take(SHOWN_CARDS)
-            .map(|serial| crate::yubikey::card_short_label(self.card_names(), *serial))
-            .collect::<Vec<_>>()
-            .join("·");
-        if let Some(more) = serials
-            .len()
-            .checked_sub(SHOWN_CARDS)
-            .filter(|more| *more > 0)
-        {
-            cards.push_str(&text::MORE_CARDS.fill(lang, [&more.to_string()]));
-        }
-        text::SOURCE_CARDS.fill(lang, [&cards])
     }
 }
 

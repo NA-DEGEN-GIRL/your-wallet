@@ -7,11 +7,8 @@
 use yw_core::journal::zec::ZecTxState;
 use yw_core::lang::Lang;
 use yw_core::zec::{ZecKeySource, ZecNetwork, format_zec, format_zec_and_zats};
-use yw_engine::cmd::{Row, ZecPress};
-use yw_engine::form::EditField;
 
-use crate::app::{App, AppMode, Wallet};
-use crate::app_zec::SourceChoice;
+use crate::app::{App, AppMode};
 use crate::settings::ZecIndexer;
 use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item};
@@ -338,178 +335,6 @@ fn grouped(address: &str) -> String {
     out
 }
 
-impl Wallet {
-    /// The `YubiKey` Zcash slot indices of the current network (`KeyRole::Zec`).
-    fn zec_hw_slots(&self) -> Vec<u32> {
-        let network = self.zec_network();
-        let mut out: Vec<u32> = Vec::new();
-        for slot in self.card.records.iter().flat_map(|record| &record.slots) {
-            if let yw_core::yubikey::plan::KeyRole::Zec {
-                network: held,
-                index,
-            } = slot.role
-                && held == network
-                && !out.contains(&index)
-            {
-                out.push(index);
-            }
-        }
-        out.truncate(usize::from(crate::app_zec::ZEC_HW_ROWS));
-        out
-    }
-
-    fn zec_evm_indices(&self) -> Vec<u32> {
-        self.meta.as_ref().map_or_else(Vec::new, |meta| {
-            meta.evm_accounts
-                .iter()
-                .filter(|account| !account.hidden)
-                .map(|account| account.index)
-                .take(usize::from(crate::app_zec::ZEC_SOURCE_EVM_ROWS))
-                .collect()
-        })
-    }
-
-    /// `EN_CHANGE` of a Zcash edit (2026-11-18, S3 C7: the field and its text from `Cmd::Edit`;
-    /// before, the control id and a read of the edit here); `false` when `field` is not one of
-    /// them.
-    pub(crate) fn on_zec_edit(&mut self, field: EditField, text: &str) -> bool {
-        match field {
-            EditField::ZecSendTo => {
-                text.clone_into(&mut self.zec.to_text);
-                self.zec_check_recipient();
-            }
-            EditField::ZecSendAmount => text.clone_into(&mut self.zec.amount_text),
-            _ => return false,
-        }
-        true
-    }
-
-    /// A Zcash press (2026-11-18, S3 C7: a `ZecPress`; before, the control id, and `false` for
-    /// an id that was not one of them).
-    pub(crate) fn on_zec(&mut self, press: ZecPress) {
-        match press {
-            ZecPress::TabZec => self.zec_select_tab(),
-            ZecPress::EnableMainnet => self.zec_enable(ZecNetwork::Mainnet),
-            ZecPress::EnableTestnet => self.zec_enable(ZecNetwork::Testnet),
-            ZecPress::Disable => self.zec_disable(),
-            ZecPress::Refresh => {
-                self.zec.error = None;
-                self.zec_refresh(false);
-                self.refresh();
-            }
-            ZecPress::CopyAddress | ZecPress::CardCopy => {
-                if let Some(account) = self.zec_account()
-                    && matches!(
-                        self.zec_hw_state(),
-                        crate::app_zec::ZecHwState::NotHardware
-                            | crate::app_zec::ZecHwState::Present
-                    )
-                {
-                    self.copy_address_text(&account.address());
-                }
-            }
-            ZecPress::QrToggle => {
-                self.zec.show_qr = !self.zec.show_qr;
-                self.refresh();
-            }
-            // A txid is public data (like Bitcoin's `해시 복사`): for checking on an explorer.
-            ZecPress::ResultCopy => {
-                if let Some(txid) = self.zec.sent {
-                    self.copy_text(&yw_core::zec::tx::txid_display(&txid));
-                }
-            }
-            ZecPress::SendMax => {
-                self.zec.send_max = !self.zec.send_max;
-                self.refresh();
-            }
-            ZecPress::SendAddrAck => {
-                self.zec.ack = !self.zec.ack && self.zec.checked.is_some();
-                self.refresh();
-            }
-            ZecPress::SendReview => {
-                // 2026-11-18 (S3 C7): the form state (`Wallet::form_text`); before, reads of the
-                // edits.
-                self.zec.to_text = self.form_text(EditField::ZecSendTo).unwrap_or_default();
-                self.zec.amount_text = self.form_text(EditField::ZecSendAmount).unwrap_or_default();
-                self.zec_check_recipient();
-                self.zec_review();
-            }
-            // The drop-down's items apply their source when picked (2026-11-15; a radio and
-            // `이 키 출처 사용` before). Picking the source in use changes nothing.
-            ZecPress::SourceStandard => {
-                self.zec.confirm_shared = false;
-                if self.zec_source_in_use(ZecKeySource::DEFAULT, None) {
-                    self.refresh();
-                } else {
-                    self.zec.source = SourceChoice::Standard;
-                    self.zec_apply_source();
-                }
-            }
-            ZecPress::SourceCurrent => self.refresh(),
-            ZecPress::SourceApply => self.zec_apply_source(),
-            ZecPress::SourceCancel => {
-                self.zec.confirm_shared = false;
-                self.zec.source = SourceChoice::Standard;
-                self.refresh();
-            }
-            ZecPress::IndexerNode => self.zec_set_indexer(ZecIndexer::Node),
-            ZecPress::IndexerBb => self.zec_set_indexer(ZecIndexer::BbRest),
-            ZecPress::Import => {
-                self.open_key_import(yw_core::keyimport::ImportChain::Zec);
-            }
-            ZecPress::Reveal | ZecPress::Remove => {
-                if let Some(record) = self.zec_selected_imported() {
-                    if press == ZecPress::Reveal {
-                        self.imported_reveal(*record.as_bytes());
-                    } else {
-                        self.imported_remove(*record.as_bytes());
-                    }
-                }
-            }
-            ZecPress::ActivityCopy(_)
-            | ZecPress::Imported(_)
-            | ZecPress::SourceEvm(_)
-            | ZecPress::Hw(_) => self.on_zec_indexed(press),
-        }
-    }
-
-    /// The Zcash row presses (activity `해시 복사`, the drop-down's imported keys, EVM keys and
-    /// `YubiKey` slots; 2026-11-18, S3 C7: a `ZecPress` row, resolved against the lists rebuilt
-    /// now as before).
-    fn on_zec_indexed(&mut self, press: ZecPress) {
-        if let ZecPress::ActivityCopy(Row(row)) = press {
-            // Rows are drawn newest first; a txid is public data, for an explorer.
-            if let Some(record) = self.zec_records().iter().rev().nth(usize::from(row)) {
-                self.copy_text(&record.txid_hex());
-            }
-            return;
-        }
-        if let ZecPress::Imported(Row(position)) = press {
-            self.zec_use_imported(usize::from(position));
-            return;
-        }
-        if let ZecPress::SourceEvm(Row(position)) = press {
-            if let Some(index) = self.zec_evm_indices().get(usize::from(position)).copied() {
-                self.zec.confirm_shared = false;
-                if self.zec_source_in_use(ZecKeySource::EvmShared { evm_index: index }, None) {
-                    self.refresh();
-                } else {
-                    // The first apply asks for the confirmation (T-ZEC-EVM-SHARED,
-                    // `정말 EVM 키 사용`); nothing changes before it.
-                    self.zec.source = SourceChoice::EvmShared(index);
-                    self.zec_apply_source();
-                }
-            }
-            return;
-        }
-        if let ZecPress::Hw(Row(position)) = press
-            && let Some(index) = self.zec_hw_slots().get(usize::from(position))
-        {
-            self.zec_use_hardware(*index);
-        }
-    }
-}
-
 impl App {
     /// The label and source of the drop-down item of `source` on the current network (`address`
     /// names an imported key, whose item is its whole address).
@@ -772,20 +597,6 @@ impl App {
         }
         items.push(Item::Row(row));
         items.push(Item::CardEnd);
-    }
-}
-
-impl Wallet {
-    /// The recipients of the activity rows, newest first as drawn (`None` without one): the
-    /// copy of a click on a row's recipient (2026-11-11).
-    #[must_use]
-    pub fn zec_activity_recipients(&self) -> Vec<Option<String>> {
-        let network = self.zec_network();
-        self.zec_records()
-            .iter()
-            .rev()
-            .map(|record| record.recipient().map(|dest| dest.encode(network)))
-            .collect()
     }
 }
 

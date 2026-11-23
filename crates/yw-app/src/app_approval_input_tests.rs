@@ -1799,10 +1799,12 @@ fn approving_input_is_built_only_by_the_mapper() {
         }
     }
     ways.sort_unstable();
+    // 2026-11-23 (S4d E0b): the wallet's router `on_cmd` (its `Cmd::Approval(` arm) is in the
+    // wallet half `app/wallet.rs` (was `app.rs`).
     assert_eq!(
         ways,
         [
-            ("app.rs", "Cmd::Approval(", 1),
+            ("app/wallet.rs", "Cmd::Approval(", 1),
             ("app_approval.rs", ".deliver(", 1),
             ("app_approval.rs", "Cmd::Approval(", 2),
             ("app_approval.rs", "Sampled(", 1),

@@ -103,7 +103,7 @@ use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 use yw_engine::secret::SecretEffect;
 use yw_win::clipboard;
 
-use crate::app::{App, Wallet};
+use crate::app::App;
 use crate::logging::{self, Field};
 use crate::ui::cmd_table::{self, cred_id_of, edit_id_of};
 
@@ -121,7 +121,10 @@ thread_local! {
 thread_local! {
     /// Tests (2026-11-20, S4 P10a): while `Some`, `emit` keeps each effect here instead of
     /// applying it, so a test can apply them after the handler that emitted them returned, as an
-    /// outbox would ([`hold_effects`]).
+    /// outbox would ([`hold_effects`]). 2026-11-23 (S4d E0b, preflight O-4): the shell keeps
+    /// them, [`App::drain`] taking them out of the wallet's outbox instead of applying them, so
+    /// the wallet's `emit` holds no test hook (before, `emit` kept them, ahead of the outbox and
+    /// of its `SetField` form write).
     static TEST_HELD_EFFECTS: core::cell::RefCell<Option<Vec<Effect>>> =
         const { core::cell::RefCell::new(None) };
 }
@@ -129,9 +132,12 @@ thread_local! {
 /// Tests (2026-11-20, S4 P10a): runs `steps` with every effect they emit kept, not applied, and
 /// returns them in emission order.
 #[cfg(test)]
-pub(crate) fn hold_effects(steps: impl FnOnce()) -> Vec<Effect> {
+pub(crate) fn hold_effects(app: &mut App, steps: impl FnOnce(&mut App)) -> Vec<Effect> {
     TEST_HELD_EFFECTS.with(|held| *held.borrow_mut() = Some(Vec::new()));
-    steps();
+    steps(app);
+    // 2026-11-23 (S4d E0b): what is still queued when `steps` return is held too (the test-side
+    // take from the outbox; before, `emit` never queued while a hold ran).
+    app.drain();
     TEST_HELD_EFFECTS
         .with(|held| held.borrow_mut().take())
         .unwrap_or_default()
@@ -174,41 +180,6 @@ impl Drop for Entry<'_> {
         if !std::thread::panicking() {
             self.0.drain();
         }
-    }
-}
-
-impl Wallet {
-    /// Queues `effect` for `App::drain` (2026-11-20, S4 P10b; see the module doc). A field
-    /// write (`SetField`) puts its text, cut to the field's cap as the edit holds it, into the
-    /// form state now, so the logic reads what it wrote before the shell applies it (owner
-    /// decision O-10; the shell reads the edit back when it applies the write, as before).
-    /// Before P10 this fn applied the effect at once. 2026-11-21 (S4 W3, plan §3.4): the
-    /// wallet's (was `App::emit`, the same body); `impl App` code reaches it through `App`.
-    pub(crate) fn emit(&mut self, effect: Effect) {
-        // Tests (2026-11-20, S4 P10a): held for `hold_effects`.
-        #[cfg(test)]
-        let Some(effect) = TEST_HELD_EFFECTS.with(|held| match held.borrow_mut().as_mut() {
-            Some(kept) => {
-                kept.push(effect);
-                None
-            }
-            None => Some(effect),
-        }) else {
-            return;
-        };
-        if let Effect::SetField { field, text } = &effect {
-            let field = *field;
-            self.form.set(field, Some(field.clamp(text)));
-        }
-        self.outbox.push_back(effect);
-    }
-
-    /// The oldest queued effect, taken out of the queue (2026-11-21, S4 W3, plan §3.4: the
-    /// drain's one read of the outbox; Android's `next()`, spec/15 §3.2). `None` when the queue is
-    /// empty.
-    #[must_use]
-    pub(crate) fn next_effect(&mut self) -> Option<Effect> {
-        self.outbox.pop_front()
     }
 }
 
@@ -263,6 +234,18 @@ impl App {
         // since the last drain, before any effect is applied.
         #[cfg(debug_assertions)]
         self.cred_check();
+        // Tests (2026-11-23, S4d E0b): held for `hold_effects`, in emission order, not applied.
+        #[cfg(test)]
+        if TEST_HELD_EFFECTS.with(|held| held.borrow().is_some()) {
+            while let Some(effect) = self.wallet.next_effect() {
+                TEST_HELD_EFFECTS.with(|held| {
+                    if let Some(kept) = held.borrow_mut().as_mut() {
+                        kept.push(effect);
+                    }
+                });
+            }
+            return;
+        }
         while let Some(effect) = self.wallet.next_effect() {
             // 2026-11-21 (S4 W2, plan §3.4, D-4): the composition. A display window's open is the
             // one effect that moves a value from the wallet into the shell (the secret), so it

@@ -147,8 +147,6 @@ pub mod text {
         ATA_NOTE(1) = "받는 사람에게 {0} 토큰 계정이 없으면 이 거래가 만들고, 생성 비용(rent)을 보내는 계정의 SOL로 냅니다. 금액은 승인 창에서 확인하세요. 보낸 뒤에도 SOL이 조금 남아야 합니다."
             / "If the recipient has no {0} token account, this transaction creates it and the sending account pays its creation cost (rent) in SOL. Check the amount in the approval window. Some SOL must remain after sending.";
         NO_MATCH = "일치하는 주소록·내 계정이 없습니다." / "No matching address book entry·own account.";
-        PICK_BOOK_ENTRY(1) = "주소록: {0}" / "Address book: {0}";
-        PICK_OWN(1) = "내 계정: {0}" / "My account: {0}";
 
         // ----- result, resend ------------------------------------------------------------------
         RESULT_TITLE = "보내기 결과" / "Send result";
@@ -1463,43 +1461,6 @@ impl App {
     }
 }
 
-impl Wallet {
-    /// Picker entries: address book and own accounts only (spec/07 §12.3), filtered by the text.
-    #[must_use]
-    pub fn sol_picker_entries(&self) -> Vec<(String, SolAddress)> {
-        let lang = self.settings.language;
-        let filter = self.sol.send.to_text.trim().to_owned();
-        self.sol_known()
-            .into_iter()
-            .filter_map(|entry| match entry.kind {
-                KnownKind::Book { .. } => {
-                    let favorite = self.meta.as_ref().is_some_and(|meta| {
-                        meta.is_favorite(BookChain::Sol, &entry.address.to_base58())
-                    });
-                    let star = if favorite { "★ " } else { "" };
-                    Some((
-                        format!("{star}{}", text::PICK_BOOK_ENTRY.fill(lang, [&entry.label])),
-                        entry.address,
-                    ))
-                }
-                KnownKind::Own { .. }
-                | KnownKind::OwnImported
-                | KnownKind::OwnHardware
-                | KnownKind::OwnMnemonic => {
-                    Some((text::PICK_OWN.fill(lang, [&entry.label]), entry.address))
-                }
-                KnownKind::Sent | KnownKind::History => None,
-            })
-            .filter(|(label, address)| {
-                filter.is_empty()
-                    || address.to_base58().contains(&filter)
-                    || label.contains(&filter)
-            })
-            .take(usize::from(crate::app_sol::SOL_SEND_PICK_ROWS))
-            .collect()
-    }
-}
-
 impl App {
     /// The SOL send result.
     pub fn sol_send_result_screen(&self, items: &mut Vec<Item>) {
@@ -1801,60 +1762,6 @@ impl App {
                 )]));
             }
         }
-    }
-}
-
-impl Wallet {
-    /// The transaction ids of the S10 Solana activity rows, in display order (the rows of
-    /// [`Self::sol_activity_counterparties`]), for their `해시 복사`.
-    #[must_use]
-    pub fn sol_activity_tx_ids(&self) -> Vec<String> {
-        let cluster = self.sol_cluster();
-        let mut out: Vec<String> = self
-            .sol_records()
-            .iter()
-            .filter(|record| record.cluster == cluster)
-            .map(yw_core::journal::sol::SolRecord::tx_id)
-            .collect();
-        if let Some(meta) = self.meta.as_ref() {
-            for entry in meta.activity_of(cluster.network_id()) {
-                if out.len() >= crate::app_sol::SOL_MAX_ACTIVITY_ROWS {
-                    break;
-                }
-                out.push(entry.tx_id.clone());
-            }
-        }
-        out
-    }
-
-    /// The counterparties of the S10 Solana activity rows, in display order (`""` without one):
-    /// the cluster's journal records, then its meta activity, at most `SOL_MAX_ACTIVITY_ROWS`
-    /// after the records (as drawn).
-    #[must_use]
-    pub fn sol_activity_counterparties(&self) -> Vec<String> {
-        let cluster = self.sol_cluster();
-        let mut out: Vec<String> = self
-            .sol_records()
-            .iter()
-            .filter(|record| record.cluster == cluster)
-            .map(|record| {
-                record
-                    .core()
-                    .map_or_else(String::new, |core| core.to.to_base58())
-            })
-            .collect();
-        if let Some(meta) = self.meta.as_ref() {
-            for entry in meta.activity_of(cluster.network_id()) {
-                if out.len() >= crate::app_sol::SOL_MAX_ACTIVITY_ROWS {
-                    break;
-                }
-                out.push(
-                    SolAddress::parse(&entry.counterparty)
-                        .map_or_else(|_| String::new(), SolAddress::to_base58),
-                );
-            }
-        }
-        out
     }
 }
 

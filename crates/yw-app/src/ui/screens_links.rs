@@ -9,12 +9,11 @@
 //! copied. The senders of the received history (`screens_received`) never are — they stay
 //! display-only (address poisoning, spec/07 §12.3).
 
-use crate::app::{App, Wallet};
+use crate::app::App;
 use crate::explorer::ExplorerNet;
 use crate::ui::main_window::{Ctl, GLYPH_LINK, GLYPH_OPEN, GLYPH_SAVE, Item};
 use crate::ui::theme::{AddressKind, own_address_spans};
 use yw_core::lang::Lang;
-use yw_engine::cmd::{LinksPress, Press, Row};
 
 /// Command ids (18,400–18,659; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -295,73 +294,12 @@ impl App {
     }
 }
 
-impl Wallet {
-    /// Closes the open account and network drop-downs (2026-11-12: Esc, any other command, a
-    /// click on the window, another screen); whether one was open. The caller lays out again.
-    pub(crate) fn close_pickers(&mut self) -> bool {
-        let account = self.account_menu.take().is_some();
-        let network = core::mem::take(&mut self.evm.network_picker);
-        account || network
-    }
-}
-
 impl App {
     /// Whether a drop-down is open: what [`Self::close_pickers`] would return (2026-11-20, S4
     /// P4: the shell's Esc resolution reads it before closing).
     #[must_use]
     pub(crate) const fn pickers_open(&self) -> bool {
         self.wallet.account_menu.is_some() || self.wallet.evm.network_picker
-    }
-}
-
-impl Wallet {
-    /// The drop-down buttons and the activity recipients (2026-11-18, S3 C1: a `LinksPress`;
-    /// before, the control id). The open drop-down is kept as its button's press (2026-11-20,
-    /// S4 P6; before, as its control id).
-    pub(crate) fn on_links(&mut self, press: LinksPress) {
-        let address = match press {
-            LinksPress::PickerEvm
-            | LinksPress::PickerSol
-            | LinksPress::PickerBtc
-            | LinksPress::PickerZec => {
-                let picker = Press::Links(press);
-                self.account_menu = if self.account_menu == Some(picker) {
-                    None
-                } else {
-                    Some(picker)
-                };
-                // One drop-down at a time.
-                self.evm.network_picker = false;
-                self.refresh();
-                return;
-            }
-            LinksPress::EvmTo(Row(row)) => self
-                .activity_rows()
-                .get(usize::from(row))
-                .and_then(|view| view.counterparty)
-                .map(yw_core::evm::address::Address::to_checksum),
-            LinksPress::SolTo(Row(row)) => self
-                .sol_activity_counterparties()
-                .get(usize::from(row))
-                .cloned(),
-            LinksPress::BtcTo(Row(row)) => {
-                let ctx = self.btc_ctx();
-                self.btc
-                    .activity_rows(&ctx)
-                    .get(usize::from(row))
-                    .map(|view| view.counterparty.clone())
-            }
-            LinksPress::ZecTo(Row(row)) => self
-                .zec_activity_recipients()
-                .get(usize::from(row))
-                .cloned()
-                .flatten(),
-        };
-        // The wallet's own sent transactions only (its signed journal): the received history's
-        // senders have no copy id at all.
-        if let Some(address) = address.filter(|address| !address.is_empty()) {
-            self.copy_address_text(&address);
-        }
     }
 }
 

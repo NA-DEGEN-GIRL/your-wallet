@@ -7439,7 +7439,7 @@ fn scroll_effects_carry_what_they_read() {
             let (mut app, dir) = unlocked_app(&format!("scroll-{name}-{held}"), false);
             setup(&mut app);
             if held {
-                let effects = crate::app_effects::hold_effects(|| steps(&mut app));
+                let effects = crate::app_effects::hold_effects(&mut app, steps);
                 assert!(!effects.is_empty(), "{name}: nothing held");
                 for effect in effects {
                     app.emit(effect);
@@ -7470,7 +7470,7 @@ fn scroll_effects_carry_what_they_read() {
     // What the scenarios leave (applied at once, as before P10a).
     let (mut app, dir) = unlocked_app("scroll-check", false);
     app.scroll = 640;
-    let effects = crate::app_effects::hold_effects(|| app.tab_shortcut(3));
+    let effects = crate::app_effects::hold_effects(&mut app, |app| app.tab_shortcut(3));
     for effect in effects {
         app.emit(effect);
     }
@@ -7503,10 +7503,43 @@ const RESET_HOLD_LOGIC: [&str; 4] = [
 
 /// 2026-11-21 (S4 W3a, spec/04 §5.3): `lock` is the shell's composition of the lock's two wallet
 /// halves, and the wallet's own lock composes them too; checked with the converted handlers below.
+/// 2026-11-23 (S4d E0b): in the wallet half `app/wallet.rs`, the first two `pub(super)` (the
+/// shell's `lock` composes them).
 const LOCK_HALVES: [&str; 3] = [
-    "    fn lock_steps(&mut self, reason: LockReason) -> bool {",
-    "    fn lock_after_wait(&mut self, vault_present: bool) {",
+    "    pub(super) fn lock_steps(&mut self, reason: LockReason) -> bool {",
+    "    pub(super) fn lock_after_wait(&mut self, vault_present: bool) {",
     "    pub(crate) fn lock_wallet(&mut self, reason: WalletLock) {",
+];
+
+/// The handlers [`converted_handlers_reach_the_main_window_only_through_effects`] reads (file,
+/// head). 2026-11-23 (S4d E0b): a const (was a local array); the wallet fns are in the wallet
+/// half `app/wallet.rs`, the shell's `lock` stays in `app.rs`.
+const CONVERTED: [(&str, &str); 10] = [
+    (
+        "app/wallet.rs",
+        "    fn enter_screen(&mut self, screen: Screen, back: bool) {",
+    ),
+    (
+        "app/wallet.rs",
+        "    fn close_overlay_in_place(&mut self, previous: Screen) {",
+    ),
+    ("app/wallet.rs", "    fn activate(&mut self) {"),
+    (
+        "app/wallet.rs",
+        "    pub(crate) fn open_rpc_row(&mut self, network: NetworkId, edit: bool) {",
+    ),
+    ("app.rs", "    pub fn lock(&mut self, reason: LockReason) {"),
+    (
+        "app/wallet.rs",
+        "    fn on_press(&mut self, press: Press) {",
+    ),
+    ("app_reset.rs", "    pub(crate) fn hold_cancel(&mut self) {"),
+    ("app_btc.rs", "    pub fn btc_select_tab(&mut self) {"),
+    (
+        "app_sol.rs",
+        "    pub fn sol_select_tab(&mut self, tab: Tab) {",
+    ),
+    ("app_zec.rs", "    pub fn zec_select_tab(&mut self) {"),
 ];
 
 /// 2026-11-20 (S4 P4): the handlers P4 converted reach the main window only through effects —
@@ -7549,39 +7582,18 @@ fn converted_handlers_reach_the_main_window_only_through_effects() {
         "self.placed",
         "self.controls",
     ];
-    let converted = [
-        (
-            "app.rs",
-            "    fn enter_screen(&mut self, screen: Screen, back: bool) {",
-        ),
-        (
-            "app.rs",
-            "    fn close_overlay_in_place(&mut self, previous: Screen) {",
-        ),
-        ("app.rs", "    fn activate(&mut self) {"),
-        (
-            "app.rs",
-            "    pub(crate) fn open_rpc_row(&mut self, network: NetworkId, edit: bool) {",
-        ),
-        ("app.rs", "    pub fn lock(&mut self, reason: LockReason) {"),
-        ("app.rs", "    fn on_press(&mut self, press: Press) {"),
-        ("app_reset.rs", "    pub(crate) fn hold_cancel(&mut self) {"),
-        ("app_btc.rs", "    pub fn btc_select_tab(&mut self) {"),
-        (
-            "app_sol.rs",
-            "    pub fn sol_select_tab(&mut self, tab: Tab) {",
-        ),
-        ("app_zec.rs", "    pub fn zec_select_tab(&mut self) {"),
-    ];
     let hold = RESET_HOLD_LOGIC.map(|head| ("app_reset.rs", head));
-    let lock = LOCK_HALVES.map(|head| ("app.rs", head));
-    for (file, head) in converted.into_iter().chain(hold).chain(lock) {
+    let lock = LOCK_HALVES.map(|head| ("app/wallet.rs", head));
+    for (file, head) in CONVERTED.into_iter().chain(hold).chain(lock) {
         let code = body(file, head);
         for shell in shell_names {
             assert!(!code.contains(shell), "{file}: {head} names {shell}");
         }
     }
-    let dispatch = body("app.rs", "    fn on_press(&mut self, press: Press) {");
+    let dispatch = body(
+        "app/wallet.rs",
+        "    fn on_press(&mut self, press: Press) {",
+    );
     for key in ["escape_key", "enter_key", "enter_on", "focused"] {
         assert!(!dispatch.contains(key), "on_press names {key}");
     }

@@ -12,6 +12,7 @@ use yw_core::evm::address::Address;
 use yw_core::policy::{BrowserOrigin, ConnectedSite, ProviderError};
 use yw_json::Value;
 
+use crate::app::Confirm;
 use crate::app::{AppMode, Wallet};
 use crate::app_approval::AfterOpen;
 use crate::app_evm::QueuedItem;
@@ -29,6 +30,9 @@ use crate::logging::{self, Field};
 use crate::meta::EvmAccountPref;
 use crate::network::NetworkId;
 use crate::ui::approval::{QueueOutcome, QueueSource};
+use yw_core::policy::Family;
+use yw_engine::cmd::Row;
+use yw_engine::cmd::SitesPress;
 use yw_engine::secret::SecretKind;
 
 /// Chain-switch grant writes are coalesced: at most one meta write per this interval (a page
@@ -283,6 +287,8 @@ pub mod text {
             / "Refused the connect request of {0}: 256 sites are already connected on this chain. Disconnect one on the Connected sites screen, then connect again.";
         /// `{0}` = why.
         MESSAGE_SIGN_FAILED(1) = "사이트의 메시지에 서명하지 못했습니다: {0}" / "Could not sign the site's message: {0}";
+        /// 2026-11-23 (S4d E0b): was `ui::screens_sites::text` (the S13 handler's notice).
+        DISCONNECTED(1) = "{0} 연결을 해제했습니다." / "Disconnected {0}.";
     }
 }
 
@@ -1437,6 +1443,100 @@ impl Wallet {
             }
         }
         origins
+    }
+}
+
+// 2026-11-23 (spec/15 §11.4 S4d E0b): moved here unchanged from `ui::screens_sites` (wallet code in a
+// render file): the S13 handler.
+
+impl Wallet {
+    /// Presses of S13 (2026-11-18, S3 C2: a `SitesPress`; before, the control id).
+    pub(crate) fn on_sites(&mut self, press: SitesPress) {
+        match press {
+            SitesPress::Open => {
+                self.set_screen(crate::app::Screen::Sites);
+            }
+            SitesPress::RevokeAll => {
+                self.set_screen(crate::app::Screen::Confirm(Confirm::DisconnectAll));
+            }
+            SitesPress::Prev | SitesPress::Next => {
+                let total = self
+                    .browser_grants()
+                    .iter()
+                    .filter(|grant| !crate::walletconnect::is_session_origin(&grant.origin))
+                    .count()
+                    + {
+                        let (sol, btc) = self.chain_grants();
+                        sol.len() + btc.len()
+                    };
+                if let Some(browser) = self.browser.as_mut() {
+                    let (pages, shown) = page_of(total, browser.site_rows.page);
+                    browser.site_rows.page = if press == SitesPress::Prev {
+                        shown.saturating_sub(1)
+                    } else {
+                        (shown + 1).min(pages - 1)
+                    };
+                }
+                self.refresh();
+            }
+            SitesPress::Disconnect(Row(offset)) => {
+                // The grant this button was drawn for (a list that changed since does not move
+                // the click to another site).
+                let key = self.browser.as_ref().and_then(|browser| {
+                    browser
+                        .site_rows
+                        .keys
+                        .borrow()
+                        .get(usize::from(offset))
+                        .cloned()
+                });
+                if let Some((origin, family)) = key {
+                    // The card just disappears: say which one went (2026-11-12).
+                    self.info = Some(
+                        text::DISCONNECTED
+                            .fill(self.settings.language, [&card_title(&origin, family)]),
+                    );
+                    match family {
+                        Family::Evm => self.disconnect_site(&origin),
+                        Family::Solana | Family::Bitcoin => {
+                            self.disconnect_chain_site(&origin, family);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Cards per page of S13 (the shell's `ui::screens_sites::ids::SITES_PAGE_ROWS` re-uses it).
+/// 2026-11-23 (spec/15 §11.4 S4d E0b): moved here with `on_sites`, value unchanged (50); before,
+/// only the ui id span.
+pub const SITES_PAGE_ROWS: usize = 50;
+
+/// Pages of `total` cards and the page shown for the wanted one (clamped to the last page).
+/// 2026-11-23 (S4d E0b): moved here unchanged from `ui::screens_sites` (the S13 handler and the
+/// page both use it).
+#[must_use]
+pub fn page_of(total: usize, wanted: usize) -> (usize, usize) {
+    let pages = total.div_ceil(SITES_PAGE_ROWS).max(1);
+    (pages, wanted.min(pages - 1))
+}
+
+/// A site card title: the full origin, then the chain family (one site may be connected on
+/// several chains and gets one card per family). 2026-11-23 (S4d E0b): moved here unchanged from
+/// `ui::screens_sites` (the S13 handler's notice and the page both use it).
+#[must_use]
+pub fn card_title(origin: &BrowserOrigin, family: Family) -> String {
+    format!("{}  ·  {}", origin.as_str(), family_name(family))
+}
+
+/// The family name of a card title and of the `연결 해제` notice. 2026-11-23 (S4d E0b): moved here
+/// unchanged from `ui::screens_sites`.
+const fn family_name(family: Family) -> &'static str {
+    match family {
+        Family::Evm => "EVM",
+        Family::Solana => "Solana",
+        Family::Bitcoin => "Bitcoin",
     }
 }
 

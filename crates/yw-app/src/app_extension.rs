@@ -14,8 +14,7 @@ use std::path::{Path, PathBuf};
 
 use yw_engine::cmd::CopyBand;
 
-use crate::app::{App, AppMode, Screen, Wallet};
-use crate::logging;
+use crate::app::{App, AppMode, Screen};
 
 /// The Chrome page that loads unpacked extensions.
 pub const CHROME_EXTENSIONS_URL: &str = "chrome://extensions";
@@ -224,22 +223,6 @@ impl App {
                     .copy_with_band(CHROME_EXTENSIONS_URL, CopyBand::ExtensionsUrl);
             }
         }
-    }
-}
-
-impl Wallet {
-    /// `Cmd::FolderMissing` (S4 P3): `탐색기에서 폴더 열기` found no extension folder — the
-    /// `extension.folder_missing` log line, the band and the repaint, as the press did before.
-    /// 2026-11-22 (S4c W15): wallet code (`Wallet::on_cmd` handles the answer); before, an
-    /// `impl App` fn reached through `DerefMut`.
-    pub(crate) fn on_folder_missing(&mut self) {
-        logging::info("app", "extension.folder_missing", &[]);
-        self.info = Some(
-            crate::app::text::T_EXT_MISSING
-                .get(self.settings.language)
-                .to_owned(),
-        );
-        self.refresh();
     }
 }
 

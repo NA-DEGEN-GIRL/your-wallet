@@ -24,6 +24,8 @@ use crate::app::{Confirm, Screen, Wallet};
 use crate::errors::ErrorCode;
 use crate::meta::{BookChain, Contact, ListError, MAX_ADDRESS_BOOK};
 use crate::text::is_valid_label;
+use yw_engine::cmd::LinksPress;
+use yw_engine::cmd::Press;
 use yw_engine::cmd::{BookPress, BookRowAction, Row};
 use yw_engine::effect::Effect;
 use yw_engine::form::EditField;
@@ -908,6 +910,70 @@ fn list_error_text(lang: Lang, error: ListError) -> String {
     match error {
         ListError::Duplicate => ErrorCode::Inp016.text_in(lang),
         ListError::Full => text::BOOK_FULL.get(lang).to_owned(),
+    }
+}
+
+// 2026-11-23 (spec/15 §11.4 S4d E0b): moved here unchanged from `ui::screens_links` (wallet code in a
+// render file): the account-link and picker handlers.
+
+impl Wallet {
+    /// Closes the open account and network drop-downs (2026-11-12: Esc, any other command, a
+    /// click on the window, another screen); whether one was open. The caller lays out again.
+    pub(crate) fn close_pickers(&mut self) -> bool {
+        let account = self.account_menu.take().is_some();
+        let network = core::mem::take(&mut self.evm.network_picker);
+        account || network
+    }
+}
+
+impl Wallet {
+    /// The drop-down buttons and the activity recipients (2026-11-18, S3 C1: a `LinksPress`;
+    /// before, the control id). The open drop-down is kept as its button's press (2026-11-20,
+    /// S4 P6; before, as its control id).
+    pub(crate) fn on_links(&mut self, press: LinksPress) {
+        let address = match press {
+            LinksPress::PickerEvm
+            | LinksPress::PickerSol
+            | LinksPress::PickerBtc
+            | LinksPress::PickerZec => {
+                let picker = Press::Links(press);
+                self.account_menu = if self.account_menu == Some(picker) {
+                    None
+                } else {
+                    Some(picker)
+                };
+                // One drop-down at a time.
+                self.evm.network_picker = false;
+                self.refresh();
+                return;
+            }
+            LinksPress::EvmTo(Row(row)) => self
+                .activity_rows()
+                .get(usize::from(row))
+                .and_then(|view| view.counterparty)
+                .map(yw_core::evm::address::Address::to_checksum),
+            LinksPress::SolTo(Row(row)) => self
+                .sol_activity_counterparties()
+                .get(usize::from(row))
+                .cloned(),
+            LinksPress::BtcTo(Row(row)) => {
+                let ctx = self.btc_ctx();
+                self.btc
+                    .activity_rows(&ctx)
+                    .get(usize::from(row))
+                    .map(|view| view.counterparty.clone())
+            }
+            LinksPress::ZecTo(Row(row)) => self
+                .zec_activity_recipients()
+                .get(usize::from(row))
+                .cloned()
+                .flatten(),
+        };
+        // The wallet's own sent transactions only (its signed journal): the received history's
+        // senders have no copy id at all.
+        if let Some(address) = address.filter(|address| !address.is_empty()) {
+            self.copy_address_text(&address);
+        }
     }
 }
 
