@@ -335,9 +335,10 @@ impl Screen<'_> {
     }
 
     /// The S23 status. 2026-11-24 (spec/15 §11.4 S5-3): render code, moved here from
-    /// `app_extension.rs` (it reads only wallet state).
+    /// `app_extension.rs` (it reads only wallet state). 2026-11-24 (S5-5 review): `pub(crate)`
+    /// with its crate-private type.
     #[must_use]
-    pub fn extension_status(&self) -> ExtensionStatus {
+    pub(crate) fn extension_status(&self) -> ExtensionStatus {
         if self
             .browser
             .as_ref()

@@ -1772,6 +1772,35 @@ pub mod screen {
     ) {
         Screen::reset_link(lang, items, help);
     }
+
+    /// S23's texts, `crate::screen::extension::text`, crate-private since the S5-5 review
+    /// (2026-11-24, spec/15 §18 31 (ㄷ); at S5-5 itself `pub` for yw-app's tests only).
+    pub mod extension_text {
+        pub use crate::screen::extension::text::{
+            ALL, CONNECTED, CONNECTED_BEFORE, NEVER, UNKNOWN,
+        };
+    }
+
+    /// The receive QR's texts, `crate::screen::qr::text`, crate-private since the S5-5 review
+    /// (2026-11-24, the same way).
+    pub mod qr_text {
+        pub use crate::screen::qr::text::{ALL, RECEIVE_SHARED_ADDRESS_NOTE};
+    }
+
+    /// `ExtensionStatus::text_in` of each S23 status, in the order `Connected`,
+    /// `ConnectedBefore`, `Never`, `Unknown` (`crate::screen::extension::ExtensionStatus`,
+    /// crate-private since the S5-5 review, 2026-11-24).
+    #[must_use]
+    pub fn extension_status_texts(lang: yw_core::lang::Lang) -> [&'static str; 4] {
+        use crate::screen::extension::ExtensionStatus;
+        [
+            ExtensionStatus::Connected,
+            ExtensionStatus::ConnectedBefore,
+            ExtensionStatus::Never,
+            ExtensionStatus::Unknown,
+        ]
+        .map(|status| status.text_in(lang))
+    }
 }
 
 /// The screen builders as the yw-app tests that draw one part of a screen call them

@@ -1174,7 +1174,7 @@ fn prune_dormant_entries_after_confirmation() {
 fn evm_receive_qr_toggles_to_the_plain_address() {
     use crate::ui::screens_evm::ids as evm_ids;
     use yw_engine::screen::EvmQrKind;
-    use yw_engine::screen::qr::text::RECEIVE_SHARED_ADDRESS_NOTE;
+    use yw_engine::testkit::screen::qr_text::RECEIVE_SHARED_ADDRESS_NOTE;
     let (mut app, dir) = unlocked_app("receive-qr", false);
     let address = parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
     app.set_screen(Screen::Receive);

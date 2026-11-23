@@ -2121,7 +2121,11 @@ const READ_ONLY_CALLS: [(&str, &str); 4] = [
 /// notices the only exception), because `render_main` reached the builders while they were
 /// `impl App`. They are yw-engine's `impl Screen<'_>` now, a read-only view (`&Wallet`) the
 /// executor reaches only as `Wallet::screen`'s one call; these two cells are the only state a
-/// builder writes, and that is checked here, scoped to `screen/build/`, instead.
+/// builder writes, and that is checked here, scoped to `screen/build/`, instead. 2026-11-24 (S5-5
+/// review): the `&self` `impl Wallet` helpers the builders reach are scanned with no listed cell
+/// ([`screen_scan`]), as the executor's descent scanned them before S5-5; at S5-5 itself they
+/// were left unscanned (the executor's descent ends at `Wallet::screen`, and this check read the
+/// builder files only).
 const SCREEN_CELL_WRITES: [(&str, &str, &str); 2] = [
     (
         "sites_page",
@@ -2579,6 +2583,10 @@ fn typed_app_names(text: &str) -> BTreeSet<String> {
 /// there: one that takes `&mut self` fails unless [`EXECUTOR_WALLET_CALLS`] lists the call (the
 /// list is checked first; before, it only stopped the descent), and a `&self` one (the render
 /// helpers that flipped with the wallet fns) is followed and scanned like an `impl App` fn.
+/// 2026-11-24 (S5-5 review): since S5-5 the descent ends at `Wallet::screen` (its body calls the
+/// engine's builders, no `self.` fn), so the render helpers are no longer reached here; they are
+/// followed from the builders and scanned the same way by [`the_screen_writes_no_wallet_state`]
+/// ([`screen_scan`]).
 #[test]
 fn the_executor_writes_no_wallet_state() {
     let files: Vec<Src> = production_code()
@@ -2698,39 +2706,208 @@ fn the_executor_writes_no_wallet_state() {
 /// lock or an atomic write (`Mutex`, `RwLock`, `.lock(`, `.store(`, `fetch_`), which would be a
 /// way to write shared state. Before S5-5 the builders were `impl App` and the executor's check
 /// followed them from `render_main` (with the two cells listed in its `EXECUTOR_CELL_WRITES`).
+///
+/// 2026-11-24 (S5-5 review): the check follows the builders into the wallet ([`screen_scan`]), as
+/// the executor's did before S5-5 (from `render_main` into the `&self` `impl Wallet` helpers the
+/// builders called): every `impl Wallet` fn a builder calls (`self.<fn>(` through the view's
+/// `Deref`, `Wallet::<fn>(`), and every one those call, transitively, must take `&self` and is
+/// scanned with no listed cell (a cell write in a helper fails), and no builder or helper uses
+/// one of the wallet's [`SHARED_HANDLES`] but by a [`HANDLE_READS`] call. Before this review the
+/// check read the `screen/build/` files only, so a `borrow_mut` of a wallet cell in a render
+/// helper (`hc_visible`) or a `self.lock_signal.signal()` in a builder passed both this check and
+/// the executor's (whose descent ends at `Wallet::screen` since S5-5). What the scanners still
+/// miss: a write inside a method of a wallet part's own type, a trait method of the wallet, a
+/// free fn of a wallet module given a part of it, and a handle reached through a binding
+/// (`let w: &Wallet = self; w.lock_signal.signal()`).
 #[test]
 fn the_screen_writes_no_wallet_state() {
     let files = production_code();
     let fields = wallet_fields(&app_and_wallet(&files));
     assert!(fields.contains("browser") && fields.contains("wc"));
-    let builders: Vec<&Src> = files
+    for handle in SHARED_HANDLES {
+        assert!(fields.contains(handle), "wallet field {handle} found");
+    }
+    let build: Vec<&Src> = files
         .iter()
-        .filter(|src| is_render_file(&src.file) && !src.file.ends_with("/build/mod.rs"))
+        .filter(|src| is_render_file(&src.file))
         .collect();
+    assert!(build.len() >= 26, "{} builder files found", build.len());
+    let wallet_fns = impl_fns(&files, "Wallet");
+    let scan = screen_scan(&build, &wallet_fns, &fields);
+    assert!(scan.fns > 200, "{} builder fns scanned", scan.fns);
     assert!(
-        builders.len() >= 25,
-        "{} builder files found",
-        builders.len()
+        scan.findings.is_empty(),
+        "a screen builder writes wallet state: {:#?}",
+        scan.findings
     );
-    let mut findings = Vec::new();
-    let mut fns = 0_usize;
-    let mut cells = 0_usize;
-    for src in &builders {
-        for word in ["Mutex", "RwLock", "Atomic"] {
-            if has_word(&src.code, word) || src.code.contains(&format!("{word}<")) {
-                findings.push(format!("{}: names {word}", src.file));
-            }
-        }
-        for call in [".lock(", ".store(", ".fetch_"] {
-            if src
-                .code
-                .split_whitespace()
-                .collect::<String>()
-                .contains(call)
+    assert_eq!(
+        scan.cells,
+        SCREEN_CELL_WRITES.len(),
+        "every listed cell write found once"
+    );
+    // The descent reaches the render helpers (critique A-20: it cannot pass on nothing).
+    assert!(
+        scan.helpers.len() >= 100,
+        "{} wallet helpers reached",
+        scan.helpers.len()
+    );
+    for helper in ["hc_visible", "sol_assets", "btc_visible_rows", "card_name"] {
+        assert!(
+            scan.helpers.contains(helper),
+            "the wallet helper {helper} reached"
+        );
+    }
+}
+
+/// The wallet's shared handles (2026-11-24, S5-5 review): `Arc`s of synchronized state whose
+/// methods change it through `&self` (`LockSignal::signal`, `KeyQueue`, `EventQueue::push`), so a
+/// `&self` fn could write through them. A screen builder or a wallet helper it reaches uses one
+/// only as a [`HANDLE_READS`] call on it (`self.<handle>.<read>(`); any other use — another
+/// method, a borrow, `as_ref`, a clone, the handle passed — fails ([`handle_uses`]).
+const SHARED_HANDLES: [&str; 4] = ["clock", "events", "key_queue", "lock_signal"];
+
+/// The calls a screen builder or a wallet helper it reaches may make on one of
+/// [`SHARED_HANDLES`], each as (handle, method, why it only reads) (2026-11-24, S5-5 review).
+const HANDLE_READS: [(&str, &str, &str); 2] = [
+    (
+        "clock",
+        "now_unix_ms",
+        "the injected clock's wall time (`Clock::now_unix_ms`, `&self`, a read)",
+    ),
+    (
+        "clock",
+        "now_ms",
+        "the injected clock's monotonic time (`Clock::now_ms`, `&self`, a read)",
+    ),
+];
+
+/// Each use of one of [`SHARED_HANDLES`] in `body` (through `self.` or `self.wallet.`), as
+/// (handle, the method called on it at once, or "" when it is not called at once) (2026-11-24,
+/// S5-5 review).
+fn handle_uses(body: &str) -> Vec<(String, String)> {
+    let text = normalized(body);
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    for handle in SHARED_HANDLES {
+        let needle = format!("self.{handle}");
+        for (at, _) in text.match_indices(&needle) {
+            let end = at + needle.len();
+            if (at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'.'))
+                || bytes.get(end).is_some_and(|&b| is_ident(b))
             {
-                findings.push(format!("{}: calls {call}", src.file));
+                continue;
             }
+            let mut method = String::new();
+            if bytes.get(end) == Some(&b'.') {
+                let start = end + 1;
+                let mut stop = start;
+                while stop < bytes.len() && is_ident(bytes[stop]) {
+                    stop += 1;
+                }
+                if text[stop..].trim_start().starts_with('(') {
+                    method = text[start..stop].to_owned();
+                }
+            }
+            found.push((handle.to_owned(), method));
         }
+    }
+    found
+}
+
+/// The findings of [`handle_uses`] in `body`: each use that is not a [`HANDLE_READS`] call.
+fn handle_findings(body: &str) -> Vec<String> {
+    handle_uses(body)
+        .into_iter()
+        .filter(|(handle, method)| {
+            !HANDLE_READS
+                .iter()
+                .any(|&(known, read, _)| known == handle && read == method)
+        })
+        .map(|(handle, method)| {
+            if method.is_empty() {
+                format!("uses self.{handle}")
+            } else {
+                format!("calls self.{handle}.{method}")
+            }
+        })
+        .collect()
+}
+
+/// The names `body` calls as `<prefix><fn>(` (`Wallet::`, `Self::`), the prefix not part of a
+/// longer path segment (2026-11-24, S5-5 review).
+fn path_calls(body: &str, prefix: &str) -> BTreeSet<String> {
+    let text = normalized(body);
+    let bytes = text.as_bytes();
+    let mut calls = BTreeSet::new();
+    for (at, _) in text.match_indices(prefix) {
+        if at > 0 && is_ident(bytes[at - 1]) {
+            continue;
+        }
+        let start = at + prefix.len();
+        let mut stop = start;
+        while stop < bytes.len() && is_ident(bytes[stop]) {
+            stop += 1;
+        }
+        if stop > start && text[stop..].trim_start().starts_with('(') {
+            calls.insert(text[start..stop].to_owned());
+        }
+    }
+    calls
+}
+
+/// A lock or an atomic write `code` names (`Mutex`, `RwLock`, `Atomic…`, `.lock(`, `.store(`,
+/// `.fetch_…`): a way to write shared state through `&self`.
+fn shared_writes(code: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for word in ["Mutex", "RwLock", "Atomic"] {
+        if has_word(code, word) || code.contains(&format!("{word}<")) {
+            found.push(format!("names {word}"));
+        }
+    }
+    let flat = code.split_whitespace().collect::<String>();
+    for call in [".lock(", ".store(", ".fetch_"] {
+        if flat.contains(call) {
+            found.push(format!("calls {call}"));
+        }
+    }
+    found
+}
+
+/// What [`screen_scan`] found: the findings, how many fns of the builder files it scanned, how
+/// many listed cell writes it found and the wallet helpers it reached.
+struct ScreenScan {
+    findings: Vec<String>,
+    fns: usize,
+    cells: usize,
+    helpers: BTreeSet<String>,
+}
+
+/// The rules of [`the_screen_writes_no_wallet_state`] over the `screen/build/` files `build`
+/// (`mod.rs`, which defines the view, gives its fn names only) and the `impl Wallet` fns
+/// `wallet_fns` ([`impl_fns`]), against the wallet's `fields` (2026-11-24, S5-5 review: was the
+/// test's body, which read the builder files only).
+fn screen_scan(
+    build: &[&Src],
+    wallet_fns: &BTreeMap<String, Vec<(String, String, bool)>>,
+    fields: &BTreeSet<String>,
+) -> ScreenScan {
+    let screen_fns = screen_fn_names(build);
+    let mut scan = ScreenScan {
+        findings: Vec::new(),
+        fns: 0,
+        cells: 0,
+        helpers: BTreeSet::new(),
+    };
+    let mut todo: Vec<String> = Vec::new();
+    for src in build
+        .iter()
+        .filter(|src| !src.file.ends_with("/build/mod.rs"))
+    {
+        scan.findings.extend(
+            shared_writes(&src.code)
+                .into_iter()
+                .map(|finding| format!("{}: {finding}", src.file)),
+        );
         for block in &src.blocks {
             let fn_head = head(&src.code, block.open);
             if !has_word(fn_head, "fn") {
@@ -2769,32 +2946,115 @@ fn the_screen_writes_no_wallet_state() {
                 .collect();
             let body = &src.code[block.open..=block.close];
             let none = BTreeSet::new();
-            let (found, listed) = executor_findings(
+            let (mut found, listed) = executor_findings(
                 &name,
                 body,
                 false,
-                if on_screen { &fields } else { &none },
+                if on_screen { fields } else { &none },
                 &SCREEN_CELL_WRITES,
             );
-            findings.extend(
+            let mut calls = path_calls(body, "Wallet::");
+            if on_screen {
+                found.extend(handle_findings(body));
+                calls.extend(
+                    self_calls(body)
+                        .into_iter()
+                        .filter(|call| !screen_fns.contains(call)),
+                );
+            }
+            todo.extend(
+                calls
+                    .into_iter()
+                    .filter(|call| wallet_fns.contains_key(call)),
+            );
+            scan.findings.extend(
                 found
                     .into_iter()
                     .map(|finding| format!("{}: {name} {finding}", src.file)),
             );
-            cells += listed;
-            fns += 1;
+            scan.cells += listed;
+            scan.fns += 1;
         }
     }
-    assert!(fns > 200, "{fns} builder fns scanned");
-    assert!(
-        findings.is_empty(),
-        "a screen builder writes wallet state: {findings:#?}"
-    );
-    assert_eq!(
-        cells,
-        SCREEN_CELL_WRITES.len(),
-        "every listed cell write found once"
-    );
+    scan_wallet_helpers(todo, wallet_fns, fields, &mut scan);
+    scan
+}
+
+/// The names of the view's own fns in `build` (the fns of an `impl … Screen<…>` block):
+/// `self.<fn>(` on a `Screen` calls one of these before the wallet's.
+fn screen_fn_names(build: &[&Src]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for src in build {
+        for block in &src.blocks {
+            let impl_head = head(&src.code, block.open)
+                .split_whitespace()
+                .collect::<String>();
+            if !impl_head.starts_with("impl") || !impl_head.contains("Screen<") {
+                continue;
+            }
+            for inner in &src.blocks {
+                if inner
+                    .parent
+                    .is_none_or(|parent| src.blocks[parent].open != block.open)
+                {
+                    continue;
+                }
+                let fn_head = head(&src.code, inner.open);
+                if let Some((_, after)) = fn_head.rsplit_once("fn ")
+                    && has_word(fn_head, "fn")
+                {
+                    names.insert(
+                        after
+                            .trim_start()
+                            .chars()
+                            .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+                            .collect::<String>(),
+                    );
+                }
+            }
+        }
+    }
+    names
+}
+
+/// [`screen_scan`]'s descent into the wallet from the `impl Wallet` fns `todo` the builders
+/// call, transitively: every helper reached takes `&self`, writes no wallet field and no cell
+/// (none listed), uses a shared handle only to read and names no lock or atomic write.
+fn scan_wallet_helpers(
+    mut todo: Vec<String>,
+    wallet_fns: &BTreeMap<String, Vec<(String, String, bool)>>,
+    fields: &BTreeSet<String>,
+    scan: &mut ScreenScan,
+) {
+    while let Some(name) = todo.pop() {
+        if !scan.helpers.insert(name.clone()) {
+            continue;
+        }
+        for (file, body, takes_mut) in wallet_fns.get(&name).into_iter().flatten() {
+            if *takes_mut {
+                scan.findings.push(format!(
+                    "{file}: reaches the wallet's `&mut self` fn {name}"
+                ));
+                continue;
+            }
+            let (mut found, _) = executor_findings(&name, body, false, fields, &[]);
+            found.extend(handle_findings(body));
+            found.extend(shared_writes(body));
+            scan.findings.extend(
+                found
+                    .into_iter()
+                    .map(|finding| format!("{file}: the wallet helper {name} {finding}")),
+            );
+            let mut calls = self_calls(body);
+            calls.extend(path_calls(body, "Self::"));
+            calls.extend(path_calls(body, "Wallet::"));
+            todo.extend(
+                calls
+                    .into_iter()
+                    .filter(|call| wallet_fns.contains_key(call)),
+            );
+        }
+    }
 }
 
 /// spec/15 §11.4 S5-5 (2026-11-24; S5 plan critic C15): yw-app's test builds compile yw-engine
@@ -2960,6 +3220,93 @@ fn wallet_writes_and_self_calls_on_made_up_code() {
     assert_eq!(
         cell_writes("{ x.try_borrow_mut(); self.wc.rows .borrow_mut(); }"),
         ["self.wc.rows", "x"]
+    );
+}
+
+/// [`screen_scan`] on made-up code (2026-11-24, S5-5 review): it follows a builder into the
+/// wallet's helpers, transitively, and fails on a cell write there (the review's probe: a
+/// `self.wc.rows.borrow_mut()` in `hc_visible`), on a `&mut self` helper reached and on a shared
+/// handle's use that is not a read, in a builder (the probe `self.lock_signal.signal()` in
+/// `hidden_items`) or in a helper; a helper no builder reaches and a wallet fn the view's own fn
+/// of the same name shadows are not scanned.
+#[test]
+fn screen_scan_on_made_up_code() {
+    let build = Src::new(
+        "yw-engine/src/screen/build/x.rs".to_owned(),
+        code_only(concat!(
+            "impl Screen<'_> {\n",
+            "    pub fn page(&self, items: &mut Vec<Item>) { let n = self.helper(); self.own(); ",
+            "let t = self.clock.now_ms(); self.lock_signal.signal(); ",
+            "let q = self.events.as_ref(); }\n",
+            "    fn own(&self) { let r = Wallet::rows_of(1); }\n",
+            "    fn sites_page(&self) { let browser = &self.browser; ",
+            "browser.site_rows.keys.borrow_mut().clear(); }\n",
+            "}\n",
+        )),
+    );
+    let view = Src::new(
+        "yw-engine/src/screen/build/mod.rs".to_owned(),
+        code_only(concat!(
+            "impl<'a> Screen<'a> { pub fn facts(&self) -> u8 { 0 } }\n",
+            "impl Deref for Screen<'_> { fn deref(&self) -> &Wallet { self.wallet } }\n",
+        )),
+    );
+    let wallet = Src::new(
+        "yw-engine/src/wallet/x.rs".to_owned(),
+        code_only(concat!(
+            "impl Wallet {\n",
+            "    pub(crate) fn helper(&self) -> u8 { self.deeper(); 0 }\n",
+            "    fn deeper(&self) { self.wc.rows.borrow_mut().clear(); self.key_queue.push(1); }\n",
+            "    fn rows_of(n: u8) -> u8 { Self::writer(n) }\n",
+            "    fn writer(&mut self) { self.mode = 1; }\n",
+            "    fn own(&self) { self.wc.rows.borrow_mut(); }\n",
+            "    fn unreached(&self) { self.wc.rows.borrow_mut(); }\n",
+            "}\n",
+        )),
+    );
+    let fields: BTreeSet<String> = [
+        "wc",
+        "browser",
+        "mode",
+        "clock",
+        "events",
+        "key_queue",
+        "lock_signal",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let wallet_fns = impl_fns(std::slice::from_ref(&wallet), "Wallet");
+    let scan = screen_scan(&[&build, &view], &wallet_fns, &fields);
+    assert_eq!(
+        scan.findings,
+        [
+            "yw-engine/src/screen/build/x.rs: page calls self.events.as_ref",
+            "yw-engine/src/screen/build/x.rs: page calls self.lock_signal.signal",
+            "yw-engine/src/wallet/x.rs: reaches the wallet's `&mut self` fn writer",
+            "yw-engine/src/wallet/x.rs: the wallet helper deeper writes self.key_queue.push",
+            "yw-engine/src/wallet/x.rs: the wallet helper deeper borrows self.wc.rows mutably",
+            "yw-engine/src/wallet/x.rs: the wallet helper deeper calls self.key_queue.push",
+        ]
+    );
+    assert_eq!((scan.fns, scan.cells), (3, 1));
+    assert_eq!(
+        scan.helpers,
+        ["deeper", "helper", "rows_of", "writer"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>()
+    );
+    assert_eq!(
+        handle_uses("{ let c = &self.wallet.clock; self.events.push(1); self.clocks(); }"),
+        [
+            ("clock".to_owned(), String::new()),
+            ("events".to_owned(), "push".to_owned())
+        ]
+    );
+    assert_eq!(
+        shared_writes("fn f() { let m: Mutex<u8>; x.store(1); y . lock (); }"),
+        ["names Mutex", "calls .lock(", "calls .store("]
     );
 }
 
@@ -8843,8 +9190,10 @@ const ENGINE_PUB_FOR_SHELL: [(&str, &str, &str); 8] = [
 /// The items of spec/15 §18 31 (ㄷ) made crate-private in S5-5 (2026-11-24; before,
 /// `#[doc(hidden)] pub`), as (file under `yw-engine/src/`, item): yw-app's tests name each through
 /// `yw_engine::testkit` (a constant re-declared there, a fn wrapped), which production code never
-/// names.
-const ENGINE_NARROWED_FOR_TESTS: [(&str, &str); 20] = [
+/// names. 2026-11-24 (S5-5 review): also S23's status type and texts and the receive QR's texts
+/// (yw-engine `screen::extension`, `screen::qr`), which S5-5 had left `pub` for yw-app's tests
+/// only; testkit re-exports them from `testkit::screen`.
+const ENGINE_NARROWED_FOR_TESTS: [(&str, &str); 23] = [
     ("wallet/app_approval.rs", "network_badge"),
     ("wallet/app_approval.rs", "order_badges"),
     ("wallet/app_btc_commands.rs", "fee_choice"),
@@ -8865,11 +9214,15 @@ const ENGINE_NARROWED_FOR_TESTS: [(&str, &str); 20] = [
     ("wallet/app_yubikey/manage.rs", "T_YK_KEY_LOST"),
     ("wallet/app_yubikey/manage.rs", "T_YK_CLEAR_FUNDS"),
     ("wallet/mod.rs", "quicknode_input"),
+    ("screen/extension.rs", "ExtensionStatus"),
+    ("screen/extension.rs", "text"),
+    ("screen/qr.rs", "text"),
 ];
 
 /// The visibility `item` is declared with in `code` (production code of one file): the words
-/// before `fn`/`const`/`enum`/`struct`/`type`/a field's `:` on the declaring line (`pub`,
-/// `pub(crate)`, `pub const`, …), `None` when it is not declared there.
+/// before `fn`/`const`/`enum`/`struct`/`type`/`mod` (2026-11-24, S5-5 review)/a field's `:`
+/// on the declaring line (`pub`, `pub(crate)`, `pub const`, …), `None` when it is not declared
+/// there.
 fn declared_visibility(code: &str, item: &str) -> Option<String> {
     let bytes = code.as_bytes();
     for (at, _) in code.match_indices(item) {
@@ -8881,7 +9234,7 @@ fn declared_visibility(code: &str, item: &str) -> Option<String> {
         let line_start = code[..at].rfind('\n').map_or(0, |n| n + 1);
         let before = code[line_start..at].trim();
         let after = code[at + item.len()..].trim_start();
-        let declares = ["fn", "const", "enum", "struct", "type", "static"]
+        let declares = ["fn", "const", "enum", "struct", "type", "static", "mod"]
             .iter()
             .any(|kind| ends_with_word(before, kind))
             || (before.starts_with("pub") && after.starts_with(':') && !after.starts_with("::"));

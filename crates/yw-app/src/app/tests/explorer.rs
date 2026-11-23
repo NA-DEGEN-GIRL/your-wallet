@@ -410,11 +410,9 @@ fn english_explorer_chain_and_site_texts() {
     ));
     lines.push(yw_engine::explorer::TemplateError::Placeholder(LinkKind::Tx).text_in(Lang::En));
     lines.push(app.unlock_pending_text(&app.facts()).unwrap_or_default());
-    lines.push(
-        yw_engine::screen::extension::ExtensionStatus::Never
-            .text_in(Lang::En)
-            .to_owned(),
-    );
+    // 2026-11-24 (S5-5 review): every S23 status (was `ExtensionStatus::Never` alone; the type
+    // is crate-private since then).
+    lines.extend(yw_engine::testkit::screen::extension_status_texts(Lang::En).map(str::to_owned));
     for line in &lines {
         assert!(!has_hangul(line), "{line}");
     }
@@ -428,7 +426,7 @@ fn english_explorer_chain_and_site_texts() {
         yw_engine::wallet::app_chain_sites::text::ALL,
         yw_engine::wallet::app_evm::text::ALL,
         yw_engine::wallet::app_explorer::text::ALL,
-        yw_engine::screen::extension::text::ALL,
+        yw_engine::testkit::screen::extension_text::ALL,
         yw_engine::wallet::app_tokens::text::ALL,
         yw_engine::explorer::text::ALL,
         yw_engine::flow::evm::form::text::ALL,

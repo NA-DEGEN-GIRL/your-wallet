@@ -5,13 +5,18 @@
 //! 2026-11-24 (spec/15 §11.4 S5-5, S5 plan critic C7): moved here unchanged from yw-app
 //! `app_extension` with the screen builders; the extension folder, its checks and `폴더 열기`
 //! stay the shell's (`app_extension`), which names [`CHROME_EXTENSIONS_URL`] here.
+//!
+//! 2026-11-24 (S5-5 review, spec/15 §18 31 (ㄷ)): [`ExtensionStatus`] and [`text`] are
+//! crate-private (the screen builders draw them; no shell code names them); yw-app's tests reach
+//! them through `crate::testkit::screen` (`extension_text`, `extension_status_texts`). At S5-5
+//! itself they were `pub` for those tests only. The URL stays `pub`: the shell's `on_ext` copies it.
 
 /// The Chrome page that loads unpacked extensions.
 pub const CHROME_EXTENSIONS_URL: &str = "chrome://extensions";
 
 /// Whether an extension has talked to this app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExtensionStatus {
+pub(crate) enum ExtensionStatus {
     /// A pipe connection is open now.
     Connected,
     /// Sites are connected (an extension has connected before).
@@ -37,7 +42,7 @@ impl ExtensionStatus {
 }
 
 /// S23 texts (spec/04 §2.21; English spec/14 §5).
-pub mod text {
+pub(crate) mod text {
     yw_core::texts! {
         CONNECTED = "확장이 지금 이 앱에 연결되어 있습니다." / "The extension is connected to this app now.";
         CONNECTED_BEFORE = "확장이 연결된 적 있음 (연결된 사이트가 있습니다)."

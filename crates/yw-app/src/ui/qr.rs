@@ -139,7 +139,7 @@ mod tests {
             assert!(!kind.label(Lang::Ko).is_empty());
         }
         assert!(!has_hangul(
-            yw_engine::screen::qr::text::RECEIVE_SHARED_ADDRESS_NOTE.get(Lang::En)
+            yw_engine::testkit::screen::qr_text::RECEIVE_SHARED_ADDRESS_NOTE.get(Lang::En)
         ));
         assert_eq!(
             EvmQrKind::Eip681.label(Lang::Ko),

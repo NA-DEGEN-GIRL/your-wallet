@@ -12,8 +12,10 @@ use qrcodegen::{QrCode, QrCodeEcc};
 
 /// The fixed texts of the receive QR (spec/14). 2026-11-24 (spec/15 §11.4 S5-5): moved here
 /// unchanged from yw-app `ui::qr::text` with the receive screen's builder; the GDI layout and
-/// painting stay there.
-pub mod text {
+/// painting stay there. 2026-11-24 (S5-5 review, spec/15 §18 31 (ㄷ)): crate-private (the receive
+/// screen's builder draws it; no shell code names it); yw-app's tests reach it through
+/// `crate::testkit::screen::qr_text`. At S5-5 itself it was `pub` for those tests only.
+pub(crate) mod text {
     yw_core::texts! {
         /// Receive-screen note: one EVM address serves every EVM chain, but the screen shows only
         /// the selected network's assets.
