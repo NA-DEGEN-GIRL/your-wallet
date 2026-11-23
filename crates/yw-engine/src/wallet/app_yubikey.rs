@@ -441,12 +441,12 @@ fn parse_index(lang: Lang, input: &str, max: u32, what: &str) -> Result<u32, Str
 // 2026-11-18 (S4 A7): what the windowed secret characterization (`ui::tour_secrets`, debug test
 // builds) reads of the wizard's held buffers: a flag, never the PIN or the words. 2026-11-23 (S4d
 // E1, preflight critic C3): debug builds, read by yw-app tests through `testkit::WalletTestExt`.
+// 2026-11-23 (S4d E1 review): crate-private (E1 had it `#[doc(hidden)] pub`).
 #[cfg(debug_assertions)]
 impl YkWizard {
     /// Whether the admin PIN (W12 → job) or the words (W05 → W06) are held.
-    #[doc(hidden)]
     #[must_use]
-    pub const fn test_holds_secret(&self) -> bool {
+    pub(crate) const fn test_holds_secret(&self) -> bool {
         self.admin_pin.is_some() || self.phrase.is_some()
     }
 }

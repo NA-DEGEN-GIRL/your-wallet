@@ -7,7 +7,7 @@
 // them across the crate boundary (`yw_engine::testkit`).
 use std::cell::RefCell;
 use std::path::PathBuf;
-use yw_engine::testkit::{SessionTestExt, WalletTestExt};
+use yw_engine::testkit::WalletTestExt;
 
 use yw_core::evm::address::{Address, parse_address};
 use yw_core::evm::amount::U256;
@@ -746,35 +746,29 @@ fn idle_lock_pauses_while_a_display_window_is_shown() {
     app.settings.auto_lock_minutes = 1;
     app.idle = IdleTracker::new(0);
     assert_eq!(app.idle_window(), None);
-    *app.secret_session_mut() = Some(yw_engine::testkit::secret_session(
+    app.set_secret_session(Some(yw_engine::testkit::secret_session(
         7,
         SecretKind::Unlock,
         Purpose::Unlock,
         false,
-    ));
-    let _ = app
-        .secret_session_mut()
-        .as_mut()
-        .map(SessionTestExt::mark_shown);
+    )));
+    app.mark_secret_shown();
     assert_eq!(app.idle_window(), None, "an input window pauses nothing");
-    *app.secret_session_mut() = Some(yw_engine::testkit::secret_session(
+    app.set_secret_session(Some(yw_engine::testkit::secret_session(
         8,
         SecretKind::ShowKey,
         Purpose::ShowForBackup,
         false,
-    ));
+    )));
     assert_eq!(app.idle_window(), None, "not shown yet");
-    let _ = app
-        .secret_session_mut()
-        .as_mut()
-        .map(SessionTestExt::mark_shown);
+    app.mark_secret_shown();
     assert_eq!(app.idle_window(), Some(DISPLAY | 8));
     // Five idle minutes with the display window open: no lock.
     app.idle_tick(300_000);
     assert!(matches!(app.mode, AppMode::Unlocked { .. }));
     assert!(app.key_queue.is_empty());
     // It closed by itself (no input): the count is not restarted, the wallet locks.
-    *app.secret_session_mut() = None;
+    app.set_secret_session(None);
     app.idle_tick(300_000);
     assert_eq!(app.mode, AppMode::Locked);
     let _ = std::fs::remove_dir_all(dir);
@@ -7977,9 +7971,7 @@ fn w12_reads_its_card_counters_only_once_shown() {
 
     // A session with the step: a stale answer takes nothing; `Shown` takes it once.
     let serial = app.begin_secret(kind, purpose, false);
-    if let Some(session) = app.secret_session_mut().as_mut() {
-        session.then_when_shown(AfterShown::CardCounters { card: CARD });
-    }
+    app.then_when_secret_shown(AfterShown::CardCounters { card: CARD });
     let shown = |serial: u64| Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Shown {
@@ -8004,9 +7996,7 @@ fn w12_reads_its_card_counters_only_once_shown() {
         OpenOutcome::Failed(ErrorCode::App009),
     ] {
         let serial = app.begin_secret(kind, purpose, false);
-        if let Some(session) = app.secret_session_mut().as_mut() {
-            session.then_when_shown(AfterShown::CardCounters { card: CARD });
-        }
+        app.then_when_secret_shown(AfterShown::CardCounters { card: CARD });
         app.dispatch(Cmd::SecretOpened { serial, outcome });
         assert!(!app.secret_open());
         assert!(counter_reads(&app).is_empty(), "{outcome:?} read the card");
@@ -8095,16 +8085,12 @@ fn display_secrets_move_only_into_verified_windows() {
 
     // The secret moves out once, only for the open session's serial.
     let serial = app.begin_secret(SecretKind::ShowKey, Purpose::ShowRevealed, false);
-    if let Some(session) = app.secret_session_mut().as_mut() {
-        session.hold_display(display());
-    }
+    app.hold_display_secret(display());
     assert!(app.take_display_secret(serial + 1).is_none());
     assert!(app.take_display_secret(serial).is_some());
     assert!(app.take_display_secret(serial).is_none(), "taken twice");
     // Once shown, a held secret is never handed out again.
-    if let Some(session) = app.secret_session_mut().as_mut() {
-        session.hold_display(display());
-    }
+    app.hold_display_secret(display());
     app.dispatch(Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Shown {
@@ -8118,9 +8104,7 @@ fn display_secrets_move_only_into_verified_windows() {
 
     // An open effect of another serial makes no window and takes nothing (A-3).
     let serial = app.begin_secret(SecretKind::ShowKey, Purpose::ShowRevealed, false);
-    if let Some(session) = app.secret_session_mut().as_mut() {
-        session.hold_display(display());
-    }
+    app.hold_display_secret(display());
     let lang = app.settings.language;
     let open = |serial: u64| SecretEffect::OpenDisplay {
         serial,
@@ -8169,9 +8153,7 @@ fn display_secrets_move_only_into_verified_windows() {
         Purpose::ShowRevealed,
         false,
     );
-    if let Some(session) = app.secret_session_mut().as_mut() {
-        session.hold_display(display());
-    }
+    app.hold_display_secret(display());
     app.lock(LockReason::Manual);
     app.drain();
     assert_eq!(ops(), ["clear-clip", "approval-close:none"]);
@@ -8224,9 +8206,7 @@ fn display_secrets_move_only_into_verified_windows() {
     ] {
         app.yk_words = YkWords::None;
         let serial = app.begin_secret(kind, words, false);
-        if let Some(session) = app.secret_session_mut().as_mut() {
-            session.then_when_shown(AfterShown::YkWordsShown);
-        }
+        app.then_when_secret_shown(AfterShown::YkWordsShown);
         app.dispatch(Cmd::SecretOpened {
             serial: serial - 1,
             outcome,
@@ -8240,9 +8220,7 @@ fn display_secrets_move_only_into_verified_windows() {
     // Words already further on stay there.
     app.yk_words = YkWords::OnCard;
     let serial = app.begin_secret(kind, words, false);
-    if let Some(session) = app.secret_session_mut().as_mut() {
-        session.then_when_shown(AfterShown::YkWordsShown);
-    }
+    app.then_when_secret_shown(AfterShown::YkWordsShown);
     app.dispatch(Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Shown {

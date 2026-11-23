@@ -481,7 +481,9 @@ pub struct SettingsGuard {
 }
 
 /// What the shell read back from a display window it made (the D-4 hand-off,
-/// [`Wallet::hand_display_secret`]; 2026-11-23, S4d E1).
+/// [`Wallet::hand_display_secret`]; 2026-11-23, S4d E1). 2026-11-23 (S4d E1 review): a plain
+/// value the shell passes, so the engine trusts the shell's read-back; it is not a token only
+/// the capture-exclusion check can make.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DisplayCheck {
     /// The window exists and its capture exclusion was read back as 0x11.
@@ -2550,6 +2552,13 @@ impl Wallet {
     /// dropped (wiped) here and `None` comes back. The engine's one way for a shell to the secret:
     /// `take_display_secret` and `drop_display_secret` stay crate-private (critique A-15). Before
     /// E1 the shell's composition called those two itself (one crate).
+    ///
+    /// 2026-11-23 (S4d E1 review): E1 called this "engine-enforced". It is not: the engine trusts
+    /// the `check` the shell passes, so a shell that passes `Verified` gets the secret (this is
+    /// in effect a `pub take_display_secret` that wipes on `Unverified`). That only the shell's
+    /// composition `display_window_handoff` calls it, right after its own read-back, is the
+    /// source check `the_display_secret_moves_only_in_the_composition`; the behaviour is pinned
+    /// by the `s4_secret` goldens.
     #[must_use]
     pub fn hand_display_secret(
         &mut self,
@@ -2582,8 +2591,15 @@ impl Wallet {
         self.secret_session.as_ref()
     }
 
-    pub(crate) const fn test_secret_session_mut(&mut self) -> &mut Option<SecretSession> {
-        &mut self.secret_session
+    /// 2026-11-23 (S4d E1 review): the setup steps of `testkit::WalletTestExt` (put a session in,
+    /// change the open one); before, the slot itself (`test_secret_session_mut`) went to the
+    /// tests.
+    pub(crate) fn test_set_secret_session(&mut self, session: Option<SecretSession>) {
+        self.secret_session = session;
+    }
+
+    pub(crate) fn test_open_secret_session(&mut self) -> Option<&mut SecretSession> {
+        self.secret_session.as_mut()
     }
 
     pub(crate) const fn test_secret_serial(&self) -> u64 {

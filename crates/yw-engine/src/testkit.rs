@@ -116,14 +116,24 @@ pub fn yubikey_wallet(
 // ----- The wallet's test entries (2026-11-23, spec/15 §11.4 S4d E1) ---------------------------
 //
 // Preflight O-2, O-11, O-14 and critic C2/C3 (주인 상시 결정(2026-11-21): 권고안, spec/15 §18 28):
-// the wallet's consent and secret steps stay crate-private in yw-engine (critique A-15: an
-// `Approved` is still made only by `consume`, and no shell can reach these), but the yw-app tests
-// (the frozen A-4 tests among them, unchanged) drive them as before. Before E1 they were
-// `pub(crate)` items of the same crate. A method of these traits shadows nothing in yw-engine and
-// resolves only where the trait is imported; production code never names `testkit` (source check
-// `testkit_is_named_only_by_tests`).
+// the wallet's consent and secret steps stay crate-private in yw-engine, and the yw-app tests
+// (the frozen A-4 tests among them, unchanged) drive them through these traits as before. Before
+// E1 they were `pub(crate)` items of the same crate. A method of these traits shadows nothing in
+// yw-engine and resolves only where the trait is imported.
+//
+// 2026-11-23 (S4d E1 review): what keeps them out of production is a source check, not the
+// compiler. This module is always compiled and `pub` (`#[doc(hidden)]` only), so any crate that
+// imports a trait can call its methods; production code never names `testkit` (source check
+// `testkit_is_named_only_by_tests`, which reads yw-app and yw-engine; S7 at S4d E4 adds the
+// consent names). The review also found that E1 had added two accessors beyond the preflight's
+// recommendations that handed out the store itself (`&mut ApprovalStore`, from which `consume`
+// makes an `Approved`) and the secret session slot (`&mut Option<SecretSession>`); they are
+// replaced by [`StoreProbe`], which returns outcomes only, and by four setup steps that only put
+// state in. Still, an `Approved` is made only by an `ApprovalStore`'s `consume` (yw-core).
 
-use yw_core::approval::{ApprovalRequest, ApprovalStore, Approved};
+use yw_core::approval::{
+    ApprovalDraft, ApprovalError, ApprovalId, ApprovalRequest, ApprovalStore, Approved,
+};
 use yw_core::vault::BackupChallenge;
 
 use crate::approval::interaction::{ApprovalSession, InteractionStatus, PrepareState};
@@ -177,17 +187,25 @@ pub trait WalletTestExt {
     fn take_display_secret(&mut self, serial: u64) -> Option<DisplaySecret>;
     /// The open secret session (read-only; preflight O-11).
     fn secret_session(&self) -> Option<&SecretSession>;
-    /// The secret session slot, for the tests that set a session's state up (2026-11-23, S4d E1:
-    /// the yw-app tests wrote the private field before; the same guard as the consent steps
-    /// above, test code only).
-    fn secret_session_mut(&mut self) -> &mut Option<SecretSession>;
+    /// Puts `session` in the secret session slot (the one before is dropped and wiped here, never
+    /// handed back). 2026-11-23 (S4d E1 review): with the three steps below it replaces the slot
+    /// itself (`secret_session_mut`), which the yw-app tests that set a session up wrote through.
+    fn set_secret_session(&mut self, session: Option<SecretSession>);
+    /// The open secret session's window was reported shown (its kept step is dropped, not run).
+    fn mark_secret_shown(&mut self);
+    /// The open secret session holds `display` (the test's own secret) for its display window.
+    fn hold_display_secret(&mut self, display: DisplaySecret);
+    /// The open secret session keeps `after` for its window's `Shown`.
+    fn then_when_secret_shown(&mut self, after: AfterShown);
     /// The last secret session's serial (read-only).
     fn secret_serial(&self) -> u64;
     /// The issued approvals (read-only; the frozen and flow tests read an item's state).
     fn evm_store(&self) -> &ApprovalStore;
-    /// The issued approvals, for the tests that issue, reject or consume one themselves (the
-    /// single-use and re-consume checks; test code only, the same guard as above).
-    fn evm_store_mut(&mut self) -> &mut ApprovalStore;
+    /// The issued approvals for the tests that issue, reject or re-consume one themselves (the
+    /// single-use and re-consume checks): outcomes only, never the store or an `Approved`
+    /// ([`StoreProbe`]). 2026-11-23 (S4d E1 review): it handed out `&mut ApprovalStore` at E1;
+    /// the name stays so the two `mutable` frozen helpers E1 recorded with it keep their text.
+    fn evm_store_mut(&mut self) -> StoreProbe<'_>;
     /// Whether the import flow holds its password and its words (flags only, never a value).
     fn import_held(&self) -> (bool, bool);
     /// The backup check's word positions (read-only; positions, never a word).
@@ -256,8 +274,26 @@ impl WalletTestExt for Wallet {
         self.test_secret_session()
     }
 
-    fn secret_session_mut(&mut self) -> &mut Option<SecretSession> {
-        self.test_secret_session_mut()
+    fn set_secret_session(&mut self, session: Option<SecretSession>) {
+        self.test_set_secret_session(session);
+    }
+
+    fn mark_secret_shown(&mut self) {
+        if let Some(session) = self.test_open_secret_session() {
+            drop(session.mark_shown());
+        }
+    }
+
+    fn hold_display_secret(&mut self, display: DisplaySecret) {
+        if let Some(session) = self.test_open_secret_session() {
+            session.hold_display(display);
+        }
+    }
+
+    fn then_when_secret_shown(&mut self, after: AfterShown) {
+        if let Some(session) = self.test_open_secret_session() {
+            session.then_when_shown(after);
+        }
     }
 
     fn secret_serial(&self) -> u64 {
@@ -268,8 +304,10 @@ impl WalletTestExt for Wallet {
         &self.evm.store
     }
 
-    fn evm_store_mut(&mut self) -> &mut ApprovalStore {
-        &mut self.evm.store
+    fn evm_store_mut(&mut self) -> StoreProbe<'_> {
+        StoreProbe {
+            store: &mut self.evm.store,
+        }
     }
 
     fn import_held(&self) -> (bool, bool) {
@@ -366,12 +404,14 @@ pub fn secret_session(
     SecretSession::new(serial, kind, purpose, topmost)
 }
 
-/// A secret session's state changes the tests make (crate-private on `SecretSession`).
+/// A secret session's state changes the tests make on a session of their own, not the wallet's
+/// (crate-private on `SecretSession`; 2026-11-23, S4d E1 review: `mark_shown` and
+/// `then_when_shown` were `#[doc(hidden)] pub` inherent methods at E1, so this trait was not the
+/// only way to them as documented; they are `pub(crate)` now, and `hold_display`, which no test
+/// calls on a session of its own any more, left the trait).
 pub trait SessionTestExt {
     /// `SecretSession::mark_shown`: the window was shown; its kept step comes back.
     fn mark_shown(&mut self) -> Option<AfterShown>;
-    /// `SecretSession::hold_display`: the display secret waits in the session.
-    fn hold_display(&mut self, display: DisplaySecret);
     /// `SecretSession::then_when_shown`: a step kept for the window's `Shown`.
     fn then_when_shown(&mut self, after: AfterShown);
 }
@@ -381,12 +421,66 @@ impl SessionTestExt for SecretSession {
         Self::mark_shown(self)
     }
 
-    fn hold_display(&mut self, display: DisplaySecret) {
-        Self::hold_display(self, display);
-    }
-
     fn then_when_shown(&mut self, after: AfterShown) {
         Self::then_when_shown(self, after);
+    }
+}
+
+/// The wallet's issued approvals as [`WalletTestExt::evm_store_mut`] hands them to a test
+/// (2026-11-23, S4d E1 review): it issues, rejects and consumes on the real store, and gives back
+/// outcomes only. A consume's `Approved` is dropped here, so neither the store nor an `Approved`
+/// leaves the engine through it.
+pub struct StoreProbe<'a> {
+    store: &'a mut ApprovalStore,
+}
+
+/// The name only (the store's entries are not printed).
+impl std::fmt::Debug for StoreProbe<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("StoreProbe").finish_non_exhaustive()
+    }
+}
+
+/// A consume went through (the `Approved` was made and dropped inside [`StoreProbe::consume`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Consumed;
+
+impl StoreProbe<'_> {
+    /// `ApprovalStore::issue` on the wallet's store.
+    ///
+    /// # Errors
+    ///
+    /// The store's [`ApprovalError`].
+    pub fn issue(
+        &mut self,
+        draft: ApprovalDraft,
+        now_ms: u64,
+        now_unix_ms: u64,
+    ) -> Result<ApprovalRequest, ApprovalError> {
+        self.store.issue(draft, now_ms, now_unix_ms)
+    }
+
+    /// `ApprovalStore::reject` on the wallet's store.
+    pub fn reject(&mut self, id: ApprovalId) {
+        self.store.reject(id);
+    }
+
+    /// `ApprovalStore::consume` on the wallet's store, outcome only.
+    ///
+    /// # Errors
+    ///
+    /// The store's [`ApprovalError`] (the entry's state changes as the store's own consume
+    /// changes it).
+    pub fn consume(
+        &mut self,
+        id: ApprovalId,
+        shown: [u8; 32],
+        now_ms: u64,
+    ) -> Result<Consumed, ApprovalError> {
+        self.store.consume(id, shown, now_ms).map(|approved| {
+            drop(approved);
+            Consumed
+        })
     }
 }
 

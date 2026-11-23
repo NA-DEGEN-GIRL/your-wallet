@@ -1629,6 +1629,7 @@ fn steps_after_an_open_wait_for_its_answer() {
 fn form_steps_wait_for_the_shown_window() {
     use yw_engine::secret::{SecretFormOp, SecretKind};
 
+    use yw_engine::testkit::SessionTestExt;
     use yw_engine::wallet::Purpose;
     use yw_engine::wallet::secret_session::AfterShown;
 
@@ -3515,7 +3516,7 @@ fn wallet_chains_on_made_up_code() {
 /// `toggle_ai_panel` (`Step::AiExpand`), `hold_shown_ai_for_ack` (the AI body's paint) and the
 /// start steps `install_commit_read`, `wer_unprotected_noted`, `browser_attached`,
 /// `workers_attached`. Each is called from the shell only as [`SHELL_WALLET_CALLS`] lists.
-static WALLET_FNS: [(&str, &str); 988] = [
+static WALLET_FNS: [(&str, &str); 989] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -4500,12 +4501,14 @@ static WALLET_FNS: [(&str, &str); 988] = [
     ("E0b", "new"),
     // 2026-11-23 (S4d E1): the display secret's one hand-off (preflight O-3), the shell's read
     // of an open, unshown session and of the queue's length, and the read-only accessors the
-    // test traits (`yw_engine::testkit`) use.
+    // test traits (`yw_engine::testkit`) use. 2026-11-23 (S4d E1 review): `test_secret_session_mut`,
+    // the slot itself, became the setup steps `test_set_secret_session`/`test_open_secret_session`.
     ("E1", "hand_display_secret"),
     ("E1", "secret_unshown"),
     ("E1", "queued_effects"),
     ("E1", "test_secret_session"),
-    ("E1", "test_secret_session_mut"),
+    ("E1", "test_set_secret_session"),
+    ("E1", "test_open_secret_session"),
     ("E1", "test_secret_serial"),
     ("E1", "test_import_held"),
     ("E1", "test_challenge"),

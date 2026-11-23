@@ -87,13 +87,13 @@ impl core::fmt::Debug for MnUi {
 // 2026-11-18 (S4 A7): what the windowed secret characterization (`ui::tour_secrets`, debug test
 // builds) reads of the held buffers: flags only, never the words. 2026-11-23 (S4d E1, preflight
 // critic C3): debug builds, read by yw-app tests through `testkit::WalletTestExt` (`cfg(test)`
-// does not cross crates).
+// does not cross crates). 2026-11-23 (S4d E1 review): crate-private (E1 had it `#[doc(hidden)]
+// pub`), so the testkit trait is the only way to it.
 #[cfg(debug_assertions)]
 impl MnUi {
     /// Whether the words between W05 and W06, and an open quiz, are held.
-    #[doc(hidden)]
     #[must_use]
-    pub const fn test_holds(&self) -> (bool, bool) {
+    pub(crate) const fn test_holds(&self) -> (bool, bool) {
         (self.phrase.is_some(), self.challenge.is_some())
     }
 }

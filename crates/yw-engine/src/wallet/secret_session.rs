@@ -160,9 +160,10 @@ impl SecretSession {
     }
 
     /// The step to take once the window is shown (replaces one set before). 2026-11-20 (S4 P9):
-    /// no longer `const` (the step it replaces may hold texts to drop).
-    #[doc(hidden)]
-    pub fn then_when_shown(&mut self, after: AfterShown) {
+    /// no longer `const` (the step it replaces may hold texts to drop). 2026-11-23 (S4d E1
+    /// review): crate-private (E1 had it `#[doc(hidden)] pub`); tests reach it through
+    /// `testkit::SessionTestExt`.
+    pub(crate) fn then_when_shown(&mut self, after: AfterShown) {
         self.after_shown = Some(after);
     }
 
@@ -192,10 +193,9 @@ impl SecretSession {
     }
 
     /// The shell reported the window shown; returns the step to take now, if one was set (taken,
-    /// so it runs once).
+    /// so it runs once). 2026-11-23 (S4d E1 review): crate-private, as `then_when_shown`.
     #[must_use]
-    #[doc(hidden)]
-    pub const fn mark_shown(&mut self) -> Option<AfterShown> {
+    pub(crate) const fn mark_shown(&mut self) -> Option<AfterShown> {
         self.shown = true;
         self.after_shown.take()
     }

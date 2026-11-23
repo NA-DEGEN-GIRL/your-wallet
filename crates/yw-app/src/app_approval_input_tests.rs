@@ -1702,6 +1702,11 @@ fn approve_enter_is_physical_and_not_injected() {
 /// the window that got the message (`Received`, captured by `Forward` when the window was made);
 /// `on_approval_input` drops an input of another window before anything else, and the flow half
 /// of the former `interaction()` is `approval_event`.
+/// 2026-11-23 (S4d E1 review): the flow half moved to yw-engine at E1, and E1 checked there only
+/// the router file and the gate's `.event(` count, so an approving event built in another wallet
+/// file went unseen. The engine's production code is now scanned like this crate's: no wallet
+/// file names an approving event or builds an `ApprovalInput {`, and outside the wallet they
+/// occur only in `approval/interaction.rs` and `approval/flow.rs`.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -1855,36 +1860,84 @@ fn approving_input_is_built_only_by_the_mapper() {
             ("app_approval.rs", "window_input(", 2),
         ]
     );
-    let router = code_only(include_str!("../../yw-engine/src/wallet/mod.rs"));
-    let gate_writer = code_only(include_str!("../../yw-engine/src/wallet/approval_flow.rs"));
-    assert_eq!(
-        router.matches("Cmd::Approval(").count(),
-        1,
-        "the router's arm"
-    );
-    let gate_code = gate_writer
-        .split(
-            "#[cfg(test)]
-mod tests",
-        )
-        .next()
-        .unwrap_or_default();
-    assert_eq!(
-        gate_code.matches(".event(").count(),
-        1,
-        "the gate's one event"
-    );
-    for approving in [
-        "ApproveActivated",
-        "PointerPressed",
-        "SpacePressed",
-        "ApprovalInput {",
-    ] {
-        assert!(
-            !router.contains(approving),
-            "{approving} in the wallet's router"
-        );
+    // 2026-11-23 (S4d E1 review, plan A-6 "extended at E1"): the flow half is yw-engine's, and
+    // `InteractionEvent` and `ApprovalInput` are yw-engine types, so the compiler does not stop
+    // wallet code from building an approving event itself (a review probe that turned a `Tick`
+    // into `ApproveActivated { physical: true }` in `Wallet::approval_event` passed every check
+    // when E1 checked only the router file). The scan therefore reads every production file of
+    // yw-engine's `src` the same way (test files, `#[cfg(test)]` modules and comment lines
+    // skipped; `testkit.rs` is always compiled, so it is read too): no wallet file
+    // (`wallet/**`) names an approving event or builds an `ApprovalInput {`, and outside the
+    // wallet they occur only where the gate defines and matches them (`approval/interaction.rs`)
+    // and in `approval/flow.rs` (the type's definition and the early-release match). The
+    // wallet's way in is the router's one `Cmd::Approval(` arm (`wallet/mod.rs`) and the gate's
+    // one `.event(` (`wallet/approval_flow.rs`); none of the yw-app input types or calls occurs
+    // there. Asserts that it read the engine (> 100 files, > 30 of them the wallet's; A-20).
+    let engine_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("yw-engine")
+        .join("src");
+    let mut engine = Vec::new();
+    sources(&engine_root, &engine_root, &mut engine);
+    let wallet_files = engine
+        .iter()
+        .filter(|(path, _)| path.starts_with("wallet/"))
+        .count();
+    assert!(engine.len() > 100, "{}", engine.len());
+    assert!(wallet_files > 30, "{wallet_files}");
+    let mut engine_builders: Vec<(&str, &str)> = Vec::new();
+    let mut wallet_ways: Vec<(&str, &str, usize)> = Vec::new();
+    for (path, text) in &engine {
+        let code = production(text);
+        for name in APPROVING {
+            if names(&code, name) {
+                engine_builders.push((path.as_str(), name));
+            }
+        }
+        if !path.starts_with("wallet/") {
+            continue;
+        }
+        for name in ["Trusted::", "TrustedSignals {", "Sampled("] {
+            if names(&code, name) {
+                wallet_ways.push((path.as_str(), name, 1));
+            }
+        }
+        for call in [".deliver(", ".event(", "window_input(", "Cmd::Approval("] {
+            let count = code.matches(call).count();
+            if count > 0 {
+                wallet_ways.push((path.as_str(), call, count));
+            }
+        }
     }
+    engine_builders.sort_unstable();
+    assert!(
+        engine_builders
+            .iter()
+            .all(|(path, _)| !path.starts_with("wallet/")),
+        "an approving event or input built in the wallet: {engine_builders:?}"
+    );
+    assert_eq!(
+        engine_builders,
+        [
+            ("approval/flow.rs", "ApprovalInput {"),
+            ("approval/flow.rs", "PointerReleased"),
+            ("approval/flow.rs", "SpaceReleased"),
+            ("approval/interaction.rs", "ApproveActivated"),
+            ("approval/interaction.rs", "PointerPressed"),
+            ("approval/interaction.rs", "PointerReleased"),
+            ("approval/interaction.rs", "SpacePressed"),
+            ("approval/interaction.rs", "SpaceReleased"),
+        ]
+    );
+    wallet_ways.sort_unstable();
+    assert_eq!(
+        wallet_ways,
+        [
+            ("wallet/approval_flow.rs", ".event(", 1),
+            ("wallet/mod.rs", "Cmd::Approval(", 1),
+        ],
+        "the router's arm and the gate's one event"
+    );
     let code = approval_production();
     let run_step = folded(item(&code, "    fn run_step(", 4));
     in_order(

@@ -428,9 +428,11 @@ pub struct EvmUi {
     /// Approval queue (app items and dApp requests).
     pub queue: ApprovalQueue<QueuedItem>,
     /// Issued approvals. 2026-11-23 (S4d E1, critique A-15, AGENTS.md §6 "only `consume` creates
-    /// `Approved`"): crate-private, so no shell reaches `consume` (the flow's `consume_and_sign`
-    /// is the only caller); the yw-app tests read and drive it through
-    /// `testkit::WalletTestExt::{evm_store, evm_store_mut}`.
+    /// `Approved`"): crate-private, so no shell reaches `consume` through the field (the flow's
+    /// `consume_and_sign` is the only production caller); the yw-app tests read and drive it
+    /// through `testkit::WalletTestExt::{evm_store, evm_store_mut}`. 2026-11-23 (S4d E1 review):
+    /// `evm_store_mut` gives a `testkit::StoreProbe` (outcomes only, never the store or an
+    /// `Approved`); the testkit is kept out of production by a source check, not by privacy.
     pub(crate) store: ApprovalStore,
     /// Send slots `(chain, account)` (spec/03 §3.6).
     pub slots: Vec<(u64, Address)>,
