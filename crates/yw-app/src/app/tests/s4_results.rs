@@ -6111,13 +6111,115 @@ fn the_probe_is_installed_only_by_tests() {
     );
 }
 
+/// The form of a kept facade entry's re-export (2026-11-23, S4 E3b review; critic C16): the
+/// entries a frozen integration test names are `#[doc(hidden)] pub` (that test sees the non-test
+/// library), the entries only frozen unit tests name are `#[cfg(test)] pub(crate)`.
+const DOC_HIDDEN: &str = "#[doc(hidden)] pub";
+/// See [`DOC_HIDDEN`].
+const TEST_ONLY: &str = "#[cfg(test)] pub(crate)";
+
 /// The facade entries kept for the bodies of the tests frozen at F-A (2026-11-23, S4d E3b,
-/// preflight §2 E3b, critic C16): `yw-app/src/lib.rs` re-exports these yw-engine modules ...
-const KEPT_LIB_FACADE: [&str; 9] = [
-    "btc", "errors", "events", "flow", "meta", "network", "sol", "workers", "yubikey",
+/// preflight §2 E3b, critic C16), with the form of their re-export: `yw-app/src/lib.rs`
+/// re-exports these yw-engine modules ...
+const KEPT_LIB_FACADE: [(&str, &str); 9] = [
+    ("btc", DOC_HIDDEN),
+    ("errors", DOC_HIDDEN),
+    ("events", DOC_HIDDEN),
+    ("flow", TEST_ONLY),
+    ("meta", DOC_HIDDEN),
+    ("network", TEST_ONLY),
+    ("sol", TEST_ONLY),
+    ("workers", DOC_HIDDEN),
+    ("yubikey", TEST_ONLY),
 ];
 /// ... and `yw-app/src/ui/mod.rs` these.
-const KEPT_UI_FACADE: [&str; 2] = ["approval", "approval_view"];
+const KEPT_UI_FACADE: [(&str, &str); 2] = [("approval", DOC_HIDDEN), ("approval_view", DOC_HIDDEN)];
+
+/// The other `pub`/`pub(…)` re-exports of yw-engine items in yw-app `src` (2026-11-23, S4 E3b
+/// review), as `file|form use path` with the whitespace collapsed; any other is refused, so no
+/// facade entry comes back elsewhere. The S4d E1 test-path shims of the frozen tests (preflight
+/// O-1, spec/15 §18 28; they go when the S4 freeze ends): `app.rs` `TestState` and `AppMode`,
+/// `Purpose`, `Wallet`, the chain-sites test holder's glob, and the `lib.rs` modules
+/// `app_browser`, `app_btc`, `app_card`, `app_evm`, `app_sol_dapp`. And the store's own API
+/// names of the reset (2026-11-17, S2: defined in `wallet_files`, named `crate::store::…` by the
+/// store's callers; items, not a moved module).
+const OTHER_ENGINE_REEXPORTS: [&str; 10] = [
+    "src/app.rs|#[cfg(test)] pub(crate) use yw_engine::wallet::{AppMode, Purpose, Wallet}",
+    "src/app.rs|#[doc(hidden)] pub use yw_engine::wallet::TestState",
+    "src/app_chain_sites.rs|pub(crate) use yw_engine::wallet::app_chain_sites::*",
+    "src/lib.rs|pub use yw_engine::wallet::app_btc::{ ADDRESS_MODE_BUSY, BtcAction, \
+     BtcAddSource, NOT_SENT, REMOVE_BUSY_APPROVAL, REMOVE_BUSY_IN_FLIGHT, }",
+    "src/lib.rs|pub(crate) use yw_engine::wallet::app_browser::{ BrowserUi, GrantWrite, \
+     SignWaiter, SiteRows, SiteSigner, }",
+    "src/lib.rs|pub(crate) use yw_engine::wallet::app_card::{ CardJobKind, T_CARD_SITE_GONE, \
+     T_CARD_SITE_REVOKED, T_CARD_TOUCH, approval_touches, touch_text, }",
+    "src/lib.rs|pub(crate) use yw_engine::wallet::app_evm::QueuedItem",
+    "src/lib.rs|pub(crate) use yw_engine::wallet::app_sol_dapp::SolBroadcast",
+    "src/store.rs|pub use yw_engine::wallet_files::file_name",
+    "src/store/reset.rs|pub use yw_engine::wallet_files::{FOLDER_PREFIX, README_NAME, \
+     ResetError, ResetReport}",
+];
+
+/// The files the tests frozen at F-A are in now where that is not their F-A file, relative to
+/// the crate (`frozen-tests.txt` keeps the F-A path and never changes): the eight A-4 tests of
+/// `app_chain_sites.rs` are in its `#[path]` child `app/tests/chain_sites.rs` since S4 W0
+/// (2026-11-21).
+const FROZEN_MOVED: [(&str, &str); 1] =
+    [("src/app_chain_sites.rs", "src/app/tests/chain_sites.rs")];
+
+/// The (file relative to the crate, fn name) of every yw-app test frozen at F-A, at its file of
+/// now (2026-11-23, S4 E3b review: a pair, not a leaf name alone, so a fn of another file with a
+/// frozen test's name, e.g. one of the `print` recorders, is no frozen test).
+fn frozen_app_tests() -> BTreeSet<(String, String)> {
+    include_str!("s4_flow/frozen-tests.txt")
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let file = parts.next()?.strip_prefix("yw-app/")?;
+            let name = parts.next()?;
+            let file = FROZEN_MOVED
+                .iter()
+                .find(|&&(then, _)| then == file)
+                .map_or(file, |&(_, now)| now);
+            Some((file.to_owned(), name.to_owned()))
+        })
+        .collect()
+}
+
+/// Whether `code` holds `name` as a whole identifier (a frozen test's file names it: in its
+/// `fn`, or in the table of a test-generating macro such as the flow goldens').
+fn names_word(code: &str, name: &str) -> bool {
+    let bytes = code.as_bytes();
+    code.match_indices(name).any(|(at, _)| {
+        let end = at + name.len();
+        (at == 0 || !is_ident(bytes[at - 1])) && bytes.get(end).is_none_or(|&b| !is_ident(b))
+    })
+}
+
+/// Every file of `frozen_app_tests` names each of its frozen tests, so a stale `FROZEN_MOVED`
+/// (a frozen test moved again) fails here instead of allowing nothing.
+fn assert_frozen_files_name_their_tests(
+    frozen: &BTreeSet<(String, String)>,
+    read: &dyn Fn(&str) -> String,
+) {
+    let files: BTreeSet<&str> = frozen.iter().map(|(file, _)| file.as_str()).collect();
+    for file in files {
+        let code = read(file);
+        let missing: Vec<&str> = frozen
+            .iter()
+            .filter(|(now, name)| now == file && !names_word(&code, name))
+            .map(|(_, name)| name.as_str())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "frozen tests not in {file}: {missing:?}"
+        );
+    }
+}
+
+fn is_kept(list: &[(&str, &str)], name: &str) -> bool {
+    list.iter().any(|&(kept, _)| kept == name)
+}
 
 /// The identifier that starts at `at` in `code` (empty when none does).
 fn ident_at(code: &str, at: usize) -> &str {
@@ -6128,26 +6230,67 @@ fn ident_at(code: &str, at: usize) -> &str {
     &code[at..end]
 }
 
-/// The kept facade entry a path names whose first segment starts at `at` of `code`, if any.
-fn kept_entry_at(code: &str, at: usize) -> Option<String> {
-    let first = ident_at(code, at);
-    if KEPT_LIB_FACADE.contains(&first) {
-        return Some(first.to_owned());
-    }
-    let after = at + first.len();
-    if first == "ui" && code[after..].starts_with("::") {
-        let second = ident_at(code, after + 2);
-        if KEPT_UI_FACADE.contains(&second) {
-            return Some(format!("ui::{second}"));
+/// The offsets where the entries of the `{ … }` group whose `{` is at `open` of `code` start
+/// (its own entries; a `,` of a nested group splits nothing here).
+fn group_entries(code: &str, open: usize) -> Vec<usize> {
+    let bytes = code.as_bytes();
+    let close = close_of(bytes, open);
+    let mut depth = 0_usize;
+    let mut entry = open + 1;
+    let mut leads = Vec::new();
+    for (n, &byte) in bytes.iter().enumerate().take(close + 1).skip(open + 1) {
+        match byte {
+            b'{' => depth += 1,
+            b',' | b'}' if depth == 0 => {
+                let text = &code[entry..n];
+                if !text.trim().is_empty() {
+                    leads.push(entry + (text.len() - text.trim_start().len()));
+                }
+                entry = n + 1;
+            }
+            b'}' => depth -= 1,
+            _ => {}
         }
     }
-    None
+    leads
+}
+
+/// The kept facade entries a path names whose first segment (or `{ … }` group) starts at `at` of
+/// `code`: `errors::…`, `ui::approval::…`, `{errors::…, ui::{approval::…}}`, `ui::{approval::…,
+/// qr}` (2026-11-23, S4 E3b review: before, a group right after `ui::` was not read).
+fn kept_entries_at(code: &str, at: usize) -> Vec<String> {
+    if code[at..].starts_with('{') {
+        return group_entries(code, at)
+            .into_iter()
+            .flat_map(|lead| kept_entries_at(code, lead))
+            .collect();
+    }
+    let first = ident_at(code, at);
+    if is_kept(&KEPT_LIB_FACADE, first) {
+        return vec![first.to_owned()];
+    }
+    let after = at + first.len();
+    if first != "ui" || !code[after..].starts_with("::") {
+        return Vec::new();
+    }
+    let rest = after + 2;
+    let seconds = if code[rest..].starts_with('{') {
+        group_entries(code, rest)
+    } else {
+        vec![rest]
+    };
+    seconds
+        .into_iter()
+        .map(|lead| ident_at(code, lead))
+        .filter(|second| is_kept(&KEPT_UI_FACADE, second))
+        .map(|second| format!("ui::{second}"))
+        .collect()
 }
 
 /// The offsets of every use of a kept facade entry in `code`, with the entry: a path that starts
 /// at one of `roots` (`crate::` and, for the binary `main.rs`, `yw_app::` in yw-app `src`;
 /// `yw_app::` in `tests/`) or at `super::` (relative paths; no yw-app module has a child of one
-/// of these names), whole or inside a `{ … }` group.
+/// of these names), whole or inside `{ … }` groups at any depth.
 fn facade_uses(code: &str, roots: &[&str]) -> Vec<(usize, String)> {
     let bytes = code.as_bytes();
     let mut found = Vec::new();
@@ -6160,26 +6303,11 @@ fn facade_uses(code: &str, roots: &[&str]) -> Vec<(usize, String)> {
             while code[rest..].starts_with("super::") {
                 rest += "super::".len();
             }
-            if !code[rest..].starts_with('{') {
-                found.extend(kept_entry_at(code, rest).map(|entry| (at, entry)));
-                continue;
-            }
-            let close = close_of(bytes, rest);
-            let mut depth = 0_usize;
-            let mut entry = rest + 1;
-            for (n, &byte) in bytes.iter().enumerate().take(close + 1).skip(rest + 1) {
-                match byte {
-                    b'{' => depth += 1,
-                    b'}' if depth > 0 => depth -= 1,
-                    b',' | b'}' => {
-                        let text = &code[entry..n];
-                        let lead = entry + (text.len() - text.trim_start().len());
-                        found.extend(kept_entry_at(code, lead).map(|name| (at, name)));
-                        entry = n + 1;
-                    }
-                    _ => {}
-                }
-            }
+            found.extend(
+                kept_entries_at(code, rest)
+                    .into_iter()
+                    .map(|entry| (at, entry)),
+            );
         }
     }
     found
@@ -6207,10 +6335,58 @@ fn fns_around(code: &str, at: usize) -> Vec<&str> {
     names
 }
 
-/// The names the `use yw_engine::…;` statements at depth 0 of `code` bind.
-fn engine_reexports(code: &str) -> BTreeSet<String> {
+/// The outer attributes and the visibility of the item whose `use` keyword is at `at` of `code`,
+/// separated by one space (`#[doc(hidden)] pub`; empty for a private `use` with no attribute).
+/// An inner attribute (`#![…]`) ends the search.
+fn item_form(code: &str, at: usize) -> String {
+    let mut head = code[..at].trim_end();
+    let mut vis = "";
+    for word in ["pub(crate)", "pub(super)", "pub(self)", "pub"] {
+        if let Some(rest) = head.strip_suffix(word)
+            && rest.bytes().next_back().is_none_or(|byte| !is_ident(byte))
+        {
+            vis = word;
+            head = rest.trim_end();
+            break;
+        }
+    }
+    let mut parts = vec![vis.to_owned()];
+    while head.ends_with(']') {
+        let bytes = head.as_bytes();
+        let mut depth = 0_usize;
+        let mut open = None;
+        for (n, &byte) in bytes.iter().enumerate().rev() {
+            match byte {
+                b']' => depth += 1,
+                b'[' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        open = Some(n);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(open) = open.filter(|&open| head[..open].ends_with('#')) else {
+            break;
+        };
+        let attr: String = head[open - 1..]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        parts.insert(0, attr);
+        head = head[..open - 1].trim_end();
+    }
+    parts.retain(|part| !part.is_empty());
+    parts.join(" ")
+}
+
+/// The names the `use yw_engine::…;` statements at depth 0 of `code` bind, each with its item's
+/// form (`item_form`), sorted.
+fn engine_reexports(code: &str) -> Vec<(String, String)> {
     let blocks = blocks_of(code.as_bytes());
-    let mut names = BTreeSet::new();
+    let mut names = Vec::new();
     for (at, _) in code.match_indices("use yw_engine::") {
         if blocks
             .iter()
@@ -6218,6 +6394,7 @@ fn engine_reexports(code: &str) -> BTreeSet<String> {
         {
             continue;
         }
+        let form = item_form(code, at);
         let end = code[at..].find(';').map_or(code.len(), |n| at + n);
         let path = &code[at + "use yw_engine::".len()..end];
         let entries: Vec<&str> = match path.find('{') {
@@ -6234,35 +6411,56 @@ fn engine_reexports(code: &str) -> BTreeSet<String> {
                 Some((_, alias)) => alias,
                 None => entry.rsplit("::").next().unwrap_or(entry),
             };
-            names.insert(bound.trim().to_owned());
+            names.push((bound.trim().to_owned(), form.clone()));
         }
     }
+    names.sort();
     names
+}
+
+/// Every `pub`/`pub(…)` `use yw_engine::…;` of `code` (in a block too, unless `depth0` is
+/// false: then only those inside a block), as `file|form use path` with the whitespace
+/// collapsed.
+fn pub_engine_uses(rel: &str, code: &str, depth0: bool) -> Vec<String> {
+    let blocks = blocks_of(code.as_bytes());
+    let mut found = Vec::new();
+    for (at, _) in code.match_indices("use yw_engine::") {
+        let nested = blocks
+            .iter()
+            .any(|block| block.open < at && at < block.close);
+        let form = item_form(code, at);
+        if !(depth0 || nested) || !form.split(' ').any(|word| word.starts_with("pub")) {
+            continue;
+        }
+        let end = code[at..].find(';').map_or(code.len(), |n| at + n);
+        let text: Vec<&str> = code[at..end].split_whitespace().collect();
+        found.push(format!("{rel}|{form} {}", text.join(" ")));
+    }
+    found
 }
 
 /// Source check `the_kept_facade_is_named_only_by_frozen_tests` (2026-11-23, S4d E3b, preflight
 /// §2 E3b "optional source check", critic C16): the S2 facade is gone but for the entries that
 /// the bodies of the tests frozen at F-A name (`s4_flow/frozen-tests.txt`, never changed), and no
 /// other code names them. Every `crate::`/`yw_app::`/`super::` path in yw-app `src` and every
-/// `yw_app::`/`super::` path in yw-app `tests/` that starts with a kept entry lies in the body of
-/// a frozen test, and every kept entry has such a user (an unused one goes). `lib.rs` and
-/// `ui/mod.rs` re-export exactly the kept entries from yw-engine, and `browser/mod.rs` nothing.
-/// Finds what it checks (A-20).
+/// `yw_app::`/`super::` path in yw-app `tests/` that starts with a kept entry (whole or in
+/// `{ … }` groups) lies in the body of a frozen test of that file, and every kept entry has such
+/// a user (an unused one goes). `lib.rs` and `ui/mod.rs` re-export exactly the kept entries from
+/// yw-engine, each in its form (`#[doc(hidden)] pub` or `#[cfg(test)] pub(crate)`), and
+/// `browser/mod.rs` nothing; yw-app `src` has no other public yw-engine re-export than
+/// `OTHER_ENGINE_REEXPORTS`. Finds what it checks (A-20). 2026-11-23 (S4 E3b review): the
+/// groups after `ui::`, the forms, the other re-exports and the (file, fn) pairs were added.
 #[test]
 fn the_kept_facade_is_named_only_by_frozen_tests() {
-    let frozen: BTreeSet<&str> = include_str!("s4_flow/frozen-tests.txt")
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let file = parts.next()?;
-            parts.next().filter(|_| file.starts_with("yw-app/"))
-        })
-        .collect();
+    let frozen = frozen_app_tests();
     assert!(frozen.len() > 50, "frozen yw-app tests: {}", frozen.len());
     let app = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |rel: &str| code_only(&std::fs::read_to_string(app.join(rel)).unwrap());
+    assert_frozen_files_name_their_tests(&frozen, &read);
     let mut scanned = 0_usize;
     let mut used: BTreeMap<String, usize> = BTreeMap::new();
     let mut stray = Vec::new();
+    let mut reexports = Vec::new();
     let src: &[&str] = &["crate::", "yw_app::"];
     for (dir, roots) in [("src", src), ("tests", &["yw_app::"])] {
         let mut stack = vec![app.join(dir)];
@@ -6279,15 +6477,19 @@ fn the_kept_facade_is_named_only_by_frozen_tests() {
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
-            if rel == "src/lib.rs" || rel == "src/ui/mod.rs" {
+            let code = code_only(&std::fs::read_to_string(&path).unwrap());
+            let facade = rel == "src/lib.rs" || rel == "src/ui/mod.rs";
+            if dir == "src" {
+                reexports.extend(pub_engine_uses(&rel, &code, !facade));
+            }
+            if facade {
                 continue;
             }
             scanned += 1;
-            let code = code_only(&std::fs::read_to_string(&path).unwrap());
             for (at, entry) in facade_uses(&code, roots) {
                 if fns_around(&code, at)
                     .iter()
-                    .any(|name| frozen.contains(name))
+                    .any(|&name| frozen.contains(&(rel.clone(), name.to_owned())))
                 {
                     *used.entry(entry).or_default() += 1;
                 } else {
@@ -6304,31 +6506,46 @@ fn the_kept_facade_is_named_only_by_frozen_tests() {
     );
     let kept: BTreeSet<String> = KEPT_LIB_FACADE
         .iter()
-        .map(|&name| name.to_owned())
-        .chain(KEPT_UI_FACADE.iter().map(|name| format!("ui::{name}")))
+        .map(|&(name, _)| name.to_owned())
+        .chain(
+            KEPT_UI_FACADE
+                .iter()
+                .map(|&(name, _)| format!("ui::{name}")),
+        )
         .collect();
     assert_eq!(
         used.keys().cloned().collect::<BTreeSet<_>>(),
         kept,
         "every kept entry has a frozen user: {used:?}"
     );
-    let read = |rel: &str| code_only(&std::fs::read_to_string(app.join(rel)).unwrap());
-    let names = |list: &[&str]| list.iter().map(|&name| name.to_owned()).collect();
-    let lib: BTreeSet<String> = names(&KEPT_LIB_FACADE);
+    let forms = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+        list.iter()
+            .map(|&(name, form)| (name.to_owned(), form.to_owned()))
+            .collect()
+    };
     assert_eq!(
         engine_reexports(&read("src/lib.rs")),
-        lib,
-        "lib.rs re-exports"
+        forms(&KEPT_LIB_FACADE),
+        "lib.rs re-exports and their forms"
     );
-    let ui: BTreeSet<String> = names(&KEPT_UI_FACADE);
     assert_eq!(
         engine_reexports(&read("src/ui/mod.rs")),
-        ui,
-        "ui/mod.rs re-exports"
+        forms(&KEPT_UI_FACADE),
+        "ui/mod.rs re-exports and their forms"
     );
     assert!(
         !read("src/browser/mod.rs").contains("use "),
         "browser/mod.rs re-exports nothing"
+    );
+    reexports.sort();
+    let mut listed: Vec<String> = OTHER_ENGINE_REEXPORTS
+        .iter()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    listed.sort();
+    assert_eq!(
+        reexports, listed,
+        "the public yw-engine re-exports of yw-app src beside the kept facade"
     );
 }
 
@@ -6349,7 +6566,7 @@ fn facade_uses_on_made_up_code() {
     assert_eq!(fns_around(code, uses[3].0), ["other"]);
     assert_eq!(
         engine_reexports(code),
-        BTreeSet::from(["approval_view", "btc", "e"].map(str::to_owned)),
+        [("approval_view", ""), ("btc", ""), ("e", "")].map(|(n, f)| (n.to_owned(), f.to_owned())),
         "depth 0 only, aliases bound"
     );
     let tests = "fn t() { yw_app::ui::approval_view::x(); yw_app::ui::approval_input::y(); }";
@@ -6358,4 +6575,66 @@ fn facade_uses_on_made_up_code() {
         .map(|u| u.1)
         .collect();
     assert_eq!(found, ["ui::approval_view"]);
+    // 2026-11-23 (S4 E3b review): groups after `ui::` and groups in groups.
+    let groups = "use crate::ui::{approval::QueueOutcome, qr};\n\
+                  use crate::{ui::{approval_view::Block}, store::{a, b}};\n\
+                  use crate::ui::{self, approval_input::x, approval_view};\n\
+                  use crate::{store::{ui, errors_x}, sol};\n\
+                  fn f() { super::{errors::E, ui::{qr, approval::{Q, R}}}; }\n\
+                  use yw_app::ui::{approval::QueueOutcome};\n\
+                  use yw_app::{ui::{approval_view::Block}};\n";
+    let found: Vec<String> = facade_uses(groups, &["crate::", "yw_app::"])
+        .into_iter()
+        .map(|u| u.1)
+        .collect();
+    assert_eq!(
+        found,
+        [
+            "ui::approval",
+            "ui::approval_view",
+            "ui::approval_view",
+            "sol",
+            "ui::approval",
+            "ui::approval_view",
+            "errors",
+            "ui::approval",
+        ]
+    );
+    // The forms of the re-exports (2026-11-23, S4 E3b review).
+    let forms = "#![forbid(unsafe_code)]\n// note\n#[doc(hidden)]\npub use yw_engine::{btc, meta};\n\
+                 #[cfg(test)]\npub(crate) use yw_engine::flow;\nuse yw_engine::sol;\n\
+                 pub use yw_engine::network;\nmod m {\n    pub(crate) use yw_engine::zec::X;\n}\n";
+    assert_eq!(
+        engine_reexports(&code_only(forms)),
+        [
+            ("btc", DOC_HIDDEN),
+            ("flow", TEST_ONLY),
+            ("meta", DOC_HIDDEN),
+            ("network", "pub"),
+            ("sol", ""),
+        ]
+        .map(|(n, f)| (n.to_owned(), f.to_owned()))
+    );
+    assert_eq!(
+        pub_engine_uses("x.rs", &code_only(forms), false),
+        ["x.rs|pub(crate) use yw_engine::zec::X"]
+    );
+    assert_eq!(
+        pub_engine_uses("x.rs", &code_only(forms), true).len(),
+        4,
+        "btc/meta, flow, network, zec; not the private sol"
+    );
+    // A frozen test's name alone is no frozen test: the pair names its file of now.
+    let frozen = frozen_app_tests();
+    let pair = |file: &str, name: &str| (file.to_owned(), name.to_owned());
+    assert!(frozen.contains(&pair(
+        "src/app/tests/chain_sites.rs",
+        "signatures_and_hashes_answer_only_while_the_grant_holds"
+    )));
+    assert!(frozen.contains(&pair("src/app_approval_flow_tests.rs", "print")));
+    assert!(!frozen.contains(&pair("src/app/tests/s3_census.rs", "print")));
+    assert!(!frozen.contains(&pair(
+        "src/app_chain_sites.rs",
+        "signatures_and_hashes_answer_only_while_the_grant_holds"
+    )));
 }
