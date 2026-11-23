@@ -43,7 +43,10 @@ pub struct PlatformFlags {
     pub secret_word_paste: bool,
     /// The `rpc.json` import card exists (a Windows developer file, spec/04 §2.10).
     pub rpc_json_import: bool,
-    /// The Chrome extension parts exist: S23, its links and cards, the S10 pipe status line.
+    /// The Chrome extension parts exist: S23 and its links and cards (settings, S08). The S10
+    /// status line's browser half is not guarded yet: it is decided when Android draws S10 (spec/15
+    /// §11.4 S5-3); until then a platform with no pipe reads E-PIPE-001 (the default
+    /// [`PipeStatus`]). 2026-11-24 (S5-3 review): before, this doc named that line too.
     pub browser_extension: bool,
     /// The platform opens folders: the data, log and extension folder buttons.
     pub open_folders: bool,

@@ -8151,6 +8151,16 @@ const RENDER_SHELL_PATHS: [&str; 4] = [
     "crate::app_rpc_import::text",
 ];
 
+/// The `crate::ui` modules other than the render files that render code names (2026-11-24, S5-3
+/// review): before, any `crate::ui::` path passed, a Windows-side module of `ui` too. Each is
+/// still named, so the list stays exact; a new one is reviewed here.
+const RENDER_UI_MODULES: [&str; 3] = ["cmd_table", "main_window", "qr"];
+
+/// The `impl App` fns defined outside the render files that render code calls (2026-11-24, S5-3
+/// review): only the facts. Before, a render builder's `self.<shell fn>(` was not seen, so a
+/// shell fn that reads `yw_win` or a file passed. Each is still called.
+const RENDER_SHELL_FNS: [&str; 1] = ["facts"];
+
 /// Words render code never names (S5-3): the Windows crate, the shell's folders and pipe host,
 /// file and process probes. The facts are asked through `ScreenFacts` (`self.facts()`).
 const RENDER_BANNED_WORDS: [&str; 11] = [
@@ -8172,6 +8182,9 @@ const RENDER_BANNED_WORDS: [&str; 11] = [
 /// `macro <m>!` for `env!`/`option_env!`/`include_str!`/`include_bytes!`, `field .pipe` for the
 /// shell's pipe field (not the fact `.pipe()`), `super super` for a path out of `ui`, and
 /// `path <p>` for every `crate::` path outside `crate::ui` (a `{…}` group squeezed).
+/// 2026-11-24 (S5-3 review): also `bare crate` (a `crate` that starts no path, e.g. `use crate as
+/// root;`; `pub(crate)` is none), `macro $crate`, a spaced path read as one ([`crate_path`]), and
+/// `ui <module>` for each `crate::ui` module named that is not a render file.
 fn render_shell_reach(code: &str) -> Vec<String> {
     let bytes = code.as_bytes();
     let mut found = Vec::new();
@@ -8217,28 +8230,94 @@ fn render_shell_reach(code: &str) -> Vec<String> {
         found.push("super super".to_owned());
     }
     for (at, _) in code.match_indices("crate") {
-        if at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'$') {
+        if (at > 0 && is_ident(bytes[at - 1])) || bytes.get(at + 5).is_some_and(|&b| is_ident(b)) {
             continue;
         }
-        let tail = &code[at..];
-        let mut path: String = tail
-            .chars()
-            .take_while(|&c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
-            .collect();
-        if !path.starts_with("crate::") {
+        // 2026-11-24 (S5-3 review): `$crate` and a `crate` that starts no path (`use crate as
+        // root;`, which rustfmt keeps) are findings; before, both were skipped, so
+        // `root::app_extension::extension_dir()` passed. `pub(crate)` is a visibility.
+        if at > 0 && bytes[at - 1] == b'$' {
+            found.push("macro $crate".to_owned());
             continue;
         }
-        if path.ends_with("::")
-            && let Some(open) = tail.find('{')
-        {
-            let close = close_of(tail.as_bytes(), open);
-            path.extend(tail[open..=close].chars().filter(|c| !c.is_whitespace()));
-        }
-        if !path.starts_with("crate::ui::") {
+        let path = crate_path(&code[at..]);
+        if path == "crate" {
+            let visibility = code[..at].trim_end().ends_with('(')
+                && code[at + 5..].trim_start().starts_with(')');
+            if !visibility {
+                found.push("bare crate".to_owned());
+            }
+        } else if let Some(rest) = path.strip_prefix("crate::ui::") {
+            for module in ui_modules(rest) {
+                if !(module.starts_with("screens") || module == "removed") {
+                    found.push(format!("ui {module}"));
+                }
+            }
+        } else {
             found.push(format!("path {path}"));
         }
     }
     found
+}
+
+/// The `crate::ui` modules a path's `rest` (after `crate::ui::`, as [`crate_path`] reads it)
+/// names: its first segment, or the first segment of each entry of a `{…}` group.
+fn ui_modules(rest: &str) -> Vec<String> {
+    let Some(group) = rest.strip_prefix('{') else {
+        return vec![
+            rest.chars()
+                .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+                .collect(),
+        ];
+    };
+    let mut modules = Vec::new();
+    let mut depth = 0_usize;
+    let mut entry_start = true;
+    for (at, c) in group.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' if depth == 0 => break,
+            '}' => depth -= 1,
+            ',' if depth == 0 => entry_start = true,
+            _ if entry_start => {
+                entry_start = false;
+                modules.push(
+                    group[at..]
+                        .chars()
+                        .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+                        .collect(),
+                );
+            }
+            _ => {}
+        }
+    }
+    modules
+}
+
+/// The `crate` path `tail` starts with (2026-11-24, S5-3 review): its segments with the blanks
+/// around each `::` dropped (`crate :: a ::b` is `crate::a::b`; before, a spaced path was not
+/// read), and a `{…}` group after a last `::` squeezed in; `crate` alone when no `::` follows.
+fn crate_path(tail: &str) -> String {
+    let mut path = String::from("crate");
+    let mut rest = &tail["crate".len()..];
+    while let Some(after) = rest.trim_start().strip_prefix("::") {
+        path.push_str("::");
+        let after = after.trim_start();
+        let segment: String = after
+            .chars()
+            .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+            .collect();
+        rest = &after[segment.len()..];
+        if segment.is_empty() {
+            if after.starts_with('{') {
+                let close = close_of(after.as_bytes(), 0);
+                path.extend(after[..=close].chars().filter(|c| !c.is_whitespace()));
+            }
+            break;
+        }
+        path.push_str(&segment);
+    }
+    path
 }
 
 /// spec/15 §11.4 S5-3 (2026-11-24; S5 plan §6 S5-3, critic C7): render code asks the shell only
@@ -8249,7 +8328,13 @@ fn render_shell_reach(code: &str) -> Vec<String> {
 /// times called `yw_win::time::local_wall_ms`, the data folder was `self.paths.data`, the
 /// `rpc.json` probe `rpc_json_path().is_some_and(|p| p.is_file())`, the extension folder
 /// `app_extension::{extension_dir, expected_dir}`, the S10 status line read `self.pipe`, and the
-/// version line was `build_info::version_text`.
+/// version line was `build_info::version_text`. 2026-11-24 (S5-3 review): also a `crate` alias,
+/// `$crate` and a spaced path are findings, a `crate::ui` module other than the render files is
+/// one of [`RENDER_UI_MODULES`], and an `impl App` fn defined only outside the render files that
+/// render code calls ([`app_calls`]) is one of [`RENDER_SHELL_FNS`]. Still not followed until
+/// S5-5 makes the boundary a compile-time one (the builders leave yw-app): a one-level `super::`
+/// path inside `ui`, and what a listed `crate::ui` module or a wallet fn reached through `Deref`
+/// does.
 #[test]
 fn render_asks_the_shell_only_through_facts() {
     let files = production_code();
@@ -8262,16 +8347,38 @@ fn render_asks_the_shell_only_through_facts() {
         27,
         "the render files moved: review this check"
     );
+    // 2026-11-24 (S5-3 review): the `impl App` fns defined only outside the render files.
+    let shell_fns: BTreeSet<String> = app_fns(&files)
+        .into_iter()
+        .filter(|(_, defs)| defs.iter().all(|(file, _, _)| !is_render_file(file)))
+        .map(|(name, _)| name)
+        .collect();
     let mut findings = Vec::new();
     let mut named = BTreeSet::new();
+    let mut ui_named = BTreeSet::new();
+    let mut fns_called = BTreeSet::new();
     let mut asks = 0_usize;
     for src in &render {
         for finding in render_shell_reach(&src.code) {
-            match finding.strip_prefix("path ") {
-                Some(path) if RENDER_SHELL_PATHS.contains(&path) => {
-                    named.insert(path.to_owned());
+            if let Some(path) = finding.strip_prefix("path ")
+                && RENDER_SHELL_PATHS.contains(&path)
+            {
+                named.insert(path.to_owned());
+            } else if let Some(module) = finding.strip_prefix("ui ")
+                && RENDER_UI_MODULES.contains(&module)
+            {
+                ui_named.insert(module.to_owned());
+            } else {
+                findings.push(format!("{}: {finding}", src.file));
+            }
+        }
+        for name in app_calls(&src.code) {
+            if shell_fns.contains(&name) {
+                if RENDER_SHELL_FNS.contains(&name.as_str()) {
+                    fns_called.insert(name);
+                } else {
+                    findings.push(format!("{}: shell fn {name}", src.file));
                 }
-                _ => findings.push(format!("{}: {finding}", src.file)),
             }
         }
         asks += src.code.matches("self.facts()").count();
@@ -8280,14 +8387,20 @@ fn render_asks_the_shell_only_through_facts() {
         findings.is_empty(),
         "render code reaches the shell: {findings:#?}"
     );
-    assert_eq!(
-        named,
-        RENDER_SHELL_PATHS
-            .iter()
-            .map(|&path| path.to_owned())
-            .collect::<BTreeSet<_>>(),
-        "a listed path is no longer named: drop it"
-    );
+    for (seen, listed, what) in [
+        (&named, &RENDER_SHELL_PATHS[..], "path"),
+        (&ui_named, &RENDER_UI_MODULES[..], "ui module"),
+        (&fns_called, &RENDER_SHELL_FNS[..], "shell fn"),
+    ] {
+        assert_eq!(
+            *seen,
+            listed
+                .iter()
+                .map(|&name| name.to_owned())
+                .collect::<BTreeSet<_>>(),
+            "a listed {what} is no longer named: drop it"
+        );
+    }
     assert!(asks >= 20, "the facts are asked ({asks})");
 }
 
@@ -8324,7 +8437,29 @@ fn render_shell_reach_on_made_up_code() {
     let clean = code_only(concat!(
         "use crate::app::App;\n",
         "fn g(app: &App) -> u64 { app.facts().local_wall_ms(1).unwrap_or(0) }\n",
-        "fn h(pipe: PipeStatus) -> bool { pipe.server && crate::ui::x() }\n",
+        "fn h(pipe: PipeStatus) -> bool { pipe.server && crate::ui::screens::x() }\n",
+        "pub(crate) fn i() { let _ = crate::ui::{screens_evm::A, removed::B}; }\n",
+        "pub( crate ) fn j() {}\nconst CRATES: u8 = 1; fn crate_x() {}\n",
     ));
     assert_eq!(render_shell_reach(&clean), ["path crate::app::App"]);
+    // 2026-11-24 (S5-3 review): an alias of `crate`, `$crate`, a spaced path and a `crate::ui`
+    // module other than the render files.
+    let hidden = code_only(concat!(
+        "use crate as root;\nfn k() { let _ = root::app_extension::extension_dir(); }\n",
+        "macro_rules! m { () => { $crate::app::x() }; }\n",
+        "fn l() { let _ = crate :: app_extension ::extension_dir(); }\n",
+        "fn n() { let _ = crate::ui::qr::draw(); }\n",
+        "use crate::ui::{ main_window::Item, screens::ids, cmd_table::{A, B} };\n",
+    ));
+    assert_eq!(
+        render_shell_reach(&hidden),
+        [
+            "bare crate",
+            "macro $crate",
+            "path crate::app_extension::extension_dir",
+            "ui qr",
+            "ui main_window",
+            "ui cmd_table",
+        ]
+    );
 }

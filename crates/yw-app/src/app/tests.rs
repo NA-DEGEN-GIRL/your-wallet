@@ -7321,6 +7321,81 @@ fn render_probes_the_files_only_where_it_did() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// spec/15 §11.4 S5-3 review (2026-11-24): the S10 status line's pipe half is the shell's
+/// `PipeHost` as `WinFacts::pipe` maps it (spec/04 §2.6): no host reads E-PIPE-001, a host with
+/// no server reads its recorded failure (E-PIPE-002) or E-PIPE-001, and never the connected
+/// line. Before, only the screenshot tour reached a present host. No pipe is opened: the host
+/// has no server and no thread.
+#[test]
+fn the_status_line_reads_the_pipe_host_through_the_facts() {
+    use std::sync::Arc;
+    use yw_core::lang::Lang;
+    use yw_engine::errors::ErrorCode;
+    use yw_engine::screen::facts::{PipeStatus, ScreenFacts};
+    use yw_engine::wallet::app_browser::text::STATUS_UNAVAILABLE;
+    let (mut app, dir) = unlocked_app("facts-pipe", false);
+    let events = Arc::new(yw_engine::events::EventQueue::new(Box::new(|| {})));
+    app.browser = Some(yw_engine::wallet::app_browser::BrowserUi {
+        core: yw_engine::browser::BrowserCore::new(
+            "abcdefghijklmnopabcdefghijklmnop",
+            events as Arc<dyn yw_engine::browser::DappSink>,
+            Arc::new(crate::system_clock::SystemClock),
+        ),
+        reads: Arc::new(yw_engine::browser::read::ReadContext::new(None)),
+        connections: 0,
+        waiters: std::collections::HashMap::new(),
+        broadcasts: std::collections::HashMap::new(),
+        sol_broadcasts: std::collections::HashMap::new(),
+        dapp_unlock: false,
+        unlocked: false,
+        locking: false,
+        grant_write: yw_engine::wallet::app_browser::GrantWrite::default(),
+        site_rows: yw_engine::wallet::app_browser::SiteRows::default(),
+    });
+    let line = |app: &App| {
+        crate::ui::screens_evm::browser_status_text(
+            Lang::En,
+            app.browser.as_ref(),
+            app.facts().pipe(),
+        )
+    };
+    assert!(app.pipe.is_none());
+    assert_eq!(app.facts().pipe(), PipeStatus::default());
+    assert_eq!(
+        line(&app),
+        STATUS_UNAVAILABLE.fill(Lang::En, ["E-PIPE-001"])
+    );
+    assert!(app.evm_status_line().contains("E-PIPE-001"));
+    for (error, code) in [
+        (Some(ErrorCode::Pipe002), "E-PIPE-002"),
+        (Some(ErrorCode::Pipe001), "E-PIPE-001"),
+        (None, "E-PIPE-001"),
+    ] {
+        app.pipe = Some(crate::browser::server::PipeHost {
+            server: None,
+            error,
+            threads: Vec::new(),
+        });
+        assert_eq!(
+            app.facts().pipe(),
+            PipeStatus {
+                server: false,
+                error
+            },
+            "{code}"
+        );
+        assert_eq!(
+            line(&app),
+            STATUS_UNAVAILABLE.fill(Lang::En, [code]),
+            "{error:?}"
+        );
+        let status = app.evm_status_line();
+        assert!(status.contains(code), "{status}");
+    }
+    app.pipe = None;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// The catalogues of the core screens keep the catalogue rules (spec/14 §4): placeholders in
 /// `0..N` and each used, no Hangul in English, display characters only.
 #[test]
