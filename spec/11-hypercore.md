@@ -58,7 +58,7 @@
 
 ## 5. 이 지갑의 작업 (S-HC, [04] §2.23)
 
-화면 문구는 앱 언어를 따른다(2026-11-14, [14]; 카탈로그 `yw_app::ui::screens_hypercore::text`·`yw_app::app_hypercore::text`) (2026-11-23 [15](15-android.md) §11.4 S4d E1부터 지갑 카탈로그 `yw_app::app_hypercore::text`는 `yw_engine::wallet::app_hypercore::text`, [14](14-language.md) §5). 아래 따옴표 문구는 한국어 / 영어다.
+화면 문구는 앱 언어를 따른다(2026-11-14, [14]; 카탈로그 `yw_app::ui::screens_hypercore::text`·`yw_app::app_hypercore::text`) (2026-11-23 [15](15-android.md) §11.4 S4d E1부터 지갑 카탈로그 `yw_app::app_hypercore::text`는 `yw_engine::wallet::app_hypercore::text`, [14](14-language.md) §5) (2026-11-24 [15](15-android.md) §11.4 S5-5부터 화면 카탈로그 `yw_app::ui::screens_hypercore::text`는 `yw_engine::screen::build::hypercore::text`, [14](14-language.md) §5). 아래 따옴표 문구는 한국어 / 영어다.
 
 1. `보내기(Core)` / `Send (Core)`: 자산 라디오 — `USDC — 선물(perp) 잔액` / `USDC — perp balance` → `usdSend`, 현물 토큰 → `spotSend`. 받는 주소는 EVM 보내기와 같은 검사([04] §2.15: 형식·체크섬·0 주소 거부, 주소록·내 계정 표시, 주소 오염(앞뒤 같은 주소) → `주소 전체를 직접 확인했습니다` / `I checked the whole address myself` 체크 필요). 받는 주소가 HyperEVM 시스템 주소(`0x20…` + index, `0x2222…2222`)이면 보내기·출금 모두 거부하고 `HyperEVM으로 이동` / `Move to HyperEVM`을 안내한다(2026-11-07). 금액 ≤ 출금 가능(perp `withdrawable`) / 현물 `total − hold`(잔액과 같은 단위 — `weiDecimals` — 로 비교; HyperEVM 이동의 금액은 더 적은 자릿수로 입력받아 환산).
 2. `현물↔선물 이동` / `Spot↔perp`: 방향 라디오, 금액 ≤ 현물 USDC(→ 선물) / `withdrawable`(→ 현물). 받는 주소 없음.
