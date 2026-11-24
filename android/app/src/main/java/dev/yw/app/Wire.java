@@ -85,6 +85,23 @@ final class Wire {
                 .getBytes(StandardCharsets.US_ASCII);
     }
 
+    /**
+     * Whether a Settings.Global switch reads as on, from its raw string (2026-11-25 A2-5 review, spec/15 §8.2): an
+     * integer other than 0 is on and 0 is off; anything else (an empty or non-integer value) is on, and so is a missing
+     * one (null) unless absentMeansOff (adb_wifi_enabled before API 30, which has no such setting). Before, the value
+     * was read with Settings.Global.getInt(…, 0), which reads a missing or malformed value as off.
+     */
+    static boolean settingOn(String raw, boolean absentMeansOff) {
+        if (raw == null) {
+            return !absentMeansOff;
+        }
+        try {
+            return Integer.parseInt(raw) != 0;
+        } catch (NumberFormatException malformed) {
+            return true;
+        }
+    }
+
     private static boolean isDate(String text) {
         if (text == null || text.length() != 10) {
             return false;
@@ -102,7 +119,8 @@ final class Wire {
     /**
      * The band texts of Rust's answer to the facts input, top first (2026-11-25 A2-5): strict UTF-8, at most BANDS_MAX
      * bytes, lines split at '\n', no other control character and no empty line. Anything else is not drawn as text
-     * Rust wrote: an empty array for an empty answer, null for a bad one (the caller then draws no band text).
+     * Rust wrote: an empty array for an empty answer, null for a bad one (the caller then draws no band text, only an
+     * empty band in the warning colours, 2026-11-25 A2-5 review).
      */
     static String[] bands(byte[] answer) {
         if (answer == null || answer.length > BANDS_MAX) {

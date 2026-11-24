@@ -139,9 +139,29 @@ impl PatchDate {
         Self::parse(format_utc(unix_ms).get(..10)?)
     }
 
+    /// The day count of the date (days since 1 March of year 0, proleptic Gregorian; only
+    /// differences are used). A day past the month's end (`2021-02-31`) counts on into the next
+    /// month.
+    fn day_number(self) -> u32 {
+        // Year 2000–9999 only (`parse`), so nothing here can overflow or go below zero.
+        let month = u32::from(self.month);
+        let year = u32::from(self.year) - u32::from(month <= 2);
+        let era = year / 400;
+        let year_of_era = year - era * 400;
+        let month_from_march = (month + 9) % 12;
+        let day_of_year = (153 * month_from_march + 2) / 5 + u32::from(self.day) - 1;
+        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+        era * 146_097 + day_of_era
+    }
+
     /// More than one year before `today`: `today` is after the same day one year later (a
-    /// 29 February patch is old from 1 March of the next year).
+    /// 29 February patch is old from 1 March of the next year). A `today` more than
+    /// [`CLOCK_MARGIN_DAYS`] before the patch date is a clock that cannot be right and reads as
+    /// old too (2026-11-25 A2-5 review; before, any clock before the patch read as not old).
     fn is_old_on(self, today: Self) -> bool {
+        if today.day_number().saturating_add(CLOCK_MARGIN_DAYS) < self.day_number() {
+            return true;
+        }
         let year_later = Self {
             year: self.year.saturating_add(1),
             ..self
@@ -149,6 +169,11 @@ impl PatchDate {
         today > year_later
     }
 }
+
+/// How far the clock may be before the security patch date and still be trusted: vendors set
+/// patch dates up to about two months ahead (2026-11-25 A2-5 review). A clock earlier than that
+/// (reset to a firmware build date, moved back by hand) is unknown, so the patch reads as old.
+const CLOCK_MARGIN_DAYS: u32 = 62;
 
 /// What the shell read from the device (spec/15 §1.1, §8.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,8 +196,9 @@ impl DeviceFacts {
     }
 
     /// The security patch is more than one year before the UTC day of `now_unix_ms`, or unknown.
-    /// A clock before 2000 cannot be compared and reads as old too; a clock before the patch date
-    /// reads as not old.
+    /// A clock before 2000 cannot be compared and reads as old too, and so does a clock more than
+    /// 62 days before the patch date (2026-11-25 A2-5 review; before, any clock before the patch
+    /// date read as not old).
     #[must_use]
     pub fn patch_is_old(&self, now_unix_ms: u64) -> bool {
         match (self.patch, PatchDate::of_unix_ms(now_unix_ms)) {
@@ -363,11 +389,50 @@ mod tests {
         let leap = PatchDate::parse("2024-02-29").unwrap();
         assert!(!leap.is_old_on(PatchDate::parse("2025-02-28").unwrap()));
         assert!(leap.is_old_on(PatchDate::parse("2025-03-01").unwrap()));
-        // Unknown patch reads as old, and so does a clock before 2000; a later clock before the
-        // patch reads as not old (2020-01-01T00:00:00Z).
+        // Unknown patch reads as old, and so does a clock before 2000 or more than 62 days before
+        // the patch (2026-11-25 A2-5 review: before, any clock before the patch read as not old;
+        // 2020-01-01T00:00:00Z here).
         assert!(facts(36, "unknown", false, false).patch_is_old(NOW));
         assert!(facts(36, "2026-11-25", false, false).patch_is_old(0));
-        assert!(!facts(36, "2026-11-25", false, false).patch_is_old(1_577_836_800_000));
+        assert!(facts(36, "2026-11-25", false, false).patch_is_old(1_577_836_800_000));
+        // The margin: NOW (2026-11-25) is 62 days before 2027-01-26 and 63 before 2027-01-27.
+        for (patch, old) in [
+            ("2026-12-25", false),
+            ("2027-01-25", false),
+            ("2027-01-26", false),
+            ("2027-01-27", true),
+            ("2027-11-25", true),
+            ("9999-12-31", true),
+        ] {
+            assert_eq!(
+                facts(36, patch, false, false).patch_is_old(NOW),
+                old,
+                "clock before {patch}"
+            );
+        }
+    }
+
+    /// The day count agrees with the UTC calendar, across month, leap-day and century ends.
+    #[test]
+    fn day_numbers_count_days() {
+        let day = |text: &str| PatchDate::parse(text).unwrap().day_number();
+        for (earlier, later, days) in [
+            ("2026-11-25", "2026-11-26", 1),
+            ("2026-11-25", "2027-01-26", 62),
+            ("2024-02-28", "2024-03-01", 2),
+            ("2023-02-28", "2023-03-01", 1),
+            ("2000-02-28", "2000-03-01", 2),
+            ("2099-12-31", "2100-03-01", 60),
+            ("2000-01-01", "2026-11-25", 9_825),
+        ] {
+            assert_eq!(day(later) - day(earlier), days, "{earlier} → {later}");
+        }
+        // The day count of NOW's day is its Unix day plus the fixed offset of 1 March year 0.
+        assert_eq!(
+            u64::from(day("2026-11-25")),
+            NOW / 86_400_000 + 719_468,
+            "Unix epoch offset"
+        );
     }
 
     /// The band table: API × patch × adb × surface.

@@ -38,10 +38,18 @@ public final class MainActivity extends Activity {
         super.onStart();
         String[] texts = App.loaded() ? Wire.bands(Native.call(DeviceFacts.input(this))) : null;
         bands.removeAllViews();
+        int padding = dp(12);
         if (texts == null) {
+            // No answer Java can draw (2026-11-25 A2-5 review): the screen is never shown as if there were no warning.
+            // Java holds no text, so an empty band in the warning colours stands for the missing ones; before, no band
+            // was drawn at all, not even the test-build band.
+            TextView band = new TextView(this);
+            band.setBackgroundColor(getColor(R.color.band_background));
+            band.setMinHeight(dp(48));
+            band.setPadding(padding, padding, padding, padding);
+            bands.addView(band);
             return;
         }
-        int padding = dp(12);
         for (String text : texts) {
             TextView band = new TextView(this);
             band.setText(text);

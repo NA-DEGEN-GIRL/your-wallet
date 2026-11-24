@@ -120,9 +120,12 @@ fn clear_exception(jni: JniEnv) {
 /// [`interim::START_MAX`] bytes read): the shell starts on that folder ([`crate::shell::start`])
 /// and answers the status line, or null when it could not. 2026-11-25 A2-5: the uncaught-exception
 /// event writes its line (`panic_hook::java_uncaught`); the facts input ([`interim::facts`]) is
-/// kept ([`crate::device::record`]) and answered with the main screen's bands in the default
-/// language (Korean until the settings are read, A2-8); a `-DeviceTest` build checks its fault
-/// points on the status request (`crate::devtest::fault_points`).
+/// kept and answered with the main screen's bands from those facts
+/// ([`crate::device::bands_with`]) in the default language (Korean until the settings are read,
+/// A2-8); a `-DeviceTest` build checks its fault points on the status request
+/// (`crate::devtest::fault_points`). (2026-11-25 A2-5 review: an input that begins like a facts
+/// input ([`interim::is_facts`]) but is refused is answered with the worst case's bands, never
+/// null, so the test-build band cannot go missing.)
 extern "C" fn call(jni: JniEnv, _class: JObject, input: JObject) -> JObject {
     when_loaded(core::ptr::null_mut(), || {
         let Some(bytes) = read_bytes(jni, input, interim::START_MAX) else {
@@ -142,10 +145,10 @@ extern "C" fn call(jni: JniEnv, _class: JObject, input: JObject) -> JObject {
                     } else {
                         core::ptr::null_mut()
                     }
-                } else if let Some(facts) = interim::facts(&bytes) {
+                } else if interim::is_facts(&bytes) {
                     let now = crate::shell::now_unix_ms();
-                    crate::device::record(facts, now);
-                    let bands = crate::device::bands(Surface::Main, now);
+                    let fresh = interim::facts(&bytes);
+                    let bands = crate::device::bands_with(fresh, Surface::Main, now);
                     new_byte_array(jni, &interim::bands_answer(&bands, Lang::default()))
                 } else {
                     core::ptr::null_mut()

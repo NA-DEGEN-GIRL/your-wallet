@@ -11,23 +11,31 @@ import android.provider.Settings;
  * while the app runs, so the facts are read and sent again each time a screen that shows bands comes up.
  *
  * <p>A setting that cannot be read counts as on: the debugging band then shows (fail toward the warning).
- * adb_wifi_enabled exists from API 30; on API 29 it reads as its default, off.
+ * adb_wifi_enabled exists from API 30; on API 29 a missing one reads as off.
+ *
+ * <p>2026-11-25 A2-5 review: the raw string is read (Settings.Global.getString) and judged by Wire.settingOn, so a
+ * missing value, a non-integer one and a failed provider (null) all read as on. Before, getInt(…, 0) read all three as
+ * off, and the catch below was nearly dead.
  */
 final class DeviceFacts {
+    /** The first API level with adb_wifi_enabled (Android 11). */
+    private static final int ADB_WIFI_SINCE = 30;
+
     private DeviceFacts() {}
 
     /** The facts input for Native.call (Wire.facts). */
     static byte[] input(Context context) {
+        int sdk = Build.VERSION.SDK_INT;
         return Wire.facts(
-                Build.VERSION.SDK_INT,
+                sdk,
                 Build.VERSION.SECURITY_PATCH,
-                setting(context, Settings.Global.ADB_ENABLED),
-                setting(context, "adb_wifi_enabled"));
+                setting(context, Settings.Global.ADB_ENABLED, false),
+                setting(context, "adb_wifi_enabled", sdk < ADB_WIFI_SINCE));
     }
 
-    private static boolean setting(Context context, String name) {
+    private static boolean setting(Context context, String name, boolean absentMeansOff) {
         try {
-            return Settings.Global.getInt(context.getContentResolver(), name, 0) != 0;
+            return Wire.settingOn(Settings.Global.getString(context.getContentResolver(), name), absentMeansOff);
         } catch (RuntimeException unreadable) {
             return true;
         }

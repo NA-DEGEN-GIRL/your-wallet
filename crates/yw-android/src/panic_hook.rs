@@ -7,7 +7,7 @@
 //! uncaught-exception path joins it in A2-5, and the log sink is installed in A2-4b (until then the
 //! line has nowhere to go and is dropped). (2026-11-25 A2-5: [`java_uncaught`] is that path's end,
 //! with its own line `app.java_uncaught`; a `-DeviceTest` build has two fault points that panic
-//! on purpose, `crate::devtest::fault_point`.)
+//! on purpose, `crate::devtest::fault_points`.)
 //!
 //! 2026-11-24 A2-1 review: the wipe comes first, before the log line. The line does not depend on the
 //! slots, and the log path can itself end the process by abort (an allocation failure, a panic inside

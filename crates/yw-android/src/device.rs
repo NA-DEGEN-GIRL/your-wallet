@@ -6,12 +6,15 @@
 //! - [`TEST_BUILD`]: every build before A5 is a test build (spec/15 §17: no tap-jacking or
 //!   accessibility defences yet), so every screen shows the test-build band. A build-time
 //!   constant, never a setting; A5 changes it.
-//! - [`record`] keeps the newest facts (Java sends them at start and again whenever a screen that
-//!   shows the debugging band could open, since `adb_enabled`/`adb_wifi_enabled` change while the
-//!   app runs; A2 plan critic 25). The first record writes one log line with the tier, the API
-//!   level and whether the patch is old (no patch date, no setting).
-//! - [`bands`]: the bands of a surface from the newest facts; with none recorded yet, the worst
-//!   case (`protection::bands`).
+//! - [`bands_with`]: the bands of a surface from the facts that came with this open, never from
+//!   facts kept from before (2026-11-25 A2-5 review, A2 plan critic 25: `adb_enabled` and
+//!   `adb_wifi_enabled` change while the app runs, so a secret or approval screen that forgot to
+//!   send them must not show stale ones; before, `bands(surface, now)` read the newest facts of the
+//!   process, from any time). No facts with the open (`None`: none sent, or a facts input that did
+//!   not parse) is the worst case (`protection::bands`).
+//! - Facts that came are also kept ([`current`], for what does not change while the process runs,
+//!   such as the tier of the settings screen, A7); the first ones write one log line with the
+//!   tier, the API level and whether the patch is old (no patch date, no setting).
 //!
 //! Platform-neutral (no `unsafe`): the Windows gate tests it.
 #![forbid(unsafe_code)]
@@ -28,7 +31,7 @@ pub const TEST_BUILD: bool = true;
 static FACTS: Mutex<Option<DeviceFacts>> = Mutex::new(None);
 
 /// Keeps `facts` as the newest; the first one is logged (module doc).
-pub fn record(facts: DeviceFacts, now_unix_ms: u64) {
+fn record(facts: DeviceFacts, now_unix_ms: u64) {
     let first = match FACTS.lock() {
         Ok(mut kept) => kept.replace(facts).is_none(),
         Err(_) => return,
@@ -47,23 +50,28 @@ pub fn record(facts: DeviceFacts, now_unix_ms: u64) {
     }
 }
 
-/// The newest facts, if any were sent (a poisoned lock reads as none: the worst case).
+/// The newest facts, if any were sent (a poisoned lock reads as none). Never for the bands: the
+/// debugging settings in them may be stale (module doc).
 #[must_use]
 pub fn current() -> Option<DeviceFacts> {
     FACTS.lock().ok().and_then(|kept| *kept)
 }
 
-/// The bands of `surface` now (module doc).
+/// The bands of `surface` now, from `fresh`, the facts the shell read for this open (kept too, as
+/// the newest); `None` is the worst case (module doc).
 #[must_use]
-pub fn bands(surface: Surface, now_unix_ms: u64) -> Vec<Band> {
-    protection::bands(current().as_ref(), surface, TEST_BUILD, now_unix_ms)
+pub fn bands_with(fresh: Option<DeviceFacts>, surface: Surface, now_unix_ms: u64) -> Vec<Band> {
+    if let Some(facts) = fresh {
+        record(facts, now_unix_ms);
+    }
+    protection::bands(fresh.as_ref(), surface, TEST_BUILD, now_unix_ms)
 }
 
 #[cfg(test)]
 mod tests {
     use yw_engine::protection::{Band, DeviceFacts, PatchDate, Surface};
 
-    use super::{TEST_BUILD, bands, current, record};
+    use super::{TEST_BUILD, bands_with, current};
 
     /// 2026-11-25T00:00:00Z.
     const NOW: u64 = 1_795_564_800_000;
@@ -75,35 +83,45 @@ mod tests {
         const { assert!(TEST_BUILD) };
     }
 
-    /// Before any facts the worst case; then the newest facts (the only test that records, so
-    /// the order inside it is the order of the process).
+    /// The facts of the open decide; without them the worst case, even after facts were kept
+    /// (2026-11-25 A2-5 review). The only test that records, so the order inside it is the order
+    /// of the process.
     #[test]
-    fn the_newest_facts_decide() {
+    fn only_the_facts_of_the_open_decide() {
         assert_eq!(current(), None);
-        assert_eq!(
-            bands(Surface::Secret, NOW),
-            [Band::TestBuild, Band::WeakDevice, Band::Debugging]
-        );
+        let worst = [Band::TestBuild, Band::WeakDevice, Band::Debugging];
+        assert_eq!(bands_with(None, Surface::Secret, NOW), worst);
+        assert_eq!(current(), None);
         let device = DeviceFacts {
             sdk: 36,
             patch: PatchDate::parse("2026-10-01"),
             adb: true,
             adb_wifi: false,
         };
-        record(device, NOW);
-        assert_eq!(bands(Surface::Main, NOW), [Band::TestBuild]);
         assert_eq!(
-            bands(Surface::Secret, NOW),
+            bands_with(Some(device), Surface::Main, NOW),
+            [Band::TestBuild]
+        );
+        assert_eq!(
+            bands_with(Some(device), Surface::Secret, NOW),
             [Band::TestBuild, Band::Debugging]
         );
-        record(
-            DeviceFacts {
-                adb: false,
-                ..device
-            },
-            NOW,
+        let off = DeviceFacts {
+            adb: false,
+            ..device
+        };
+        assert_eq!(
+            bands_with(Some(off), Surface::Secret, NOW),
+            [Band::TestBuild]
         );
-        assert_eq!(bands(Surface::Secret, NOW), [Band::TestBuild]);
-        assert_eq!(current().map(|facts| facts.adb), Some(false));
+        assert_eq!(current(), Some(off));
+        // Kept facts with debugging off never hide the band of an open that sent none.
+        assert_eq!(bands_with(None, Surface::Secret, NOW), worst);
+        assert_eq!(bands_with(None, Surface::Approval, NOW), worst);
+        assert_eq!(
+            bands_with(None, Surface::Main, NOW),
+            [Band::TestBuild, Band::WeakDevice]
+        );
+        assert_eq!(current(), Some(off), "a worst-case open keeps the facts");
     }
 }

@@ -25,6 +25,7 @@ public final class JvmTests {
         run("only the create request may make the device key", JvmTests::createFrame);
         run("facts input is the bytes Rust parses", JvmTests::factsInput);
         run("bands answer is strict UTF-8 lines", JvmTests::bandsAnswer);
+        run("an unreadable debugging setting reads as on", JvmTests::settingOn);
         System.out.println("jvmTest: " + passed + " passed, " + failed + " failed");
         if (failed != 0 || passed == 0) {
             System.exit(1);
@@ -232,5 +233,17 @@ public final class JvmTests {
         Arrays.fill(longest, (byte) 'a');
         check(Wire.bands(longest) != null, "longest");
         check(Wire.bands(Arrays.copyOf(longest, Wire.BANDS_MAX + 1)) == null, "too long");
+    }
+
+    private static void settingOn() {
+        // 2026-11-25 A2-5 review: missing or malformed is on, except a missing adb_wifi_enabled before API 30.
+        String[] raws = {null, "", "x", "0", "1", "2", "-1", " 1", "0x1", "99999999999"};
+        boolean[] on = {true, true, true, false, true, true, true, true, true, true};
+        boolean[] onWhenAbsentIsOff = {false, true, true, false, true, true, true, true, true, true};
+        for (int at = 0; at < raws.length; at++) {
+            String name = raws[at] == null ? "null" : "\"" + raws[at] + "\"";
+            check(Wire.settingOn(raws[at], false) == on[at], "setting " + name);
+            check(Wire.settingOn(raws[at], true) == onWhenAbsentIsOff[at], "setting before API 30 " + name);
+        }
     }
 }

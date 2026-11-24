@@ -26,7 +26,8 @@
 //! to [`SDK_MAX`], `patch` a string of at most [`PATCH_MAX`] bytes that is read as unknown unless it is a
 //! valid `YYYY-MM-DD`, at most [`START_MAX`] bytes). Its answer
 //! is the main screen's warning bands ([`bands_answer`]: their texts in UTF-8, one per line, at
-//! most [`BANDS_MAX`] bytes).
+//! most [`BANDS_MAX`] bytes). (2026-11-25 A2-5 review: an input that begins like one
+//! ([`is_facts`]) but is refused is answered with the worst case's bands, not with nothing.)
 //!
 //! A2-6 replaces all four with the yw-json input format (`Input`, spec/15 §3.2, §18 8).
 //! Platform-neutral (no `unsafe`), so the gate's Windows build tests it; the JVM runner pins the
@@ -128,6 +129,18 @@ pub const PATCH_MAX: usize = 16;
 /// The longest answer of the facts input (Java's `Wire.BANDS_MAX`).
 pub const BANDS_MAX: usize = 1_024;
 
+/// How every facts input `Wire.facts` builds begins.
+pub const FACTS_HEAD: &[u8] = br#"{"t":"facts","#;
+
+/// The input says it is a facts input (it begins with [`FACTS_HEAD`]), whether or not
+/// [`facts`] takes it: `call` answers one it refuses with the worst case's bands, never with
+/// nothing (2026-11-25 A2-5 review: before, a refused facts input was answered with null and the
+/// main screen drew no band at all, not even the test-build band).
+#[must_use]
+pub fn is_facts(input: &[u8]) -> bool {
+    input.starts_with(FACTS_HEAD)
+}
+
 /// The device facts of a facts input (module doc), `None` for any other input.
 #[must_use]
 pub fn facts(input: &[u8]) -> Option<DeviceFacts> {
@@ -207,7 +220,7 @@ mod tests {
 
     use super::{
         ABI, BANDS_MAX, Interim, JAVA_UNCAUGHT, MAX_INPUT, START_MAX, STATUS, STATUS_LINE,
-        bands_answer, classify, facts, start_dir,
+        bands_answer, classify, facts, is_facts, start_dir,
     };
 
     /// The same bytes as `dev.yw.app.Wire` (pinned on the Java side by `JvmTests.interimInputs`).
@@ -333,7 +346,35 @@ mod tests {
             JAVA_UNCAUGHT,
         ] {
             assert_eq!(facts(bad), None, "{}", String::from_utf8_lossy(bad));
+            // A refused one that begins like a facts input is still one (the worst case's
+            // answer, 2026-11-25 A2-5 review); the others are not.
+            assert_eq!(
+                is_facts(bad),
+                bad.starts_with(b"{\"t\":\"facts\","),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
         }
+        for refused in [
+            &b"{\"t\":\"facts\",\"sdk\":1001,\"patch\":\"\",\"adb\":true,\"adbw\":false}"[..],
+            b"{\"t\":\"facts\",",
+            b"{\"t\":\"facts\",\"sdk\":29,\"patch\":\"\",\"adb\":true,\"adbw\":false,\"x\":1}",
+        ] {
+            assert!(is_facts(refused) && facts(refused).is_none());
+        }
+        for other in [
+            &b""[..],
+            b"{\"t\":\"facts\"}",
+            b"{\"t\":\"fact\",\"sdk\":29}",
+            b" {\"t\":\"facts\",",
+            STATUS,
+            JAVA_UNCAUGHT,
+        ] {
+            assert!(!is_facts(other), "{}", String::from_utf8_lossy(other));
+        }
+        assert!(is_facts(
+            b"{\"t\":\"facts\",\"sdk\":29,\"patch\":\"\",\"adb\":true,\"adbw\":false}"
+        ));
         assert_eq!(
             classify(b"{\"t\":\"facts\",\"sdk\":29,\"patch\":\"\",\"adb\":true,\"adbw\":false}"),
             Interim::Unknown
