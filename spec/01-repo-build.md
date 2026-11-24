@@ -84,9 +84,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1   # 0
 git add -A && git commit -m "start v3" -m "Replace the v2.4 tree with the v3 skeleton. Old code: archive/spec-v2.4 (7cb8338)."
 ```
 
-`.gitattributes` (전체, 한 줄에 하나씩): `* text=auto`, `*.rs`·`*.toml`·`*.md`·`*.js`·`*.mjs`·`*.json`·`*.txt`·`*.yml`·`*.lock`·`*.template`·`.gitignore`·`.gitattributes`는 `text eol=lf`, `*.ps1`·`*.cmd`는 `text eol=crlf`. 구 항목(`*.cs`, `*.rc`, 삭제된 런처·MIDL 파일)은 없앤다. `english.txt`는 LF 기준 SHA-256을 BIP39 테스트(M1)가 확인하므로 `*.txt eol=lf`가 반드시 있어야 한다.
+`.gitattributes` (전체, 한 줄에 하나씩): `* text=auto`, `*.rs`·`*.toml`·`*.md`·`*.js`·`*.mjs`·`*.json`·`*.txt`·`*.yml`·`*.lock`·`*.template`·`.gitignore`·`.gitattributes`는 `text eol=lf`, `*.ps1`·`*.cmd`는 `text eol=crlf`. 구 항목(`*.cs`, `*.rc`, 삭제된 런처·MIDL 파일)은 없앤다. `english.txt`는 LF 기준 SHA-256을 BIP39 테스트(M1)가 확인하므로 `*.txt eol=lf`가 반드시 있어야 한다. (2026-11-24 A2-3, [15] §13: Android 프로젝트의 글 파일 `*.java`·`*.xml`·`*.kts`·`*.gradle`·`*.pro`·`*.properties`·`*.keys`·`*.lockfile`·`*.sha256`도 `text eol=lf`.)
 
-`.gitignore` (전체): `/target/`, `/vendor/`, `/.idea/`, `/.vscode/`, `/node_modules/`, `/coverage/`, `/artifacts/`, `/fuzz/target/`, `/fuzz/artifacts/`, `/tools/*/target/`, `__pycache__/`, `*.pdb`, `*.ilk`, `*.dmp`, `*.log`, `*.tmp`, `*.bak`, `.env`, `.env.*`, `!.env.example`, `*.ywv`, `*.ywm`, `*.ywj`, `*.dpapi`, `*.vault`, `*.wallet`, `*.keystore`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*private*.pem`, `/extension/native-host/com.your_wallet.native.json`, `!/extension/native-host/com.your_wallet.native.json.template` (한 줄에 하나씩).
+`.gitignore` (전체): `/target/`, `/vendor/`, `/.idea/`, `/.vscode/`, `/node_modules/`, `/coverage/`, `/artifacts/`, `/fuzz/target/`, `/fuzz/artifacts/`, `/tools/*/target/`, `__pycache__/`, `*.pdb`, `*.ilk`, `*.dmp`, `*.log`, `*.tmp`, `*.bak`, `.env`, `.env.*`, `!.env.example`, `*.ywv`, `*.ywm`, `*.ywj`, `*.dpapi`, `*.vault`, `*.wallet`, `*.keystore`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*private*.pem`, `/extension/native-host/com.your_wallet.native.json`, `!/extension/native-host/com.your_wallet.native.json.template` (한 줄에 하나씩). (2026-11-24 A2-3, [15] §13·§4.3: Android의 `*.so`, `*.apk`, `*.aab`, `*.idsig`, `/android/**/build/`, `/android/.gradle/`, `/android/.kotlin/`, `gradle-wrapper.jar`, `verification-keyring.gpg`, `local.properties`도; 서명 키 `*.p12`·`*.jks`·`*.keystore`는 위에 이미 있다.)
 
 ### 1.5 이식 방법 (M1 이후)
 
@@ -150,9 +150,15 @@ crates/
                   `KeyPlatform`·`WalletStore`·`KeyDeps`)·ui::approval_view(→ `approval::view`)도 옮겼다. yw-app은 옛 경로로 다시 내보낸다, §2.3b)
   yw-host/   Cargo.toml  src/{lib.rs, main.rs}  tests/               ([05](05-browser.md))
   yw-android/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, jni_table.rs(JNI 함수표 인덱스·등록하는 메서드 다섯, 모든 타깃),
+                              interim.rs(A2-6 전에 `call`이 아는 고정 입력 둘, 모든 타깃, 2026-11-24 A2-3),
                               slot_plan.rs(잠근 슬롯의 크기·예산 계산, 모든 타깃), jni.rs(`JNI_OnLoad`, Android만),
                               slot.rs(`LockedSlot` 페이지, Android만), panic_hook.rs(패닉 훅: 슬롯 지우기·로그 한 줄·`_exit`, Android만)}
              (Android 셸의 Rust 쪽 `libyw.so`, cdylib + rlib, [15](15-android.md) §3; 2026-11-24 A2-1)
+android/     settings.gradle  build.gradle  gradle.properties  buildscript-gradle.lockfile  toolchain.sha256  runtime-deps.txt
+             gradle/{verification-metadata.xml, verification-keyring.keys}
+             app/{build.gradle, gradle.lockfile, proguard-rules.pro, src/main/{AndroidManifest.xml, java/dev/yw/app/*.java, res/*},
+                  src/jvmTest/java/dev/yw/app/JvmTests.java}
+             (Android 앱, Java만·래퍼 jar 없음, [15](15-android.md) §3·§4.2–§4.4·§13; 빌드 출력 `app/build/`는 무시; 2026-11-24 A2-3)
 extension/   manifest.json  package.json  extension-id.txt(M5)  src/*.js  popup/*  icons/icon-{16,32,48,128}.png([05] §2.2)
              native-host/*  tests/*.test.mjs  test-dapp/(M5)
 scripts/     check.ps1  check-core-deps.mjs  privacy-scan.mjs  privacy-scan.test.mjs
@@ -163,6 +169,7 @@ scripts/     check.ps1  check-core-deps.mjs  privacy-scan.mjs  privacy-scan.test
              dev-rpc-setup.ps1 (개발용 rpc.json 대화형 생성, §4.8)
              screenshot-tour.ps1(화면 투어, [04](04-app-ui.md) §11)
              make-icons.mjs  lib/png.mjs   (앱·확장 아이콘 생성기와 PNG 도우미, Node 내장 모듈만. `--check`는 check.ps1 icons 단계, §4.1)
+             build-android.ps1  check-android-deps.mjs  check-android-deps.test.mjs   (Android 빌드·결과 검사, `-Check`는 check.ps1 android 단계, §4.1, [15] §13; 2026-11-24 A2-3)
 fuzz/        퍼징, 별도 워크스페이스·루트 exclude([09](09-testing.md) §2.4) — 아직 없음(만들 때 이 위치)
 tools/       btc-oracle/(M8, [08](08-bitcoin.md) §14.3)  sol-oracle/(M7, [07](07-solana.md) §17.3) — 개발 전용 차등 오라클. 각각 자체 [workspace]·Cargo.lock,
              루트 exclude(§3.1), check.ps1·허용 목록 대상 아님, 설치되지 않음 — 아직 없음(만들 때 이 위치)
@@ -547,12 +554,13 @@ rustflags = ["--cfg", 'curve25519_dalek_backend="serial"']
 ### 4.1 `scripts/check.ps1` (전체)
 
 ```powershell
-# scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline]
+# scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline] [-RequireAndroid]
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "winui", "s4fz", "build", "ext-test", "script-test", "privacy", "audit-ext", "icons")]
+    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "winui", "s4fz", "build", "ext-test", "script-test", "privacy", "audit-ext", "icons", "android")]
     [string]$Step = "all",
-    [switch]$Offline
+    [switch]$Offline,
+    [switch]$RequireAndroid
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Continue"
@@ -792,6 +800,15 @@ if ($Step -in "all", "script-test") { Invoke-Step "script-test" 26 "node" (@("--
 Invoke-Step "privacy" 27 "node" @("scripts/privacy-scan.mjs")
 Invoke-Step "audit-ext" 28 "node" @("scripts/audit-extension.mjs", "check", "--extension-root", "extension")
 Invoke-Step "icons" 30 "node" @("scripts/make-icons.mjs", "--check")   # 커밋된 아이콘 = 생성기 출력([04] §1.7, [05] §2.2)
+# Android([15] §13, [09] §2.2; 2026-11-24 A2-3, 종료 33 — 31은 winui다, §18 42 N1): scripts/build-android.ps1 -Check가 aarch64
+# clippy(-D warnings), check-core-deps.mjs의 두 Android 표, 릴리스 libyw.so와 그 검사, 새 Gradle 홈의 엄격 검증 assembleDebug(-Offline이면 오프라인),
+# JVM 단위 시험, 런타임 닫힘 대조(check-android-deps.mjs), APK·매니페스트 검사를 돈다. 도구가 없으면 "android: skipped (<이유>)"로
+# 넘어가되(rustup 타깃과 NDK가 있으면 clippy와 Android 표는 건너뛰지 않는다), -RequireAndroid 또는 YW_CHECK_ANDROID=1이면 건너뛰기도
+# 실패다. yw-android·yw-engine·android/를 바꾸는 커밋 전 게이트는 -RequireAndroid로 돈다(AGENTS.md §2).
+$androidArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "scripts\build-android.ps1"), "-Check")
+if ($Offline) { $androidArgs += "-Offline" }
+if ($RequireAndroid -or $env:YW_CHECK_ANDROID -eq "1") { $androidArgs += "-Require" }
+Invoke-Step "android" 33 "powershell" $androidArgs
 Write-Host "check: OK"
 exit 0
 ```
@@ -800,7 +817,7 @@ exit 0
 
 빌드 폴더(2026-11-01): 게이트 결과는 호스트 ACL 특성에 좌우되지 않아야 한다. 빌드 폴더(`CARGO_TARGET_DIR`, 없으면 `target\`; 저장소 안이면 저장소 루트도)에 Medium보다 낮은 무결성 레이블(Low·Untrusted — 일부 샌드박스 도구가 저장소에 붙인다)이 있거나 빌드 폴더가 재분석 지점이면, 그 실행에서만 `CARGO_TARGET_DIR`을 저장소 밖 사설 폴더 `%LOCALAPPDATA%\YourWallet-dev\target`으로 바꾸고 한 줄(`check: build folder … unsuitable (…); using CARGO_TARGET_DIR=…`) 출력한다. 레이블이 붙은 폴더에서 만든 exe는 Low 무결성으로 실행되어 yw-win·yw-host 무결성 검사, [05] H1, `%TEMP%` 쓰기가 환경 때문에 실패하기 때문이다. `YourWallet-dev`는 없으면 현재 사용자·SYSTEM·Administrators 모든 권한·상속 끊음으로 만들고, 있으면 링크가 아님·소유자와 허용 ACE가 그 셋뿐·상속 끊김·낮은 레이블 없음을 확인한다(그 아래 `target`도 링크·다른 SID·낮은 레이블 없음). 저장소의 ACL은 바꾸지 않는다. 바뀐 `CARGO_TARGET_DIR`은 모든 단계(확장·스크립트 테스트 포함)에 넘어가고, `extension/tests/yw-host-process.test.mjs`는 `CARGO_TARGET_DIR`(상대 경로면 작업 폴더 기준, cargo와 같음)의 `debug\yw-host.exe`를 실행한다.
 
-종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 12 빌드 폴더가 부적합한데 사설 폴더를 만들거나 쓸 수 없음(`LOCALAPPDATA` 없음, 기존 `YourWallet-dev`의 권한이 다름 — 지우고 다시 실행), 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 29 fuzz-lite 스모크(`fuzz`, test 다음·build 앞: `#[ignore]`된 `fuzz_lite_*` 테스트를 `YW_FUZZ_RUNS=20000`으로 디버그 빌드에서 실행; 각 테스트는 이 변수가 없으면 1,000,000회), 31 창 UI 하네스(`winui`, fuzz 다음·build 앞: yw-app `--lib`의 `#[ignore]`된 `app_approval::flow_support`·`app_approval::flow_tests`·`app_approval::input_tests`를 `--test-threads=1`로 실행 — 숨은 승인 창을 만들지만 보이거나 전경을 가져가지 않는다. 2026-11-18 [15] §11.4 S4 A3에서 `s4fl`로 임시로 더했고, 2026-11-20 S4 B7(주인이 맡긴 결정)에서 `winui`로 이름을 바꿔 상설로 둔다: 실제 Win32 재진입(`s4_flow/reentry.txt`)과 창 흔적(`input.txt`, `flow.txt`의 `l1_*` 흔적·포커스·Tab·패널 클릭, `lifecycle.txt`의 `windows=N`)은 계획 비평 A-7·A-8의 고정이고 창 없이는 만들 수 없으며, 같은 흐름·수명 시나리오의 창 없는 절반(`s4_flow/headless.txt`와 그 교차 확인)은 test 단계 23에서 돈다([09] §2.1. 그 전 문장은 "S4 B7(창 없는 시험이 게이트의 test 단계로 들어감)에서 없앤다"). 테스트 스레드에 비공개 데스크톱을 붙이는 길은 yw-win에 데스크톱 API가 없고 그것을 더하는 일은 A3 범위 밖의 yw-win `unsafe` 변경이라, 주인이 이 대안을 골랐다(2026-11-18 O-3; A3 검토 전 문장은 "windows-sys 기능을 늘려야 해서"였는데 틀렸다 — `crates/yw-win/tests/clipboard_winsta.rs`처럼 자체 `extern` 블록이면 기능 변경이 필요 없다). 필터가 아무 시험도 고르지 않아도 libtest는 0으로 끝나므로(2026-11-18 A3 검토) 먼저 같은 필터의 `--list`로 필터마다 `#[ignore]` 시험 수를 세어 `$WinuiMinimum`(2026-11-20 전 이름 `$S4flMinimum`)의 최소 수보다 적으면 31; 최소 수는 그 시험을 더하는 커밋(S4 A4·A5·A6)이 올린다(2026-11-20 S4 B7 검토: 최소 수는 실제 수 flow_support 3·flow_tests 80(창 있는 시험 79와 창 없는 `print_headless`)·input_tests 10이다(2026-11-22 S4 W14ab 검토: 9에서 10 — `RepaintAi` 실행 팔을 숨긴 실제 창에서 보는 `the_ai_repaint_reaches_only_its_window`를 더했다). 그 전에는 flow_tests가 단계 A 끝의 66이어서 창 있는 시험 14개가 빠져도 31이 나지 않았다. 시험을 더하거나 빼는 커밋이 함께 고친다). 경로 이름에 `fuzz_lite`를 넣지 않는다), 32 S4 고정 시험 컴파일 확인(`s4fz`, winui 다음·build 앞, 2026-11-19 [15] §11.4 S4 F-A 검토: test 단계의 `frozen_tests_keep_their_names_and_bodies`는 소스 글만 읽어 고정 시험이 컴파일에서 빠져도 초록이므로, test 단계와 같은 인자의 `cargo test --workspace -- --list`와 `-- --list --ignored`로 고정 잎 이름(`crates/yw-app/src/app/tests/s4_flow/frozen-tests.txt`와 `frozen-helpers.txt`의 `test` 줄)마다 컴파일된 수·무시된 수를 세어 `YW_S4_COMPILED`(`이름=전체/무시;…`)로 넘기고, `#[ignore]`된 `app::tests::s4_frozen::frozen_tests_are_compiled`를 `--exact`로 돌린다. 이름마다 소스의 `#[test]` fn보다 적게 컴파일되거나 소스에서 무시되지 않은 것보다 적게 돌면, 또는 그 시험이 목록에 정확히 하나 없으면 32. S4 동안 둔다(2026-11-24 [15] §18 40: S4·S5 동안 두었고, S5 끝부터 고정 집합이 있는 동안 상설이다. 이름 `s4fz`와 종료 코드 32는 그대로); [09] §2.1·§2.2), 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사, 30 아이콘(`scripts/make-icons.mjs --check`: 앱 `.ico`·`.res`, 확장 `icons/*.png`, `provider-main.js`의 `PROVIDER_ICON`, `docs/icon-preview.png`를 메모리에서 다시 만들어 커밋본과 바이트 비교; 다르거나 없으면 생성기 종료 1, 사용법·입출력 오류 2). 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
+종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 12 빌드 폴더가 부적합한데 사설 폴더를 만들거나 쓸 수 없음(`LOCALAPPDATA` 없음, 기존 `YourWallet-dev`의 권한이 다름 — 지우고 다시 실행), 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 29 fuzz-lite 스모크(`fuzz`, test 다음·build 앞: `#[ignore]`된 `fuzz_lite_*` 테스트를 `YW_FUZZ_RUNS=20000`으로 디버그 빌드에서 실행; 각 테스트는 이 변수가 없으면 1,000,000회), 31 창 UI 하네스(`winui`, fuzz 다음·build 앞: yw-app `--lib`의 `#[ignore]`된 `app_approval::flow_support`·`app_approval::flow_tests`·`app_approval::input_tests`를 `--test-threads=1`로 실행 — 숨은 승인 창을 만들지만 보이거나 전경을 가져가지 않는다. 2026-11-18 [15] §11.4 S4 A3에서 `s4fl`로 임시로 더했고, 2026-11-20 S4 B7(주인이 맡긴 결정)에서 `winui`로 이름을 바꿔 상설로 둔다: 실제 Win32 재진입(`s4_flow/reentry.txt`)과 창 흔적(`input.txt`, `flow.txt`의 `l1_*` 흔적·포커스·Tab·패널 클릭, `lifecycle.txt`의 `windows=N`)은 계획 비평 A-7·A-8의 고정이고 창 없이는 만들 수 없으며, 같은 흐름·수명 시나리오의 창 없는 절반(`s4_flow/headless.txt`와 그 교차 확인)은 test 단계 23에서 돈다([09] §2.1. 그 전 문장은 "S4 B7(창 없는 시험이 게이트의 test 단계로 들어감)에서 없앤다"). 테스트 스레드에 비공개 데스크톱을 붙이는 길은 yw-win에 데스크톱 API가 없고 그것을 더하는 일은 A3 범위 밖의 yw-win `unsafe` 변경이라, 주인이 이 대안을 골랐다(2026-11-18 O-3; A3 검토 전 문장은 "windows-sys 기능을 늘려야 해서"였는데 틀렸다 — `crates/yw-win/tests/clipboard_winsta.rs`처럼 자체 `extern` 블록이면 기능 변경이 필요 없다). 필터가 아무 시험도 고르지 않아도 libtest는 0으로 끝나므로(2026-11-18 A3 검토) 먼저 같은 필터의 `--list`로 필터마다 `#[ignore]` 시험 수를 세어 `$WinuiMinimum`(2026-11-20 전 이름 `$S4flMinimum`)의 최소 수보다 적으면 31; 최소 수는 그 시험을 더하는 커밋(S4 A4·A5·A6)이 올린다(2026-11-20 S4 B7 검토: 최소 수는 실제 수 flow_support 3·flow_tests 80(창 있는 시험 79와 창 없는 `print_headless`)·input_tests 10이다(2026-11-22 S4 W14ab 검토: 9에서 10 — `RepaintAi` 실행 팔을 숨긴 실제 창에서 보는 `the_ai_repaint_reaches_only_its_window`를 더했다). 그 전에는 flow_tests가 단계 A 끝의 66이어서 창 있는 시험 14개가 빠져도 31이 나지 않았다. 시험을 더하거나 빼는 커밋이 함께 고친다). 경로 이름에 `fuzz_lite`를 넣지 않는다), 32 S4 고정 시험 컴파일 확인(`s4fz`, winui 다음·build 앞, 2026-11-19 [15] §11.4 S4 F-A 검토: test 단계의 `frozen_tests_keep_their_names_and_bodies`는 소스 글만 읽어 고정 시험이 컴파일에서 빠져도 초록이므로, test 단계와 같은 인자의 `cargo test --workspace -- --list`와 `-- --list --ignored`로 고정 잎 이름(`crates/yw-app/src/app/tests/s4_flow/frozen-tests.txt`와 `frozen-helpers.txt`의 `test` 줄)마다 컴파일된 수·무시된 수를 세어 `YW_S4_COMPILED`(`이름=전체/무시;…`)로 넘기고, `#[ignore]`된 `app::tests::s4_frozen::frozen_tests_are_compiled`를 `--exact`로 돌린다. 이름마다 소스의 `#[test]` fn보다 적게 컴파일되거나 소스에서 무시되지 않은 것보다 적게 돌면, 또는 그 시험이 목록에 정확히 하나 없으면 32. S4 동안 둔다(2026-11-24 [15] §18 40: S4·S5 동안 두었고, S5 끝부터 고정 집합이 있는 동안 상설이다. 이름 `s4fz`와 종료 코드 32는 그대로); [09] §2.1·§2.2), 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사, 30 아이콘(`scripts/make-icons.mjs --check`: 앱 `.ico`·`.res`, 확장 `icons/*.png`, `provider-main.js`의 `PROVIDER_ICON`, `docs/icon-preview.png`를 메모리에서 다시 만들어 커밋본과 바이트 비교; 다르거나 없으면 생성기 종료 1, 사용법·입출력 오류 2), 33 Android(`android`, icons 다음·마지막; 2026-11-24 [15] §13·§18 42 N1, A2-3 — [15]의 처음 안은 31이었으나 31은 winui다: `scripts/build-android.ps1 -Check`(+`-Offline`, `-RequireAndroid` 또는 `YW_CHECK_ANDROID=1`이면 `-Require`)를 `powershell`로 부른다. 그 스크립트는 rustup 타깃 `aarch64-linux-android`와 NDK가 있으면 `cargo clippy --target aarch64-linux-android -p yw-android --all-targets -- -D warnings`와 `check-core-deps.mjs --target`의 두 Android 표를 늘 돌고, JDK·SDK·Gradle이 있고 `-Offline`이면 Gradle 캐시도 있을 때 릴리스 `libyw.so`(경로 지우기, LOAD 정렬·내보낸 기호 다섯·빌드 PC 경로 문자열 0의 검사), 검증된 캐시만 복사한 새 Gradle 홈에서 엄격 검증의 `assembleDebug`와 JVM 단위 시험 `jvmTest`, 런타임 닫힘 대조(`check-android-deps.mjs runtime`), `zipalign -P 16`과 APK·매니페스트 검사(`check-android-deps.mjs apk`·`manifest`)를 돈다. 없는 도구가 있으면 `android: skipped (<이유>)`를 출력하고 0이지만 `-Require`면 실패다; 실패는 모두 33). 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
 
 ### 4.2 `scripts/check-core-deps.mjs` (전체)
 
@@ -1062,6 +1079,7 @@ const forbidden = [
 - 엔드포인트 URL 규칙은 D13 템플릿 두 공급자(알케미 경로 키, QuickNode 경로 토큰)의 모양만 잡는다. 다른 공급자의 토큰 URL은 잡지 못하므로 개발용 URL 파일은 저장소 밖에만 둔다(§4.6).
 - 단어 목록 파일을 읽지 못하면 인프라 실패(종료 1).
 - 테스트(`privacy-scan.test.mjs`) 추가: 새 규칙 5개(`alchemy-key-url`, `quicknode-url`, `llm-api-key`, `labeled-private-key-hex`, `bip39-word-sequence`) 각각 양성 1건, `<KEY>`·`<토큰>` 자리표시·`https://docs-demo.quiknode.pro/`·genesis 해시·영어 문장 음성, `crates/x/tests/v.rs`·`crates/x/src/m/tests.rs`·`tools/x/tests/v.rs`·`spec/02.md`의 벡터 면제, 비면제 경로의 벡터 검출. 픽스처 문자열은 기존처럼 조각을 이어 붙여 저장소 자체가 걸리지 않게 만든다. 기존 "retains all four forbidden source signatures"는 9개로, C# 하네스 테스트는 `.rs`로 바꾼다.
+- (2026-11-24 A2-3, [15] §13) 확장자에 Android 프로젝트의 `.gradle .java .keys .kts .lockfile .pro .properties .sha256 .xml`을 더한다(`local.properties`는 무시 파일이라 목록에 들지 않는다; ASCII 키링 `.keys`의 `uid` 줄(유지보수자 전자우편)은 지운다, [15] §13).
 - 추가(L2 검토): 확장자에 `.txt .cmd .css .template`을 더한다(`crates/yw-core/src/bip39/english.txt`는 단어 목록 자체라 `bip39-word-sequence`에서만 제외). 규칙 4개를 더한다: `infura-project-id-url`(아무 호스트의 `/v3/` + 16진 32자, 뒤에 영숫자·`_`·`-`가 이어지지 않을 때), `api-key-query-value`(`api-key=`·`apikey=`·`api_key=`, 대소문자 무시; 값이 비었거나 `<…>`·`${…}`·`{…}`·`YOUR_`/`YOUR-`로 시작·`x` 3자 이상이면 자리표시), `email-address`(허용: 정확히 `noreply@anthropic.com`, `example.com`·`example.org`와 그 하위 도메인, 예약 TLD `.example`), `windows-profile-path`(`<드라이브>:\Users\<이름>`, `\`·`\\`·`/` 모두; 허용 이름: `<…>`, `%USERNAME%`, `$env:USERNAME`, `${env:USERNAME}`, `{user}`·`{name}`·`{username}`, `Public`·`Default`·`Default User`·`All Users`; `%USERPROFILE%`은 `Users`를 포함하지 않아 걸리지 않는다). 테스트 픽스처는 파일 + 정확한 값 단위로 명시 허용한다(통째 제외 없음).
 - 따름 규칙: 니모닉·개인키가 든 테스트 값은 `crates/*/tests/**`(KAT·벡터 위치, [09](09-testing.md) §2.1), `crates/*/src/**/tests.rs`(`#[cfg(test)] mod tests;`), `tools/*/tests/**`(오라클, §2.1)에만 둔다. 같은 파일 안의 인라인 `mod tests`에는 두지 않는다.
 

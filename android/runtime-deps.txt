@@ -1,0 +1,3 @@
+# The resolved releaseRuntimeClasspath of the app, one group:name:version per line (spec/15 §4.2). Changing this list
+# is adding a dependency (AGENTS.md rule 1). scripts/check-android-deps.mjs compares Gradle's resolution with it line
+# by line. Empty in A2 (§18 42 N8): androidx.webkit and its closure join in A4 (§18 47).

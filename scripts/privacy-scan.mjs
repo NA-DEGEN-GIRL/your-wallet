@@ -8,19 +8,31 @@ import { fileURLToPath } from "node:url";
 
 const execFile = promisify(execFileCallback);
 const root = fileURLToPath(new URL("../", import.meta.url));
+// 2026-11-24 A2-3 ([15] §4.3, §13): the Android project's text files too (.gradle, .java, .keys, .kts, .lockfile,
+// .pro, .properties, .sha256, .xml). local.properties holds a user path (sdk.dir) and is git-ignored, so it is never
+// in the inventory.
 const allowedExtensions = new Set([
   ".cmd",
   ".css",
+  ".gradle",
   ".html",
+  ".java",
   ".js",
   ".json",
+  ".keys",
+  ".kts",
+  ".lockfile",
   ".md",
   ".mjs",
+  ".pro",
+  ".properties",
   ".ps1",
   ".rs",
+  ".sha256",
   ".template",
   ".toml",
   ".txt",
+  ".xml",
   ".yml",
 ]);
 const TEST_VECTOR_PATH = /^(?:crates\/[^/]+\/tests\/|crates\/[^/]+\/src\/(?:[^/]+\/)*tests\.rs$|tools\/[^/]+\/tests\/|extension\/tests\/|scripts\/[^/]+\.test\.mjs$|spec\/)/u;

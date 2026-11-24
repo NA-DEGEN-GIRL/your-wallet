@@ -427,6 +427,20 @@ test("scans .txt, .cmd, .css and .template sources", async () => {
   }
 });
 
+test("scans the Android project's text files (spec/15 §13, 2026-11-24 A2-3)", async () => {
+  const repositoryRoot = await createRepository();
+  try {
+    for (const name of ["App.java", "AndroidManifest.xml", "build.gradle", "settings.gradle.kts", "proguard-rules.pro",
+      "gradle.properties", "verification-keyring.keys", "gradle.lockfile", "toolchain.sha256"]) {
+      await writeFile(join(repositoryRoot, name), secretMarker(), "utf8");
+      assert.deepEqual(await scanRepository(repositoryRoot), rules("production-secret-marker"), name);
+      await rm(join(repositoryRoot, name));
+    }
+  } finally {
+    await removeRepository(repositoryRoot);
+  }
+});
+
 test("detects personal-data rules: Infura IDs, api-key values, e-mail and profile paths", async () => {
   const cases = [
     [infuraUrl(), "infura-project-id-url"],

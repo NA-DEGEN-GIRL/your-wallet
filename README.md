@@ -80,7 +80,9 @@ XChaCha20-Poly1305로 암호화합니다.
 암호화 같은 암호 기본 요소는 직접 구현하지 않고 널리 쓰이는 크레이트를 고정 버전으로 씁니다. `unsafe`는 Windows API를 감싸는
 크레이트와, 2026-11-24부터 만들고 있는 Android판의 JNI·메모리 잠금 크레이트(`yw-android`, Android용으로만 빌드되며 Windows
 앱에는 들어가지 않음) 두 곳에서만 허용하고(전에는 Windows 크레이트 하나), 게이트는 1,400개가 넘는 테스트와 fuzz-lite 대상
-22개, 개인정보 검사, 확장 정적 감사를 매번 실행합니다.
+22개, 개인정보 검사, 확장 정적 감사를 매번 실행합니다. 만들고 있는 Android판(`android/`, 2026-11-24부터)도 소스로만 배포하며
+`scripts/build-android.ps1`이 빌드합니다(고정한 JDK·NDK·Gradle·SDK, 검증한 Gradle 의존성; 아직 시험 빌드이고 자금에 쓰지 않습니다).
+그 도구가 없는 PC에서 게이트의 `android` 단계는 건너뜁니다.
 
 **11. YubiKey가 있다면 하드웨어 지갑처럼 (선택).** YubiKey는 없어도 되지만, 있다면 하드웨어 지갑처럼 쓸 수 있습니다.
 'YubiKey 지갑'(복구 단어를 PC에 저장하지 않는 지갑)을 만들면 복구 단어에서 고른 키를 YubiKey 5에 넣고, 그 뒤 PC에는
@@ -354,7 +356,10 @@ uses no npm packages. Cryptographic primitives (signatures, hashes, encryption) 
 widely used crates at pinned versions. `unsafe` is allowed only in two crates: the one that wraps the Windows API and,
 since 2026-11-24, the JNI and memory-locking crate of the Android version in progress (`yw-android`, built for Android
 only and not part of the Windows app; before, the Windows crate alone). The gate runs more than 1,400 tests, 22
-fuzz-lite targets, a privacy scan and an extension static audit every time.
+fuzz-lite targets, a privacy scan and an extension static audit every time. The Android version in progress
+(`android/`, since 2026-11-24) is source-only too and is built by `scripts/build-android.ps1` (pinned JDK, NDK, Gradle
+and SDK, verified Gradle dependencies; still a test build, not for funds). On a PC without those tools the gate's
+`android` step is skipped.
 
 **11. Have a YubiKey? Use it like a hardware wallet (optional).** A YubiKey is not required, but if you have one you
 can use it like a hardware wallet. With a "YubiKey wallet" (one that never stores the recovery phrase on the PC), keys

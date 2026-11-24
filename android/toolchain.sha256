@@ -1,0 +1,15 @@
+# The Android build tools (spec/15 §4.4; P0-6, 2026-11-24). Official zips, each SHA-256 compared with the published
+# value at download time (the NDK publishes SHA-1 only: two official copies agreed, our SHA-256 is recorded here).
+# scripts/build-android.ps1 checks the installed versions against the "version" lines on every build and stops on a
+# difference. The SDK packages (platform, build-tools, platform-tools) come from sdkmanager, which checks Google's
+# repository list (SHA-1); their revisions are pinned below but their hashes cannot be (§4.4 residual).
+eafba0944f777abdc74d5aad16049c9b5a1275b6ce99e2939ba9f7f3e6f08c87  OpenJDK17U-jdk_x64_windows_hotspot_17.0.21.1_2.zip
+b830098aaf18b67a42eb831c404e15e5f2990a474f054ac145b0bc957ac6d729  android-ndk-r30-windows.zip
+9c0f7faeeb306cb14e4279a3e084ca6b596894089a0638e68a07c945a32c9e14  gradle-9.6.1-bin.zip
+90ae805d20434428bffcb699c290860f19bb5f66a67e6b330067e3de801fb04a  commandlinetools-win-15859902_latest.zip
+version jdk 17.0.21.1+2
+version ndk 30.0.16248370
+version gradle 9.6.1
+version build-tools 36.0.0
+version platform android-36 2
+version platform-tools 37.0.3

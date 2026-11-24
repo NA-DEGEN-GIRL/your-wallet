@@ -12,7 +12,13 @@ import { fileURLToPath } from "node:url";
 const HANGUL = /[ᄀ-ᇿ㄰-㆏ꥠ-꥿가-힯ힰ-퟿]/u;
 // yw-platform/src since 2026-11-17 (spec/15 §11.4 S1): shared non-Windows code must not grow fixed Korean text.
 // yw-engine/src since 2026-11-17 (spec/15 §11.4 S2): the modules moved out of yw-app.
-const ROOTS = ["crates/yw-core/src", "crates/yw-platform/src", "crates/yw-engine/src", "crates/yw-app/src", "extension/src"];
+// yw-android/src and the Android app's Java since 2026-11-24 (spec/15 §3.3 N24, A2-3): the Java side holds no fixed text
+// at all (no catalogue there), so any Hangul literal in a .java file is a violation; Android resources may hold Hangul
+// only in res/values-ko/strings.xml (the manifest label, the one exception; spec/14 §1).
+const ROOTS = ["crates/yw-core/src", "crates/yw-platform/src", "crates/yw-engine/src", "crates/yw-app/src", "crates/yw-android/src",
+  "extension/src", "android/app/src"];
+const ANDROID_RES = "android/app/src/main/res";
+const ANDROID_LABEL_KO = "android/app/src/main/res/values-ko/strings.xml";
 const CATALOGUE_MACROS = ["texts!", "rules!"];
 // The language card shows the first two in both languages (spec/14 §1); the last two are font
 // measurement probes, never shown.
@@ -29,7 +35,7 @@ function walk(directory, out) {
     const path = join(directory, name);
     if (statSync(path).isDirectory()) {
       walk(path, out);
-    } else if (/\.(rs|js|mjs)$/u.test(name)) {
+    } else if (/\.(rs|js|mjs|java|xml)$/u.test(name)) {
       out.push(path);
     }
   }
@@ -209,6 +215,13 @@ export function scan(repositoryRoot) {
   for (const path of files) {
     const rel = relative(repositoryRoot, path).split(sep).join("/");
     if (isTestFile(rel) || rel.endsWith(".test.mjs")) {
+      continue;
+    }
+    if (rel.endsWith(".xml")) {
+      const text = readFileSync(path, "utf8");
+      if (rel.startsWith(`${ANDROID_RES}/`) && rel !== ANDROID_LABEL_KO && HANGUL.test(text)) {
+        offending.push({ path: rel, count: [...text].filter((character) => HANGUL.test(character)).length, first: text.match(/[^\n]*/u)[0] });
+      }
       continue;
     }
     const found = violations(readFileSync(path, "utf8"), rel.endsWith(".rs"));

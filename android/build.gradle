@@ -1,0 +1,9 @@
+// spec/15 §4.3: the build-script classpath is locked too (buildscript-gradle.lockfile); AGP exactly 9.5.1 (§18 42 N7).
+buildscript {
+    configurations.classpath {
+        resolutionStrategy.activateDependencyLocking()
+    }
+}
+plugins {
+    id 'com.android.application' version '9.5.1' apply false
+}

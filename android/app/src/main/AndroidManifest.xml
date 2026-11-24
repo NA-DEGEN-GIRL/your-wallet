@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- spec/15 §5.1, §12, §13 (2026-11-24 A2-3). No permission at all: A2 has no network (no INTERNET, §18 42 N16).
+     Backups and device transfers are off (§5.1); no other app may capture its audio. Every component is
+     exported="false" except the launcher Activity. The label is the only text of the Java side (§3.3 N24, spec/14).
+     scripts/check-android-deps.mjs checks the packaged manifest. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:name=".App"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:hasFragileUserData="false"
+        android:usesCleartextTraffic="false"
+        android:allowAudioPlaybackCapture="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name">
+        <!-- No WebView in A2; set now so that no later step can forget it (§7.3, D28). -->
+        <meta-data android:name="android.webkit.WebView.MetricsOptOut" android:value="true" />
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

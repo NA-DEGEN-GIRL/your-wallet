@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app's name on the launcher: the one fixed text of the Java side (spec/15 §3.3 N24, spec/14 §1). It is the same
+     in Korean and English (the product name), so there is no values-ko. Every other text comes from the Rust
+     catalogues through the screen model. -->
+<resources>
+    <string name="app_name" translatable="false">Your Wallet</string>
+</resources>

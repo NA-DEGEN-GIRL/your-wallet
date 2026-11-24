@@ -1,0 +1,76 @@
+// The Android app (spec/15 §3, §4.2, §13; 2026-11-24 A2-3). Java only; no runtime library in A2 (runtime-deps.txt is
+// empty, §18 42 N8). scripts/build-android.ps1 builds libyw.so with cargo and puts it in build/rustJniLibs/<abi>/
+// before Gradle runs (Gradle never calls cargo, §13 4), then aligns and signs the unsigned APK (§13 5-6).
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace = 'dev.yw.app'
+    compileSdk = 36
+    defaultConfig {
+        // A neutral application id: the package name of a sideloaded app can leave the device (§14.1 P0-1 F1-4).
+        applicationId = 'dev.yw.app'
+        minSdk = 29
+        targetSdk = 36
+        versionCode = 1
+        versionName = '0.3.0'
+    }
+    buildTypes {
+        release {
+            minifyEnabled = true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // §4.3: no META-INF/version-control-info.textproto (the build PC's repository revision) in the APK.
+            vcsInfo { include = false }
+        }
+        debug {
+            // build-android.ps1 signs after zipalign with the key it is given (§13 6, §14.2); AGP's own debug key and
+            // its keystore under ANDROID_USER_HOME are not used.
+            signingConfig = null
+            vcsInfo { include = false }
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    buildFeatures {
+        buildConfig = false
+    }
+    // D28: no Google-encrypted dependency report in the signing block.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+    packaging {
+        // §13 5 (P0-4): lib/<abi>/libyw.so stored uncompressed and 16 KB aligned, extractNativeLibs=false.
+        jniLibs { useLegacyPackaging = false }
+    }
+    sourceSets {
+        main { jniLibs.srcDirs = ['build/rustJniLibs'] }
+    }
+}
+
+dependencyLocking { lockAllConfigurations() }
+
+dependencies {
+    // None in A2 (§4.2, runtime-deps.txt). androidx.webkit joins in A4 (§18 42 N8, §18 47).
+}
+
+// Java unit tests without a test library (§18 42 N15): the platform-neutral classes (no android.* import; javac
+// fails if one appears) and src/jvmTest are compiled by a plain JavaCompile and run by JavaExec. The runner
+// dev.yw.app.JvmTests exits non-zero on the first failure.
+def jvmPureSources = ['ProcessRule.java', 'Wire.java']
+def jvmTestClasses = layout.buildDirectory.dir('jvmTest/classes')
+def jvmTestCompile = tasks.register('jvmTestCompile', JavaCompile) {
+    source = files(jvmPureSources.collect { "src/main/java/dev/yw/app/$it" }) + fileTree('src/jvmTest/java')
+    classpath = files()
+    destinationDirectory = jvmTestClasses
+    options.release = 17
+    options.encoding = 'UTF-8'
+}
+tasks.register('jvmTest', JavaExec) {
+    dependsOn jvmTestCompile
+    classpath = files(jvmTestClasses)
+    mainClass = 'dev.yw.app.JvmTests'
+}

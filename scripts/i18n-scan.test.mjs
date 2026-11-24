@@ -58,6 +58,18 @@ test("the yw-engine module tree is scanned under its own crate name (spec/15 §1
   assert.ok(!cataloguePaths(root, "yw_app", "crates/yw-app/src/lib.rs").includes("yw_app::errors::text"));
 });
 
+test("Java has no catalogue: every Hangul literal is a violation (spec/15 §3.3 N24)", () => {
+  const java = [
+    "// 주석은 보지 않는다",
+    "final class A {",
+    "    static final String B = \"보이는 문구\";",
+    "    static final char C = '나';",
+    "    static final String D = \"plain\";",
+    "}",
+  ].join("\n");
+  assert.deepEqual(violations(java, false).map(({ value }) => value), ["보이는 문구", "나"]);
+});
+
 test("the repository has no Hangul literal outside catalogues except the allowlisted files", () => {
   assert.deepEqual(check(root), []);
 });

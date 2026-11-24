@@ -1,0 +1,17 @@
+// spec/15 §4.3: only Google Maven and Maven Central, for plugins and for dependencies; a project cannot add its own
+// repository (FAIL_ON_PROJECT_REPOS). No plugin portal, no mavenLocal, no foojay toolchain plugin (§4.4 N3).
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode = RepositoriesMode.FAIL_ON_PROJECT_REPOS
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = 'yw'
+include ':app'

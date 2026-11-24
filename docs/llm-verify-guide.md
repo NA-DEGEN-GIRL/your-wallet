@@ -340,7 +340,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1
 
 - On a fresh clone run it **without** `-Offline` (or run `cargo fetch --locked` first); `-Offline` is for when crates are
   already cached.
-- One step only: `-Step fmt|deps|clippy|test|fuzz|winui|s4fz|build|ext-test|script-test|privacy|audit-ext|icons`.
+- One step only: `-Step fmt|deps|clippy|test|fuzz|winui|s4fz|build|ext-test|script-test|privacy|audit-ext|icons|android`.
+- The `android` step (since 2026-11-24) checks the Android version in progress. Without the Android tools on the PC it
+  prints `android: skipped (<reason>)` and passes; that is normal for a Windows-only check. `-RequireAndroid` turns the
+  skip into a failure (for developers who build the Android app).
 - The `winui` step creates hidden approval windows on the desktop for a moment; they are never shown and never take the
   foreground (its self-test checks that).
 - It takes a long time (1,400+ tests, and a debug-profile fuzz-lite smoke at 20,000 iterations per target). Success
@@ -364,6 +367,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1
 | privacy | 27 | §6 |
 | audit-ext | 28 | `scripts/audit-extension.mjs`: exact permissions and manifest keys; bans `eval`, `Function`, dynamic import, `fetch`, `innerHTML` and URL literals; no unreferenced source files |
 | icons | 30 | Committed icons equal the generator output |
+| android | 33 | (since 2026-11-24, skipped without the Android tools) Android Rust lints, the Android dependency tables, the `libyw.so` and APK checks, the Gradle build with strict dependency verification, Java unit tests |
 | preconditions | 10, 11, 12 | Wrong cargo/Node version; RUSTFLAGS set; unusable build folder |
 
 The gate does not cover: real RPC behaviour, real YubiKeys, real Chrome end-to-end, or the installer writing to the

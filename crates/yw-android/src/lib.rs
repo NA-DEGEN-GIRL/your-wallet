@@ -5,7 +5,8 @@
 //! comment (spec/01 §5.1). Those modules are compiled for Android only. On every other target (the
 //! Windows gate, spec/15 §13) the crate is its platform-neutral helpers and their unit tests:
 //! [`jni_table`] (the hand-declared JNI function-table indices and the five registered methods) and
-//! [`slot_plan`] (the locked-slot size and budget arithmetic).
+//! [`slot_plan`] (the locked-slot size and budget arithmetic), and since 2026-11-24 A2-3
+//! [`interim`] (the two fixed inputs `call` knows before the wire format of A2-6).
 //!
 //! 2026-11-24 A2-1 (spec/15 §17 A2): the skeleton. `JNI_OnLoad` calls `prctl(PR_SET_DUMPABLE, 0)`
 //! first, installs the panic hook and registers the five methods of spec/15 §3.2 as stubs; `slot`
@@ -15,6 +16,7 @@
 //! are registered, and each method answers "nothing" without it. The engine, the wire format,
 //! storage and the screens come in the later A2 steps.
 
+pub mod interim;
 pub mod jni_table;
 pub mod slot_plan;
 

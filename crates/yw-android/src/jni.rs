@@ -11,7 +11,10 @@
 //!
 //! 2026-11-24 A2-1: the five methods are stubs that read nothing and answer "nothing": `call` and
 //! `next` return null, `ioComplete` and `secretKey` do nothing, `secretFill` returns 0 and writes
-//! nothing (an unknown handle, spec/15 §3.2). A2-6 and A2-7 give them their bodies.
+//! nothing (an unknown handle, spec/15 §3.2). A2-6 and A2-7 give them their bodies. (2026-11-24
+//! A2-3: `call` knows the two interim inputs of [`crate::interim`] — the status request, answered
+//! with the status line through `NewByteArray`/`SetByteArrayRegion`, and Java's uncaught-exception
+//! event, which ends the process like a panic; the other four are still stubs.)
 //!
 //! 2026-11-24 A2-1 review: ART's `RegisterNatives` binds the methods in order and stops at the first
 //! it cannot find, leaving the earlier ones bound. So every method body runs only through
@@ -25,6 +28,7 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::interim::{self, Interim};
 use crate::jni_table::{JNI_ERR, JNI_OK, JNI_VERSION_1_6, METHODS, NATIVE_CLASS, env, vm};
 
 /// Set (`Release`) only after `RegisterNatives` returned `JNI_OK` for all five methods; never cleared.
@@ -80,6 +84,10 @@ type ExceptionCheckFn = unsafe extern "C" fn(JniEnv) -> u8;
 type ExceptionClearFn = unsafe extern "C" fn(JniEnv);
 type DeleteLocalRefFn = unsafe extern "C" fn(JniEnv, JObject);
 type RegisterNativesFn = unsafe extern "C" fn(JniEnv, JObject, *const NativeMethod, i32) -> i32;
+type GetArrayLengthFn = unsafe extern "C" fn(JniEnv, JObject) -> i32;
+type NewByteArrayFn = unsafe extern "C" fn(JniEnv, i32) -> JObject;
+type GetByteArrayRegionFn = unsafe extern "C" fn(JniEnv, JObject, i32, i32, *mut i8);
+type SetByteArrayRegionFn = unsafe extern "C" fn(JniEnv, JObject, i32, i32, *const i8);
 
 /// Clears a pending Java exception (one `FindClass` or `RegisterNatives` threw), so the loader's own
 /// error is what Java sees.
@@ -96,9 +104,84 @@ fn clear_exception(jni: JniEnv) {
     }
 }
 
-/// `byte[] call(byte[] cmd)`: the engine's input (spec/15 §3.2). Stub: no engine yet, no answer.
-extern "C" fn call(_jni: JniEnv, _class: JObject, _input: JObject) -> JObject {
-    when_loaded(core::ptr::null_mut(), core::ptr::null_mut)
+/// `byte[] call(byte[] cmd)`: the engine's input (spec/15 §3.2). 2026-11-24 A2-3: only the two
+/// interim inputs ([`interim`]): the status request is answered with the status line, the
+/// uncaught-exception event ends the process like a panic; anything else (or more than
+/// [`interim::MAX_INPUT`] bytes, which are not read) is answered with null. The engine joins in A2-6.
+extern "C" fn call(jni: JniEnv, _class: JObject, input: JObject) -> JObject {
+    when_loaded(core::ptr::null_mut(), || {
+        let Some((bytes, len)) = read_small(jni, input) else {
+            return core::ptr::null_mut();
+        };
+        match bytes.get(..len).map(interim::classify) {
+            Some(Interim::Status) => new_byte_array(jni, interim::STATUS_LINE.as_bytes()),
+            Some(Interim::JavaUncaught) => crate::panic_hook::fatal_end(),
+            Some(Interim::Unknown) | None => core::ptr::null_mut(),
+        }
+    })
+}
+
+/// Copies a Java `byte[]` of at most [`interim::MAX_INPUT`] bytes; `None` for null, a longer array
+/// (not read) or a failed copy.
+fn read_small(jni: JniEnv, array: JObject) -> Option<([u8; interim::MAX_INPUT], usize)> {
+    if array.is_null() {
+        return None;
+    }
+    let length_of = table_fn!(jni, env::GET_ARRAY_LENGTH, GetArrayLengthFn)?;
+    // SAFETY: `jni` is the current thread's `JNIEnv*` inside a native call; `array` is the non-null
+    // local reference of the `byte[]` parameter Java passed.
+    let length = unsafe { length_of(jni, array) };
+    let len = usize::try_from(length).ok()?;
+    if len > interim::MAX_INPUT {
+        return None;
+    }
+    let mut bytes = [0_u8; interim::MAX_INPUT];
+    let region = table_fn!(jni, env::GET_BYTE_ARRAY_REGION, GetByteArrayRegionFn)?;
+    // SAFETY: As above; `0..length` is inside the array (its length was just read) and `bytes` has
+    // room for `length` (≤ `MAX_INPUT`) bytes.
+    unsafe { region(jni, array, 0, length, bytes.as_mut_ptr().cast()) };
+    if exception_pending(jni) {
+        return None;
+    }
+    Some((bytes, len))
+}
+
+/// A new Java `byte[]` holding `bytes`, or null (an exception it caused is cleared).
+fn new_byte_array(jni: JniEnv, bytes: &[u8]) -> JObject {
+    let Ok(length) = i32::try_from(bytes.len()) else {
+        return core::ptr::null_mut();
+    };
+    let Some(new_array) = table_fn!(jni, env::NEW_BYTE_ARRAY, NewByteArrayFn) else {
+        return core::ptr::null_mut();
+    };
+    // SAFETY: `jni` is the current thread's `JNIEnv*` inside a native call; `length` ≥ 0.
+    let array = unsafe { new_array(jni, length) };
+    if array.is_null() {
+        clear_exception(jni);
+        return core::ptr::null_mut();
+    }
+    let Some(set_region) = table_fn!(jni, env::SET_BYTE_ARRAY_REGION, SetByteArrayRegionFn) else {
+        return core::ptr::null_mut();
+    };
+    // SAFETY: `array` is the new `byte[]` of exactly `length` elements; `bytes` holds `length` bytes.
+    unsafe { set_region(jni, array, 0, length, bytes.as_ptr().cast()) };
+    if exception_pending(jni) {
+        return core::ptr::null_mut();
+    }
+    array
+}
+
+/// Whether a Java exception is pending; if so it is cleared (the caller answers "nothing").
+fn exception_pending(jni: JniEnv) -> bool {
+    let Some(check) = table_fn!(jni, env::EXCEPTION_CHECK, ExceptionCheckFn) else {
+        return true;
+    };
+    // SAFETY: `jni` is the current thread's `JNIEnv*`; `ExceptionCheck` may be called any time.
+    let pending = unsafe { check(jni) } != 0;
+    if pending {
+        clear_exception(jni);
+    }
+    pending
 }
 
 /// `byte[] next(long timeoutMs)`: effects, the screen model and platform I/O requests. Stub: none.

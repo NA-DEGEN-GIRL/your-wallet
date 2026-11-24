@@ -37,3 +37,16 @@ __pycache__/
 # Claude Code 작업 폴더(로컬 설정·worktree)
 /.claude/
 /Microsoft/
+# Android (spec/15 §13, §4.3; 2026-11-24 A2-3): build outputs, native libraries, packages, the Gradle cache and
+# wrapper jar, the binary keyring (only the ASCII-armored .keys is committed), local.properties (sdk.dir is a user
+# path). Signing keys (*.p12, *.jks, *.keystore) are ignored above.
+*.so
+*.apk
+*.aab
+*.idsig
+/android/**/build/
+/android/.gradle/
+/android/.kotlin/
+gradle-wrapper.jar
+verification-keyring.gpg
+local.properties

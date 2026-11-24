@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A simple wallet shape on the 108 dp adaptive-icon canvas (safe zone: the middle 66 dp). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M33,38h38a4,4 0,0 1,4 4v26a4,4 0,0 1,-4 4h-38a4,4 0,0 1,-4 -4v-26a4,4 0,0 1,4 -4z" />
+    <path
+        android:fillColor="#FF1F4E79"
+        android:pathData="M58,49h17v12h-17a6,6 0,0 1,0 -12z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M60,55m-2.5,0a2.5,2.5 0,1 1,5 0a2.5,2.5 0,1 1,-5 0" />
+</vector>

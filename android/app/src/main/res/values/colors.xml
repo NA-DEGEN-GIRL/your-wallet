@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Launcher icon background (spec/15 §13 N21). -->
+    <color name="icon_background">#FF1F4E79</color>
+</resources>
