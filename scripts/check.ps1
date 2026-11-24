@@ -245,7 +245,7 @@ Invoke-Step "privacy" 27 "node" @("scripts/privacy-scan.mjs")
 Invoke-Step "audit-ext" 28 "node" @("scripts/audit-extension.mjs", "check", "--extension-root", "extension")
 Invoke-Step "icons" 30 "node" @("scripts/make-icons.mjs", "--check")   # 커밋된 아이콘 = 생성기 출력([04] §1.7, [05] §2.2)
 # Android([15] §13, [09] §2.2; 2026-11-24 A2-3, 종료 33 — 31은 winui다, §18 42 N1): scripts/build-android.ps1 -Check가 aarch64
-# clippy(-D warnings), check-core-deps.mjs의 두 Android 표, 릴리스 libyw.so와 그 검사, 새 Gradle 홈의 엄격 검증 assembleDebug(-Offline이면 오프라인),
+# clippy(-D warnings), check-core-deps.mjs의 두 Android 표, 릴리스 libyw.so와 그 검사, 새 Gradle 홈의 엄격 검증 assembleDebug·assembleRelease(-Offline이면 오프라인; release는 2026-11-25 A2-3 검토부터),
 # JVM 단위 시험, 런타임 닫힘 대조(check-android-deps.mjs), APK·매니페스트 검사를 돈다. 도구가 없으면 "android: skipped (<이유>)"로
 # 넘어가되(rustup 타깃과 NDK가 있으면 clippy와 Android 표는 건너뛰지 않는다), -RequireAndroid 또는 YW_CHECK_ANDROID=1이면 건너뛰기도
 # 실패다. yw-android·yw-engine·android/를 바꾸는 커밋 전 게이트는 -RequireAndroid로 돈다(AGENTS.md §2).

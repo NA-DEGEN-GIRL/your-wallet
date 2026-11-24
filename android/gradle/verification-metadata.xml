@@ -3,6 +3,7 @@
    <configuration>
       <verify-metadata>true</verify-metadata>
       <verify-signatures>true</verify-signatures>
+      <key-servers enabled="false"/>
       <ignored-keys>
          <ignored-key id="296CD27F60EED12C" reason="Key couldn't be downloaded from any key server"/>
          <ignored-key id="34918B7D3969D2F5" reason="Key couldn't be downloaded from any key server"/>

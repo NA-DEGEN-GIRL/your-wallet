@@ -6,9 +6,10 @@
 # (LOAD 정렬 0x4000, 내보낸 기호 다섯, 빌드 PC 경로 문자열 없음) → 4 Gradle(--no-daemon, 검증 메타데이터 강제)이 서명 전 APK →
 # 5 zipalign -P 16 -f, -c -P 16, APK·매니페스트 검사 → 6 -SignKey가 있으면 apksigner(정렬 뒤에만).
 # -Check: aarch64 clippy(-D warnings)와 check-core-deps.mjs의 두 Android 표는 rustup 타깃과 NDK가 있으면 건너뛰지 않는다. 그 뒤
-# (JDK·SDK·Gradle이 있고, -Offline이면 Gradle 캐시가 있을 때) 위 2–5를 debug APK로 돌고, Gradle은 새로 만든 Gradle 홈(검증된 캐시
+# (JDK·SDK·Gradle이 있고, -Offline이면 Gradle 캐시가 있을 때) 위 2–5를 debug와 release APK로 돌고(2026-11-25 A2-3 검토: 전에는
+# debug만이라 R8의 Native 보존과 "release는 debuggable 아님" 검사가 게이트에 없었다), Gradle은 새로 만든 Gradle 홈(검증된 캐시
 # modules-2만 복사)에서 엄격 오프라인으로 돌며(§4.3), JVM 단위 시험(jvmTest, §18 42 N15)과 런타임 닫힘 대조(check-android-deps.mjs,
-# §4.2)를 더한다. 없는 것이 있으면 "android: skipped (<이유>)"를 출력하고 0으로 끝난다. -Require면 건너뛰기가 실패(1)다.
+# §4.2)를 더한다. -Check는 서명하지 않는다. 없는 것이 있으면 "android: skipped (<이유>)"를 출력하고 0으로 끝난다. -Require면 건너뛰기가 실패(1)다.
 # 이 스크립트는 경로 리터럴을 두지 않는다: 도구 폴더는 -ToolRoot, 없으면 YW_ANDROID_TOOLS, 없으면 %LOCALAPPDATA%\build-cache\droid
 # (지갑을 드러내지 않는 이름, §4.4 N5). 찾을 빌드 PC 경로 문자열도 실행할 때 환경에서 만든다(§13 3).
 [CmdletBinding()]
@@ -50,7 +51,8 @@ foreach ($name in "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS
     if ([Environment]::GetEnvironmentVariable($name)) { Stop-Build "$name must be unset (.cargo/config.toml owns rustflags)" }
 }
 foreach ($name in "RUSTC", "RUSTC_WRAPPER", "CARGO_BUILD_TARGET") { [Environment]::SetEnvironmentVariable($name, [NullString]::Value, "Process") }
-if ($Check) { $Variant = "debug" }
+# -Check는 두 변형을 모두 만들고 검사한다(§13); 아니면 -Variant 하나.
+$Variants = if ($Check) { @("debug", "release") } else { @($Variant) }
 $Tools = if ($ToolRoot) { $ToolRoot } elseif ($env:YW_ANDROID_TOOLS) { $env:YW_ANDROID_TOOLS } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "build-cache\droid" } else { "" }
 if (-not $Tools) { Skip-Build "no tool folder (LOCALAPPDATA is not set)" }
 $Tools = [IO.Path]::GetFullPath($Tools)
@@ -223,13 +225,14 @@ foreach ($triple in $Triples) {
     $so = Join-Path $TargetDir "$triple\release\libyw.so"
     if (-not (Test-Path -LiteralPath $so)) { Stop-Build "libyw.so not built for $triple" }
 
-    # .so 검사(§13 3): LOAD 정렬, 내보낸 기호, 경로 문자열.
+    # .so 검사(§13 3): LOAD 정렬, 내보낸 기호, 경로 문자열. 내보낸 기호는 LOCAL이 아닌 모든 정의된 동적 기호(GLOBAL·WEAK·
+    # UNIQUE)다(2026-11-25 A2-3 검토: 전에는 GLOBAL만 세어 정의된 WEAK·GNU_UNIQUE 내보내기를 보지 못했다).
     $loads = @(& (Join-Path $NdkBin "llvm-readelf.exe") -Wl $so | Where-Object { "$_" -match '^\s+LOAD\s' })
     if ($loads.Count -eq 0) { Stop-Build "no LOAD segment in libyw.so ($triple)" }
     foreach ($load in $loads) { if ((("$load".Trim()) -split '\s+')[-1] -ne "0x4000") { Stop-Build "LOAD segment not 16 KB aligned ($triple): $("$load".Trim())" } }
     $exported = @(& (Join-Path $NdkBin "llvm-readelf.exe") --dyn-syms -W $so | ForEach-Object {
         $cols = ("$_".Trim()) -split '\s+'
-        if ($cols.Count -ge 8 -and $cols[4] -eq "GLOBAL" -and $cols[6] -ne "UND" -and $cols[0] -match '^\d+:$') { ($cols[7] -split '@')[0] }
+        if ($cols.Count -ge 8 -and $cols[4] -ne "LOCAL" -and $cols[6] -ne "UND" -and $cols[0] -match '^\d+:$') { ($cols[7] -split '@')[0] }
     } | Sort-Object -Unique)
     if (($exported -join ",") -ne (($ExpectedExports | Sort-Object) -join ",")) { Stop-Build "exported symbols of libyw.so ($triple): $($exported -join ', ')" }
     $hits = 0
@@ -263,9 +266,9 @@ if ($Check) {
     Copy-Item -LiteralPath (Join-Path $GradleHome "caches\modules-2") -Destination (Join-Path $checkHome "caches\modules-2") -Recurse
     $env:GRADLE_USER_HOME = $checkHome
 }
-$taskVariant = $Variant.Substring(0, 1).ToUpperInvariant() + $Variant.Substring(1)
 # clean은 쓰지 않는다: build/rustJniLibs(위 3)를 지운다. Gradle의 증분 빌드가 APK를 새로 만든다.
-$gradleArgs = @("--no-daemon", "--dependency-verification", "strict", "--project-dir", $AndroidDir, ":app:assemble$taskVariant")
+$gradleArgs = @("--no-daemon", "--dependency-verification", "strict", "--project-dir", $AndroidDir)
+foreach ($one in $Variants) { $gradleArgs += ":app:assemble" + $one.Substring(0, 1).ToUpperInvariant() + $one.Substring(1) }
 if ($Check) { $gradleArgs += ":app:jvmTest" }
 if ($Offline) { $gradleArgs = @("--offline") + $gradleArgs }
 $depsReport = Join-Path $AndroidDir "app\build\yw-runtime-deps.txt"
@@ -279,23 +282,29 @@ if ($LASTEXITCODE -ne 0) { Stop-Build "gradle dependencies (exit $LASTEXITCODE)"
 Invoke-Native "check-android-deps runtime" "node" @((Join-Path $RepoRoot "scripts\check-android-deps.mjs"), "runtime", $depsReport, (Join-Path $AndroidDir "runtime-deps.txt"))
 
 # --- 5. 정렬과 검사 ------------------------------------------------------------------------------------------------
-$unsigned = Join-Path $AndroidDir "app\build\outputs\apk\$Variant\app-$Variant-unsigned.apk"
-if (-not (Test-Path -LiteralPath $unsigned)) { Stop-Build "Gradle made no app-$Variant-unsigned.apk" }
 $outDir = Join-Path $AndroidDir "app\build\outputs\yw"
 [void](New-Item -ItemType Directory -Force -Path $outDir)
-$aligned = Join-Path $outDir "yw-$Variant-aligned.apk"
 $zipalign = Join-Path $BuildTools "zipalign.exe"
-Invoke-Native "zipalign" $zipalign @("-P", "16", "-f", "4", $unsigned, $aligned)
-Invoke-Native "zipalign check" $zipalign @("-c", "-P", "16", "4", $aligned)
-Invoke-Native "check-android-deps apk" "node" @((Join-Path $RepoRoot "scripts\check-android-deps.mjs"), "apk", $aligned, ($BuiltAbis -join ","))
-$tree = Join-Path $AndroidDir "app\build\yw-manifest-tree.txt"
-$dump = @(& (Join-Path $BuildTools "aapt2.exe") dump xmltree --file AndroidManifest.xml $aligned)
-if ($LASTEXITCODE -ne 0) { Stop-Build "aapt2 dump xmltree (exit $LASTEXITCODE)" }
-[IO.File]::WriteAllLines($tree, [string[]]$dump)
-Invoke-Native "check-android-deps manifest" "node" @((Join-Path $RepoRoot "scripts\check-android-deps.mjs"), "manifest", $tree, $Variant)
+$alignedOf = @{}
+foreach ($one in $Variants) {
+    $unsigned = Join-Path $AndroidDir "app\build\outputs\apk\$one\app-$one-unsigned.apk"
+    if (-not (Test-Path -LiteralPath $unsigned)) { Stop-Build "Gradle made no app-$one-unsigned.apk" }
+    $aligned = Join-Path $outDir "yw-$one-aligned.apk"
+    Invoke-Native "zipalign ($one)" $zipalign @("-P", "16", "-f", "4", $unsigned, $aligned)
+    Invoke-Native "zipalign check ($one)" $zipalign @("-c", "-P", "16", "4", $aligned)
+    Invoke-Native "check-android-deps apk ($one)" "node" @((Join-Path $RepoRoot "scripts\check-android-deps.mjs"), "apk", $aligned, ($BuiltAbis -join ","))
+    $tree = Join-Path $AndroidDir "app\build\yw-manifest-tree-$one.txt"
+    $dump = @(& (Join-Path $BuildTools "aapt2.exe") dump xmltree --file AndroidManifest.xml $aligned)
+    if ($LASTEXITCODE -ne 0) { Stop-Build "aapt2 dump xmltree $one (exit $LASTEXITCODE)" }
+    [IO.File]::WriteAllLines($tree, [string[]]$dump)
+    Invoke-Native "check-android-deps manifest ($one)" "node" @((Join-Path $RepoRoot "scripts\check-android-deps.mjs"), "manifest", $tree, $one)
+    $alignedOf[$one] = $aligned
+}
 
 # --- 6. 서명(정렬 뒤에만, §13 6, §14.2) ----------------------------------------------------------------------------
-$result = $aligned
+if ($Check -and $SignKey) { Stop-Build "-Check does not sign" }
+$aligned = $alignedOf[$Variant]
+$results = @($Variants | ForEach-Object { $alignedOf[$_] })
 if ($SignKey) {
     if (-not $SignPassFile) { Stop-Build "-SignKey needs -SignPassFile" }
     $signed = Join-Path $outDir "yw-$Variant.apk"
@@ -305,11 +314,13 @@ if ($SignKey) {
         "--v3-signing-enabled", "true", "--ks", $SignKey, "--ks-pass", "file:$SignPassFile", "--out", $signed, $aligned)
     Invoke-Native "apksigner verify" $apksigner @("verify", "--min-sdk-version", "29", $signed)
     Invoke-Native "zipalign check (signed)" $zipalign @("-c", "-P", "16", "4", $signed)
-    $result = $signed
+    $results = @($signed)
 }
 # Get-FileHash가 없는 셸(다른 PowerShell이 물려준 PSModulePath)에서도 되게 .NET으로 잰다.
-$sha = [Security.Cryptography.SHA256]::Create()
-try { $stream = [IO.File]::OpenRead($result); try { $hash = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace("-", "").ToLowerInvariant() } finally { $stream.Dispose() } } finally { $sha.Dispose() }
-Write-Host "android: OK $Variant $($BuiltAbis -join ',') $((Get-Item -LiteralPath $result).Length) bytes sha256 $hash"
-Write-Host "android: apk $result"
+foreach ($result in $results) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $stream = [IO.File]::OpenRead($result); try { $hash = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace("-", "").ToLowerInvariant() } finally { $stream.Dispose() } } finally { $sha.Dispose() }
+    Write-Host "android: OK $([IO.Path]::GetFileName($result)) $($BuiltAbis -join ',') $((Get-Item -LiteralPath $result).Length) bytes sha256 $hash"
+    Write-Host "android: apk $result"
+}
 exit 0

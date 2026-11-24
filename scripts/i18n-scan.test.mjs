@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { cataloguePaths, check, stringLiterals, violations } from "./i18n-scan.mjs";
+import { androidXmlViolations, cataloguePaths, check, stringLiterals, violations } from "./i18n-scan.mjs";
 
 const root = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 
@@ -68,6 +68,25 @@ test("Java has no catalogue: every Hangul literal is a violation (spec/15 §3.3 
     "}",
   ].join("\n");
   assert.deepEqual(violations(java, false).map(({ value }) => value), ["보이는 문구", "나"]);
+});
+
+test("Android XML: Hangul only in values-ko/strings.xml, a manifest label only a string resource (spec/15 §3.3 N24)", () => {
+  const manifest = (label) => `<manifest>\n    <application\n        android:label="${label}">\n    </application>\n</manifest>\n`;
+  const at = "android/app/src/main/AndroidManifest.xml";
+  assert.deepEqual(androidXmlViolations(at, manifest("@string/app_name")), []);
+  assert.deepEqual(androidXmlViolations(at, manifest("지갑")), [
+    { count: 2, first: "android:label=\"지갑\">" },
+    { count: 1, first: "android:label=\"지갑\" is not a string resource" },
+  ]);
+  assert.deepEqual(androidXmlViolations(at, manifest("Your Wallet")),
+    [{ count: 1, first: "android:label=\"Your Wallet\" is not a string resource" }]);
+  assert.deepEqual(androidXmlViolations(at, "<manifest>\n<!-- 주석 -->\n</manifest>\n"), [{ count: 2, first: "<!-- 주석 -->" }]);
+  const strings = "<resources>\n    <string name=\"app_name\">내 지갑</string>\n</resources>\n";
+  assert.deepEqual(androidXmlViolations("android/app/src/main/res/values-ko/strings.xml", strings), []);
+  assert.deepEqual(androidXmlViolations("android/app/src/main/res/values/strings.xml", strings),
+    [{ count: 3, first: "<string name=\"app_name\">내 지갑</string>" }]);
+  assert.deepEqual(androidXmlViolations("android/app/src/debug/res/values-ko/strings.xml", strings),
+    [{ count: 3, first: "<string name=\"app_name\">내 지갑</string>" }]);
 });
 
 test("the repository has no Hangul literal outside catalogues except the allowlisted files", () => {

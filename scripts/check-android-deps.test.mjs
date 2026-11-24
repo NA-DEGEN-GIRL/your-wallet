@@ -209,3 +209,38 @@ test("a second exported component, or one without exported=\"false\", fails", ()
   assert.deepEqual(checkManifest(build(service(null)), "release"), ["service dev.yw.app.Relay does not set exported=\"false\""]);
   assert.deepEqual(checkManifest(manifest({ components: [] }), "release"), ["0 exported components, expected only the launcher"]);
 });
+
+test("extractNativeLibs, the WebView metrics opt-out and testOnly are checked (D28, spec/15 §13 5)", () => {
+  const extract = (value) => manifest().replace("extractNativeLibs(0x010104ea)=false", `extractNativeLibs(0x010104ea)=${value}`);
+  assert.deepEqual(checkManifest(extract("true"), "release"), ["application extractNativeLibs is not false"]);
+  const noExtract = manifest().replace(/.*extractNativeLibs.*\n/u, "");
+  assert.deepEqual(checkManifest(noExtract, "debug"), ["application extractNativeLibs is not false"]);
+  const optOut = (value) => manifest().replace("value(0x01010024)=true", `value(0x01010024)=${value}`);
+  assert.deepEqual(checkManifest(optOut("false"), "release"), ["WebView MetricsOptOut is not true"]);
+  const noOptOut = manifest().replace(/.*E: meta-data.*\n.*MetricsOptOut.*\n.*value\(0x01010024\).*\n/u, "");
+  assert.deepEqual(checkManifest(noOptOut, "release"), ["WebView MetricsOptOut is not true"]);
+  const testOnly = manifest({ application: [`        A: ${NS}:testOnly(0x01010272)=true`] });
+  assert.deepEqual(checkManifest(testOnly, "debug"), ["application is testOnly"]);
+  const testOnlyFalse = manifest({ application: [`        A: ${NS}:testOnly(0x01010272)=false`] });
+  assert.deepEqual(checkManifest(testOnlyFalse, "debug"), ["application is testOnly"]);
+});
+
+test("spec/15 §4.3 lists every trusted fingerprint of the verification metadata, once (N7, A2-3 review)", () => {
+  const metadata = readFileSync(join(root, "android/gradle/verification-metadata.xml"), "utf8");
+  const trusted = new Set([
+    ...[...metadata.matchAll(/<trusted-key id="([0-9A-F]{40})"/gu)].map((match) => match[1]),
+    ...[...metadata.matchAll(/<pgp value="([0-9A-F]{40})"/gu)].map((match) => match[1]),
+  ]);
+  assert.equal(metadata.match(/<trusted-key id="[^"]*"/gu)?.length, 25);
+  assert.equal(metadata.match(/<pgp value="[^"]*"/gu)?.length, 7);
+  assert.equal(trusted.size, 31);
+  // Every trust is exact: no regex and no group-wide trust (spec/15 §4.3).
+  assert.doesNotMatch(metadata, /regex="true"/u);
+  for (const match of metadata.matchAll(/<trusting ([^>]*)\/>/gu)) assert.match(match[1], /group="[^"]+" name="[^"]+" version="[^"]+"/u);
+  assert.match(metadata, /<key-servers enabled="false"\/>/u);
+  const spec = readFileSync(join(root, "spec/15-android.md"), "utf8");
+  const section = spec.slice(spec.indexOf("### 4.3 공급망"), spec.indexOf("### 4.4 도구와 출처"));
+  const rows = [...section.matchAll(/^\| \d+ \| `([0-9A-F]{40})` \|/gmu)].map((match) => match[1]);
+  assert.equal(rows.length, new Set(rows).size, "a fingerprint is listed twice");
+  assert.deepEqual([...rows].sort(), [...trusted].sort());
+});

@@ -14,10 +14,11 @@ const HANGUL = /[ᄀ-ᇿ㄰-㆏ꥠ-꥿가-힯ힰ-퟿]/u;
 // yw-engine/src since 2026-11-17 (spec/15 §11.4 S2): the modules moved out of yw-app.
 // yw-android/src and the Android app's Java since 2026-11-24 (spec/15 §3.3 N24, A2-3): the Java side holds no fixed text
 // at all (no catalogue there), so any Hangul literal in a .java file is a violation; Android resources may hold Hangul
-// only in res/values-ko/strings.xml (the manifest label, the one exception; spec/14 §1).
+// only in res/values-ko/strings.xml (the manifest label, the one exception; spec/14 §1). (2026-11-25 A2-3 review: every
+// .xml under android/app/src is checked, the manifest included, and a manifest label must name a string resource;
+// before, only res/ was checked, so a Hangul or literal android:label in AndroidManifest.xml passed.)
 const ROOTS = ["crates/yw-core/src", "crates/yw-platform/src", "crates/yw-engine/src", "crates/yw-app/src", "crates/yw-android/src",
   "extension/src", "android/app/src"];
-const ANDROID_RES = "android/app/src/main/res";
 const ANDROID_LABEL_KO = "android/app/src/main/res/values-ko/strings.xml";
 const CATALOGUE_MACROS = ["texts!", "rules!"];
 // The language card shows the first two in both languages (spec/14 §1); the last two are font
@@ -206,6 +207,22 @@ export function violations(text, rust) {
   });
 }
 
+// Problems of one Android XML file (repository-relative `rel`): Hangul anywhere but the Korean label resource, and an
+// android:label that is not a string resource (spec/15 §3.3 N24, spec/14 §1).
+export function androidXmlViolations(rel, text) {
+  const out = [];
+  if (rel !== ANDROID_LABEL_KO && HANGUL.test(text)) {
+    const line = text.split("\n").find((candidate) => HANGUL.test(candidate)) ?? "";
+    out.push({ count: [...text].filter((character) => HANGUL.test(character)).length, first: line.trim() });
+  }
+  for (const match of text.matchAll(/android:label\s*=\s*"([^"]*)"/gu)) {
+    if (!/^@string\/\w+$/u.test(match[1])) {
+      out.push({ count: 1, first: `android:label="${match[1]}" is not a string resource` });
+    }
+  }
+  return out;
+}
+
 export function scan(repositoryRoot) {
   const files = [];
   for (const root of ROOTS) {
@@ -218,9 +235,10 @@ export function scan(repositoryRoot) {
       continue;
     }
     if (rel.endsWith(".xml")) {
-      const text = readFileSync(path, "utf8");
-      if (rel.startsWith(`${ANDROID_RES}/`) && rel !== ANDROID_LABEL_KO && HANGUL.test(text)) {
-        offending.push({ path: rel, count: [...text].filter((character) => HANGUL.test(character)).length, first: text.match(/[^\n]*/u)[0] });
+      if (rel.startsWith("android/app/src/")) {
+        for (const found of androidXmlViolations(rel, readFileSync(path, "utf8"))) {
+          offending.push({ path: rel, ...found });
+        }
       }
       continue;
     }
