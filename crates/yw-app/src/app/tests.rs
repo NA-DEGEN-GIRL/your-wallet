@@ -2396,6 +2396,75 @@ fn the_settings_check_starts_the_llm_worker_only_with_its_consent() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// spec/06 §10 E1 (review M1): a new `App` runs no explanation worker — off, on without the
+/// privacy consent, on without a model, the defaults, and on with everything but not yet checked
+/// against the vault's snapshot (no unlock yet). 2026-11-24 (spec/15 §11.4 S5-10): moved here
+/// from the integration test `llm_mock` (`e1_off_means_no_worker_and_no_connection`, which keeps
+/// the loopback part): it read the wallet's `llm_running` on an `App`, which only test builds of
+/// the library can do now (no non-test `Deref`). The same five settings, nothing sent anywhere
+/// (no request, and the endpoint is a closed loopback port).
+#[test]
+fn a_new_app_runs_no_llm_worker_before_its_check() {
+    use std::sync::Arc;
+    let configured = yw_engine::settings::LlmSettings {
+        enabled: false,
+        endpoint: "http://127.0.0.1:9/v1/chat/completions".to_owned(),
+        model: "mock-model".to_owned(),
+        privacy_notice_version: 1,
+        ..yw_engine::settings::LlmSettings::default()
+    };
+    let cases = [
+        ("off", configured.clone()),
+        (
+            "no-consent",
+            yw_engine::settings::LlmSettings {
+                enabled: true,
+                privacy_notice_version: 0,
+                ..configured.clone()
+            },
+        ),
+        (
+            "no-model",
+            yw_engine::settings::LlmSettings {
+                enabled: true,
+                model: String::new(),
+                ..configured.clone()
+            },
+        ),
+        ("default", yw_engine::settings::LlmSettings::default()),
+        (
+            "unchecked",
+            yw_engine::settings::LlmSettings {
+                enabled: true,
+                ..configured
+            },
+        ),
+    ];
+    for (tag, llm) in cases {
+        let dir = temp_dir(&format!("llm-e1-{tag}"));
+        let mut app = App::new(
+            Paths {
+                data: dir.clone(),
+                logs: dir.join("logs"),
+            },
+            true,
+            Settings {
+                llm_explain: llm,
+                ..Settings::default()
+            },
+            ApiKeys::default(),
+        );
+        let (tx, _rx) = std::sync::mpsc::channel();
+        app.attach_workers(
+            Arc::new(yw_engine::events::EventQueue::new(Box::new(|| {}))),
+            Vec::new(),
+            tx,
+        );
+        assert!(!app.llm_running(), "{tag}: no worker");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 /// Review L15: fee caps and auto-lock changed in the file use the snapshot values; the banner's
 /// `파일 값 사용` takes the file values (and the snapshot follows), `되돌리기` rewrites the file;
 /// a deleted `HyperEVM` pin is restored in memory and on disk.

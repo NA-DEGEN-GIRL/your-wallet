@@ -2344,6 +2344,109 @@ fn the_ai_panel_repaints_through_an_effect() {
     headless_host::remove();
 }
 
+/// The window timer's tail is the flow's `ApprovalSignal::TimerTail` (2026-11-24, spec/15 §11.4
+/// S5-10, S5 plan owner item O-12, spec/04 §3.4): it runs only as the input right after its own
+/// window's `Tick` passed the id check — not alone, not after a stale window's `Tick`, not for
+/// another window, not after another input came between. Before S5-10 the shell's
+/// `Step::TimerTail` called `ai_tick` and `rebuild_view_with` on the shown flow with no check.
+/// Observed through the tail's AI tick: while a request waits, it emits
+/// `RepaintAi { body_only: true }` in the first 50 ms of a second (the A3 fixture with the
+/// headless approval host and the explanation worker on its in-process transport, as in
+/// [`the_ai_panel_repaints_through_an_effect`]: no window, no socket, no answer fed back). The
+/// tail after an expiry that opened the next window runs on the new flow, as before; no golden
+/// changes (`flow.txt` `stale_window_input_is_dropped` `stale-timer` is byte-equal).
+#[test]
+fn the_timer_tail_follows_only_its_own_windows_tick() {
+    use super::headless_host::{self, OpenAnswer};
+    use crate::ui::approval_input::window_input;
+    use yw_engine::approval::flow::{ApprovalEffect, ApprovalSignal, ShownId};
+    use yw_engine::cmd::Cmd;
+    use yw_engine::wallet::approval_flow::ApprovalFlow;
+
+    /// A case: its label, the inputs sent in order and the AI repaints they emit.
+    type Case = (
+        &'static str,
+        Vec<(ShownId, ApprovalSignal)>,
+        Vec<ApprovalEffect>,
+    );
+
+    fn repaints() -> Vec<ApprovalEffect> {
+        headless_host::take_effects()
+            .into_iter()
+            .filter(|effect| matches!(effect, ApprovalEffect::RepaintAi { .. }))
+            .collect()
+    }
+
+    let fx = Fixture::new("timer-tail", HostMode::Hidden);
+    headless_host::install(OpenAnswer::Shown);
+    fx.app().llm = Some(no_network_llm());
+    let outlet = dapp(&fx, false, true);
+    personal_sign(&fx, &outlet, 1, 600_000);
+    let shown = fx
+        .app
+        .borrow()
+        .evm
+        .approval
+        .as_ref()
+        .map(ApprovalFlow::shown)
+        .expect("the personal_sign is shown");
+    let _ = repaints();
+    let stale = ShownId(shown.0.wrapping_sub(1));
+    let second = (fx.clock.peek() / 1_000 + 1) * 1_000;
+    let tick = ApprovalSignal::Event(InteractionEvent::Tick);
+    let tail = ApprovalSignal::TimerTail;
+    let body = vec![ApprovalEffect::RepaintAi {
+        shown,
+        body_only: true,
+    }];
+    let cases: [Case; 6] = [
+        (
+            "its tick, then its tail",
+            vec![(shown, tick), (shown, tail)],
+            body.clone(),
+        ),
+        ("its tail alone", vec![(shown, tail)], Vec::new()),
+        (
+            "a stale tick and tail",
+            vec![(stale, tick), (stale, tail)],
+            Vec::new(),
+        ),
+        (
+            "its tick, another's tail",
+            vec![(shown, tick), (stale, tail)],
+            Vec::new(),
+        ),
+        (
+            "its tick, an activation, its tail",
+            vec![
+                (shown, tick),
+                (shown, ApprovalSignal::Activated),
+                (shown, tail),
+            ],
+            Vec::new(),
+        ),
+        (
+            "its tick, then its tail again",
+            vec![(shown, tick), (shown, tail)],
+            body,
+        ),
+    ];
+    for (label, inputs, expected) in cases {
+        fx.clock.set(second + 10);
+        for (window, signal) in inputs {
+            fx.app()
+                .dispatch(Cmd::Approval(window_input(window, false, signal)));
+        }
+        assert_eq!(repaints(), expected, "{label}");
+    }
+    {
+        let mut app = fx.app();
+        app.close_approval_window();
+        app.drain();
+    }
+    headless_host::remove();
+}
+
 /// The shell applies the AI panel's repaints to the window of their `ShownId` only (2026-11-22,
 /// S4 W14ab review; spec/04 §3.8, spec/06 §3.2): `approval_repaint_ai`, the executor arm of
 /// `Effect::Approval(RepaintAi)`, on real hidden windows. A hidden window gets no update region,
@@ -2623,7 +2726,7 @@ fn the_approval_flow_names_no_window() {
     in_order(
         &shell_open,
         &[
-            "if self.evm.approval.as_ref().map(ApprovalFlow::shown) != Some(shown) { return FAILED; }",
+            "if self.wallet.evm.approval.as_ref().map(ApprovalFlow::shown) != Some(shown) { return FAILED; }",
             "create_window(&spec, handler)",
         ],
     );

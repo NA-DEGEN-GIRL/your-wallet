@@ -292,7 +292,7 @@ pub(crate) mod host {
                 let mut form = SecretForm::new(
                     kind,
                     lang,
-                    app.clock.now_ms(),
+                    app.wallet.clock.now_ms(),
                     !warning,
                     PlatformFlags::WINDOWS,
                 );
@@ -461,7 +461,7 @@ pub(crate) mod host {
     /// neither is a `Copy` or `Paste` the form asks for (the module doc).
     #[cfg(debug_assertions)]
     pub(crate) fn deliver(app: &mut App, serial: u64, msg: &Msg) -> Reply {
-        let now = app.clock.now_ms();
+        let now = app.wallet.clock.now_ms();
         let step = HOST
             .try_with(|slot| {
                 let mut slot = slot.borrow_mut();
@@ -1032,7 +1032,7 @@ fn the_headless_secret_host_mirrors_the_shell() {
                 "match self.create_secret(serial, kind, topmost, lang) { Ok(window) => { let \
                  excluded = window.capture_excluded(); Self::log_capture(kind, excluded); match \
                  capture_decision(kind, Ok(excluded)) { CaptureDecision::Show { warning } => { \
-                 let mut form = SecretForm::new(kind, lang, self.clock.now_ms(), !warning, \
+                 let mut form = SecretForm::new(kind, lang, self.wallet.clock.now_ms(), !warning, \
                  PlatformFlags::WINDOWS, ); \
                  form.set_step(step); self.show_secret(serial, window, form); OpenOutcome::Shown \
                  { capture_excluded: !warning, } } CaptureDecision::Refuse(code) => { \
@@ -1136,7 +1136,7 @@ fn the_headless_secret_host_mirrors_the_shell() {
         (
             "on_secret",
             &[
-                "let now = self.clock.now_ms();",
+                "let now = self.wallet.clock.now_ms();",
                 "let Some(secret) = secret.as_mut().filter(|secret| secret.serial == serial) \
                  else { return Reply::Default; };",
                 "Msg::Char(unit) => form.on_key(map_secret_char(*unit), now),",
@@ -1157,7 +1157,9 @@ fn the_headless_secret_host_mirrors_the_shell() {
             "apply_secret_effect",
             &[
                 "#[cfg(test)] tests::s4_secret::host::saw(&effect);",
-                "let unshown = self.secret_unshown(serial); let outcome = if unshown { \
+                // 2026-11-24 (S5-10): the shell names the wallet (no `Deref` in non-test builds;
+                // here and in the clock reads above, was `self.secret_unshown`, `self.clock`).
+                "let unshown = self.wallet.secret_unshown(serial); let outcome = if unshown { \
                  self.open_input_window(serial, kind, step, topmost, lang) } else { \
                  OpenOutcome::Refused(ErrorCode::Sec001) };",
             ],
@@ -1194,7 +1196,7 @@ fn the_headless_secret_host_mirrors_the_shell() {
             &[
                 "Self::log_capture(kind, excluded);",
                 "match capture_decision(kind, Ok(excluded)) { CaptureDecision::Show { warning } \
-                 => { let mut form = SecretForm::new(kind, lang, self.clock.now_ms(), \
+                 => { let mut form = SecretForm::new(kind, lang, self.wallet.clock.now_ms(), \
                  !warning, PlatformFlags::WINDOWS, ); form.set_step(step); \
                  self.show_secret(serial, window, form); OpenOutcome::Shown { capture_excluded: \
                  !warning, } } CaptureDecision::Refuse(code) =>",
@@ -1265,7 +1267,7 @@ fn the_headless_secret_host_mirrors_the_shell() {
             "on_secret",
             "deliver",
             &[
-                "let now = self.clock.now_ms();",
+                "let now = self.wallet.clock.now_ms();",
                 ".serial == serial)",
                 "Msg::Char(unit) =>",
                 "form.on_key(map_secret_char(*unit), now)",

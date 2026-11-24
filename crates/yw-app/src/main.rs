@@ -28,7 +28,7 @@ use yw_app::system_clock::ArcClock;
 use yw_core::lang::Lang;
 use yw_engine::cmd::PlatformNote;
 use yw_engine::errors::ErrorCode;
-use yw_engine::events::{EventQueue, KeyJob, UiEvent};
+use yw_engine::events::{EventQueue, UiEvent};
 use yw_engine::flow::evm::Limits;
 use yw_engine::logging::{self, Field};
 use yw_engine::rpc::{RPC_TIMEOUTS, Transport};
@@ -355,7 +355,7 @@ fn main() -> ExitCode {
         let (queue, signal) = state.worker_channels();
         // One clock for the App, both workers and the browser dispatcher (2026-11-19, S4 B1a,
         // spec/15 §11.4 S4): `App::new` built it (`SystemClock`, `GetTickCount64`).
-        let clock = state.clock();
+        let clock = state.worker_clock();
         let key_clock = Arc::clone(&clock);
         let rpc_clock = Arc::clone(&clock);
         let key_events = Arc::clone(&events);
@@ -414,8 +414,7 @@ fn main() -> ExitCode {
         state.drain();
         // 8. Classify the vault. The key worker first learns the language: the default labels of
         // a new or imported wallet are written in it (spec/14 §1).
-        state.key(KeyJob::SetLanguage(lang));
-        state.key(KeyJob::Load);
+        state.start_key_jobs(lang);
         // 9. Show unless started for the browser.
         if !background {
             state.show_main();

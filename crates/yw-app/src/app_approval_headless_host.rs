@@ -107,7 +107,8 @@ pub(crate) fn record(effect: ApprovalEffect, current: Option<ShownId>) -> Option
             | ApprovalEffect::Rebuilt { .. }
             | ApprovalEffect::RepaintBar { .. }
             | ApprovalEffect::Redraw { .. }
-            | ApprovalEffect::RepaintAi { .. } => None,
+            | ApprovalEffect::RepaintAi { .. }
+            | ApprovalEffect::AiToggled { .. } => None,
         }
     })
     .ok()

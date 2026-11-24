@@ -451,13 +451,10 @@ impl<'a> Run<'a> {
                 Step::ToggleRaw => self.send(window, false, ApprovalSignal::ToggleRaw),
                 Step::Retry => self.send(window, false, ApprovalSignal::Retry),
                 Step::AiRetry => self.send(window, false, ApprovalSignal::AiRetry),
+                // 2026-11-24 (S5-10): also the panel's and the AI body's guard (was `AnyWindow`,
+                // which no key maps to).
                 Step::SameWindow(_) => {
                     if self.shown_now() != Some(window) {
-                        return;
-                    }
-                }
-                Step::AnyWindow(_) => {
-                    if self.shown_now().is_none() {
                         return;
                     }
                 }
@@ -653,6 +650,8 @@ fn effect_names(effects: &[ApprovalEffect]) -> String {
                 body_only: false,
             } => format!("ai#{}", shown.0),
             ApprovalEffect::RepaintAi { shown, .. } => format!("ai-body#{}", shown.0),
+            // 2026-11-24 (S5-10): no scenario here has an AI panel either.
+            ApprovalEffect::AiToggled { shown } => format!("ai-toggled#{}", shown.0),
         })
         .collect();
     let mut out: Vec<String> = Vec::new();
@@ -4371,7 +4370,7 @@ fn the_windowless_main_entry_mirrors_on_main() {
     let app_in_main = format!(
         "Msg::App {{ msg, wparam }} => {{ match *msg {{ WM_YW_EVENTS => self.drain_events(),{} \
          WM_YW_LOCK_SHORTCUT => self.lock_shortcut(),{} _ => {{}} }} \
-         self.drain(); let now = self.clock.now_ms(); self.wallet.on_cmd(Cmd::Tick {{ now_ms: \
+         self.drain(); let now = self.wallet.clock.now_ms(); self.wallet.on_cmd(Cmd::Tick {{ now_ms: \
          now, part: TickPart::ReadsDue, }}); Reply::Handled(0) }}",
         window_arms[0],
         window_arms[1..].concat()

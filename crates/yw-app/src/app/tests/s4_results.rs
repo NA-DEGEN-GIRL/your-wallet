@@ -4035,7 +4035,7 @@ fn word_sites_on_made_up_code() {
 /// (`copy_extension_path`; a path never rides in a `Cmd`). Before, 46 lines here and 4 in
 /// `SHELL_WALLET_RPC_CALLS`, which is gone (its one kept line, `begin_rpc_import` →
 /// `on_rpc_json_read`, is here).
-const SHELL_WALLET_CALLS: [(&str, &str, &str); 33] = [
+const SHELL_WALLET_CALLS: [(&str, &str, &str); 29] = [
     (
         "dispatch",
         "on_cmd",
@@ -4197,35 +4197,22 @@ const SHELL_WALLET_CALLS: [(&str, &str, &str); 33] = [
         "on_rpc_json_read",
         "the parsed plan, typed in-process (it holds RPC URLs and a token, §7)",
     ),
-    (
-        "run_step",
-        "toggle_ai_panel",
-        "`Step::AiExpand`: the shown flow's AI panel (no `Cmd::Approval`: see `AnyWindow`; S5-10)",
-    ),
-    (
-        "run_step",
-        "ai_tick",
-        "`Step::TimerTail` after the window timer's `Tick` (B6 review: no id check; S5-10)",
-    ),
-    (
-        "run_step",
-        "rebuild_view_with",
-        "the same tail: the view while the simulation runs (S5-10)",
-    ),
-    (
-        "paint_ai_body",
-        "hold_shown_ai_for_ack",
-        "the AI panel's held flag before the AI body paints (spec/06 §3.2; never the gate; \
-         S5-10)",
-    ),
+    // 2026-11-24 (spec/15 §11.4 S5-10, S5 plan owner item O-12): the approval window's last four
+    // named wallet steps are `Cmd::Approval` signals through the flow's id check — `run_step` →
+    // `toggle_ai_panel` (`Step::AiExpand`, now `ApprovalSignal::AiExpand`, answered by
+    // `ApprovalEffect::AiToggled`), `run_step` → `ai_tick` and `rebuild_view_with`
+    // (`Step::TimerTail`, now `ApprovalSignal::TimerTail`) and `paint_ai_body` →
+    // `hold_shown_ai_for_ack` (now `ApprovalSignal::AiPaint`); the four wallet fns are private
+    // (`ai_tick` crate-private) since. Before, 33 lines here.
 ];
 
 /// The kind of every wallet fn [`SHELL_WALLET_CALLS`] lists (2026-11-24, spec/15 §11.4 S5-9,
 /// S5 plan §6 S5-9 "lists only the kept kinds"): [`the_shell_writes_wallet_state_only_through_entries`]
 /// fails on a listed call whose wallet fn has no kind here, so a named wallet step cannot come
-/// back as a line of its own. The last four are the approval window's steps that S5-10 turns
-/// into `Cmd::Approval` signals or answers (S5 plan owner item O-12).
-const SHELL_WALLET_KINDS: [(&str, &str); 19] = [
+/// back as a line of its own. 2026-11-24 (S5-10): the approval window's four steps are
+/// `Cmd::Approval` signals (S5 plan owner item O-12), so their kind "the approval window's step,
+/// until S5-10" is gone (before, 19 lines).
+const SHELL_WALLET_KINDS: [(&str, &str); 15] = [
     (
         "on_cmd",
         "a `Cmd` (Android's `call`, spec/15 §3.2), sent or an answer",
@@ -4262,24 +4249,49 @@ const SHELL_WALLET_KINDS: [(&str, &str); 19] = [
     ("shutdown_begin", "the shutdown's composition"),
     ("shutdown_steps", "the shutdown's composition"),
     ("shutdown_after_wait", "the shutdown's composition"),
-    ("toggle_ai_panel", "the approval window's step, until S5-10"),
-    ("ai_tick", "the approval window's step, until S5-10"),
-    (
-        "rebuild_view_with",
-        "the approval window's step, until S5-10",
-    ),
-    (
-        "hold_shown_ai_for_ack",
-        "the approval window's step, until S5-10",
-    ),
 ];
 
 /// The methods the shell may call on a wallet field it names through `self.wallet.` (a read the
-/// split borrow needs), each with why it only reads (2026-11-22, S4c W15).
-const SHELL_WALLET_READS: [(&str, &str); 3] = [
+/// split borrow needs), each with why it only reads (2026-11-22, S4c W15). 2026-11-24 (spec/15
+/// §11.4 S5-10, S5 plan owner item O-8): the shell reads every wallet field through
+/// `self.wallet.` now (non-test builds have no `Deref`), so the reads it made through `Deref`
+/// before are listed here too; each takes `&self` (or a `Copy` value) and writes nothing.
+const SHELL_WALLET_READS: [(&str, &str); 10] = [
     ("as_ref", "a shared view of an `Option`"),
     ("is_some", "whether an `Option` holds a value"),
+    (
+        "is_none",
+        "whether an `Option` is empty (`paint_ai_body`'s early check)",
+    ),
     ("now_ms", "the injected clock (`Clock::now_ms`, `&self`)"),
+    (
+        "clone",
+        "a new handle to the worker event queue (`Option<Arc<EventQueue>>::clone`, \
+         `drain_events`); the wallet keeps its own",
+    ),
+    (
+        "text",
+        "the form state's text of a plain edit (`FormState::text`, `&self`; the debug builds' \
+         shadow reads `check_form_in_step`, `edit_changed_in_borrow`)",
+    ),
+    (
+        "len",
+        "the approval queue's length (`ApprovalQueue::len`, `&self`; the bottom bar's waiting \
+         count, `approval_repaint_bar`)",
+    ),
+    (
+        "wait_beyond",
+        "the key worker's lock count (`LockSignal::wait_beyond`, `&self`): the shell's own wait \
+         in the lock and shutdown compositions (`apply`'s `AwaitKeyLock` arm, `shutdown`)",
+    ),
+    (
+        "active",
+        "whether S22's hold gate runs (`HoldGate::active`, `Copy`; `hold_move`)",
+    ),
+    (
+        "holds_secrets",
+        "whether the mode holds secrets (`AppMode::holds_secrets`, `Copy`; `lock_shortcut`)",
+    ),
 ];
 
 /// The `self.wallet.` chains of `body`, whitespace aside, as (the names after `self.wallet.`,
@@ -4364,9 +4376,12 @@ fn the_shell_writes_wallet_state_only_through_entries() {
         .filter(|src| in_app_or_wallet(&src.file))
         .collect();
     let app = &app_and_wallet(&files);
+    // 2026-11-24 (spec/15 §11.4 S5-10, S5 plan owner item O-8): non-test builds have no
+    // `App` → `Wallet` `Deref` either (both are `#[cfg(test)]`, for the tests and their
+    // fixtures); before, this asserted that `App` derefs to the wallet.
     assert!(
-        app.code.contains("impl core::ops::Deref for App {"),
-        "App derefs to the wallet"
+        !app.code.contains("Deref for App"),
+        "non-test builds have no App → Wallet Deref"
     );
     assert!(
         !app.code.contains("DerefMut for App"),
@@ -4461,8 +4476,8 @@ fn the_shell_writes_wallet_state_only_through_entries() {
 
 /// Part of [`the_shell_writes_wallet_state_only_through_entries`] (2026-11-24, spec/15 §11.4
 /// S5-9): every listed call's wallet fn has a kept kind ([`SHELL_WALLET_KINDS`]: a `Cmd`, the
-/// outbox, a typed in-process entry, a composition, the debug check, or one of S5-10's approval
-/// steps), and every kind is used.
+/// outbox, a typed in-process entry, a composition or the debug check; 2026-11-24, S5-10: before,
+/// also the approval window's four steps until S5-10), and every kind is used.
 fn assert_kept_kinds(listed: &[(&str, &str, &str)]) {
     for (wallet_fn, kind) in SHELL_WALLET_KINDS {
         assert!(!kind.is_empty(), "{wallet_fn}: no kind");
@@ -4786,8 +4801,11 @@ fn wallet_chains_on_made_up_code() {
 /// `workers_attached`. Each is called from the shell only as [`SHELL_WALLET_CALLS`] lists.
 /// S5-5 (2026-11-24, spec/15 §11.4 S5-5): `screen`, the screen's one entry (`&self`; the
 /// builders it calls are yw-engine's `impl Screen<'_>`, not `impl Wallet`), which yw-app's
-/// `App::items` calls (a read, so not a [`SHELL_WALLET_CALLS`] line).
-static WALLET_FNS: [(&str, &str); 998] = [
+/// `App::items` calls (a read, so not a [`SHELL_WALLET_CALLS`] line). S5-10 (2026-11-24, spec/15
+/// §11.4 S5-10): `timer_tail`, the window timer's tail after its `Tick` (`ApprovalSignal::TimerTail`;
+/// was the shell's `Step::TimerTail` arm); `toggle_ai_panel` and `hold_shown_ai_for_ack` above
+/// are reached through `ApprovalSignal::AiExpand`/`AiPaint` since, no longer from the shell.
+static WALLET_FNS: [(&str, &str); 999] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -5796,6 +5814,7 @@ static WALLET_FNS: [(&str, &str); 998] = [
     ("S5-9", "close_extension_help"),
     ("S5-9", "copy_extension_path"),
     ("S5-9", "on_rpc_import_press"),
+    ("S5-10", "timer_tail"),
 ];
 
 /// The `self.` field names `body` reads or writes: the first segment of each `self.` chain that
@@ -8098,14 +8117,15 @@ fn the_shutdown_composition_runs_from_the_shell(files: &[Src]) {
         }
     };
     // 2026-11-22 (S4c W15): the halves are named on the wallet (`self.wallet.`; non-test builds
-    // have no `DerefMut`).
+    // have no `DerefMut`). 2026-11-24 (spec/15 §11.4 S5-10): so is the lock signal the wait reads
+    // (non-test builds have no `Deref` either; was `self.lock_signal`).
     in_order(
         "shutdown",
         &[
             "if!self.wallet.shutdown_begin(){return;}",
             "pipe.stop();",
             "letbefore=self.wallet.shutdown_steps();self.drain();",
-            "self.lock_signal.wait_beyond(before,Duration::from_secs(5));\
+            "self.wallet.lock_signal.wait_beyond(before,Duration::from_secs(5));\
              self.wallet.shutdown_after_wait();self.save_window_state();",
             "yw_win::ui::quit(0);",
         ],
@@ -9310,7 +9330,11 @@ fn render_shell_reach_on_made_up_code() {
 /// narrowing must not change one, S5 freeze regime) and what a public testkit signature takes;
 /// the rest of (ㄷ) is crate-private ([`ENGINE_NARROWED_FOR_TESTS`]). Before S5-5 every item of
 /// (ㄷ) was `#[doc(hidden)] pub` for yw-app (the render builders and tests).
-const ENGINE_PUB_FOR_SHELL: [(&str, &str, &str); 8] = [
+///
+/// 2026-11-24 (spec/15 §11.4 S5-10): and `ai_tick`, which no yw-app non-test code names since the
+/// window's timer tail became `ApprovalSignal::TimerTail` (before, the shell's timer tail called
+/// it).
+const ENGINE_PUB_FOR_SHELL: [(&str, &str, &str); 9] = [
     (
         "wallet/mod.rs",
         "cred_misses",
@@ -9351,6 +9375,15 @@ const ENGINE_PUB_FOR_SHELL: [(&str, &str, &str); 8] = [
         "wallet/app_card.rs",
         "T_CARD_SITE_GONE",
         "(ㄷ) named by the frozen body of `a_card_step_waiting_for_its_pin_ends_when_its_site_goes`",
+    ),
+    (
+        "wallet/app_approval.rs",
+        "ai_tick",
+        "(ㄷ) yw-app's AI repaint tests (`the_ai_panel_repaints_through_an_effect`, \
+         `the_ai_repaint_reaches_only_its_window`) tick the AI panel at chosen times, and a \
+         `pub(crate)` head breaks the S3 scan `ai_never_touches_the_gate` (a frozen helper line), \
+         which reads a `fn ai_*` head up to its first `(`; a narrowing must not change a frozen \
+         helper (S5-10)",
     ),
     (
         "wallet/app_approval.rs",

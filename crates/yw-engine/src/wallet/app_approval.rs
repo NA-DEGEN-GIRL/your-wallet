@@ -21,7 +21,7 @@ use yw_core::evm::simulate::needs_resimulation;
 use yw_core::lang::{Lang, Text};
 
 use crate::approval::QueueOutcome;
-use crate::approval::interaction::{InteractionEvent, PrepareState, ReadyContent};
+use crate::approval::interaction::{InteractionEvent, PrepareStage, PrepareState, ReadyContent};
 use crate::approval::text;
 use crate::approval::view::view;
 use crate::badge::Badge;
@@ -1922,18 +1922,41 @@ impl Wallet {
     ///
     /// With a test clock that steps on every read, a skipped read moves every later timestamp;
     /// no scenario reaches these paths today.
+    ///
+    /// 2026-11-24 (spec/15 §11.4 S5-10, S5 plan owner item O-12, spec/04 §3.4): the window's
+    /// last steps that reached the flow outside this id check are signals here too: the AI body's
+    /// click (`AiExpand`, was the shell's `toggle_ai_panel` call) and paint (`AiPaint`, was
+    /// `hold_shown_ai_for_ack`), and the timer's tail (`TimerTail`, was `ai_tick` and
+    /// `rebuild_view_with`). The tail is checked against the timer's own `Tick`, not against the
+    /// window shown now: it runs when that window's `Tick` passed the check with the input just
+    /// before it, on the flow shown then — so a `Tick` that ended its request and opened the next
+    /// one's window is still followed by the tail on the new flow, as before S5-10; a stale
+    /// window's timer (its `Tick` dropped) runs no tail any more. Windows sends no message to an
+    /// ended window, so its behaviour is unchanged.
     pub(crate) fn on_approval_input(&mut self, input: ApprovalInput) {
         // 2026-11-22 (S4 W14b, preflight critic C5): the test builds' pairing check of the flow
         // and its window (`assert_flow_and_window_in_step`, the shell's) is made by the shell's
         // senders `window_event`/`window_signal` right before they send this input, and by
         // `App::drain` (before, here, first).
         let shown = input.shown;
+        let ticked = self.evm.timer_ticked.take();
+        if input.signal == ApprovalSignal::TimerTail {
+            if ticked == Some(shown) {
+                self.timer_tail();
+            }
+            return;
+        }
         if self.shown_now() != Some(shown) {
             return;
         }
         let foreground = input.foreground;
         match input.signal {
-            ApprovalSignal::Event(event) => self.approval_event(foreground, event),
+            ApprovalSignal::Event(event) => {
+                if event == InteractionEvent::Tick {
+                    self.evm.timer_ticked = Some(shown);
+                }
+                self.approval_event(foreground, event);
+            }
             ApprovalSignal::Close => {
                 self.approval_event(foreground, InteractionEvent::RejectActivated);
                 // A window whose `RejectActivated` changes nothing (an `Approved` interaction)
@@ -1984,6 +2007,35 @@ impl Wallet {
                 }
                 self.rebuild_view();
             }
+            ApprovalSignal::AiExpand => {
+                if self.toggle_ai_panel() {
+                    self.emit(Effect::Approval(ApprovalEffect::AiToggled { shown }));
+                }
+            }
+            ApprovalSignal::AiPaint => self.hold_shown_ai_for_ack(),
+            // Taken above, before the id check.
+            ApprovalSignal::TimerTail => {}
+        }
+    }
+
+    /// The rest of the window's 50 ms timer after its `Tick` (`ApprovalSignal::TimerTail`;
+    /// 2026-11-24, spec/15 §11.4 S5-10: was the shell's `Step::TimerTail`, the same calls in the
+    /// same order): the AI panel's tick at the clock's time, then, while the shown request's
+    /// simulation runs, its view rebuilt for the countdown (repainted only when it changed). The
+    /// shell drained between the two before; the AI tick emits only `RepaintAi` (no answer) and
+    /// hands a request to the worker (no effect), so the one drain after both applies the same
+    /// effects in the same order.
+    fn timer_tail(&mut self) {
+        let now = self.clock.now_ms();
+        self.ai_tick(now);
+        let simulating = self.evm.approval.as_ref().is_some_and(|flow| {
+            matches!(
+                flow.gate().prepare,
+                PrepareState::Preparing(PrepareStage::Simulating { .. })
+            )
+        });
+        if simulating {
+            self.rebuild_view_with(false);
         }
     }
 
@@ -2022,12 +2074,13 @@ impl Wallet {
     }
 
     /// Rebuilds the view; with `force == false` (the simulation countdown tick) nothing is
-    /// invalidated when the rebuilt view is the one already shown.
+    /// invalidated when the rebuilt view is the one already shown. 2026-11-24 (spec/15 §11.4
+    /// S5-10): crate-private (was `pub` for the shell's timer tail, now `timer_tail`).
     #[expect(
         clippy::too_many_lines,
         reason = "badges, connect view and signing view of every queue item kind"
     )]
-    pub fn rebuild_view_with(&mut self, force: bool) {
+    fn rebuild_view_with(&mut self, force: bool) {
         let now = self.clock.now_ms();
         self.refresh_connect_chain();
         let testnet_chain = self.evm.approval.as_ref().map(|flow| match flow.connect() {
@@ -2275,11 +2328,13 @@ impl Wallet {
 }
 
 impl Wallet {
-    /// `Step::AiExpand` of the window (`ai.down`, spec/06 §3.2): flips the shown flow's AI panel
+    /// `ApprovalSignal::AiExpand` (`ai.down`, spec/06 §3.2): flips the shown flow's AI panel
     /// between short and expanded; `true` when it changed (the shell then puts the body's scroll
-    /// at the top and repaints). 2026-11-22 (S4c W15): wallet code (the flow's AI state); before,
-    /// the shell's `run_step` flipped it itself through `DerefMut`.
-    pub fn toggle_ai_panel(&mut self) -> bool {
+    /// at the top and repaints, `ApprovalEffect::AiToggled`). 2026-11-22 (S4c W15): wallet code
+    /// (the flow's AI state); before, the shell's `run_step` flipped it itself through
+    /// `DerefMut`. 2026-11-24 (spec/15 §11.4 S5-10): private, reached through the signal and its
+    /// id check (before, `pub`, called by the shell's `Step::AiExpand`).
+    fn toggle_ai_panel(&mut self) -> bool {
         self.evm
             .approval
             .as_mut()
@@ -2287,16 +2342,18 @@ impl Wallet {
             .is_some_and(|ai| ai.panel.toggle_expanded())
     }
 
-    /// Before the AI body paints (spec/06 §3.2): the shown flow's AI panel is held while a
-    /// High-risk request's acknowledgement checkbox is clear ([`ApprovalFlow::hold_ai_for_ack`],
-    /// which writes that flag only); `true` when the window has an AI explanation to paint.
-    /// 2026-11-22 (S4c W15): wallet code; before, the shell's `paint_ai_body` called it on the
-    /// flow it had bound mutably.
-    pub fn hold_shown_ai_for_ack(&mut self) -> bool {
-        self.evm
-            .approval
-            .as_mut()
-            .is_some_and(ApprovalFlow::hold_ai_for_ack)
+    /// `ApprovalSignal::AiPaint`, before the AI body paints (spec/06 §3.2): the shown flow's AI
+    /// panel is held while a High-risk request's acknowledgement checkbox is clear
+    /// ([`ApprovalFlow::hold_ai_for_ack`], which writes that flag only). 2026-11-22 (S4c W15):
+    /// wallet code; before, the shell's `paint_ai_body` called it on the flow it had bound
+    /// mutably. 2026-11-24 (spec/15 §11.4 S5-10): private, reached through the signal and its id
+    /// check, and returns nothing (before, `pub`, and `true` when the window had an AI
+    /// explanation, after which the paint went on; the paint now stops on the same condition when
+    /// the flow's read model has no AI explanation).
+    fn hold_shown_ai_for_ack(&mut self) {
+        if let Some(flow) = self.evm.approval.as_mut() {
+            flow.hold_ai_for_ack();
+        }
     }
 
     /// `다시 시도` / `시뮬레이션 다시 실행` of the shown window (`ApprovalSignal::Retry`).
@@ -2495,7 +2552,11 @@ impl Wallet {
     /// request waits, the AI body is repainted once a second for its elapsed time
     /// (`Effect::Approval(RepaintAi { body_only: true })`; 2026-11-22, S4 W14a: before, this fn
     /// invalidated the AI body of the window open then itself; the timer's tail drains right
-    /// after this call, so it is applied at the same point).
+    /// after this call, so it is applied at the same point). 2026-11-24 (spec/15 §11.4 S5-10):
+    /// called by `timer_tail` (`ApprovalSignal::TimerTail`; before, by the shell's timer tail);
+    /// still `pub`, for yw-app's AI repaint tests that tick at chosen times — a crate-private
+    /// head would break the frozen S3 scan `ai_never_touches_the_gate`, which reads a
+    /// `pub(crate) fn ai_*` head up to its first `(` (`s4_results::ENGINE_PUB_FOR_SHELL`).
     pub fn ai_tick(&mut self, now: u64) {
         let busy = self.llm_busy();
         let Some(flow) = self.evm.approval.as_mut() else {

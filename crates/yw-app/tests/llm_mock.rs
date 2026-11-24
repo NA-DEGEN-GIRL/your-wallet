@@ -20,18 +20,15 @@ mod llm {
         NEW, S2_UNIX_MS, USER, address, fake, fixture, job, ready, send_intent, user_chain, world,
     };
     use super::common::{Answer, FakeClock};
-    use yw_app::app::{App, Paths};
     use yw_app::explain_transport::{WinHttpTransport, factory};
     use yw_core::approval::{ApprovalStore, ChainFacts};
     use yw_core::evm::amount::U256;
     use yw_core::evm::chain::{SEPOLIA_GENESIS, SimulationSupport, sepolia};
     use yw_core::lang::Lang;
-    use yw_engine::apikeys::ApiKeys;
     use yw_engine::approval::interaction::{
         ApprovalGate, ApprovalSession, InteractionEvent, PrepareState, ReadyContent, ack_needed,
         can_approve, sim_state,
     };
-    use yw_engine::events::EventQueue;
     use yw_engine::explain::config::{ApiKey, ModelName, parse_endpoint};
     use yw_engine::explain::input::RequestKind;
     use yw_engine::explain::panel::AiPanel;
@@ -43,7 +40,6 @@ mod llm {
     };
     use yw_engine::flow::evm::ChainCache;
     use yw_engine::flow::evm::prepare::{Prepared, prepare};
-    use yw_engine::settings::{LlmSettings, Settings};
     use yw_engine::wallet::app_llm::transaction_input;
     use yw_json::{Limits, Number, Object, Value};
 
@@ -328,61 +324,16 @@ mod llm {
 
     // ----- E1 ----------------------------------------------------------------------------
 
-    /// Distinct data folder per app (pid + counter), so parallel tests never share one.
-    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
-
-    fn app_with(llm: LlmSettings) -> App {
-        let dir = std::env::temp_dir().join(format!(
-            "yw-llm-e1-{}-{}",
-            std::process::id(),
-            NEXT_DIR.fetch_add(1, Ordering::SeqCst)
-        ));
-        let mut app = App::new(
-            Paths {
-                data: dir.clone(),
-                logs: dir.join("logs"),
-            },
-            true,
-            Settings {
-                llm_explain: llm,
-                ..Settings::default()
-            },
-            ApiKeys::default(),
-        );
-        let (tx, _rx) = mpsc::channel();
-        app.attach_workers(Arc::new(EventQueue::new(Box::new(|| {}))), Vec::new(), tx);
-        app
-    }
-
     #[test]
     fn e1_off_means_no_worker_and_no_connection() {
         let mock = serve(|_| json(valid()));
-        let configured = LlmSettings {
-            enabled: false,
-            endpoint: mock.endpoint(),
-            model: "mock-model".to_owned(),
-            privacy_notice_version: 1,
-            ..LlmSettings::default()
-        };
-        // Off, on without consent, on without a model: no worker thread at all.
-        assert!(!app_with(configured.clone()).llm_running());
-        assert!(
-            !app_with(LlmSettings {
-                enabled: true,
-                privacy_notice_version: 0,
-                ..configured.clone()
-            })
-            .llm_running()
-        );
-        assert!(
-            !app_with(LlmSettings {
-                enabled: true,
-                model: String::new(),
-                ..configured.clone()
-            })
-            .llm_running()
-        );
-        assert!(!app_with(LlmSettings::default()).llm_running());
+        // 2026-11-24 (spec/15 §11.4 S5-10): "off, on without consent, on without a model, the
+        // defaults and on before the check after unlock: no worker thread at all" is the library
+        // test `app::tests::a_new_app_runs_no_llm_worker_before_its_check`. It read the wallet's
+        // `llm_running` on an `App`, which only test builds of the library can do: non-test builds
+        // have no `App` → `Wallet` `Deref` any more (before, `Deref` only; since S4c W15 no
+        // `DerefMut`). This test keeps the panel and the loopback part.
+        //
         // With the feature off every request kind leaves the panel `Off`: nothing to send.
         let typed_source = br#"{"types":{"EIP712Domain":[{"name":"name","type":"string"},{"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}],"Note":[{"name":"text","type":"string"}]},"primaryType":"Note","domain":{"name":"n","chainId":11155111,"verifyingContract":"0x1111111111111111111111111111111111111111"},"message":{"text":"hello"}}"#;
         let typed_value = yw_json::parse(typed_source, &LIMITS).unwrap();
@@ -420,14 +371,6 @@ mod llm {
         }
         std::thread::sleep(Duration::from_millis(300));
         assert_eq!(mock.accepts(), 0, "no connection while off");
-        // Review M1: switched on in the (plain) settings file but not yet checked against the
-        // vault-encrypted snapshot (no unlock yet): still no worker.
-        let on = LlmSettings {
-            enabled: true,
-            ..configured
-        };
-        let app = app_with(on);
-        assert!(!app.llm_running());
         // A worker started on this endpoint opens no connection before a request.
         // 2026-11-22 (S4c W15): the worker is started directly; before, through the app's check
         // after unlock (`reconcile_settings`, called on the `App`), which an integration test can

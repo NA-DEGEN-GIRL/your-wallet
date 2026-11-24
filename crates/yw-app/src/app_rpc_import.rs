@@ -231,7 +231,7 @@ impl App {
     /// reset the import state before the read (now right after it: the read takes the networks
     /// and settings only, never that state).
     pub(crate) fn begin_rpc_import(&mut self, path: &Path) {
-        let read = read_plan(path, &self.url_networks(), &self.settings);
+        let read = read_plan(path, &self.wallet.url_networks(), &self.wallet.settings);
         self.wallet.on_rpc_json_read(read);
     }
 }

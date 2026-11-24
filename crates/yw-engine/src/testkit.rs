@@ -1725,6 +1725,7 @@ pub fn effect_name(effect: &Effect) -> String {
             ApprovalEffect::RepaintBar { shown } => format!("bar#{}", shown.0),
             ApprovalEffect::Redraw { shown } => format!("redraw#{}", shown.0),
             ApprovalEffect::RepaintAi { shown, .. } => format!("ai#{}", shown.0),
+            ApprovalEffect::AiToggled { shown } => format!("ai-toggled#{}", shown.0),
         },
         Effect::OpenUrl { url, .. } => format!("open-url:len={}", url.len()),
         Effect::OpenFolder(folder) => format!("open-folder:{folder:?}"),

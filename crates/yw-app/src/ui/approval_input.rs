@@ -554,10 +554,11 @@ pub enum Step {
     AiRetry,
     /// Go on only while the window that got the message is the shown one (S4 F1, L-1;
     /// 2026-11-19, S4 B6: its `ShownId`, was the queue item shown when the message arrived);
-    /// else end with this reply.
+    /// else end with this reply. 2026-11-24 (spec/15 §11.4 S5-10, S5 plan owner item O-12,
+    /// spec/04 §3.4): also the guard of the panel's and the AI body's presses and scroll-bar
+    /// messages; before, those went on while any approval window was open (`AnyWindow`, gone),
+    /// and the steps after it acted on the window and flow shown then.
     SameWindow(Reply),
-    /// Go on only while some approval window is open; else end with this reply.
-    AnyWindow(Reply),
     /// `SetFocus` on the window that got the message (A01).
     FocusReceiver,
     /// `SetFocus` on A01 (from the panel or the AI body).
@@ -595,7 +596,9 @@ pub enum Step {
         x: i32,
         y: i32,
     },
-    /// An AI body click opens or folds an inconsistent explanation.
+    /// An AI body click opens or folds an inconsistent explanation (2026-11-24, S5-10: the
+    /// flow's `ApprovalSignal::AiExpand` of the window that got the click; before, the shell
+    /// flipped the shown flow's panel).
     AiExpand,
     /// Paint the window that got the message.
     Paint,
@@ -603,7 +606,9 @@ pub enum Step {
     /// class goes to the flow as `ApprovalSignal::Resized`).
     Relayout,
     /// The rest of the 50 ms timer after its `Tick`: the AI panel tick, then the
-    /// simulating-countdown rebuild.
+    /// simulating-countdown rebuild (2026-11-24, S5-10: the flow's `ApprovalSignal::TimerTail`
+    /// of the window that got the timer, run only after that window's own `Tick`; before, the
+    /// shell called the two on the shown flow).
     TimerTail,
 }
 
@@ -855,7 +860,7 @@ fn map_panel(msg: &Msg) -> Mapped {
         Msg::MouseDown { x, y } => mapped(
             vec![
                 Step::Event(InteractionEvent::OtherPress),
-                Step::AnyWindow(Reply::Default),
+                Step::SameWindow(Reply::Default),
                 Step::FocusApproval,
                 Step::PanelClick { x, y },
             ],
@@ -867,7 +872,7 @@ fn map_panel(msg: &Msg) -> Mapped {
             if code != SB_ENDSCROLL {
                 steps.push(Step::Event(InteractionEvent::OtherPress));
             }
-            steps.push(Step::AnyWindow(Reply::Default));
+            steps.push(Step::SameWindow(Reply::Default));
             steps.push(Step::PanelScroll(ScrollGoal::of(code)));
             mapped(steps, Reply::Handled(0))
         }
@@ -883,7 +888,7 @@ fn map_ai_body(msg: &Msg) -> Mapped {
         Msg::MouseDown { .. } => mapped(
             vec![
                 Step::Event(InteractionEvent::OtherPress),
-                Step::AnyWindow(Reply::Handled(0)),
+                Step::SameWindow(Reply::Handled(0)),
                 Step::AiExpand,
                 Step::FocusApproval,
             ],

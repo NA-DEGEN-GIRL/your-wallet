@@ -488,6 +488,10 @@ pub struct EvmUi {
     /// (`after_open`), so a step asked for after the lock runs at once; before F14 a lock left it
     /// and a late answer still ran the steps kept for it.
     pub(crate) open_unanswered: Option<crate::approval::flow::ShownId>,
+    /// The approval window whose timer `Tick` the flow took with the last window input
+    /// (2026-11-24, spec/15 §11.4 S5-10): its `ApprovalSignal::TimerTail`, the next input of the
+    /// same timer message, runs; any other input clears it (`Wallet::on_approval_input`).
+    pub(crate) timer_ticked: Option<crate::approval::flow::ShownId>,
     /// What the S12 receive QR encodes (session only, spec/04 §2.8).
     pub receive_qr: crate::screen::EvmQrKind,
     /// The S10 network drop-down is open (2026-11-11; session only, closed by a choice).

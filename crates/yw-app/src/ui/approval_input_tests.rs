@@ -777,8 +777,10 @@ fn retry_buttons_and_no_window() {
     );
 }
 
-/// The panel: a click counts first, then (with a window) A01 takes the focus and the click is
-/// hit-tested; a scroll-bar press counts unless it is `SB_ENDSCROLL`; the wheel only scrolls.
+/// The panel: a click counts first, then (while its window is the shown one) A01 takes the focus
+/// and the click is hit-tested; a scroll-bar press counts unless it is `SB_ENDSCROLL`; the wheel
+/// only scrolls. 2026-11-24 (spec/15 §11.4 S5-10, spec/04 §3.4): the guard is `SameWindow`, the
+/// id check; before, `AnyWindow` (any approval window open).
 #[test]
 fn panel_rows() {
     assert_eq!(
@@ -786,7 +788,7 @@ fn panel_rows() {
         steps(
             &[
                 OTHER,
-                Step::AnyWindow(Reply::Default),
+                Step::SameWindow(Reply::Default),
                 Step::FocusApproval,
                 Step::PanelClick { x: 3, y: 4 },
             ],
@@ -798,7 +800,7 @@ fn panel_rows() {
         if code != SB_ENDSCROLL {
             expected.push(OTHER);
         }
-        expected.push(Step::AnyWindow(Reply::Default));
+        expected.push(Step::SameWindow(Reply::Default));
         expected.push(Step::PanelScroll(ScrollGoal::of(code)));
         assert_eq!(
             map_msg(Surface::Panel, &Msg::VScroll { code }, None, NONE),
@@ -854,9 +856,9 @@ fn panel_rows() {
     );
 }
 
-/// The AI body: a click counts first, then (with a window) opens or folds an inconsistent
-/// explanation and gives A01 the focus; the AI body never takes the keyboard focus (spec/04
-/// §3.8).
+/// The AI body: a click counts first, then (while its window is the shown one) opens or folds an
+/// inconsistent explanation and gives A01 the focus; the AI body never takes the keyboard focus
+/// (spec/04 §3.8). 2026-11-24 (S5-10): the guard is `SameWindow` (was `AnyWindow`).
 #[test]
 fn ai_body_rows() {
     assert_eq!(
@@ -864,7 +866,7 @@ fn ai_body_rows() {
         steps(
             &[
                 OTHER,
-                Step::AnyWindow(Reply::Handled(0)),
+                Step::SameWindow(Reply::Handled(0)),
                 Step::AiExpand,
                 Step::FocusApproval,
             ],

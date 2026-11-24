@@ -55,8 +55,8 @@ pub struct ApprovalInput {
 /// One input of the approval window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApprovalSignal {
-    /// An interaction event (the 50 ms window timer is `Event(Tick)`: interaction, then the AI
-    /// tick, then the simulating-countdown rebuild).
+    /// An interaction event (the 50 ms window timer is `Event(Tick)`, then
+    /// [`Self::TimerTail`]: the AI tick and the simulating-countdown rebuild).
     Event(InteractionEvent),
     /// The window was activated: restart the arm delay unconditionally, then mark it foreground.
     Activated,
@@ -84,6 +84,23 @@ pub enum ApprovalSignal {
         /// The wide layout applies.
         wide: bool,
     },
+    /// The AI body was clicked (`ai.down`, spec/06 §3.2): an inconsistent explanation opens or
+    /// folds; when it did, [`ApprovalEffect::AiToggled`]. 2026-11-24 (spec/15 §11.4 S5-10, S5
+    /// plan owner item O-12): before, the shell's `Step::AiExpand` flipped the shown flow's panel
+    /// itself (the wallet's `toggle_ai_panel`), with no id check.
+    AiExpand,
+    /// The AI body is about to paint: its text is held while a High-risk request's
+    /// acknowledgement checkbox is clear (`held_for_ack`, spec/06 §3.2; the AI panel's flag only,
+    /// never the gate). 2026-11-24 (S5-10): before, the shell's paint called the wallet's
+    /// `hold_shown_ai_for_ack` on the shown flow, with no id check.
+    AiPaint,
+    /// The rest of the window's 50 ms timer after its `Event(Tick)`: the AI tick, then the
+    /// simulating-countdown rebuild. Taken only right after that window's own `Tick` passed the id
+    /// check, and run on the flow shown then — the next request's when the `Tick` ended this one
+    /// and opened the next (an expiry), as before. 2026-11-24 (S5-10): before, the shell's
+    /// `Step::TimerTail` called the wallet's `ai_tick` and `rebuild_view_with` on the shown flow,
+    /// with no id check (spec/15 §11.4 S4 B6 review).
+    TimerTail,
 }
 
 /// What the approval flow asks the shell to do with the approval window (never coalesced).
@@ -136,6 +153,13 @@ pub enum ApprovalEffect {
         shown: ShownId,
         /// Only the AI body (the elapsed time while a request waits).
         body_only: bool,
+    },
+    /// The AI panel's explanation opened or folded ([`ApprovalSignal::AiExpand`]): the AI body's
+    /// scroll goes back to the top and the AI body is repainted (2026-11-24, spec/15 §11.4 S5-10:
+    /// before, the shell's `Step::AiExpand` did both right after the flip).
+    AiToggled {
+        /// The window.
+        shown: ShownId,
     },
 }
 

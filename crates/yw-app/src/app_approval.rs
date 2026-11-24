@@ -31,9 +31,7 @@ use crate::ui::theme::{self, FontRole, Fonts, wide};
 use yw_engine::approval::QueueOutcome;
 #[cfg(test)]
 use yw_engine::approval::interaction::InteractionEvent;
-use yw_engine::approval::interaction::{
-    APPROVAL_TICK_MS, HIGH_RISK_HOLD_MS, PrepareStage, PrepareState,
-};
+use yw_engine::approval::interaction::{APPROVAL_TICK_MS, HIGH_RISK_HOLD_MS};
 use yw_engine::approval::layout as text_layout;
 use yw_engine::approval::text;
 use yw_engine::approval::view::{ApprovalView, Block, Tone, escape_spans};
@@ -1188,6 +1186,10 @@ impl App {
                 self.approval_repaint_ai(shown, body_only);
                 None
             }
+            ApprovalEffect::AiToggled { shown } => {
+                self.approval_ai_toggled(shown);
+                None
+            }
         }
     }
 
@@ -1211,7 +1213,7 @@ impl App {
         connect: bool,
     ) -> (OpenOutcome, bool) {
         const FAILED: (OpenOutcome, bool) = (OpenOutcome::Failed(ErrorCode::App009), false);
-        if self.evm.approval.as_ref().map(ApprovalFlow::shown) != Some(shown) {
+        if self.wallet.evm.approval.as_ref().map(ApprovalFlow::shown) != Some(shown) {
             return FAILED;
         }
         // 2026-11-19 (S4 B6, A-12): each window's `Forward` keeps the id it was made for.
@@ -1341,13 +1343,21 @@ impl App {
     /// `Effect::Approval(RepaintBar)`: the whole window while the bar was never laid out, else the
     /// bar's rectangle when what it shows changed (S4 B5: was inline in `interaction()`).
     fn approval_repaint_bar(&mut self, shown: ShownId) {
-        let waiting = self.evm.queue.len().saturating_sub(1);
-        if let (Some(flow), Some(win)) = (self.evm.approval.as_ref(), self.approval_win.as_ref())
-            && win.shown == shown
+        let waiting = self.wallet.evm.queue.len().saturating_sub(1);
+        if let (Some(flow), Some(win)) = (
+            self.wallet.evm.approval.as_ref(),
+            self.approval_win.as_ref(),
+        ) && win.shown == shown
         {
             if win.bottom.bar.w <= 0 {
                 win.window.invalidate();
-            } else if bar_state(&flow.paint(), win.focus, waiting, self.clock.now_ms()) != win.bar {
+            } else if bar_state(
+                &flow.paint(),
+                win.focus,
+                waiting,
+                self.wallet.clock.now_ms(),
+            ) != win.bar
+            {
                 win.window.invalidate_rect(win.bottom.bar);
             }
         }
@@ -1387,6 +1397,23 @@ impl App {
                 #[cfg(test)]
                 trace_ai_repaint("a01");
             }
+        }
+    }
+
+    /// `Effect::Approval(AiToggled)`: the AI explanation opened or folded, so the AI body's
+    /// scroll goes back to the top and the AI body is repainted. Nothing for a window that is not
+    /// open under `shown` or has no AI body. (2026-11-24, spec/15 §11.4 S5-10: was inline in
+    /// `run_step`'s `Step::AiExpand` after the wallet's `toggle_ai_panel`, which invalidated the
+    /// AI body that got the click — the same window: the flow's id check passed for it.)
+    fn approval_ai_toggled(&mut self, shown: ShownId) {
+        if let Some(body) = self
+            .approval_win
+            .as_mut()
+            .filter(|win| win.shown == shown)
+            .and_then(|win| win.ai.as_mut())
+        {
+            body.scroll = 0;
+            body.body.invalidate();
         }
     }
 
@@ -1701,20 +1728,14 @@ impl App {
                 // ran on the next request's window that the press had just opened. 2026-11-19
                 // (S4 B6): the window that got the message by its id (was the queue item shown
                 // when the message arrived).
-                if shown.is_none_or(|shown| self.shown_now() != Some(shown)) {
-                    return Some(reply);
-                }
-            }
-            // 2026-11-20 (S4 B6 review): not an id check. A panel or AI-body message passes it
-            // while any flow is shown, and the steps after it (`FocusApproval`, `PanelClick`,
-            // `MoveFocus`, `AiExpand`) act on the shown window and flow, not on the window that
-            // got the message. Windows cannot reach the difference (an ended window gets no
-            // message while effects are applied at once); recorded in spec/15 §11.4 (B6 review)
-            // for P10/S4d, which make a deferred schedule. 2026-11-23 (S4 end): still so; S4d E2's
-            // deferred schedule sends no message to an ended window, so S5 or the Android shell
-            // decides (spec/04 §3.4).
-            Step::AnyWindow(reply) => {
-                if self.evm.approval.is_none() {
+                // 2026-11-24 (spec/15 §11.4 S5-10, S5 plan owner item O-12, spec/04 §3.4): also
+                // the panel's and the AI body's guard. Before, those had `Step::AnyWindow`, not an
+                // id check: a panel or AI-body message passed it while any flow was shown, and the
+                // steps after it (`FocusApproval`, `PanelClick`, `MoveFocus`, `AiExpand`) acted on
+                // the shown window and flow, not on the window that got the message (2026-11-20,
+                // S4 B6 review). Windows cannot reach the difference (an ended window gets no
+                // message), so its behaviour is unchanged.
+                if shown.is_none_or(|shown| self.wallet.shown_now() != Some(shown)) {
                     return Some(reply);
                 }
             }
@@ -1839,22 +1860,16 @@ impl App {
                     }
                 }
             }
-            Step::AiExpand => {
-                // 2026-11-19 (S4 B4b): the panel state is the flow's `AiFlow`, the body's scroll
-                // the shell's `AiBody`. 2026-11-20 (S4 B6 review): it flips the shown flow's
-                // panel directly, not through `Cmd::Approval` and its id check (see `AnyWindow`).
-                // 2026-11-22 (S4c W15): the flip is the wallet's `toggle_ai_panel` (the flow's AI
-                // state); before, this step wrote it through `DerefMut`. Same order: the flip,
-                // then the shell's body scroll and repaint when it changed.
-                if self.wallet.toggle_ai_panel()
-                    && let Some(body) = self.approval_win.as_mut().and_then(|win| win.ai.as_mut())
-                {
-                    body.scroll = 0;
-                    if let Some(window) = window {
-                        window.invalidate();
-                    }
-                }
-            }
+            // 2026-11-19 (S4 B4b): the panel state is the flow's `AiFlow`, the body's scroll the
+            // shell's `AiBody`. 2026-11-20 (S4 B6 review): it flipped the shown flow's panel
+            // directly, not through `Cmd::Approval` and its id check. 2026-11-22 (S4c W15): the
+            // flip was the wallet's `toggle_ai_panel`, called here. 2026-11-24 (spec/15 §11.4
+            // S5-10, S5 plan owner item O-12): `ApprovalSignal::AiExpand` of the window that got
+            // the click, through the flow's id check; when the panel changed the flow answers
+            // with `ApprovalEffect::AiToggled`, whose arm puts the body's scroll at the top and
+            // repaints the AI body, applied when this input drains (same order: the flip, then
+            // the scroll and the repaint, then the next step).
+            Step::AiExpand => self.window_signal(shown, ApprovalSignal::AiExpand),
             Step::Paint => {
                 if let Some(window) = window {
                     match surface {
@@ -1881,30 +1896,18 @@ impl App {
                     self.window_signal(shown, ApprovalSignal::Resized { wide });
                 }
             }
-            // 2026-11-20 (S4 B6 review): the timer's tail after its `Tick` runs on the flow shown
+            // 2026-11-20 (S4 B6 review): the timer's tail after its `Tick` ran on the flow shown
             // now, without the id check (plan §3.1 puts it inside the flow's `Event(Tick)`). A
             // `Tick` that ends the request (`Expire`) and opens the next one's window is followed
-            // by this tail on the new flow, as before B6; moving it behind the id check would
-            // change that order, so it stays here until P10/S4d (spec/15 §11.4, B6 review).
-            // 2026-11-23 (S4 end): it stayed through S4; S5 or the Android shell decides.
-            // 2026-11-20 (S4 P10b): each of its two calls into the flow is drained before the
-            // next step, as when `emit` applied each effect at once.
-            // 2026-11-22 (S4c W15): the two calls are the wallet's own fns, named on the wallet
-            // (non-test builds have no `DerefMut`).
-            Step::TimerTail => {
-                let now = self.clock.now_ms();
-                self.wallet.ai_tick(now);
-                self.drain();
-                if let Some(flow) = self.evm.approval.as_ref()
-                    && matches!(
-                        flow.gate().prepare,
-                        PrepareState::Preparing(PrepareStage::Simulating { .. })
-                    )
-                {
-                    self.wallet.rebuild_view_with(false);
-                }
-                self.drain();
-            }
+            // by this tail on the new flow, as before B6. 2026-11-20 (S4 P10b): each of its two
+            // calls into the flow was drained before the next step. 2026-11-22 (S4c W15): the two
+            // calls were the wallet's `ai_tick` and `rebuild_view_with`, named on the wallet.
+            // 2026-11-24 (spec/15 §11.4 S5-10, S5 plan owner item O-12): `ApprovalSignal::TimerTail`
+            // of the window that got the timer; the flow runs it only right after that window's
+            // own `Tick` passed the id check, on the flow shown then (the new one after an expiry,
+            // the same order as before), and the input drains once after both calls (the first
+            // emits only `RepaintAi`, which has no answer).
+            Step::TimerTail => self.window_signal(shown, ApprovalSignal::TimerTail),
         }
         None
     }
@@ -1925,14 +1928,15 @@ impl App {
 
     #[expect(clippy::too_many_lines, reason = "the fixed A01 areas in order")]
     fn paint_approval(&mut self, window: &Window) {
-        let now = self.clock.now_ms();
+        let now = self.wallet.clock.now_ms();
         let dpi = window.dpi();
         let client = window.client_rect();
         let llm_busy = self
+            .wallet
             .llm
             .as_ref()
             .is_none_or(yw_engine::explain::ExplainService::busy);
-        let lang = self.approval_lang();
+        let lang = self.wallet.approval_lang();
         // 2026-11-22 (S4c W15): the flow is borrowed shared (`&self.wallet.evm`) beside the
         // shell's fonts and window state; before, a `Self { wallet: Wallet { evm, .. }, .. }`
         // pattern bound it mutably (it was only read).
@@ -2505,11 +2509,11 @@ impl App {
 
     /// Paints the AI panel body (spec/06 §6): plain text laid out by
     /// `yw_engine::approval::layout`, wrapped only; no links, formatting, click actions or copy.
-    fn paint_ai_body(&mut self, window: &Window) {
-        let now = self.clock.now_ms();
+    fn paint_ai_body(&mut self, window: &Received<'_>) {
+        let now = self.wallet.clock.now_ms();
         let dpi = window.dpi();
         let client = window.client_rect();
-        let lang = self.approval_lang();
+        let lang = self.wallet.approval_lang();
         // 2026-11-22 (S4c W15): the AI panel's held flag is the wallet's to write
         // (`Wallet::hold_shown_ai_for_ack`), so the paint makes its early checks first — the
         // fonts, the flow and the window, the AI body — in the same order, then that call at the
@@ -2518,7 +2522,7 @@ impl App {
         // called `ApprovalFlow::hold_ai_for_ack` on it there. The fonts are looked up twice; the
         // second lookup finds the first one's (`FontCache::for_dpi` makes them once per DPI).
         if self.fonts.for_dpi(dpi, lang).is_none()
-            || self.evm.approval.is_none()
+            || self.wallet.evm.approval.is_none()
             || self
                 .approval_win
                 .as_ref()
@@ -2530,9 +2534,12 @@ impl App {
         // acknowledgement checkbox (the panel keeps its reserved place). (2026-11-19, S4 B4b:
         // `ApprovalFlow::hold_ai_for_ack` sets it from the issued request and the gate, then the
         // body paints from `ApprovalPaint`; was `ai.panel.set_held(held_for_ack(..))` here.)
-        if !self.wallet.hold_shown_ai_for_ack() {
-            return;
-        }
+        // 2026-11-24 (spec/15 §11.4 S5-10, S5 plan owner item O-12): `ApprovalSignal::AiPaint`
+        // of the window being painted, through the flow's id check (no effect; its drain applies
+        // nothing). Before, the wallet's `hold_shown_ai_for_ack` on the shown flow, whose `false`
+        // (no AI explanation) ended the paint here; the paint now ends on the same condition below
+        // (`paint.ai` is `None`), after a second font lookup that finds the first one's.
+        self.window_signal(Some(window.shown), ApprovalSignal::AiPaint);
         let evm = &self.wallet.evm;
         let Self {
             fonts,
@@ -2642,7 +2649,7 @@ impl App {
     fn paint_panel(&mut self, window: &Window) {
         let dpi = window.dpi();
         let client = window.client_rect();
-        let lang = self.approval_lang();
+        let lang = self.wallet.approval_lang();
         // 2026-11-22 (S4c W15): the flow borrowed shared, as in `paint_approval`.
         let evm = &self.wallet.evm;
         let Self {

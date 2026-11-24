@@ -386,6 +386,13 @@ pub struct App {
 
 /// 2026-11-21 (S4 W2, plan §3.3, D-21): `impl App` code reaches the wallet's fields through
 /// `App`; the render builders keep doing so until S5.
+///
+/// 2026-11-24 (spec/15 §11.4 S5-10, S5 plan owner item O-8): test builds only, like
+/// [`core::ops::DerefMut`] since S4c W15. The render builders left `impl App` in S5-5, and the
+/// shell's code names the wallet (`self.wallet.…`) for every read: a field, a method, the clock.
+/// The tests and their fixtures (the frozen ones too) keep calling wallet fns on an `App`.
+/// Before, every build had it.
+#[cfg(test)]
 impl core::ops::Deref for App {
     type Target = Wallet;
 
@@ -418,7 +425,7 @@ impl core::fmt::Debug for App {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("App")
-            .field("mode", &self.mode)
+            .field("mode", &self.wallet.mode)
             .finish_non_exhaustive()
     }
 }
@@ -748,7 +755,27 @@ impl App {
     /// The key queue and lock signal shared with the key worker.
     #[must_use]
     pub fn worker_channels(&self) -> (Arc<KeyQueue>, Arc<LockSignal>) {
-        (Arc::clone(&self.key_queue), Arc::clone(&self.lock_signal))
+        (
+            Arc::clone(&self.wallet.key_queue),
+            Arc::clone(&self.wallet.lock_signal),
+        )
+    }
+
+    /// The wallet's clock, shared with the workers and the browser dispatcher `main.rs` starts
+    /// (`Wallet::clock`). 2026-11-24 (spec/15 §11.4 S5-10): `main.rs` read it through `App`'s
+    /// `Deref`, which non-test builds no longer have.
+    #[must_use]
+    pub fn worker_clock(&self) -> Arc<dyn Clock> {
+        self.wallet.clock()
+    }
+
+    /// The start's first key jobs (`main.rs` step 8): the language, then the vault's load, queued
+    /// in the current epoch (`Wallet::key`). 2026-11-24 (spec/15 §11.4 S5-10): `main.rs` queued
+    /// the two itself through `App`'s `Deref`; same jobs, same order.
+    pub fn start_key_jobs(&self, lang: Lang) {
+        self.wallet
+            .key(yw_engine::events::KeyJob::SetLanguage(lang));
+        self.wallet.key(yw_engine::events::KeyJob::Load);
     }
 
     /// Attaches the started workers. 2026-11-22 (S4c W15): the threads are the shell's
@@ -778,7 +805,7 @@ impl App {
                     &[("code", Field::Num(u64::from(error.code)))],
                 );
                 self.session_retries = self.session_retries.saturating_add(1);
-                self.session_next_ms = self.clock.now_ms().saturating_add(SESSION_RETRY_MS);
+                self.session_next_ms = self.wallet.clock.now_ms().saturating_add(SESSION_RETRY_MS);
                 if self.session_retries >= SESSION_RETRY_MAX {
                     self.session_retries = 0;
                     // E-APP-004 (2026-11-24, spec/15 §11.4 S5-9: as `Cmd::Platform`; before,
@@ -846,7 +873,7 @@ impl App {
         let dpi = main.dpi();
         let client = main.client_rect();
         let items = self.items();
-        let Some(fonts) = self.fonts.for_dpi(dpi, self.settings.language) else {
+        let Some(fonts) = self.fonts.for_dpi(dpi, self.wallet.settings.language) else {
             return false;
         };
         let measure = |text: &str, role: FontRole, width: i32| {
@@ -900,7 +927,7 @@ impl App {
     fn paint_main(&mut self, window: &Window) {
         let dpi = window.dpi();
         let client = window.client_rect();
-        let Some(fonts) = self.fonts.for_dpi(dpi, self.settings.language) else {
+        let Some(fonts) = self.fonts.for_dpi(dpi, self.wallet.settings.language) else {
             return;
         };
         if let Ok(mut dc) = window.begin_paint() {
@@ -937,18 +964,18 @@ impl App {
                 // 2026-11-24 (spec/15 §11.4 S5-9): the layout as `Cmd::Main`, then the same
                 // drain (before, the wallet's `refresh` called here, then `drain`).
                 self.dispatch(Cmd::Main(MainStep::Relayout));
-                self.window_state.changed(self.clock.now_ms());
+                self.window_state.changed(self.wallet.clock.now_ms());
                 Reply::Default
             }
             Msg::ExitSizeMove => {
-                self.window_state.changed(self.clock.now_ms());
+                self.window_state.changed(self.wallet.clock.now_ms());
                 Reply::Default
             }
             Msg::DpiChanged { dpi } => {
                 // The offset follows the new scale (2026-11-10); the suggested rectangle applied
                 // by the default processing resizes and lays the screen out again.
                 self.scroll_dpi_changed(*dpi);
-                self.window_state.changed(self.clock.now_ms());
+                self.window_state.changed(self.wallet.clock.now_ms());
                 if let Some(main) = self.main.as_ref() {
                     main.invalidate();
                 }
@@ -964,7 +991,7 @@ impl App {
                     self.on_command(*id);
                     // What the click made due starts now, not at the next tick (2026-11-12).
                     // (2026-11-22, S4c W15: as Cmd::Tick with TickPart::ReadsDue.)
-                    let now = self.clock.now_ms();
+                    let now = self.wallet.clock.now_ms();
                     self.wallet.on_cmd(Cmd::Tick {
                         now_ms: now,
                         part: TickPart::ReadsDue,
@@ -977,7 +1004,7 @@ impl App {
             // The S22 hold area (painted, no child control). A click on the window itself, not
             // on a control, also closes an open drop-down (2026-11-12).
             Msg::MouseDown { x, y } => {
-                self.hold_down(*x, *y, self.clock.now_ms());
+                self.hold_down(*x, *y, self.wallet.clock.now_ms());
                 // 2026-11-24 (spec/15 §11.4 S5-9): as `Cmd::Main` (before, the wallet's
                 // `close_pickers`, then `refresh` when it closed one, called here).
                 self.wallet.on_cmd(Cmd::Main(MainStep::Clicked));
@@ -1023,7 +1050,7 @@ impl App {
                 self.drain();
                 // A worker's answer, a shortcut or the window shown again may have made a
                 // read due. (2026-11-22, S4c W15: as `Cmd::Tick` with `TickPart::ReadsDue`.)
-                let now = self.clock.now_ms();
+                let now = self.wallet.clock.now_ms();
                 self.wallet.on_cmd(Cmd::Tick {
                     now_ms: now,
                     part: TickPart::ReadsDue,
@@ -1088,7 +1115,8 @@ impl App {
                     _ => {}
                 }
                 self.drain();
-                let now = self.clock.now_ms();
+                // 2026-11-24 (S5-10): as `on_main_msg` spells it (no `Deref` in non-test builds).
+                let now = self.wallet.clock.now_ms();
                 self.wallet.on_cmd(Cmd::Tick {
                     now_ms: now,
                     part: TickPart::ReadsDue,
@@ -1138,7 +1166,7 @@ impl App {
     /// then the gate decides, as before (before F19 the shell was never told and kept the
     /// pointer capture).
     fn hold_move(&mut self, x: i32, y: i32) {
-        let Some(id) = self.reset_hold.filter(|_| self.reset.gate.active()) else {
+        let Some(id) = self.reset_hold.filter(|_| self.wallet.reset.gate.active()) else {
             return;
         };
         let inside = self
@@ -1177,7 +1205,7 @@ impl App {
     /// Ctrl+L (posted by the loop observer). 2026-11-20 (S4 P4): unchanged — the lock is the
     /// wallet's `lock(Manual)`, called from this shell entry until S4c makes it a `Cmd`.
     fn lock_shortcut(&mut self) {
-        if self.mode.holds_secrets() {
+        if self.wallet.mode.holds_secrets() {
             self.lock(LockReason::Manual);
         }
     }
@@ -1196,7 +1224,7 @@ impl App {
         let &id = tab
             .checked_sub(1)
             .and_then(|index| logic_presses::TABS.get(index))?;
-        if self.screen != Screen::Main || self.secret_open() {
+        if self.wallet.screen != Screen::Main || self.wallet.secret_open() {
             return None;
         }
         let shown = self.items().iter().any(|item| {
@@ -1232,11 +1260,11 @@ impl App {
 
     /// The control F5 or Ctrl+, presses (S4 P4: the read half of [`Self::shortcut`]).
     fn shortcut_target(&self, code: usize) -> Option<u16> {
-        if self.secret_open() {
+        if self.wallet.secret_open() {
             return None;
         }
         match crate::shell_msg::Shortcut::from_code(code) {
-            Some(crate::shell_msg::Shortcut::Refresh) if self.screen == Screen::Main => {
+            Some(crate::shell_msg::Shortcut::Refresh) if self.wallet.screen == Screen::Main => {
                 self.shown_of(&logic_presses::REFRESH)
             }
             Some(crate::shell_msg::Shortcut::Settings) => self.shown_of(&logic_presses::SETTINGS),
@@ -1281,10 +1309,10 @@ impl App {
     /// overlay whose `취소` is not shown is still nothing; the drop-downs are what
     /// `close_pickers` closes, [`Self::pickers_open`]).
     fn escape_target(&self) -> EscTarget {
-        if self.secret_open() {
+        if self.wallet.secret_open() {
             return EscTarget::Nothing;
         }
-        if matches!(self.screen, Screen::Confirm(_)) {
+        if matches!(self.wallet.screen, Screen::Confirm(_)) {
             return self
                 .shown_of(&logic_presses::ESC_CONFIRM)
                 .map_or(EscTarget::Nothing, EscTarget::Press);
@@ -1292,8 +1320,10 @@ impl App {
         if self.pickers_open() {
             return EscTarget::ClosePickers;
         }
-        let in_yubikey_flow = matches!(self.screen, Screen::Settings(SettingsSection::YubiKey))
-            && self.card.manage.is_some();
+        let in_yubikey_flow = matches!(
+            self.wallet.screen,
+            Screen::Settings(SettingsSection::YubiKey)
+        ) && self.wallet.card.manage.is_some();
         if in_yubikey_flow {
             return EscTarget::Nothing;
         }
@@ -1302,13 +1332,13 @@ impl App {
         }
         // S20's `취소` too, but never once its new words were shown: it discards them, like the
         // YubiKey wizard's (both stay a click then).
-        if self.yk_words == yw_engine::wallet::app_yubikey::YkWords::None
+        if self.wallet.yk_words == yw_engine::wallet::app_yubikey::YkWords::None
             && let Some(id) = self.shown_of(&logic_presses::ESC_NEW_WALLET_CANCEL)
         {
             return EscTarget::Press(id);
         }
         if matches!(
-            self.screen,
+            self.wallet.screen,
             Screen::Send
                 | Screen::Receive
                 | Screen::Sites
@@ -1362,7 +1392,7 @@ impl App {
     /// must reach; no caller outside `App` in production.
     pub(crate) fn enter_target(&self, focus: Option<&crate::ui::main_window::Ctl>) -> Option<u16> {
         let ctl = focus?;
-        if self.secret_open() || !ctl.enabled {
+        if self.wallet.secret_open() || !ctl.enabled {
             return None;
         }
         if ctl.is_button() {
@@ -1443,7 +1473,7 @@ impl App {
     /// [`Self::dispatch`] (its `on_cmd`, then the drain the part had after it); before, this fn
     /// called the part's wallet fn, then drained.
     fn tick(&mut self) {
-        let now = self.clock.now_ms();
+        let now = self.wallet.clock.now_ms();
         self.drain_events();
         if self.session_retries > 0 && now >= self.session_next_ms {
             self.register_session();
@@ -1548,7 +1578,7 @@ impl App {
         let Some(main) = self.main.as_ref() else {
             return;
         };
-        let now = self.clock.now_ms();
+        let now = self.wallet.clock.now_ms();
         let mut pending = PendingClip::earlier_run(now);
         let result = clipboard::clear_secret(main, &pending.clip);
         let outcome = match clip_step(&mut pending.retry, now, result) {
@@ -1587,10 +1617,14 @@ impl App {
         let Some(main) = self.main.as_ref() else {
             return;
         };
-        let deadline = self.clock.now_ms().saturating_add(SECRET_CLIPBOARD_EXIT_MS);
+        let deadline = self
+            .wallet
+            .clock
+            .now_ms()
+            .saturating_add(SECRET_CLIPBOARD_EXIT_MS);
         let result = loop {
             let result = clipboard::clear_secret(main, &pending.clip);
-            if result.is_ok() || self.clock.now_ms() >= deadline {
+            if result.is_ok() || self.wallet.clock.now_ms() >= deadline {
                 break result;
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -1665,13 +1699,16 @@ impl App {
             what: "shutdown",
             ms: 5_000,
         });
-        let _ = self.lock_signal.wait_beyond(before, Duration::from_secs(5));
+        let _ = self
+            .wallet
+            .lock_signal
+            .wait_beyond(before, Duration::from_secs(5));
         self.wallet.shutdown_after_wait();
         // The window's place for the next start (`window.json`, 2026-11-10).
         self.save_window_state();
-        let deadline = self.clock.now_ms().saturating_add(2_000);
+        let deadline = self.wallet.clock.now_ms().saturating_add(2_000);
         for handle in std::mem::take(&mut self.workers) {
-            while !handle.is_finished() && self.clock.now_ms() < deadline {
+            while !handle.is_finished() && self.wallet.clock.now_ms() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
             }
             if handle.is_finished() {
@@ -1713,7 +1750,7 @@ impl App {
     /// through `App::on_key_result`, which drained once more before this fn's drain).
     fn drain_events(&mut self) {
         self.assert_outbox_empty();
-        let Some(events) = self.events.clone() else {
+        let Some(events) = self.wallet.events.clone() else {
             return;
         };
         for event in events.drain() {
@@ -1895,7 +1932,7 @@ impl App {
                         let mut form = SecretForm::new(
                             kind,
                             lang,
-                            self.clock.now_ms(),
+                            self.wallet.clock.now_ms(),
                             !warning,
                             PlatformFlags::WINDOWS,
                         );
@@ -1938,7 +1975,7 @@ impl App {
                 topmost,
                 lang,
             } => {
-                let unshown = self.secret_unshown(serial);
+                let unshown = self.wallet.secret_unshown(serial);
                 let outcome = if unshown {
                     self.open_input_window(serial, kind, step, topmost, lang)
                 } else {
@@ -1973,7 +2010,7 @@ impl App {
                     self.clear_secret_clip_at_exit();
                     None
                 } else {
-                    self.clear_secret_clip(self.clock.now_ms())
+                    self.clear_secret_clip(self.wallet.clock.now_ms())
                 }
             }
         }
@@ -2199,7 +2236,7 @@ impl App {
     }
 
     fn on_secret(&mut self, serial: u64, window: &Window, msg: &Msg) -> Reply {
-        let now = self.clock.now_ms();
+        let now = self.wallet.clock.now_ms();
         let dpi = window.dpi();
         let Self { secret, fonts, .. } = self;
         let Some(secret) = secret.as_mut().filter(|secret| secret.serial == serial) else {
@@ -2312,7 +2349,7 @@ impl App {
     /// `drop_clip_notice` and `refresh` are wallet code, called on `self.wallet` and listed in
     /// `SHELL_WALLET_CALLS`; non-test builds have no `DerefMut`.
     fn apply_form_action(&mut self, serial: u64, action: FormAction) {
-        if !self.secret_session_is(serial) {
+        if !self.wallet.secret_session_is(serial) {
             return;
         }
         match action {
@@ -2341,7 +2378,7 @@ impl App {
 
 impl App {
     fn paste(&mut self) {
-        let lang = self.settings.language;
+        let lang = self.wallet.settings.language;
         let Some(secret) = self.secret.as_mut() else {
             return;
         };
@@ -2383,8 +2420,8 @@ impl App {
     }
 
     fn copy_secret(&mut self) {
-        let lang = self.settings.language;
-        let allowed = self.settings.allow_secret_copy;
+        let lang = self.wallet.settings.language;
+        let allowed = self.wallet.settings.allow_secret_copy;
         let Some(secret) = self.secret.as_mut() else {
             return;
         };
@@ -2485,7 +2522,12 @@ impl App {
         }
         // 2026-11-24 (spec/15 §11.4 S5-6): no `Cmd::Form` first — the engine keeps what the plain
         // edits show (`EN_CHANGE` → `Cmd::Edit`, its own field writes, `Cmd::Rendered`).
-        let input = cmd_table::capture(id, &self.controls, self.main.as_ref(), &self.wc.file_text);
+        let input = cmd_table::capture(
+            id,
+            &self.controls,
+            self.main.as_ref(),
+            &self.wallet.wc.file_text,
+        );
         if let Some(press) = cmd_table::press_of(id, &self.controls) {
             // Debug builds (2026-11-21, S4 W3, critique B-11): the shell's own read of the masked
             // edits the press captures, compared with the edits the handler took when the drain
@@ -2629,7 +2671,7 @@ impl App {
             let Some(text) = self.controls.text(id, field.cap()).map(Zeroizing::new) else {
                 continue;
             };
-            if self.form.text(field) != Some(text.as_str()) {
+            if self.wallet.form.text(field) != Some(text.as_str()) {
                 return Some(Cmd::Edit { field, text });
             }
         }
@@ -2662,7 +2704,7 @@ impl App {
     /// count (its own last drain and the `Exit` press's); before W3 nothing read a field then.
     #[cfg(debug_assertions)]
     pub(crate) fn check_form_in_step(&self) {
-        if self.mode == AppMode::ShuttingDown {
+        if self.wallet.mode == AppMode::ShuttingDown {
             return;
         }
         for field in EditField::ALL {
@@ -2670,7 +2712,7 @@ impl App {
                 .controls
                 .text(cmd_table::edit_id_of(field), field.cap())
                 .map(Zeroizing::new);
-            if shown.as_deref().map(String::as_str) != self.form.text(field) {
+            if shown.as_deref().map(String::as_str) != self.wallet.form.text(field) {
                 self.note_form_mismatch(field);
             }
         }
@@ -2718,7 +2760,7 @@ impl App {
                 cmd_table::id_of(test_steps::last_press(&self.wallet)),
                 field,
             ));
-            if self.mode == AppMode::ShuttingDown {
+            if self.wallet.mode == AppMode::ShuttingDown {
                 continue;
             }
             let read = self

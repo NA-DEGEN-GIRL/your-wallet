@@ -319,7 +319,7 @@ impl App {
             };
             self.wallet.on_cmd(edit);
         }
-        debug_assert!(self.queued_effects() == 0, "the outbox drained");
+        debug_assert!(self.wallet.queued_effects() == 0, "the outbox drained");
         // Tests (2026-11-23, S4d E2): a held batch is checked once its answers went back
         // (`deferred::settle`).
         #[cfg(test)]
@@ -360,9 +360,9 @@ impl App {
     /// Debug builds: when an effect is queued.
     pub fn assert_outbox_empty(&self) {
         debug_assert!(
-            self.queued_effects() == 0,
+            self.wallet.queued_effects() == 0,
             "an entry returned with {} effect(s) queued",
-            self.queued_effects()
+            self.wallet.queued_effects()
         );
     }
 
@@ -540,6 +540,7 @@ impl App {
                     ms,
                 });
                 let _ = self
+                    .wallet
                     .lock_signal
                     .wait_beyond(before, core::time::Duration::from_millis(ms));
                 None
