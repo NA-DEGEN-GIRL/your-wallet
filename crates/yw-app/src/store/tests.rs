@@ -238,6 +238,39 @@ fn reparse_points_are_refused_on_read_and_commit() {
     fs::remove_dir_all(&elsewhere).unwrap();
 }
 
+/// 2026-11-25 A2-4a review: a reparse point at a set-aside name or at a lone `.prev` is no copy,
+/// and `replace_copy` refuses it and writes nothing (the engine test with links is
+/// `yw_engine::file_storage::tests::copies_leave_out_and_refuse_links`).
+#[test]
+fn reparse_points_are_no_copies() {
+    const REPARSE: StorageError = StorageError::Io(0x0000_1126);
+    let dir = temp_dir("copies");
+    let elsewhere = temp_dir("copies-target");
+    let mut storage = FileStorage::open(&dir).unwrap();
+    let linked = dir.join("meta.ywm.corrupt-5");
+    let prev = dir.join("meta.ywm.prev");
+    junction(&linked, &elsewhere);
+    junction(&prev, &elsewhere);
+    fs::write(dir.join("meta.ywm.corrupt-6"), b"copy").unwrap();
+    assert_eq!(
+        storage.copies(FileKind::Meta),
+        Ok(vec!["meta.ywm.corrupt-6".to_owned()])
+    );
+    for name in ["meta.ywm.corrupt-5", "meta.ywm.prev"] {
+        assert_eq!(
+            storage.replace_copy(FileKind::Meta, name, b"new"),
+            Err(REPARSE),
+            "{name}"
+        );
+    }
+    assert!(fs::read_dir(&elsewhere).unwrap().next().is_none());
+    assert!(tmp_files(&dir).is_empty());
+    fs::remove_dir(&linked).unwrap();
+    fs::remove_dir(&prev).unwrap();
+    fs::remove_dir_all(&dir).unwrap();
+    fs::remove_dir_all(&elsewhere).unwrap();
+}
+
 /// spec/15 §11.4 S2 review (a): the key worker's Windows platform gives the `VirtualLock` slot
 /// (D10), never a heap buffer: the slot starts a `VirtualAlloc` reservation (64 KiB
 /// granularity), where a heap allocation of `SLOT_LEN` bytes practically never starts; it is zeroed and

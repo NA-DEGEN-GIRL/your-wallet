@@ -99,6 +99,8 @@ pub enum FileKind {
 }
 
 /// Durable storage for the three files (spec/02 §6.2), implemented by yw-app over yw-win.
+/// (2026-11-25 A2-4a: implemented by yw-engine `file_storage::FileStorage` over the platform's
+/// `yw_platform::files::Files`; on Windows yw-app wraps it over `yw_win::file::WinFiles`.)
 pub trait VaultStorage: Send {
     /// Reads the main file, `None` if absent.
     ///

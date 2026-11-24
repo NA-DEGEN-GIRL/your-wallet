@@ -543,9 +543,11 @@ mod tests {
             self.with("exists", &[path], |state| state.entries.contains_key(path))
         }
 
+        /// Follows a link like `Path::is_file` (the trait's contract): an `Entry::Link` stands for
+        /// a link to an ordinary file, so only `reject_link` keeps it out (2026-11-25 A2-4a review).
         fn is_file(&self, path: &Path) -> bool {
             self.with("is_file", &[path], |state| {
-                matches!(state.entries.get(path), Some(Entry::File(_)))
+                matches!(state.entries.get(path), Some(Entry::File(_) | Entry::Link))
             })
         }
 
@@ -774,5 +776,51 @@ mod tests {
             ]
         );
         assert_eq!(storage.copies(FileKind::Vault), Ok(Vec::new()));
+    }
+
+    /// Links among the copies (2026-11-25 A2-4a review): a linked set-aside name and a linked lone
+    /// `.prev` are no copies, and `replace_copy` refuses a linked target before it writes.
+    #[test]
+    fn copies_leave_out_and_refuse_links() {
+        const LINK: StorageError = StorageError::Io(0x0000_1126);
+        let files = MemFiles::default();
+        let mut storage = FileStorage::open(files.clone(), &dir()).unwrap();
+        files.put(&dir().join("meta.ywm.corrupt-5"), Entry::Link);
+        files.put(&dir().join("meta.ywm.corrupt-6"), Entry::File(meta(1)));
+        files.put(&dir().join("meta.ywm.prev"), Entry::Link);
+        files.take_log();
+        assert_eq!(
+            storage.copies(FileKind::Meta),
+            Ok(vec!["meta.ywm.corrupt-6".to_owned()])
+        );
+        for name in ["meta.ywm.corrupt-5", "meta.ywm.prev"] {
+            assert_eq!(
+                storage.replace_copy(FileKind::Meta, name, &meta(2)),
+                Err(LINK),
+                "{name}"
+            );
+        }
+        let log = files.take_log();
+        assert!(
+            !log.iter()
+                .any(|line| ["write", "replace", "rename", "remove"]
+                    .iter()
+                    .any(|op| line.starts_with(op))),
+            "{log:?}"
+        );
+        assert_eq!(
+            files.get(&dir().join("meta.ywm.corrupt-5")),
+            Some(Entry::Link)
+        );
+        assert_eq!(files.get(&dir().join("meta.ywm.prev")), Some(Entry::Link));
+        // The same lone `.prev` as an ordinary file is a copy: only the link kept it out.
+        files.put(&dir().join("meta.ywm.prev"), Entry::File(meta(1)));
+        assert_eq!(
+            storage.copies(FileKind::Meta),
+            Ok(vec![
+                "meta.ywm.corrupt-6".to_owned(),
+                "meta.ywm.prev".to_owned()
+            ])
+        );
     }
 }
