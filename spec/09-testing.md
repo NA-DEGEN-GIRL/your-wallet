@@ -140,6 +140,91 @@
 | SOL | 07 §16 설정한 공급자 행(이력 검색, `getFeeForMessage` 우선 수수료 포함, `maxRetries:0`, dataSlice), 07 §10 CU 측정 | M7 착수 시 | 07 §16 "실패 시" |
 | BTC | 08 §4.5 E1–E3(Esplora, `curl.exe`)·C1–C3(Core, `probe-rpc.mjs`·`rpc.json`). B1–B4는 `bitcoin.indexer`를 `bb-rpc`·`bb-rest`로 쓰기로 한 경우만, B5(받은 내역 `details=txs`, 2026-11-13)는 그 인덱서로 받은 내역을 켤 때만 | M8 착수 전, Esplora URL·공급자 변경 시 | 08 §4.5 판정·대안: mempool.space 실패면 다른 Esplora URL 또는 선택 인덱서. 쓸 수 있는 인덱서가 없거나 Core 원본·`TxRaw`가 모두 실패할 때만 M8 중단(D26). 애드온 미활성은 중단 사유가 아니다 |
 
+### 2.6 Android 기기 시험과 P0 기록 ([15] §13·§16)
+
+2026-11-24 신설(A2 전, [15] §16 P0 결과와 함께). Android판([15], D40)의 기기·에뮬레이터 시험의 규칙과 기록이다. 게이트의 `android` 단계(종료 33, [15] §13)는 `android/`를 만드는 A2 커밋에서 §2.2와 [01] §4.1에 더한다. 기기 시험은 게이트에 들어가지 않는다.
+
+**규칙**
+
+- 기기: 에이전트는 연결된 시험 기기 하나(아래 표)와, 그 뒤 새 SDK로 만든 로컬 x86_64 에뮬레이터만 쓴다. 다른 기기, 특히 주인의 기기는 쓰지 않는다. 시험 기기와 에뮬레이터를 동시에 쓰지 않고(에뮬레이터는 시험 기기 다음), 대상은 세션 안의 `ANDROID_SERIAL`로만 고른다(파일에 적지 않는다).
+- 기기 설정은 바꾸지 않는다: 화면 잠금(PIN·패턴), Play Protect, 이미 켜진 것 밖의 개발자 옵션, 계정([15] §18 42 N11·N12). 화면을 깨우는 키 사건(`input keyevent 224`·`82`)과 뒤로(`4`)는 설정이 아니다.
+- 데이터: 공개 시험 니모닉(`abandon` ×11 + `about`), 합성 비밀번호, 가짜 값만. 시험 패키지 이름은 중립이다. A2 빌드에는 네트워크 권한이 없다([15] §12).
+- 설치는 `adb install -r --user 0`. 기기 단계가 끝날 때마다 시험 패키지를 지우고(`adb uninstall`), 푸시한 임시 폴더를 지우고, `adb reverse --remove-all`을 하고, 에뮬레이터를 멈춘다. A2 끝의 마지막 빌드는 남겨도 된다.
+- 원시 기록(`getprop`·`logcat`·`dumpsys`·스크린숏·`cargo -vv`·Gradle 출력)은 기기 일련번호·사용자 이름·빌드 PC 경로를 담으므로 저장소 밖에만 둔다. 저장소에는 손으로 쓴 요약만 넣는다. 그런 요약을 커밋하기 전에 `scripts/privacy-scan.mjs`를 돌리고, 그때 `adb get-serialno`로 읽은 일련번호(파일에 적어 두지 않는다)·사용자 이름·사용자 프로필 경로를 `git grep -i`로 찾는다. 스크린숏은 기기 홈 화면 같은 개인 화면을 담을 수 있어 저장소에 넣지 않는다.
+- 시험 기기의 결과는 기능 확인이다. 부트로더가 풀리고 루팅된 기기라 Keystore·TEE 결과로 보호를 주장하지 않는다([15] §18 42 N10).
+- 기기에서 앱을 시작하기 전에 화면을 깨운다(꺼진 화면에서는 `am start -W`가 밀기 잠금 화면 뒤에서 기다렸다).
+
+**시험 기기와 에뮬레이터**(2026-11-24 읽기 전용 조회; 일련번호는 적지 않는다)
+
+| 항목 | 시험 기기 | 에뮬레이터 |
+|---|---|---|
+| 기종·판 | LG G7(LM-G710N), Android 10 / API 29, 보안 패치 2021-01-01, `user` 빌드 | AVD `sp35`: API 35 `google_apis` x86_64(rev 9, `userdebug`), AVD `sp36`: API 36(rev 7) |
+| ABI·페이지 | arm64-v8a, 4096 | x86_64, 4096 |
+| 메모리 | `MemTotal` 3 736 464 kB, `MemoryInfo.totalMem` 3 826 139 136 B(3.56 GiB), `isLowRamDevice()` 거짓, `MemoryInfo.threshold` 332 800 000 B | — |
+| 무결성 | 부트로더 풀림(`ro.boot.flash.locked=0`, `verifiedbootstate=orange`), Magisk(루팅), FDE | — |
+| 보안 요소 | TEE Keystore, StrongBox 없음 | — |
+| 사용자 | 사용자 0 하나(작업 프로필 없음; Private Space는 API 29에 없음) | — |
+| WebView | 157.0.8103.50 | API 35: 124.0.6367.219, API 36: 133.0.6943.137 |
+| 상태 | `adb_enabled=1`, `development_settings_enabled=1`, 보안 화면 잠금 없음(밀기), 화면 꺼짐 30 s, 켜진 접근성 서비스 없음, `dalvik.vm.checkjni` 없음 | `debug.checkjni=1`(에뮬레이터에서만 설정) |
+| Play Protect(있는 그대로) | `package_verifier_enable=1`, `package_verifier_user_consent=1`, `upload_apk_enable=1`, ADB 설치 확인 기본 켬 | — |
+
+**P0 기록**(2026-11-24; 판정과 반영한 절은 [15] §16)
+
+- 도구(P0-6): 새로 받아 확인한 것만 썼다 — Temurin JDK `17.0.21.1+2`, NDK r30(`30.0.16248370`, clang 21.0.0), Gradle 9.6.1(래퍼 없음), command-line tools 22.0, 새 SDK 루트의 `platform-tools` 37.0.3·`build-tools` 36.0.0·`platforms;android-36`·에뮬레이터 37.3.10, Rust 1.95.0의 `aarch64-linux-android`·`x86_64-linux-android`. 해시와 출처는 [15] §4.4. 저장소 밖의 시험 크레이트는 저장소의 `Cargo.lock`을 복사해 쓰고, 빌드마다 저장소 잠금 파일과 비교했다(다른 것은 시험 크레이트의 뿌리 항목과 cargo가 쓰지 않아 뺀 저장소 항목뿐 — 밖의 크레이트에서는 `--locked`를 쓸 수 없어 비교가 그 몫을 한다). 저장소의 `Cargo.lock` 해시는 모든 빌드 전후 같았다.
+- 네이티브 단위 시험(P0-1 첫째 몫): 저장소를 소스로, 대상 폴더는 저장소 밖에 두고
+  `cargo +1.95.0 test --offline --locked --release --target <타깃> -p yw-core -p yw-json --no-run --config "target.<타깃>.rustflags=['--cfg','curve25519_dalek_backend=\"serial\"']"`
+  (NDK의 `CC_<타깃>`·`AR_<타깃>`·링커는 환경으로; Windows PowerShell 5.1은 이 값의 안쪽 `"`를 떼므로 PowerShell 7로 돌렸다). 나온 실행 파일 30개를 기기의 임시 폴더에 `adb push`하고 하나씩 `--test-threads=1`로 돌렸다. 시험 기기와 `sp35` 모두 683 통과, 0 실패, 22 무시(fuzz-lite와 수동 도구, Windows와 같음); yw-core 단위 시험 480 통과·4 무시(시험 기기 20.1 s, 에뮬레이터 11.4 s). **건너뛴 시험 없음**: 실행 중에 호스트 파일을 읽는 시험이 없다(픽스처는 `include_*!`).
+- JNI(P0-1 둘째 몫): `JNI_OnLoad`(맨 먼저 `prctl(PR_SET_DUMPABLE, 0)`) + `RegisterNatives`로 다섯 A2 서명과 자체 시험을 등록한 시험 `.so`(release, 저장소 프로필, 경로 지움)와 debuggable APK. CheckJNI가 켜졌다는 증거는 그 pid의 ART 줄 `Late-enabling -Xcheck:jni`; 양성 대조(`byte[]`에 `SetCharArrayRegion`)는 두 대상 모두 `JNI DETECTED ERROR IN APPLICATION: incompatible array type`으로 멈췄다. 자체 시험의 KAT(공개 니모닉의 EVM 주소, EIP-155 RFC 6979 서명의 복구 주소, RFC 8032 시험 1과 한 비트 바꾼 서명)는 저장소 시험 파일의 기대값과 같았고, `call`·`ioComplete`→`next`·`secretKey`·`secretFill`을 각 2 000번(길이·합·다이제스트 확인, null·잘못된 핸들·짧은 배열 포함) 불러 오류 0. 결과는 앱의 `files/`에 쓰고 `run-as`로 읽었다(앱은 logcat에 쓰지 않음).
+
+  | | 시험 기기(API 29) | 에뮬레이터 `sp35` |
+  |---|---|---|
+  | `RLIMIT_MEMLOCK`(앱 프로세스, cur/max) | 67 108 864 / 67 108 864 | 65 536 / 65 536 |
+  | `mmap`+`mlock`+`madvise(MADV_DONTDUMP)` 한 페이지 / 64 KiB | 됨 / 됨 | 됨 / 됨 |
+  | 같은 것 128 KiB·1 MiB·16 MiB | 됨 | `mlock` ENOMEM |
+  | `PR_GET_DUMPABLE`(`JNI_OnLoad` 뒤 / 실행 뒤) | 0 / 0 | 0 / 0 |
+  | 밖에서 | `/proc/<pid>/mem`·`maps`의 주인 uid 0, `run-as … cat /proc/<pid>/maps` 거부, `TracerPid:0` | 같음 |
+  | 시험 `.so` 크기(release) | aarch64 1 685 344 B | x86_64 1 810 968 B |
+
+  양성 대조의 `abort()`는 `PR_SET_DUMPABLE 0`에서도 시험 기기에 `SYSTEM_TOMBSTONE`·`data_app_native_crash` 기록을 남겼다([15] §5.3).
+- C 빌드와 `#`(P0-2): `secp256k1-sys`의 C 진단 0(두 타깃); `#`을 넣은 대상 폴더·`TMP`, `clang.exe --target` 변형의 `.so`가 기준과 바이트 같음. 기준 빌드 aarch64 157 s, x86_64 135 s.
+- 의존 그래프(P0-5): [15] §4.1의 표 — serial cfg가 있으면 두 타깃 모두 해석 51개, proc-macro 없음, Windows 표에 대해 새 것은 `libc=0.2.189`(+ `build.rs`)뿐(Android 표로는 통과: yw-core 41, yw-engine 42, yw-app 44); serial cfg 없는 x86_64는 56개(proc-macro 다섯을 검사기가 잡음).
+- `.so`(P0-4): 모든 LOAD `Align 0x4000`; 빌드 PC 경로 문자열 경로 지우기 전 11 → 뒤 0; 정의된 동적 기호 = `JNI_OnLoad` + `rustsecp256k1_v0_11_*` 넷; stripped 388 856 B(aarch64)·449 368 B(x86_64, KAT만 든 시험 크레이트). APK 안의 `.so`는 stored, 오프셋 % 16 384 = 0, `zipalign -c -P 16 -v 4` 통과.
+- Gradle(P0-7): [15] §4.2–§4.3. A2 모양의 release APK 2 704 B(서명 전), webkit 모양 92 773 B; A2 모양 빌드 뒤 Gradle 캐시 701 파일.
+- 설치(P0-8)와 Play Protect(P0-20): [15] §14.1·§14.3. 설치 6.5 s(증분 설치 미지원 → 흘려 보냄), Play Protect 확인으로 설치마다 약 1.2 s 더.
+- Argon2 `KDF_V3`(P0-3): 시험 앱의 네이티브 함수가 yw-core의 공개 vault 길을 운영 매개변수(m = 256 MiB, t = 3, p = 4)로 돈다 — 프로세스의 첫 호출은 `Vault::import_mnemonic`(공개 니모닉, 합성 비밀번호, 메모리 안 저장소, 디스크에 쓰지 않음), 그 뒤는 `lock` + `unlock`; 매번 계정 0의 주소를 KAT와 대조. Java 작업 스레드(기본 우선순위)에서 Activity가 앞에 있는 동안 부르고 앞뒤의 `elapsedRealtime`, `MemoryInfo`, `VmHWM`·`VmRSS`를 적었다. 종료는 `logcat -b events`(`am_kill`·`am_proc_died`·`am_crash`)와 `lowmemorykiller`·`lmkd` 줄로 지켜봤다. 배터리 온도 29.4–29.7 °C.
+
+  | 묶음 | 횟수 | 한 번의 시간(ms) | 시작 전 `availMem` 최소(B) | VmHWM | lmkd 종료 | 충돌 |
+  |---|---|---|---|---|---|---|
+  | 처음 실행(매번 새 프로세스, 가져오기) | 5 | 1617, 1524, 1431, 1535, 1467 | 1 225 863 168 | 326–336 MB | 없음 | 없음 |
+  | 부하(약 800 MB 공유 메모리 프로세스를 백그라운드에, 매번 새 프로세스) | 5 | 1607, 1421, 1405, 1500, 1421 | 1 400 922 112 | 322–327 MB | 없음 | 없음 |
+  | 연속(한 프로세스, 가져오기 1 + 잠금 해제 4) | 5 | 1473, 1419, 1430, 1402, 1403 | 806 617 088 | 586 MB | 없음 | 없음 |
+  | 과부하(공유 메모리 1.2 GB 요청, 한 프로세스) | 3 | 1389, 1424, 1325 | 825 462 784 | 585 MB | 없음 | 없음 |
+  | 연속 + 매번 `mallopt(M_PURGE)` | 5 | 1499, 1416, 1462, 1447, 1543 | 1 300 492 288 | 348 MB(비운 뒤 RSS 86 MB) | 없음 | 없음 |
+
+  `availMem − threshold` ≥ 512 MiB 규칙([15] §5.3)은 처음 실행·부하·비운 실행 모두에서 성립했고(가장 작은 여유 893 MB), 비우지 않은 연속 셋째–다섯째와 과부하 셋째에서는 성립하지 않았다(474–493 MB; 실제로는 잘 돌았다). 계획의 Chrome 부하는 쓰지 않았다([15] §18 43). 첫 대체(Java 힙 할당)는 ART 힙 한계로 그 프로세스가 `OutOfMemoryError`를 내 무효로 쳤다(그 다섯 번도 통과했다). Windows의 `argon2_production_single_derivation`(§5.2 M1-4)과 견주면 시험 기기에서 운영 KDF는 약 1.4–1.6 s; 에뮬레이터에서는 재지 않았다(P0-1의 기능만).
+- Keystore(P0-10, Java만, debuggable): AES-256-GCM 키(`PURPOSE_ENCRYPT|DECRYPT`, 사용자 인증 없음, `setRandomizedEncryptionRequired(true)`, `setUnlockedDeviceRequired(true)`, StrongBox 없음), `noBackupFilesDir` 아래 원자적 쓰기. 같은 프로세스 100번씩(ms):
+
+  | 크기 | 감싸기 첫 번 | 풀기 첫 번 | 감싸기 중앙값 | 감싸기 p95 | 풀기 중앙값 | 풀기 p95 |
+  |---|---|---|---|---|---|---|
+  | 1 KiB | 14.5 | 14.5 | 31.2 | 42.6 | 29.5 | 41.7 |
+  | 64 KiB | 156.2 | 170.1 | 155.8 | 162.4 | 158.3 | 172.8 |
+  | 1 MiB | 1 938.6 | 1 687.0 | 1 775.8 | 1 939.3 | 1 787.7 | 1 957.3 |
+
+  키 만들기 52 ms(`isInsideSecureHardware` 참). 호출자가 준 IV 거부, 잘못된 AAD·태그 비트 거부, StrongBox 요청 → `StrongBoxUnavailableException`, 강제 종료·같은 키 업데이트 뒤 키와 파일 유지, 제거 뒤 둘 다 없음. 화면 꺼짐 경합: 45 s 동안 50 ms마다 64 KiB 감싸기 + 원자적 쓰기 201번(화면 꺼진 동안 75번) 실패 0 — 보안 화면 잠금이 없으므로 증거가 아니다(아래 주인 체크리스트).
+- WebView(P0-9; `WebViewAssetLoader`의 두 https 출처, `adb reverse`로 연 루프백 127.0.0.1:5173·5174의 던지는 서버, `loadDataWithBaseURL`의 합성 출처; 인터넷 페이지는 하나도 열지 않았다; 시험 앱의 `INTERNET` 권한은 버리는 빌드에만): 결과는 [15] §7.2(규칙 문법과 제외), §7.4(렌더러·`:browser`·백그라운드 시작), §7.5(응답 프록시), §7.6(크기), §5.4(Activity 수). 세 대상(시험 기기, API 35, API 36) 모두 같은 결과이고, 다른 것은 백그라운드 시작의 음성 경우와 시험 기기의 `[::1]` 실제 탐색(`adb reverse`가 IPv4만 넘겨 실패; 기준 URL 탐색으로는 제외 확인)뿐이다.
+
+**주인 Android 체크리스트**(에이전트가 하지 않는 것. 결과는 날짜와 함께 이 표 아래와 [15]의 해당 절에 적는다)
+
+| ID | 확인 | 언제까지 | 근거 |
+|---|---|---|---|
+| AND-K1 | 화면 잠금(PIN·패턴·비밀번호)을 둔 기기에서, 기기 키로 감싸 원자적으로 쓰는 루프(50 ms마다) 중 즉시 잠금(전원 키, `power_button_instantly_locks`)과 시간 뒤 잠금(화면 시간 제한 + `lock_screen_lock_after_timeout`): 어느 쓰기가 실패하는지와 그 예외 종류, 화면을 켜고 잠금을 푼 뒤 마지막 좋은 파일이 온전히 열리는지 | A5 끝 전 | [15] §5.2(`setUnlockedDeviceRequired`), P0-10 경우 3, §18 42 N12·N25 |
+| AND-K2 | 같은 기기에서 기기 키가 화면 잠금 PIN을 바꾼 뒤, 없앤 뒤, 다시 만든 뒤에도 파일을 푸는지. 없앤 뒤 무효가 되면 [15] §5.2에 적고 앱은 "기기 키를 잃었습니다 — 복구 단어로 복원하세요"(fail closed) | A5 끝 전 | [15] §5.2, P0-10 경우 4 |
+| AND-K3 | StrongBox가 있는 기기에서 기기 키(32바이트 감싸기)의 시간 | [15] §5.2의 StrongBox 줄을 다시 정하기 전 | P0-10 경우 2 |
+| AND-B1 | API 34 이상 실제 기기에서 `:browser`가 앞에 있을 때와 사용자가 떠난 뒤(홈, 작업 전환) 주 프로세스의 승인 Activity 시작 | A4 끝 전 | [15] §7.4, P0-9 F9-3 |
+| AND-I1 | 작업 프로필·Private Space가 있는 기기에서 `pm list users`와 설치 대상, 파일 관리자·브라우저로 하는 사이드로드의 Play Protect 동작 | 설치 안내 전 | [15] §14.1·§14.3, P0-8·P0-20 |
+
+- 그 밖의 주인 P0(P0-13–P0-15, P0-17–P0-19)는 [15] §16 표 그대로다.
+
 ## 3. 기지 답(KAT) 벡터
 
 ### 3.1 파일 규칙
