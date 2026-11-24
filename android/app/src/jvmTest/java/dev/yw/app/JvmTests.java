@@ -18,6 +18,10 @@ public final class JvmTests {
         run("interim inputs are the bytes Rust matches", JvmTests::interimInputs);
         run("interim inputs are fresh copies", JvmTests::freshCopies);
         run("status line accepts printable ASCII only", JvmTests::statusLine);
+        run("start input is the bytes Rust parses", JvmTests::startInput);
+        run("I/O frames are read as Rust writes them", JvmTests::ioFrames);
+        run("I/O statuses and kind strings are Rust's", JvmTests::ioConstants);
+        run("memory facts are the bytes Rust parses", JvmTests::memoryFacts);
         System.out.println("jvmTest: " + passed + " passed, " + failed + " failed");
         if (failed != 0 || passed == 0) {
             System.exit(1);
@@ -79,6 +83,76 @@ public final class JvmTests {
         check(Wire.statusLine(new byte[] {'a', 0x0a}) == null, "control byte");
         check(Wire.statusLine(new byte[] {'a', 0x7f}) == null, "DEL");
         check(Wire.statusLine(new byte[] {'a', (byte) 0xc3, (byte) 0xa9}) == null, "non-ASCII");
+    }
+
+    private static void startInput() {
+        // yw-android interim::tests::the_start_input pins the same bytes.
+        check(Arrays.equals(Wire.start("/data/user/0/dev.yw.app/no_backup"),
+                ascii("{\"t\":\"start\",\"dir\":\"/data/user/0/dev.yw.app/no_backup\"}")), "device folder");
+        String[] bad = {null, "", "relative/x", "/a/../b", "/a/./b", "/a b", "/a\\b", "/a\"b", "/é", "/a\u0000b"};
+        for (String dir : bad) {
+            check(Wire.start(dir) == null, "refused: " + (dir == null ? "null" : dir.length()));
+        }
+        StringBuilder longest = new StringBuilder("/");
+        while (longest.length() < Wire.START_MAX) {
+            longest.append('a');
+        }
+        check(Wire.start(longest.toString()) == null, "over START_MAX");
+    }
+
+    private static void ioFrames() {
+        // yw-android io_request::tests::the_frame_layout: an unwrap request, id 1, kind 3.
+        byte[] head = {0x01, 0x02, 0x03, 0x01, 0, 0, 0, 0, 0, 0, 0};
+        check(IoFrame.op(head) == IoFrame.OP_UNWRAP, "op");
+        check(IoFrame.kind(head) == 3, "kind");
+        check(IoFrame.id(head) == 1L, "id");
+        byte[] unwrap = Arrays.copyOf(head, IoFrame.HEADER + IoFrame.WRAPPED_LEN);
+        check(IoFrame.valid(unwrap), "unwrap with 60 bytes");
+        check(!IoFrame.valid(Arrays.copyOf(head, IoFrame.HEADER + IoFrame.KEY_LEN)), "unwrap with 32 bytes");
+        byte[] wrap = Arrays.copyOf(head, IoFrame.HEADER + IoFrame.KEY_LEN);
+        wrap[1] = IoFrame.OP_WRAP;
+        check(IoFrame.valid(wrap), "wrap with 32 bytes");
+        wrap[2] = 9;
+        check(!IoFrame.valid(wrap), "unknown kind");
+        byte[] memory = Arrays.copyOf(head, IoFrame.HEADER);
+        memory[1] = IoFrame.OP_MEMORY;
+        memory[2] = 0;
+        check(IoFrame.valid(memory), "memory without body");
+        memory[0] = 0x02;
+        check(!IoFrame.valid(memory), "another frame kind");
+        check(!IoFrame.valid(new byte[IoFrame.HEADER - 1]), "short");
+        check(!IoFrame.valid(null), "null");
+        byte[] big = {0x01, 0x03, 0, (byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff,
+            (byte) 0xff, 0x7f};
+        check(IoFrame.id(big) == Long.MAX_VALUE, "little-endian id");
+    }
+
+    private static void ioConstants() {
+        // yw-android io_request::status and yw-core vault::envelope::SealKind.
+        int[] statuses = {IoFrame.OK, IoFrame.KEY_MISSING, IoFrame.KEY_FAILED, IoFrame.CRYPTO_FAILED,
+            IoFrame.DEVICE_LOCKED, IoFrame.BAD_REQUEST, IoFrame.OTHER};
+        for (int at = 0; at < statuses.length; at++) {
+            check(statuses[at] == at, "status " + at);
+        }
+        String[] kinds = {null, "vault", "meta", "journal", "apikeys", null};
+        for (int kind = 0; kind < kinds.length; kind++) {
+            byte[] aad = IoFrame.aad(kind);
+            check(kinds[kind] == null ? aad == null : Arrays.equals(aad, ascii(kinds[kind])), "kind " + kind);
+        }
+        byte[] first = IoFrame.aad(1);
+        first[0] = 0;
+        check(IoFrame.aad(1)[0] == 'v', "aad is a fresh array");
+        check(IoFrame.HEADER == 11 && IoFrame.WRAPPED_LEN == 60 && IoFrame.KEY_LEN == 32, "lengths");
+    }
+
+    private static void memoryFacts() {
+        // yw-android kdf_gate::tests::the_answer_bytes.
+        long gib = 1L << 30;
+        byte[] facts = IoFrame.memoryFacts(3 * gib, gib, 200L << 20, false, true);
+        check(facts.length == IoFrame.FACTS_LEN, "length");
+        check(facts[0] == 0 && facts[3] == (byte) 0xc0, "total little-endian");
+        check(facts[24] == 2, "isLowRamDevice is bit 1");
+        check(IoFrame.memoryFacts(0, 0, 0, true, false)[24] == 1, "lowMemory is bit 0");
     }
 
     private static byte[] ascii(String text) {

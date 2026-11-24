@@ -602,6 +602,25 @@ kind  = 0x01 EVM ([03](03-evm.md) §5.1, body[0] = record_kind 0x01이어야 함
 
 **롤백은 막지 않는다(알아챌 수 있게만 한다).** vault·meta·journal을 이전 세대 파일로 바꿔치기하는 것은 거부하지 않는다. 파일 쓰기 권한이 있는 공격자는 §2.2 비목표(PC 장악)이고, 사용자가 직접 예전 사본을 복원하는 경우도 정상 동작으로 본다. `generation`은 동시 쓰기 충돌(CAS)과 `.prev` 구분에 쓰고, 다음 두 가지로 되감기를 보이게 한다(2026-11-01 검토 L17): (1) 잠금 화면과 설정 → 보안에 `vault.ywv`의 `generation`과 마지막 저장 시각을 표시한다. (2) meta의 `vault_generation_seen`(§5.3, AEAD로 보호)이 본 파일의 generation보다 크면 잠금 해제 뒤 배너로 알린다. `vault.ywv`만 되돌린 경우는 이렇게 드러나고, vault·meta를 같은 백업에서 함께 되돌린 경우는 드러나지 않는다(서로 맞는 옛 상태라 구분할 근거가 없다).
 
+### 5.5 Android 기기 키 봉투 `YWK2` (`yw_core::vault::envelope`, 2026-11-25 A2-4b)
+
+Android판은 `vault.ywv`·`meta.ywm`·`journal.ywj`·`apikeys.ks`를 디스크에 쓸 때 쓰기마다의 봉투로 한 번 더 감싼다([15](15-android.md) §5.2, §18 44). **이 문서의 안쪽 형식(§4–§5.4)은 바이트 그대로다**: 봉투를 열면 나오는 것이 위 형식의 바이트이고, Windows판은 봉투를 쓰지 않는다. 봉투는 yw-core `vault::envelope`(`seal`, `open`, `looks_sealed`, 플랫폼의 `DeviceKey` 트레이트)이고, 그것을 쓰는 저장 계층은 yw-android `sealed_files`다.
+
+| 오프셋 | 길이 | 필드 (정수는 little-endian) |
+|---:|---:|---|
+| 0 | 4 | `"YWK2"` |
+| 4 | 1 | 판, 1 |
+| 5 | 1 | 종류 번호: `vault` 1, `meta` 2, `journal` 3, `apikeys` 4 |
+| 6 | 2 | 감싼 키 길이, 60 |
+| 8 | 60 | 감싼 32바이트 파일 키: Keystore AES-256-GCM `iv(12) ‖ ct(32) ‖ tag(16)`, AAD = 종류 문자열 |
+| 68 | 24 | XChaCha20-Poly1305 nonce (CSPRNG) |
+| 92 | n + 16 | XChaCha20-Poly1305(파일 키, nonce, 안쪽 바이트, AAD = 종류 문자열 ‖ 바이트 0..92) |
+
+- 종류 문자열은 ASCII `vault`·`meta`·`journal`·`apikeys`이고 두 층의 AAD 앞부분이다. 파일 키와 nonce는 쓰기마다 OS CSPRNG에서 새로 뽑고(§1.1, 실패하면 쓰지 않음), 파일 키는 감싼 직후·푼 직후 지운다.
+- 모르는 머리(마법·판·다른 종류 번호·길이)나 XChaCha 태그 실패는 "손상"(`EnvelopeError::Damaged`)이다. 기기 키가 감싸거나 풀지 못한 것(키 없음, 쓸 수 없는 키, GCM 태그 거부, 잠긴 기기, 답 없음)은 "기기 오류"(`EnvelopeError::Device(code)`)이며 손상으로 보지 않는다. 머리를 먼저 보므로 손상된 머리에는 기기 키를 부르지 않는다.
+- 저장 계층에서(yw-android `sealed_files`, [15] §5.2): 손상된 봉투는 빈 바이트로 읽힌다 — 어떤 안쪽 형식도 빈 파일을 받지 않으므로(§4.5 헤더 디코드, §5.2 구조 위반 = `SidecarCorrupt`) 이 문서의 손상 처리(§6.3, E-VLT-006)가 그대로 걸린다. 봉투가 없는 안쪽 파일(평문 vault 등)도 손상된 봉투다: 안쪽 바이트로 읽히지 않는다. 기기 오류는 저장 오류 `StorageError::Io(0x7977_00ss)`(ss = Java의 상태, [15] §3.2)이고 격리·`.prev` 선택으로 가지 않는다.
+- 시험 벡터(yw-core `vault::envelope::tests::vector`; 2026-11-25 Node `chacha20-poly1305`와 손으로 쓴 HChaCha20으로 따로 계산해 같음): 파일 키 `00 01 … 1f`, nonce `20 21 … 37`, 종류 `meta`, 감싼 키는 시험용 가짜(바이트 0–11 `0x11`, 12–43 = 파일 키 XOR `0x5a` XOR 2, 44–59 `0x11`), 안쪽 바이트 `"yw"` → 머리 `59 57 4b 32 01 02 3c 00 ‖ 감싼 키 ‖ nonce`, 뒤 18바이트 `642e4c214f75473637a98cb97ae6862d15f5`.
+
 ## 6. 파일 쓰기와 손상 처리
 
 ### 6.1 파일

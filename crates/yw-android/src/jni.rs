@@ -14,7 +14,10 @@
 //! nothing (an unknown handle, spec/15 §3.2). A2-6 and A2-7 give them their bodies. (2026-11-24
 //! A2-3: `call` knows the two interim inputs of [`crate::interim`] — the status request, answered
 //! with the status line through `NewByteArray`/`SetByteArrayRegion`, and Java's uncaught-exception
-//! event, which ends the process like a panic; the other four are still stubs.)
+//! event, which ends the process like a panic; the other four are still stubs.) (2026-11-25
+//! A2-4b: `call` also takes the start input; `next` hands out the platform I/O requests of
+//! [`crate::io_request`] and `ioComplete` answers them — the same table entries, no new index;
+//! `secretKey` and `secretFill` are still stubs.)
 //!
 //! 2026-11-24 A2-1 review: ART's `RegisterNatives` binds the methods in order and stops at the first
 //! it cannot find, leaving the earlier ones bound. So every method body runs only through
@@ -28,7 +31,10 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use yw_core::secret::Zeroizing;
+
 use crate::interim::{self, Interim};
+use crate::io_request;
 use crate::jni_table::{JNI_ERR, JNI_OK, JNI_VERSION_1_6, METHODS, NATIVE_CLASS, env, vm};
 
 /// Set (`Release`) only after `RegisterNatives` returned `JNI_OK` for all five methods; never cleared.
@@ -108,22 +114,30 @@ fn clear_exception(jni: JniEnv) {
 /// interim inputs ([`interim`]): the status request is answered with the status line, the
 /// uncaught-exception event ends the process like a panic; anything else (or more than
 /// [`interim::MAX_INPUT`] bytes, which are not read) is answered with null. The engine joins in A2-6.
+/// 2026-11-25 A2-4b: also the start input ([`interim::start_dir`], at most
+/// [`interim::START_MAX`] bytes read): the shell starts on that folder ([`crate::shell::start`])
+/// and answers the status line, or null when it could not.
 extern "C" fn call(jni: JniEnv, _class: JObject, input: JObject) -> JObject {
     when_loaded(core::ptr::null_mut(), || {
-        let Some((bytes, len)) = read_small(jni, input) else {
+        let Some(bytes) = read_bytes(jni, input, interim::START_MAX) else {
             return core::ptr::null_mut();
         };
-        match bytes.get(..len).map(interim::classify) {
-            Some(Interim::Status) => new_byte_array(jni, interim::STATUS_LINE.as_bytes()),
-            Some(Interim::JavaUncaught) => crate::panic_hook::fatal_end(),
-            Some(Interim::Unknown) | None => core::ptr::null_mut(),
+        match interim::classify(&bytes) {
+            Interim::Status => new_byte_array(jni, interim::STATUS_LINE.as_bytes()),
+            Interim::JavaUncaught => crate::panic_hook::fatal_end(),
+            Interim::Unknown => match interim::start_dir(&bytes) {
+                Some(dir) if crate::shell::start(&dir) => {
+                    new_byte_array(jni, interim::STATUS_LINE.as_bytes())
+                }
+                _ => core::ptr::null_mut(),
+            },
         }
     })
 }
 
-/// Copies a Java `byte[]` of at most [`interim::MAX_INPUT`] bytes; `None` for null, a longer array
-/// (not read) or a failed copy.
-fn read_small(jni: JniEnv, array: JObject) -> Option<([u8; interim::MAX_INPUT], usize)> {
+/// Copies a Java `byte[]` of at most `max` bytes into a buffer wiped on drop; `None` for null, a
+/// longer array (not read) or a failed copy.
+fn read_bytes(jni: JniEnv, array: JObject, max: usize) -> Option<Zeroizing<Vec<u8>>> {
     if array.is_null() {
         return None;
     }
@@ -132,18 +146,21 @@ fn read_small(jni: JniEnv, array: JObject) -> Option<([u8; interim::MAX_INPUT], 
     // local reference of the `byte[]` parameter Java passed.
     let length = unsafe { length_of(jni, array) };
     let len = usize::try_from(length).ok()?;
-    if len > interim::MAX_INPUT {
+    if len > max {
         return None;
     }
-    let mut bytes = [0_u8; interim::MAX_INPUT];
+    let mut bytes = Zeroizing::new(vec![0_u8; len]);
+    if len == 0 {
+        return Some(bytes);
+    }
     let region = table_fn!(jni, env::GET_BYTE_ARRAY_REGION, GetByteArrayRegionFn)?;
     // SAFETY: As above; `0..length` is inside the array (its length was just read) and `bytes` has
-    // room for `length` (≤ `MAX_INPUT`) bytes.
+    // exactly `length` bytes of room.
     unsafe { region(jni, array, 0, length, bytes.as_mut_ptr().cast()) };
     if exception_pending(jni) {
         return None;
     }
-    Some((bytes, len))
+    Some(bytes)
 }
 
 /// A new Java `byte[]` holding `bytes`, or null (an exception it caused is cleared).
@@ -184,15 +201,43 @@ fn exception_pending(jni: JniEnv) -> bool {
     pending
 }
 
-/// `byte[] next(long timeoutMs)`: effects, the screen model and platform I/O requests. Stub: none.
-extern "C" fn next(_jni: JniEnv, _class: JObject, _timeout_ms: i64) -> JObject {
-    when_loaded(core::ptr::null_mut(), core::ptr::null_mut)
+/// The longest wait of one `next` call (Java's I/O thread calls it in a loop).
+const NEXT_WAIT_MAX_MS: u64 = 10_000;
+
+/// `byte[] next(long timeoutMs)`: effects, the screen model and platform I/O requests. 2026-11-25
+/// A2-4b: the platform I/O requests of [`crate::io_request`] (the Keystore device key, the memory
+/// facts), waiting up to `timeoutMs` (at most [`NEXT_WAIT_MAX_MS`]); null when none came. The
+/// Rust copy of the frame is wiped once the Java array holds it (the wrap request carries the
+/// plain file key, spec/15 §3.2). Effects and the screen model join in A2-6.
+extern "C" fn next(jni: JniEnv, _class: JObject, timeout_ms: i64) -> JObject {
+    when_loaded(core::ptr::null_mut(), || {
+        let wait = u64::try_from(timeout_ms).map_or(0, |ms| ms.min(NEXT_WAIT_MAX_MS));
+        match crate::shell::BROKER.take(core::time::Duration::from_millis(wait)) {
+            Some(frame) => new_byte_array(jni, &frame),
+            None => core::ptr::null_mut(),
+        }
+    })
 }
 
-/// `void ioComplete(long id, int status, byte[] body)`: a platform I/O result. Stub: no request was
-/// ever issued, so every id is unknown and dropped (the body is not read).
-extern "C" fn io_complete(_jni: JniEnv, _class: JObject, _id: i64, _status: i32, _body: JObject) {
-    when_loaded((), || {});
+/// `void ioComplete(long id, int status, byte[] body)`: a platform I/O result (2026-11-25 A2-4b).
+/// The body (at most [`io_request::ANSWER_MAX`] bytes; a longer one is not read and the request
+/// fails with `BAD_REQUEST`) goes to the waiting request; an id that is not waiting (late, unknown,
+/// negative, answered twice) is dropped with its body wiped (spec/15 §3.2, §18 42 N9).
+extern "C" fn io_complete(jni: JniEnv, _class: JObject, id: i64, status: i32, body: JObject) {
+    when_loaded((), || {
+        let Ok(id) = u64::try_from(id) else {
+            return;
+        };
+        let (status, body) = if body.is_null() {
+            (status, Zeroizing::new(Vec::new()))
+        } else {
+            match read_bytes(jni, body, io_request::ANSWER_MAX) {
+                Some(bytes) => (status, bytes),
+                None => (io_request::status::BAD_REQUEST, Zeroizing::new(Vec::new())),
+            }
+        };
+        crate::shell::BROKER.complete(id, status, body);
+    });
 }
 
 /// `void secretKey(int field, int codeUnit)`: one app-keyboard key. Stub: no secret window is open.

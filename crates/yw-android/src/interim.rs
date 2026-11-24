@@ -1,19 +1,29 @@
-//! The two inputs `call` knows before the wire format of A2-6 exists (spec/15 §3.2; 2026-11-24 A2-3).
+//! The inputs `call` knows before the wire format of A2-6 exists (spec/15 §3.2; 2026-11-24 A2-3,
+//! 2026-11-25 A2-4b).
 //!
-//! Java (`dev.yw.app.Wire`) sends one of two fixed byte strings; anything else is unknown and answered
-//! with nothing (null). They are matched byte for byte, never parsed:
+//! Java (`dev.yw.app.Wire`) sends one of two fixed byte strings or the start input; anything else
+//! is unknown and answered with nothing (null). The fixed ones are matched byte for byte, never
+//! parsed:
 //!
 //! - [`STATUS`]: the answer is [`STATUS_LINE`], the library version and ABI as printable ASCII (no
 //!   words, so nothing to translate, spec/15 §3.3, spec/14), which the main Activity draws as the
 //!   device smoke of the skeleton;
 //! - [`JAVA_UNCAUGHT`]: the fixed event of Java's uncaught-exception handler (spec/15 §3.3): the
 //!   process ends like a panic (every slot wiped, then `_exit`). The one log line of that end comes
-//!   with the log sink (A2-4b, A2-5).
+//!   with A2-5.
 //!
-//! A2-6 replaces both with the yw-json input format (`Input`, spec/15 §3.2, §18 8). Platform-neutral
-//! (no `unsafe`), so the gate's Windows build tests it; the JVM runner pins the same bytes on the Java
-//! side (`JvmTests.interimInputs`).
+//! 2026-11-25 A2-4b: the start input `{"t":"start","dir":"<path>"}` ([`start_dir`]), sent once by
+//! `App.onCreate` with `Context.getNoBackupFilesDir()`: the shell's data folder is `<path>/v3`
+//! (spec/15 §5.1), where the log file starts and the storage opens. It is parsed by yw-json
+//! (strict, an object of exactly those two members) and the path must be absolute, printable
+//! ASCII, without `..` components, at most [`START_MAX`] bytes in all; anything else is unknown.
+//!
+//! A2-6 replaces all three with the yw-json input format (`Input`, spec/15 §3.2, §18 8).
+//! Platform-neutral (no `unsafe`), so the gate's Windows build tests it; the JVM runner pins the
+//! same bytes on the Java side (`JvmTests.interimInputs`).
 #![forbid(unsafe_code)]
+
+use std::path::PathBuf;
 
 /// The status request (`{"t":"status"}`).
 pub const STATUS: &[u8] = br#"{"t":"status"}"#;
@@ -21,8 +31,11 @@ pub const STATUS: &[u8] = br#"{"t":"status"}"#;
 /// The uncaught-exception event (`{"t":"java_uncaught"}`).
 pub const JAVA_UNCAUGHT: &[u8] = br#"{"t":"java_uncaught"}"#;
 
-/// The longest input `call` reads before A2-6: longer ones are unknown without being read.
+/// The longest fixed input: a longer input is a start input or unknown.
 pub const MAX_INPUT: usize = 32;
+
+/// The longest start input `call` reads (longer ones are unknown without being read).
+pub const START_MAX: usize = 1_024;
 
 /// The ABI name of the build target, as the APK's `lib/<abi>/` folder names it.
 const ABI: &str = if cfg!(target_arch = "aarch64") {
@@ -50,7 +63,7 @@ pub enum Interim {
     Status,
     /// [`JAVA_UNCAUGHT`].
     JavaUncaught,
-    /// Anything else: answered with nothing.
+    /// Anything else: a start input ([`start_dir`]) or unknown.
     Unknown,
 }
 
@@ -64,6 +77,33 @@ pub fn classify(input: &[u8]) -> Interim {
     } else {
         Interim::Unknown
     }
+}
+
+/// The folder of a start input (module doc), `None` for any other input.
+#[must_use]
+pub fn start_dir(input: &[u8]) -> Option<PathBuf> {
+    if input.len() > START_MAX {
+        return None;
+    }
+    let limits = yw_json::Limits {
+        max_bytes: START_MAX,
+        max_depth: 1,
+        max_nodes: 8,
+        max_items: 4,
+    };
+    let value = yw_json::parse(input, &limits).ok()?;
+    let object = value.as_object()?;
+    if object.len() != 2 || object.get("t")?.as_str()? != "start" {
+        return None;
+    }
+    let dir = object.get("dir")?.as_str()?;
+    let plain = dir
+        .bytes()
+        .all(|unit| (0x21..=0x7e).contains(&unit) && unit != b'\\' && unit != b'"');
+    if !plain || !dir.starts_with('/') || dir.split('/').any(|part| part == ".." || part == ".") {
+        return None;
+    }
+    Some(PathBuf::from(dir))
 }
 
 // The status line is printable ASCII that Java accepts (`Wire.STATUS_MAX` = 64), and both inputs fit
@@ -82,7 +122,11 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
-    use super::{ABI, Interim, JAVA_UNCAUGHT, MAX_INPUT, STATUS, STATUS_LINE, classify};
+    use std::path::Path;
+
+    use super::{
+        ABI, Interim, JAVA_UNCAUGHT, MAX_INPUT, START_MAX, STATUS, STATUS_LINE, classify, start_dir,
+    };
 
     /// The same bytes as `dev.yw.app.Wire` (pinned on the Java side by `JvmTests.interimInputs`).
     #[test]
@@ -106,6 +150,42 @@ mod tests {
         ] {
             assert_eq!(classify(other), Interim::Unknown, "{other:?}");
         }
+    }
+
+    /// The bytes `Wire.start` builds for the test device's folder (`JvmTests.startInput`).
+    #[test]
+    fn the_start_input() {
+        assert_eq!(
+            start_dir(b"{\"t\":\"start\",\"dir\":\"/data/user/0/dev.yw.app/no_backup\"}"),
+            Some(Path::new("/data/user/0/dev.yw.app/no_backup").to_path_buf())
+        );
+        assert_eq!(
+            classify(b"{\"t\":\"start\",\"dir\":\"/d\"}"),
+            Interim::Unknown
+        );
+        for bad in [
+            &b"{\"t\":\"start\",\"dir\":\"relative/x\"}"[..],
+            b"{\"t\":\"start\",\"dir\":\"/a/../b\"}",
+            b"{\"t\":\"start\",\"dir\":\"/a/./b\"}",
+            b"{\"t\":\"start\",\"dir\":\"/a b\"}",
+            b"{\"t\":\"start\",\"dir\":\"/a\\\\b\"}",
+            b"{\"t\":\"start\",\"dir\":\"/a\\u0000b\"}",
+            b"{\"t\":\"start\",\"dir\":\"/\xc3\xa9\"}",
+            b"{\"t\":\"start\",\"dir\":\"\"}",
+            b"{\"t\":\"start\",\"dir\":7}",
+            b"{\"t\":\"start\"}",
+            b"{\"t\":\"start\",\"dir\":\"/a\",\"x\":1}",
+            b"{\"t\":\"start\",\"dir\":\"/a\",\"dir\":\"/b\"}",
+            b"{\"t\":\"stop\",\"dir\":\"/a\"}",
+            b"[\"start\",\"/a\"]",
+            STATUS,
+        ] {
+            assert_eq!(start_dir(bad), None, "{}", String::from_utf8_lossy(bad));
+        }
+        let mut long = b"{\"t\":\"start\",\"dir\":\"/".to_vec();
+        long.resize(START_MAX, b'a');
+        long.extend_from_slice(b"\"}");
+        assert_eq!(start_dir(&long), None, "over START_MAX");
     }
 
     #[test]

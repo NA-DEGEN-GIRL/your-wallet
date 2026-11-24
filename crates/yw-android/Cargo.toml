@@ -28,6 +28,9 @@ libc.workspace = true
 unsafe_code = "deny"                 # lifted only by #![allow(unsafe_code)] in an FFI module (spec/01 §5.1)
 unsafe_op_in_unsafe_fn = "deny"
 missing_debug_implementations = "warn"
+# 2026-11-25 A2-4b: `--cfg yw_device_test` is set only by `build-android.ps1 -Variant debug -DeviceTest`
+# (the device round trip, spec/09 §2.6); declared so that check-cfg knows it. Not a Cargo feature.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(yw_device_test)'] }
 
 [lints.clippy]
 # The 12 lines (all … exit) of the root [workspace.lints.clippy] plus the 2 below, as yw-win.

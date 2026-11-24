@@ -6,7 +6,7 @@
 //! Windows gate, spec/15 §13) the crate is its platform-neutral helpers and their unit tests:
 //! [`jni_table`] (the hand-declared JNI function-table indices and the five registered methods) and
 //! [`slot_plan`] (the locked-slot size and budget arithmetic), and since 2026-11-24 A2-3
-//! [`interim`] (the two fixed inputs `call` knows before the wire format of A2-6).
+//! [`interim`] (the fixed inputs `call` knows before the wire format of A2-6).
 //!
 //! 2026-11-24 A2-1 (spec/15 §17 A2): the skeleton. `JNI_OnLoad` calls `prctl(PR_SET_DUMPABLE, 0)`
 //! first, installs the panic hook and registers the five methods of spec/15 §3.2 as stubs; `slot`
@@ -15,14 +15,40 @@
 //! first; before, the line came first). `JNI_OnLoad` sets a loaded flag only after all five methods
 //! are registered, and each method answers "nothing" without it. The engine, the wire format,
 //! storage and the screens come in the later A2 steps.
+//!
+//! 2026-11-25 A2-4b (spec/15 §5.1–§5.3, §3.2): storage. Platform-neutral and tested on the gate:
+//! [`io_request`] (the platform I/O requests `next`/`ioComplete` serve), [`device_key`] (the
+//! Keystore device key as yw-core's `DeviceKey`, and the memory facts), [`sealed_files`] (the
+//! `YWK2` envelope under yw-engine's `FileStorage`), [`storage`] (the key worker's platform and the
+//! app store), [`kdf_gate`] (the memory check before Argon2) and [`log_file`] (the log file).
+//! Android only: `android_files` (the std/`libc` `Files`), `purge` (`mallopt(M_PURGE)`), `shell`
+//! (the broker, the data folder, the Argon2 wrapper) and, in a `-DeviceTest` debug build only,
+//! `devtest` (the create → kill → reopen round trip).
 
+pub mod device_key;
 pub mod interim;
+pub mod io_request;
 pub mod jni_table;
+pub mod kdf_gate;
+pub mod log_file;
+pub mod sealed_files;
 pub mod slot_plan;
+pub mod storage;
 
+#[cfg(target_os = "android")]
+mod android_files;
+#[cfg(all(target_os = "android", yw_device_test))]
+mod devtest;
 #[cfg(target_os = "android")]
 mod jni;
 #[cfg(target_os = "android")]
 mod panic_hook;
 #[cfg(target_os = "android")]
+mod purge;
+#[cfg(target_os = "android")]
+mod shell;
+#[cfg(target_os = "android")]
 pub mod slot;
+
+#[cfg(test)]
+mod source_checks;

@@ -2,6 +2,8 @@
 # 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-android.ps1 [-Variant release|debug]
 #        [-Abi arm64-v8a|x86_64|all] [-SignKey <키스토어.p12> -SignPassFile <암호 파일>] [-Offline] [-ToolRoot <폴더>]
 #      게이트: ... -File scripts/build-android.ps1 -Check [-Require] [-Offline]  (scripts/check.ps1의 android 단계, 종료 33)
+#      기기 왕복 시험(2026-11-25 A2-4b, [09] §2.6): ... -Variant debug -DeviceTest -SignKey <키> -SignPassFile <파일> — libyw.so에 --cfg yw_device_test를 더해
+#      공개 시험 니모닉 vault를 만들고 다시 여는 devtest를 넣는다. -Check·release와 함께 쓰면 멈춘다(게이트·릴리스 APK에는 절대 들어가지 않는다).
 # 순서([15] §13): 1 도구 판 확인(android/toolchain.sha256, §4.4) → 2 cargo로 libyw.so(--release, 경로 지우기) → 3 .so 검사
 # (LOAD 정렬 0x4000, 내보낸 기호 다섯, 빌드 PC 경로 문자열 없음) → 4 Gradle(--no-daemon, 검증 메타데이터 강제)이 서명 전 APK →
 # 5 zipalign -P 16 -f, -c -P 16, APK·매니페스트 검사 → 6 -SignKey가 있으면 apksigner(정렬 뒤에만).
@@ -23,7 +25,8 @@ param(
     [string]$ToolRoot = "",
     [switch]$Offline,
     [switch]$Check,
-    [switch]$Require
+    [switch]$Require,
+    [switch]$DeviceTest
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Continue"
@@ -53,6 +56,7 @@ foreach ($name in "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS
 foreach ($name in "RUSTC", "RUSTC_WRAPPER", "CARGO_BUILD_TARGET") { [Environment]::SetEnvironmentVariable($name, [NullString]::Value, "Process") }
 # -Check는 두 변형을 모두 만들고 검사한다(§13); 아니면 -Variant 하나.
 $Variants = if ($Check) { @("debug", "release") } else { @($Variant) }
+if ($DeviceTest -and ($Check -or $Variant -ne "debug")) { Stop-Build "-DeviceTest is for -Variant debug only, never with -Check" }
 $Tools = if ($ToolRoot) { $ToolRoot } elseif ($env:YW_ANDROID_TOOLS) { $env:YW_ANDROID_TOOLS } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "build-cache\droid" } else { "" }
 if (-not $Tools) { Skip-Build "no tool folder (LOCALAPPDATA is not set)" }
 $Tools = [IO.Path]::GetFullPath($Tools)
@@ -129,6 +133,7 @@ function Set-TargetEnv([string]$Triple) {
 # 값은 TOML 작은따옴표 리터럴이라 '\'와 '#'이 그대로 가고, 안쪽 큰따옴표가 없어 Windows PowerShell 5.1에서도 그대로 넘어간다.
 function Get-TargetConfig([string]$Triple, [bool]$Remap) {
     $flags = @("-Clink-arg=--target=${Triple}29")
+    if ($DeviceTest) { $flags += "--cfg"; $flags += "yw_device_test" }
     if ($Remap) {
         foreach ($pair in @(@($RepoRoot, "yw"), @($CargoHome, "cargo"), @($RustupHome, "rustup"))) {
             if (-not $pair[0]) { Stop-Build "cannot build the path remap (CARGO_HOME, RUSTUP_HOME or USERPROFILE missing)" }

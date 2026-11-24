@@ -8,6 +8,10 @@ import android.content.Context;
  * uncaught-exception handler, then loads libyw.so in the main process only (§18 1): JNI_OnLoad first makes the
  * process non-dumpable (prctl), then registers the native methods. A failed load is fatal and never caught (§3.2):
  * the app does not go on without the wallet library.
+ *
+ * <p>2026-11-25 A2-4b: in onCreate the main process starts the I/O thread ({@link IoLoop}, the Keystore device key
+ * and the memory facts that Rust requests, §3.2) and then sends the start input with the no-backup folder (§5.1),
+ * where Rust keeps the data folder v3 and its log file.
  */
 public final class App extends Application {
     private static volatile boolean loaded;
@@ -19,6 +23,18 @@ public final class App extends Application {
         if (ProcessRule.isMainProcess(Application.getProcessName(), getPackageName())) {
             System.loadLibrary("yw");
             loaded = true;
+        }
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        if (loaded) {
+            IoLoop.start(this);
+            byte[] start = Wire.start(getNoBackupFilesDir().getAbsolutePath());
+            if (start != null) {
+                Native.call(start);
+            }
         }
     }
 

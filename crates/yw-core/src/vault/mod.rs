@@ -3,13 +3,15 @@
 //!
 //! Patterns ported from `archive/spec-v2.4:crates/secret-core/src/vault.rs` (header AAD, exact
 //! parameter rejection, `Cursor`, record codec, backup comparison) and `storage.rs` (generation
-//! CAS); the v3 layout itself is new.
+//! CAS); the v3 layout itself is new. Since 2026-11-25 (spec/15 §5.2, A2-4b) also [`envelope`],
+//! the Android device-key envelope around these files (their inner bytes unchanged).
 #![deny(clippy::indexing_slicing)]
 
 use core::fmt;
 
 pub use crate::error::{StorageError, VaultError};
 
+pub mod envelope;
 mod format;
 mod session;
 

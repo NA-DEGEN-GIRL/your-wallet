@@ -88,6 +88,23 @@ impl fmt::Display for SlotError {
 
 impl std::error::Error for SlotError {}
 
+impl SlotError {
+    /// The kind as a fixed log word (2026-11-25 A2-4b: the `slot.failed` line).
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::PageSize => "page_size",
+            Self::Limit => "limit",
+            Self::Budget => "budget",
+            Self::Full => "full",
+            Self::Busy => "busy",
+            Self::Map => "map",
+            Self::Lock => "lock",
+            Self::Advise => "advise",
+        }
+    }
+}
+
 /// Overwrites `buf` with zeros using volatile writes followed by a `SeqCst` compiler fence (as
 /// yw-win `mem::wipe`; spec/01 §5.3).
 fn wipe(buf: &mut [u8]) {
