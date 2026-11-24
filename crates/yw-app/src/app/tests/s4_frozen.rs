@@ -57,7 +57,7 @@
 //! S5 safety net. Golden **content** stays byte-equal for all of S5 (`s3_census`, `s4_flow`,
 //! `s4_secret`, the engine/core/app approval goldens). `frozen-tests.txt` is no longer "never
 //! changed": a line's hash column may be re-recorded only by a named S5 commit (a word of
-//! [`PLANNED`]) whose diff of that test is a path, accessor or type rename with the same
+//! `PLANNED`, since 2026-11-24 [`ENDED`]) whose diff of that test is a path, accessor or type rename with the same
 //! assertions, recorded twice with different `TMP` by [`print_frozen_tests`] (which since S5-0
 //! re-computes the hash column only) and listed in the commit body with its reason; the paths,
 //! leaf names, the line count (206) and the run/ignored states never change
@@ -66,6 +66,18 @@
 //! accessors (spec/15 §18 28, 31 (가)). `fixed` lines of `frozen-helpers.txt` stay fixed; `mutable`
 //! lines may be re-recorded by a named S4 or S5 commit; the commit-list lines change only in their
 //! listed commits (S3 gains `S5-10`, declared in S5-0). Gate steps `winui` and `s4fz` stay.
+//!
+//! 2026-11-24 (S5 final review; spec/15 §18 40 (1), spec/09 §2.1; 주인 상시 결정(2026-11-21):
+//! 권고안): S5 is done and the rule above ends with it, the strictest way. Golden content stays
+//! byte-equal; no commit re-records a hash column of `frozen-tests.txt` or a `fixed`, `mutable`
+//! or commit-list line of `frozen-helpers.txt`. Code holds this now, not only review: both files
+//! hash to [`CLOSED_DIGEST`] ([`frozen_files_are_closed_after_s5`]), the S4 and S5 step words are
+//! the closed set [`ENDED`], valid only in the commit lists the file held at S5's end
+//! ([`ended_steps_are_a_closed_word_set`]), and [`PLANNED`] (later steps) is empty. A later plan
+//! that must change a frozen line adds its step's word to `PLANNED` and re-records
+//! `CLOSED_DIGEST` in one commit, with the owner's approval. The recorders [`print_frozen_tests`]
+//! and [`print_frozen_helpers`] stay for review: their output must equal the committed files.
+//! Gate steps `winui` and `s4fz` stay while the frozen set exists.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -832,7 +844,8 @@ fn frozen_tests_keep_their_names_and_bodies() {
 const HELPERS: &str = include_str!("s4_flow/frozen-helpers.txt");
 
 /// Lines of `frozen-helpers.txt`. A commit that may remove a `mutable` line (its helper is gone)
-/// lowers this in the same commit and names the line (the check cannot pass on an emptied file).
+/// lowers this in the same commit and names the line (the check cannot pass on an emptied file;
+/// after S5 only a later step of [`PLANNED`], 2026-11-24).
 /// 2026-11-19 (S4 F1 review): 639 → 642, the three new `mutable` helpers of the F1 key and mouse
 /// scenarios (`shown_request`, `press_trace`, `l1_press_past_deadline`) are pinned too.
 /// 2026-11-19 (S4 B1a): 642 → 641, the `mutable` line `fn core_clock` of
@@ -868,7 +881,11 @@ const HELPER_LINES: usize = 643;
 /// `Z-e`: a `mutable` line or a `frozen-tests.txt` hash column is re-recorded only by a commit of
 /// one of these rows (or of the S4 rows above) that names the line, and a commit-list rule may
 /// name them (S3's list gains `S5-10`, where the AI step becomes a `Cmd::Approval` input).
-const PLANNED: [&str; 69] = [
+/// 2026-11-24 (S5 final review; spec/15 §18 40 (1), spec/09 §2.1): renamed from `PLANNED` to
+/// `ENDED`. Every one of these steps is done, so these words are a closed set: a commit-list rule
+/// that names one must be one of the lists the file held at S5's end ([`ENDED_LISTS`]), and no
+/// new list may name them. A later step's words go in [`PLANNED`].
+const ENDED: [&str; 69] = [
     "F1", "F2", "B1a", "B1b", "B2", "B3", "B4a", "B4b", "B5", "B6", "B7", "Z-a", "P1", "P2", "P3",
     "P4", "P5", "P6", "P7a1", "P7a2", "P7b", "P8", "P9", "P10", "Z-b", "W0", "W1", "W2", "W3",
     "W3a", "W3b", "W4", "W5", "W6", "W7", "W8", "W9", "W10", "W11", "W12", "W13", "W14a", "W14b",
@@ -876,6 +893,31 @@ const PLANNED: [&str; 69] = [
     "Z-d", "S5-0", "S5-1", "S5-2", "S5-3", "S5-4", "S5-5", "S5-6", "S5-7", "S5-8", "S5-9", "S5-10",
     "Z-e",
 ];
+
+/// The planned steps after S5 that may change a frozen line (2026-11-24, S5 final review;
+/// spec/15 §18 40 (1)): none. A later plan that must change a frozen line adds its step's word
+/// here, with the owner's approval, in the commit that also re-records [`CLOSED_DIGEST`]; a rule
+/// that names such a word names only such words.
+const PLANNED: [&str; 0] = [];
+
+/// The commit-list rules of `frozen-helpers.txt` at S5's end (the source checks S1–S3,
+/// [`SOURCE_CHECKS`]): the only rules that may name a word of [`ENDED`] (2026-11-24, S5 final
+/// review; spec/15 §18 40 (1)).
+const ENDED_LISTS: [&str; 3] = [
+    "B2,B4a,B4b,B5,E1",
+    "B2,B4a,B4b,B5",
+    "B2,B4a,B4b,B5,W14a,W14b,E1,S5-10",
+];
+
+/// The first 8 bytes (hex) of the SHA-256 of `frozen-tests.txt` followed by
+/// `frozen-helpers.txt`, both whole (2026-11-24, S5 final review; spec/15 §18 40 (1), spec/09
+/// §2.1). After S5 no commit re-records a hash column, a `fixed` or a `mutable` line or a commit
+/// list: `mutable` lines are as closed as `fixed` ones. Before, the files were checked line by
+/// line against the sources only, so a re-recorded line passed and only review stopped it (the
+/// Z-e review's probe: `deliver_keys` changed, its line re-recorded and `Z-e` added to S3's list
+/// left the six `s4_frozen` tests green). A later step that must change a frozen line changes this
+/// in the same owner-approved commit that adds its word to [`PLANNED`].
+const CLOSED_DIGEST: &str = "bca0a2e19fba4c8f";
 
 /// A frozen test file whose non-test items are pinned: its F-A path, the name prefix of the
 /// pinned items (`tests::` = only the inline test module), the drivers (the code that runs a
@@ -1032,8 +1074,54 @@ const KINDS: [&str; 12] = [
     "test",
 ];
 
+/// `fixed`, `mutable`, a commit list of S5's end ([`ENDED_LISTS`], each of whose words is in
+/// [`ENDED`]), or a list of later steps' words only ([`PLANNED`]). 2026-11-24 (S5 final review;
+/// spec/15 §18 40 (1)): before, any list of planned S4 and S5 words was valid, so a new list could
+/// still name an S5 step.
 fn rule_is_valid(rule: &str) -> bool {
-    rule == "fixed" || rule == "mutable" || rule.split(',').all(|commit| PLANNED.contains(&commit))
+    rule == "fixed"
+        || rule == "mutable"
+        || (ENDED_LISTS.contains(&rule) && rule.split(',').all(|commit| ENDED.contains(&commit)))
+        || rule.split(',').all(|commit| PLANNED.contains(&commit))
+}
+
+/// After S5 the two frozen files are closed (2026-11-24, S5 final review; spec/15 §18 40 (1)):
+/// both whole files hash to [`CLOSED_DIGEST`], so no hash column, `fixed` or `mutable` line or
+/// commit list is re-recorded without a change here.
+#[test]
+fn frozen_files_are_closed_after_s5() {
+    let mut both = String::from(FROZEN);
+    both.push_str(HELPERS);
+    assert_eq!(
+        short_hash(&both),
+        CLOSED_DIGEST,
+        "frozen-tests.txt or frozen-helpers.txt changed after S5: only a later step named in \
+         PLANNED with the owner's approval may change them (spec/15 §18 40, spec/09 §2.1)"
+    );
+}
+
+/// The rule words after S5 (2026-11-24, S5 final review; spec/15 §18 40 (1)): the S5 end's
+/// lists stay valid, but no new list names an ended step, not even one more word on an old list.
+#[test]
+fn ended_steps_are_a_closed_word_set() {
+    for rule in ["fixed", "mutable"].into_iter().chain(ENDED_LISTS) {
+        assert!(rule_is_valid(rule), "{rule}");
+    }
+    for (name, rule) in SOURCE_CHECKS {
+        assert!(ENDED_LISTS.contains(&rule), "{name}: {rule}");
+    }
+    for rule in [
+        "Z-e",
+        "S5-0",
+        "W14c",
+        "B2,B4a,B4b,B5,W14a,W14b,E1,S5-10,Z-e",
+        "B2,B4a,B4b,B5,E1,S5-10",
+        "",
+        "fixed,mutable",
+    ] {
+        assert!(!rule_is_valid(rule), "{rule}");
+    }
+    assert!(PLANNED.iter().all(|word| !ENDED.contains(word)));
 }
 
 fn helper_lines() -> Vec<HelperLine<'static>> {

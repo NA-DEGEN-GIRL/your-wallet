@@ -7,7 +7,8 @@
 //! family follows in the family's own commit. Windows-transitional (they go in S5 or earlier):
 //! `Press::Legacy` (a control id whose handler is not converted yet; gone in S3 D3),
 //! `Press::Enter` (the shell still resolves the focus), `Cmd::Form` (the edits' text read back
-//! from the window) and the positional [`Row`].
+//! from the window) and the positional [`Row`]. 2026-11-24 (spec/15 §18 40 (3)): `Cmd::Form`
+//! went in S5-6; the positional `Row` stays until the A phase's wire format (spec/15 §18 8).
 //!
 //! 2026-11-18 (S3 C1): the received-history, hidden-account, side-file and drop-down/recipient
 //! families (`Press::{Received, Hidden, Sidecar, Links}`) and the two press facts the shell's
@@ -160,7 +161,8 @@ pub use yubikey::{YkConnectPress, YkManagePress, YkPress};
 pub use zec::ZecPress;
 
 /// A list row as the screen drew it (positional: resolved against the list rebuilt when the
-/// press is handled; S5 → stable keys).
+/// press is handled; S5 → stable keys). 2026-11-24 (spec/15 §18 40 (3), S5 plan owner item O-5):
+/// the stable keys are not S5 but the A phase's wire format (spec/15 §18 8); positional until then.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Row(pub u16);
 

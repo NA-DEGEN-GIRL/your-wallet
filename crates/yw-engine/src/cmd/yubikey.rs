@@ -9,7 +9,8 @@
 //! are. 2026-11-22 (spec/15 §11.4 S4d E0a, as plan critique B-12 (e) recommends): the
 //! per-value variants stay through S4; the choice enums move to yw-engine with the wallet's
 //! `YubiKey` code (S4d E1), and whether these variants collapse into them is S5 (it changes
-//! `cmd_table` and the census keys).
+//! `cmd_table` and the census keys). 2026-11-24 (spec/15 §18 40 (3), S5 plan owner item O-5):
+//! not S5 — decided with the A phase's wire format (spec/15 §18 8); the variants stay until then.
 //!
 //! 2026-11-18 (S3 C11): created.
 
