@@ -117,8 +117,9 @@ fn is_test_file(krate: &str, rel: &str) -> bool {
 
 /// The crates [`production_code`] reads (2026-11-23, spec/15 §11.4 S5-0, §18 31 (다), critic C4):
 /// every crate under `crates/` but the no-engine list `card_pcsc::tests::NO_ENGINE_CRATES`, the
-/// same as `card_pcsc`'s `source_roots` (`every_engine_dependent_crate_is_scanned`). Today yw-app
-/// and yw-engine; before S5-0 those two by name.
+/// same as `card_pcsc`'s `source_roots` (`every_engine_dependent_crate_is_scanned`). Today
+/// yw-android, yw-app and yw-engine (yw-android since 2026-11-24 A2-1); before S5-0 yw-app and
+/// yw-engine by name.
 pub(crate) fn production_crates() -> Vec<String> {
     crate::card_pcsc::tests::scanned_crates()
 }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/yw-core", "crates/yw-json", "crates/yw-platform", "crates/yw-engine", "crates/yw-win", "crates/yw-app", "crates/yw-host"]
+members = ["crates/yw-core", "crates/yw-json", "crates/yw-platform", "crates/yw-engine", "crates/yw-win", "crates/yw-app", "crates/yw-host", "crates/yw-android"]
 exclude = ["fuzz", "tools/btc-oracle", "tools/sol-oracle"]   # 각자 워크스페이스·lock([09] §2.4, [08] §14.3, [07] §17.3), 허용 목록 대상 아님, 배포하지 않음
 
 [workspace.package]
@@ -30,6 +30,8 @@ ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["fas
 curve25519-dalek = { version = "=4.1.3", default-features = false, features = ["precomputed-tables", "zeroize"] }
 qrcodegen = { version = "=1.8.0", default-features = false }
 windows-sys = { version = "=0.61.2", default-features = false }   # feature 목록은 crates/yw-win/Cargo.toml에만
+# Android 타깃만(yw-android의 target 표, spec/15 §4.1·§18 41; 2026-11-24 A2-1). yw-core 폐포에는 그 타깃에서 이미 있다.
+libc = { version = "=0.2.189", default-features = false }
 yw-core = { path = "crates/yw-core" }
 yw-engine = { path = "crates/yw-engine" }
 yw-json = { path = "crates/yw-json" }

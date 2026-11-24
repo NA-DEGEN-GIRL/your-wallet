@@ -1,0 +1,12 @@
+# Root clippy.toml contents (clippy reads only the nearest clippy.toml) + the yw-android bans (spec/01 §5.1,
+# spec/15 §3.2-§3.3, §5.3; 2026-11-24 A2-1). The Android shell's Rust half opens no socket and starts no process
+# (Java owns the network, spec/15 §3.1), reads no environment variable, and never aborts: the panic hook and every
+# fatal end wipe the slots and `_exit` (an abort leaves a tombstone, spec/15 §5.3). Files and threads stay allowed
+# (the storage service and the key worker, A2-4b).
+avoid-breaking-exported-api = false
+msrv = "1.95.0"
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+disallowed-types = [ "std::net::TcpStream", "std::net::TcpListener", "std::net::UdpSocket", "std::process::Command" ]
+disallowed-methods = [ "std::process::abort", "std::env::var", "std::env::var_os", "std::env::vars",
+                       "std::env::vars_os", "std::net::ToSocketAddrs::to_socket_addrs" ]

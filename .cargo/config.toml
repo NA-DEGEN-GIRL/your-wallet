@@ -3,3 +3,13 @@
 # 입력이면 같은 바이너리가 나온다(spec/01 §3.9). 실행 파일은 빌드한 PC에서만 쓰고 배포하지 않으므로(spec.md D1)
 # 패닉 위치 문자열의 이 PC 경로를 지우는 --remap-path-prefix는 쓰지 않는다.
 rustflags = ["--cfg", 'curve25519_dalek_backend="serial"', "-C", "link-arg=/Brepro"]
+
+# Android(2026-11-24 A2-1, spec/15 §4.1·§13, spec/01 §3.9): serial cfg만 둔다. 없으면 x86_64-linux-android에
+# curve25519-dalek-derive·syn 같은 proc-macro가 들어온다(P0-5). NDK 링커·CC·AR와 빌드 PC 경로 지우기
+# (--remap-path-prefix)는 PC마다 다르므로 여기 고정하지 않고 빌드 스크립트가 --config로 넘긴다(그 배열은 이 배열과
+# 합쳐진다, P0-4). x86_64는 에뮬레이터의 CheckJNI 확인용이다.
+[target.aarch64-linux-android]
+rustflags = ["--cfg", 'curve25519_dalek_backend="serial"']
+
+[target.x86_64-linux-android]
+rustflags = ["--cfg", 'curve25519_dalek_backend="serial"']

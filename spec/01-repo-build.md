@@ -149,6 +149,10 @@ crates/
                   walletconnect 작업자([13](13-walletconnect.md))·events·workers([04](04-app-ui.md) §1.2; `workers/key/platform.rs`의
                   `KeyPlatform`·`WalletStore`·`KeyDeps`)·ui::approval_view(→ `approval::view`)도 옮겼다. yw-app은 옛 경로로 다시 내보낸다, §2.3b)
   yw-host/   Cargo.toml  src/{lib.rs, main.rs}  tests/               ([05](05-browser.md))
+  yw-android/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, jni_table.rs(JNI 함수표 인덱스·등록하는 메서드 다섯, 모든 타깃),
+                              slot_plan.rs(잠근 슬롯의 크기·예산 계산, 모든 타깃), jni.rs(`JNI_OnLoad`, Android만),
+                              slot.rs(`LockedSlot` 페이지, Android만), panic_hook.rs(패닉 훅·`_exit`, Android만)}
+             (Android 셸의 Rust 쪽 `libyw.so`, cdylib + rlib, [15](15-android.md) §3; 2026-11-24 A2-1)
 extension/   manifest.json  package.json  extension-id.txt(M5)  src/*.js  popup/*  icons/icon-{16,32,48,128}.png([05] §2.2)
              native-host/*  tests/*.test.mjs  test-dapp/(M5)
 scripts/     check.ps1  check-core-deps.mjs  privacy-scan.mjs  privacy-scan.test.mjs
@@ -287,6 +291,9 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 | yw-win | yw-platform | windows-sys | lib |
 | yw-app | yw-core, yw-engine, yw-json, yw-platform, yw-win | 없음(2026-11-24 S5-2 전에는 qrcodegen; 이제 yw-engine을 거쳐서만) | bin (`#![windows_subsystem = "windows"]`) |
 | yw-host | yw-json, yw-win (yw-win을 거쳐 yw-platform) | 없음 | bin (콘솔 서브시스템) |
+| yw-android | yw-core, yw-engine, yw-json, yw-platform | Android 타깃에서만 libc(qrcodegen은 yw-engine을 거쳐서만) | cdylib `libyw.so` + rlib |
+
+2026-11-24 A2-1([15](15-android.md) §3·§4.1, §18 41): yw-android 행을 더했다. 로컬 의존은 yw-engine과 같은 넷이며 yw-win에는 의존하지 않는다. 서드파티 직접 의존은 `[target.'cfg(target_os = "android")'.dependencies]`의 `libc`뿐이다. Windows(게이트)에서는 플랫폼 중립 도우미(`jni_table`, `slot_plan`)와 그 단위 시험만 컴파일되고, `unsafe`·libc·JNI가 있는 모듈은 `#[cfg(target_os = "android")]`이다. rlib은 그 도우미가 공개 항목으로 남아(쓰이지 않는 코드 경고 없이) Windows에서 시험되게 하려고 둔다.
 
 2026-11-17: yw-platform 행을 더했다. 그 전에는 yw-win의 로컬 의존이 없었다. 2026-11-17 S2: yw-engine 행을 더했고 yw-app이 yw-engine에 의존한다. 2026-11-24 S5-2([15] §4.1): `qrcodegen`을 화면 모델의 QR과 함께 yw-app의 직접 의존에서 yw-engine의 직접 의존으로 옮겼다. yw-app은 yw-engine을 거쳐서만 쓰고, 직접 의존하면 검사가 실패한다(§4.2 `indirect`).
 
@@ -301,7 +308,7 @@ yw-app·yw-host는 창·OS 호출이 없는 로직을 `lib.rs`에 두고 `tests/
 ```toml
 [workspace]
 resolver = "3"
-members = ["crates/yw-core", "crates/yw-json", "crates/yw-platform", "crates/yw-engine", "crates/yw-win", "crates/yw-app", "crates/yw-host"]
+members = ["crates/yw-core", "crates/yw-json", "crates/yw-platform", "crates/yw-engine", "crates/yw-win", "crates/yw-app", "crates/yw-host", "crates/yw-android"]
 exclude = ["fuzz", "tools/btc-oracle", "tools/sol-oracle"]   # 각자 워크스페이스·lock([09] §2.4, [08] §14.3, [07] §17.3), 허용 목록 대상 아님, 배포하지 않음
 
 [workspace.package]
@@ -331,6 +338,8 @@ ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["fas
 curve25519-dalek = { version = "=4.1.3", default-features = false, features = ["precomputed-tables", "zeroize"] }
 qrcodegen = { version = "=1.8.0", default-features = false }
 windows-sys = { version = "=0.61.2", default-features = false }   # feature 목록은 crates/yw-win/Cargo.toml에만
+# Android 타깃만(yw-android의 target 표, spec/15 §4.1·§18 41; 2026-11-24 A2-1). yw-core 폐포에는 그 타깃에서 이미 있다.
+libc = { version = "=0.2.189", default-features = false }
 yw-core = { path = "crates/yw-core" }
 yw-engine = { path = "crates/yw-engine" }
 yw-json = { path = "crates/yw-json" }
@@ -376,7 +385,7 @@ debug = false
 
 ### 3.2 크레이트별 `Cargo.toml`
 
-모든 멤버의 `[package]`: `name = "<크레이트>"`, `version.workspace = true`, `edition.workspace = true`, `rust-version.workspace = true`, `license.workspace = true`, `publish.workspace = true`. yw-win 외 여섯은 `[lints] workspace = true`(2026-11-17: yw-platform이 더해져 넷에서 다섯, S2에서 yw-engine이 더해져 여섯). `[dependencies]` 항목은 모두 `<name>.workspace = true` 한 줄씩이다.
+모든 멤버의 `[package]`: `name = "<크레이트>"`, `version.workspace = true`, `edition.workspace = true`, `rust-version.workspace = true`, `license.workspace = true`, `publish.workspace = true`. yw-win 외 여섯은 `[lints] workspace = true`(2026-11-17: yw-platform이 더해져 넷에서 다섯, S2에서 yw-engine이 더해져 여섯). `[dependencies]` 항목은 모두 `<name>.workspace = true` 한 줄씩이다. (2026-11-24 A2-1: yw-android는 yw-win처럼 lint를 상속하지 않고 아래 yw-win 블록의 `[lints.rust]`·`[lints.clippy]`를 그대로 복사하며, `[lib] name = "yw"`, `crate-type = ["cdylib", "rlib"]`이고, `libc.workspace = true`는 `[target.'cfg(target_os = "android")'.dependencies]`에 둔다. 루트 `[workspace.dependencies]`의 `libc = { version = "=0.2.189", default-features = false }`는 이 한 곳만 쓴다.)
 
 | 크레이트 | `[dependencies]` |
 |---|---|
@@ -386,6 +395,7 @@ debug = false
 | yw-engine | qrcodegen(2026-11-24 S5-2), yw-core, yw-json, yw-platform(2026-11-17 S2) |
 | yw-app | yw-core, yw-engine, yw-json, yw-platform, yw-win(2026-11-24 S5-2 전에는 qrcodegen도) |
 | yw-host | yw-json, yw-win |
+| yw-android | yw-core, yw-engine, yw-json, yw-platform; Android 타깃에서만 libc(2026-11-24 A2-1) |
 
 ```toml
 # crates/yw-win/Cargo.toml (package 표 외 전체)
@@ -430,6 +440,9 @@ windows-sys feature 추가·삭제는 크레이트 수를 바꾸지 않지만 yw
 | yw-json | 없음 |
 | yw-platform | 없음 |
 | yw-engine | yw-core와 같음(yw-core를 거쳐서만, 2026-11-17 S2) + qrcodegen=1.8.0(직접, 2026-11-24 S5-2) |
+| yw-android | yw-engine과 같음(yw-engine을 거쳐서만; qrcodegen을 직접 쓰면 실패, `indirect`), 2026-11-24 A2-1 |
+
+**Android 표**(`aarch64-linux-android`, 에뮬레이터 CheckJNI용 `x86_64-linux-android`; 2026-11-24 A2-1, [15](15-android.md) §4.1·§18 41, `spec.md` D5): 위 Windows 표에 `libc=0.2.189`(런타임)를 yw-core·yw-engine·yw-android 폐포에 더하고 `build.rs` 허용에 `libc`를 더한 것이다. `sha2`·`keccak` → `cpufeatures` → `libc`, `getrandom` → `libc`로 들어오며(어떤 cfg로도 뺄 수 없다) yw-android가 직접도 쓴다. 이 표가 보는 멤버는 Android용으로 빌드하는 다섯(yw-core, yw-json, yw-platform, yw-engine, yw-android)이고, Windows 전용 셋(yw-win, yw-app, yw-host)은 건너뛴다(`deps check skipped: not built for <타깃>`) — yw-win의 `windows-sys` 의존은 타깃으로 묶여 있지 않아 Android 메타데이터에도 나오기 때문이다(P0-5 F5-2). 그 밖의 모르는 멤버는 어느 표에서나 오류다. serial cfg(`.cargo/config.toml`의 `[target.*-linux-android]`, §3.9)가 빠지면 `x86_64-linux-android` 폐포에 `curve25519-dalek-derive`·`syn`·`quote`·`proc-macro2`·`unicode-ident`가 들어오고 표가 이를 잡는다(확인함: `RUSTFLAGS`로 cfg를 빼고 만든 메타데이터에서 실패). 검사 결과(확인함, 2026-11-24): Windows 표 yw-core 40, yw-engine 41, yw-android 41, yw-app 43; Android 두 표 yw-core 41, yw-engine 42, yw-android 42.
 
 - 검사 결과(확인함): EVM 단계 yw-core 34, yw-json 0, yw-win 2, yw-app 37, yw-host 2. Solana 단계 yw-core 40, yw-app 43. Bitcoin 단계(M8)는 추가 크레이트가 없다(D5). yw-platform 0(2026-11-17, 로컬 크레이트는 세지 않으므로 다른 수는 그대로). yw-engine 40(2026-11-17 S2, yw-core와 같다), 2026-11-24 S5-2부터 41(qrcodegen; yw-app은 43 그대로).
 - `build.rs` 허용: generic-array, getrandom, secp256k1-sys (+M7 curve25519-dalek). proc-macro는 어느 단계에서도 0개.
@@ -513,7 +526,15 @@ feature 선택에 따른 코드 의무(세부 [02](02-core-keys-vault.md)):
 ```toml
 [target.x86_64-pc-windows-msvc]
 rustflags = ["--cfg", 'curve25519_dalek_backend="serial"', "-C", "link-arg=/Brepro"]
+
+[target.aarch64-linux-android]
+rustflags = ["--cfg", 'curve25519_dalek_backend="serial"']
+
+[target.x86_64-linux-android]
+rustflags = ["--cfg", 'curve25519_dalek_backend="serial"']
 ```
+
+(주석은 뺐다.) 2026-11-24 A2-1([15](15-android.md) §4.1·§13): 두 Android 타깃 줄을 더했다. serial cfg만 두고, NDK 링커·`CC_<타깃>`·`AR_<타깃>`과 빌드 PC 경로 지우기(`--remap-path-prefix`)는 PC마다 다르므로 빌드 스크립트가 `cargo --config`로 넘긴다(그 배열은 이 배열과 합쳐져 serial cfg가 남는다, [15] §16 P0-4). Android `.so`는 폰으로 가므로 경로를 지우고, 아래의 "지우지 않는다"는 Windows 실행 파일에만 해당한다.
 
 - `--cfg curve25519_dalek_backend="serial"`: §3.4 M7.
 - `/Brepro`: MSVC 링커가 PE 헤더·디버그 디렉터리의 시각 대신 내용 해시를 쓴다(같은 입력 → 같은 exe). PDB 경로는 rustc가 이미 `/PDBALTPATH:%_PDB%`로 파일 이름만 남긴다(확인함).
@@ -784,16 +805,24 @@ exit 0
 ### 4.2 `scripts/check-core-deps.mjs` (전체)
 
 ```js
-// scripts/check-core-deps.mjs — 워크스페이스 크레이트별 의존성 폐포를 허용 목록과 정확히 비교한다.
-// Usage: node scripts/check-core-deps.mjs [--offline] [--list] [--metadata <file>]
+// scripts/check-core-deps.mjs — 워크스페이스 크레이트별 의존성 폐포를 타깃별 허용 목록과 정확히 비교한다.
+// Usage: node scripts/check-core-deps.mjs [--offline] [--list] [--target <triple>] [--metadata <file>]
+//   --target <triple>: 그 타깃 하나만 검사한다(없으면 TARGETS 셋 모두, 타깃마다 `cargo metadata --filter-platform`).
 //   --metadata <file>: cargo를 실행하지 않고 그 파일의 `cargo metadata` JSON을 검사한다(scripts/check-core-deps.test.mjs).
-// Exit: 0 = OK, 1 = 정책 위반, 2 = cargo metadata 실행/해석 실패.
+//     문서 하나는 타깃 하나의 것이므로 --target과 함께 쓴다(없으면 Windows 타깃).
+// Exit: 0 = OK, 1 = 정책 위반, 2 = cargo metadata 실행/해석 실패·모르는 타깃.
+// 2026-11-24 A2-1(spec/15 §4.1, spec/01 §3.3·§4.2, spec.md D5): 타깃별 표. 그 전에는 x86_64-pc-windows-msvc 하나였다.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const TARGET = "x86_64-pc-windows-msvc";
+export const WINDOWS = "x86_64-pc-windows-msvc";
+// x86_64-linux-android는 에뮬레이터의 CheckJNI 확인용이다(spec/15 §13).
+export const ANDROID_TARGETS = ["aarch64-linux-android", "x86_64-linux-android"];
+export const TARGETS = [WINDOWS, ...ANDROID_TARGETS];
+// 2026-11-24 전의 이름: Windows 표의 타깃.
+export const TARGET = WINDOWS;
 export const CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index";
 // 단계 진입 커밋에서만 바꾼다(spec/01 §3.4): M7 → "sol" 추가.
 export const PHASES = new Set(["sol"]);
@@ -813,22 +842,51 @@ rustc_version=0.4.1:b semver=1.0.28:b`);
 const WIN = table(`windows-sys=0.61.2:n windows-link=0.2.1:n`);
 // 2026-11-24(spec/15 §4.1, §11.4 S5-2): 화면 모델의 QR과 함께 yw-app에서 yw-engine으로 옮겼다(전 이름 APP).
 const QR = table(`qrcodegen=1.8.0:n`);
+// 2026-11-24 A2-1(spec/15 §4.1·§18 41): Android 표에만. sha2·keccak → cpufeatures → libc, getrandom → libc로 yw-core
+// 폐포에 들어오고(어떤 cfg로도 뺄 수 없다) yw-android가 직접 쓴다. 그 build.rs도 Android 표에만 허용한다.
+const LIBC = table(`libc=0.2.189:n`);
 
 const CORE = { ...CORE_EVM, ...(PHASES.has("sol") ? CORE_SOL : {}) };
-export const POLICY = {
-  "yw-core": { allow: CORE, local: ["yw-json"] },
-  "yw-json": { allow: {}, local: [] },
-  // 2026-11-17: yw-platform(의존성 0) 추가. yw-host는 yw-win을 거쳐 링크한다.
-  "yw-platform": { allow: {}, local: [] },
-  // 2026-11-17(spec/15 §11.4 S2): yw-engine은 yw-core 폐포만(yw-win·windows-sys 없음).
-  // 2026-11-24(S5-2): 그리고 qrcodegen(화면 모델의 QR, spec/15 §4.1).
-  "yw-engine": { allow: { ...CORE, ...QR }, local: ["yw-core", "yw-json", "yw-platform"] },
-  "yw-win": { allow: WIN, local: ["yw-platform"] },
-  // indirect: 폐포에는 있어도 직접 의존하면 안 되는 크레이트(2026-11-24 S5-2: qrcodegen은 yw-engine을 거쳐서만, spec.md D5).
-  "yw-app": { allow: { ...CORE, ...WIN, ...QR }, local: ["yw-core", "yw-engine", "yw-json", "yw-platform", "yw-win"], indirect: ["qrcodegen"] },
-  "yw-host": { allow: WIN, local: ["yw-json", "yw-platform", "yw-win"] },
-};
-export const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);
+const isAndroid = (target) => ANDROID_TARGETS.includes(target);
+// Android용으로 빌드하지 않는 멤버: Windows 셸과 그 도구. Android 표는 이들을 검사하지 않는다 — yw-win의 windows-sys
+// 의존은 타깃으로 묶여 있지 않아 Android 메타데이터에도 나온다(spec/15 §4.1, P0-5 F5-2). 그 밖의 멤버는 모든 표에 있다.
+export const WINDOWS_ONLY = new Set(["yw-win", "yw-app", "yw-host"]);
+
+/** The policy rows of one target (throws for a target outside TARGETS). */
+export function policyFor(target) {
+  if (!TARGETS.includes(target)) throw new Error(`unknown target ${target} (one of ${TARGETS.join(", ")})`);
+  const core = { ...CORE, ...(isAndroid(target) ? LIBC : {}) };
+  const shared = {
+    "yw-core": { allow: core, local: ["yw-json"] },
+    "yw-json": { allow: {}, local: [] },
+    // 2026-11-17: yw-platform(의존성 0) 추가. yw-host는 yw-win을 거쳐 링크한다.
+    "yw-platform": { allow: {}, local: [] },
+    // 2026-11-17(spec/15 §11.4 S2): yw-engine은 yw-core 폐포만(yw-win·windows-sys 없음).
+    // 2026-11-24(S5-2): 그리고 qrcodegen(화면 모델의 QR, spec/15 §4.1).
+    "yw-engine": { allow: { ...core, ...QR }, local: ["yw-core", "yw-json", "yw-platform"] },
+    // 2026-11-24 A2-1(spec/15 §3·§4.1): Android 셸. 로컬 넷(yw-win 없음), qrcodegen은 yw-engine을 거쳐서만, 직접 쓰는
+    // 서드파티는 Android 타깃의 libc뿐(Windows에서는 이식 가능한 도우미와 그 시험만 컴파일된다, spec/15 §13).
+    "yw-android": { allow: { ...core, ...QR }, local: ["yw-core", "yw-engine", "yw-json", "yw-platform"], indirect: ["qrcodegen"] },
+  };
+  if (isAndroid(target)) return shared;
+  return {
+    ...shared,
+    "yw-win": { allow: WIN, local: ["yw-platform"] },
+    // indirect: 폐포에는 있어도 직접 의존하면 안 되는 크레이트(2026-11-24 S5-2: qrcodegen은 yw-engine을 거쳐서만, spec.md D5).
+    "yw-app": { allow: { ...CORE, ...WIN, ...QR }, local: ["yw-core", "yw-engine", "yw-json", "yw-platform", "yw-win"], indirect: ["qrcodegen"] },
+    "yw-host": { allow: WIN, local: ["yw-json", "yw-platform", "yw-win"] },
+  };
+}
+
+/** The crates whose build.rs is reviewed, for one target. */
+export function buildRsAllowFor(target) {
+  return new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : []),
+    ...(isAndroid(target) ? ["libc"] : [])]);
+}
+
+// The Windows table under the names used before 2026-11-24.
+export const POLICY = policyFor(WINDOWS);
+export const BUILD_RS_ALLOW = buildRsAllowFor(WINDOWS);
 export const OWN_BUILD_RS_ALLOW = new Set(["yw-app"]);
 export const FORBIDDEN_FEATURES = {
   secp256k1: ["rand", "global-context", "hashes", "serde"], argon2: ["alloc", "password-hash", "rand"],
@@ -839,26 +897,33 @@ export const FORBIDDEN_FEATURES = {
 };
 
 /**
- * Checks one `cargo metadata --format-version 1` document against the policy.
- * Returns `{ errors, ok, listing }`: violations, the per-crate OK lines and the `--list` rows.
- * Throws when the document lacks the fields it reads (the CLI reports that as exit 2).
+ * Checks one `cargo metadata --format-version 1` document of `target` against that target's policy.
+ * Returns `{ errors, ok, listing, skipped }`: violations, the per-crate OK lines, the `--list` rows and the
+ * Windows-only members an Android table does not check.
+ * Throws when the document lacks the fields it reads or the target is unknown (the CLI reports that as exit 2).
  */
-export function checkMetadata(meta) {
+export function checkMetadata(meta, target = WINDOWS) {
+  const policies = policyFor(target);
+  const buildRsAllow = buildRsAllowFor(target);
   const pkgs = new Map(meta.packages.map((p) => [p.id, p]));
   const nodes = new Map(meta.resolve.nodes.map((n) => [n.id, n]));
   const key = (p) => `${p.name}=${p.version}`;
   const errors = [];
   const ok = [];
   const listing = [];
+  const skipped = [];
 
   for (const id of meta.workspace_members) {
     const p = pkgs.get(id);
-    if (!(p.name in POLICY)) errors.push(`${p.name}: workspace member without a policy`);
+    if (!(p.name in policies)) {
+      if (isAndroid(target) && WINDOWS_ONLY.has(p.name)) skipped.push(p.name);
+      else errors.push(`${p.name}: workspace member without a policy`);
+    }
     if (p.dependencies.some((d) => d.kind === "dev")) errors.push(`${p.name}: dev-dependencies are forbidden`);
     if (p.targets.some((t) => t.kind.includes("custom-build")) && !OWN_BUILD_RS_ALLOW.has(p.name)) errors.push(`${p.name}: build.rs is forbidden`);
   }
 
-  for (const [root, policy] of Object.entries(POLICY)) {
+  for (const [root, policy] of Object.entries(policies)) {
     const rootId = meta.workspace_members.find((id) => pkgs.get(id).name === root);
     if (!rootId) { errors.push(`${root}: workspace member not found`); continue; }
     // BFS over normal + build edges (dev edges ignored); a crate reached at runtime is "n".
@@ -891,24 +956,35 @@ export function checkMetadata(meta) {
       if (p.source !== CRATES_IO) errors.push(`${at}: non-crates.io source ${p.source}`);
       if (!(k in policy.allow)) errors.push(`${at}: not in allowlist (${mode === "n" ? "runtime" : "build-time"})`);
       else if (policy.allow[k] === "b" && mode === "n") errors.push(`${at}: allowlisted build-only but linked at runtime`);
-      if (p.targets.some((t) => t.kind.includes("custom-build")) && !BUILD_RS_ALLOW.has(p.name)) errors.push(`${at}: unreviewed build.rs`);
+      if (p.targets.some((t) => t.kind.includes("custom-build")) && !buildRsAllow.has(p.name)) errors.push(`${at}: unreviewed build.rs`);
       if (p.targets.some((t) => t.kind.includes("proc-macro"))) errors.push(`${at}: proc-macro (curve25519-dalek-derive means the serial backend cfg is missing)`);
       const bad = (FORBIDDEN_FEATURES[p.name] ?? []).filter((f) => nodes.get(id).features.includes(f));
       if (bad.length) errors.push(`${at}: forbidden features ${bad.join(",")} (workspace-unified)`);
     }
     for (const k of Object.keys(policy.allow)) if (!reached.has(k)) errors.push(`${root}: ${k} allowlisted but not reached (prune or fix phase)`);
-    if (!errors.some((e) => e.startsWith(root))) ok.push(`${root} deps check OK: ${reached.size} crates (${TARGET})`);
+    if (!errors.some((e) => e.startsWith(`${root}:`) || e.startsWith(`${root} `))) ok.push(`${root} deps check OK: ${reached.size} crates (${target})`);
   }
-  return { errors, ok, listing };
+  return { errors, ok, listing, skipped };
 }
 
-function loadMetadata(argv) {
+/** The targets the CLI checks: `--target <triple>`, else Windows for `--metadata`, else all. */
+function targetsOf(argv) {
+  const at = argv.indexOf("--target");
+  if (at >= 0) {
+    const target = argv[at + 1];
+    if (!TARGETS.includes(target)) throw new Error(`--target needs one of ${TARGETS.join(", ")}`);
+    return [target];
+  }
+  return argv.includes("--metadata") ? [WINDOWS] : TARGETS;
+}
+
+function loadMetadata(argv, target) {
   const file = argv.indexOf("--metadata");
   if (file >= 0) {
     if (!argv[file + 1]) throw new Error("--metadata needs a file");
     return JSON.parse(readFileSync(argv[file + 1], "utf8"));
   }
-  const args = ["metadata", "--format-version", "1", "--locked", "--filter-platform", TARGET];
+  const args = ["metadata", "--format-version", "1", "--locked", "--filter-platform", target];
   if (argv.includes("--offline")) args.push("--offline");
   return JSON.parse(execFileSync("cargo", args, { encoding: "utf8", maxBuffer: 64 << 20, windowsHide: true }));
 }
@@ -916,22 +992,38 @@ function loadMetadata(argv) {
 const firstLine = (error) => (error instanceof Error ? error.message.split("\n")[0] : "unknown");
 const invokedPath = process.argv[1];
 if (invokedPath !== undefined && resolve(invokedPath) === resolve(fileURLToPath(import.meta.url))) {
-  let result;
+  let targets;
   try {
-    result = checkMetadata(loadMetadata(process.argv));
+    targets = targetsOf(process.argv);
   } catch (error) {
-    console.error(`deps check: cargo metadata failed: ${firstLine(error)}`);
+    console.error(`deps check: ${firstLine(error)}`);
     process.exit(2);
   }
-  for (const line of result.ok) console.log(line);
   const phases = [...PHASES].join(",") || "evm";
-  if (process.argv.includes("--list")) console.log(result.listing.join("\n"));
-  if (result.errors.length) { console.error(`deps check FAILED (${TARGET}, phases: ${phases}):\n  ${result.errors.join("\n  ")}`); process.exit(1); }
-  console.log(`deps check OK (${TARGET}, phases: ${phases})`);
+  let failed = false;
+  for (const target of targets) {
+    let result;
+    try {
+      result = checkMetadata(loadMetadata(process.argv, target), target);
+    } catch (error) {
+      console.error(`deps check: cargo metadata failed (${target}): ${firstLine(error)}`);
+      process.exit(2);
+    }
+    for (const line of result.ok) console.log(line);
+    for (const name of result.skipped) console.log(`${name} deps check skipped: not built for ${target}`);
+    if (process.argv.includes("--list")) console.log(result.listing.map((row) => `${target}\t${row}`).join("\n"));
+    if (result.errors.length) {
+      console.error(`deps check FAILED (${target}, phases: ${phases}):\n  ${result.errors.join("\n  ")}`);
+      failed = true;
+    } else {
+      console.log(`deps check OK (${target}, phases: ${phases})`);
+    }
+  }
+  if (failed) process.exit(1);
 }
 ```
 
-`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 여러 루트(2026-11-17 `yw-platform`을 더해 여섯, S2에서 `yw-engine`을 더해 일곱)·단계·멤버 규칙으로 확장한 것이다. 검사 본체는 `checkMetadata(meta)`(가져와도 CLI는 실행되지 않는다)이고, `scripts/check-core-deps.test.mjs`가 허용 목록과 정확히 같은 합성 그래프(통과)와 위반 종류별 변형(허용 목록 밖·빌드 전용의 런타임 링크·dev-dependency·자체 build.rs·금지 feature·crates.io 밖 출처·proc-macro·검토 안 된 build.rs·도달하지 않는 허용 항목·허용 안 된 로컬 크레이트·정책 없는/없는 멤버·폐포에만 허용된 크레이트의 직접 의존(2026-11-24 S5-2: yw-app → qrcodegen))과 `--metadata` CLI의 종료 코드 0·1·2를 cargo 없이 시험한다(script-test 단계).
+`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 여러 루트(2026-11-17 `yw-platform`을 더해 여섯, S2에서 `yw-engine`을 더해 일곱)·단계·멤버 규칙으로 확장한 것이다. 검사 본체는 `checkMetadata(meta)`(가져와도 CLI는 실행되지 않는다)이고, `scripts/check-core-deps.test.mjs`가 허용 목록과 정확히 같은 합성 그래프(통과)와 위반 종류별 변형(허용 목록 밖·빌드 전용의 런타임 링크·dev-dependency·자체 build.rs·금지 feature·crates.io 밖 출처·proc-macro·검토 안 된 build.rs·도달하지 않는 허용 항목·허용 안 된 로컬 크레이트·정책 없는/없는 멤버·폐포에만 허용된 크레이트의 직접 의존(2026-11-24 S5-2: yw-app → qrcodegen))과 `--metadata` CLI의 종료 코드 0·1·2를 cargo 없이 시험한다(script-test 단계). 2026-11-24 A2-1([15](15-android.md) §4.1): 표는 타깃별이다(`policyFor(target)`, `buildRsAllowFor(target)`; 옛 이름 `POLICY`·`BUILD_RS_ALLOW`·`TARGET`은 Windows 표). CLI는 인자 없이 `TARGETS` 셋을 차례로 `cargo metadata --filter-platform <타깃>`으로 검사하고(`--target`이면 하나, `--metadata`이면 그 문서의 타깃 하나 — 없으면 Windows), 줄마다 타깃을 적고 `--list` 행 앞에도 타깃을 붙인다. 모르는 타깃은 종료 2다. Android 표는 Windows 전용 멤버 yw-win·yw-app·yw-host를 건너뛰고 나머지 멤버 규칙(dev-dependency·자체 build.rs)은 모든 멤버에 그대로 적용한다. 더한 시험: 타깃마다 허용 목록과 같은 그래프의 통과, `libc`와 그 build.rs는 Android 표에서만(Windows 그래프가 `libc`에 닿으면 실패), Android 표의 proc-macro(serial cfg 빠짐), yw-android의 `qrcodegen` 직접 의존·yw-win 의존 거부, Android 표에서도 모르는 멤버·없는 yw-android는 오류, Android에서 닿지 않는 `libc`의 정리, `--target`/모르는 타깃의 CLI 종료 코드. ok 줄은 그 루트의 오류(`<루트>:` 또는 `<루트> ->`로 시작)가 없을 때만 낸다(전에는 이름 접두사만 보았다).
 
 ### 4.3 `scripts/privacy-scan.mjs` 변경
 
@@ -1027,8 +1119,8 @@ const forbidden = [
 
 ### 5.1 unsafe와 경계
 
-- `unsafe`는 yw-win에만 있다. yw-core·yw-json·yw-platform(2026-11-17)·yw-engine(2026-11-17 S2)·yw-app·yw-host는 workspace lint `unsafe_code = "forbid"`에 더해 `lib.rs`/`main.rs`에 `#![forbid(unsafe_code)]`를 둔다.
-- yw-win은 FFI 모듈 파일 첫 줄에만 `#![allow(unsafe_code)]`를 두고, 모든 `unsafe` 블록에 `// SAFETY:` 주석(어떤 전제가 왜 성립하는지)과 블록당 unsafe 연산 1개(clippy `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`).
+- `unsafe`는 yw-win과 yw-android(2026-11-24 A2-1, D4·D40, [15](15-android.md) §3.1)에만 있다. yw-core·yw-json·yw-platform(2026-11-17)·yw-engine(2026-11-17 S2)·yw-app·yw-host는 workspace lint `unsafe_code = "forbid"`에 더해 `lib.rs`/`main.rs`에 `#![forbid(unsafe_code)]`를 둔다.
+- yw-win과 yw-android는 FFI 모듈 파일 첫 줄에만 `#![allow(unsafe_code)]`를 두고, 모든 `unsafe` 블록에 `// SAFETY:` 주석(어떤 전제가 왜 성립하는지)과 블록당 unsafe 연산 1개(clippy `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`). yw-android의 FFI 모듈(`jni`, `slot`, `panic_hook`)은 Android 타깃에서만 컴파일되므로 Windows 게이트의 clippy가 보지 못한다: 그 clippy는 `cargo clippy --target aarch64-linux-android -p yw-android -- -D warnings`이고 게이트 단계 `android`(A2-3, [15] §13)가 돌리며, 그 전(A2-1)에는 손으로 돌린다. 플랫폼 중립 모듈(`jni_table`, `slot_plan`)은 `#![forbid(unsafe_code)]`. `crates/yw-android/clippy.toml`은 루트 내용 + 소켓·프로세스 타입, `std::process::abort`(치명적 끝은 슬롯을 지운 뒤 `_exit`, [15] §5.3), `std::env::var` 계열, `to_socket_addrs`를 막는다(네트워크는 Java가 맡는다, [15] §3.1). 파일·스레드는 허용(저장 서비스·키 작업자, A2-4b).
 - yw-win 공개 API에 원시 `HANDLE`·`HWND`·포인터를 노출하지 않는다. 모든 핸들은 `Drop`에서 닫는 RAII 타입이다. `static mut` 금지(전역 상태는 atomic·`OnceLock`).
 - yw-app은 windows-sys에 직접 의존하지 않는다. Win32 GUI 전체(클래스, wndproc, 루프, 그리기)는 yw-win의 안전 API다.
 - `crates/yw-core/clippy.toml`(루트 clippy.toml 내용 + 아래)로 yw-core의 OS 접근을 lint로 막는다(확인함: yw-core에서만 오류, yw-app은 무관):

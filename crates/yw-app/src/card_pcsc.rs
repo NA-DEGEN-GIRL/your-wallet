@@ -352,7 +352,7 @@ pub(crate) mod tests {
     /// The source scans leave out only crates that cannot reach yw-engine (2026-11-23, spec/15
     /// §11.4 S5-0, §18 31 (다); critic C4): each [`NO_ENGINE_CRATES`] crate exists under
     /// `crates/` and names yw-engine in none of its dependency tables, and every other crate there
-    /// (yw-app and yw-engine today) is a [`source_roots`] root and in
+    /// (yw-android, yw-app and yw-engine today; yw-android since 2026-11-24 A2-1) is a [`source_roots`] root and in
     /// `s4_results::production_code`. A crate that starts to depend on yw-engine fails here until
     /// it leaves the no-engine list, and then it is scanned. 2026-11-23 (S5-0 review): every root
     /// `[workspace] members` path is `crates/<dir>` and the members are exactly the crates under
@@ -409,7 +409,13 @@ pub(crate) mod tests {
             assert!(scanned.contains(name), "{name}");
             assert!(roots.contains(&crates.join(name).join("src")), "{name}");
         }
-        assert_eq!(scanned, ["yw-app", "yw-engine"], "the scanned crates today");
+        // 2026-11-24 A2-1 (spec/15 §11.4 S5-0 note, §17 A2): yw-android depends on yw-engine, so it is
+        // scanned from the day it was added; before, yw-app and yw-engine only.
+        assert_eq!(
+            scanned,
+            ["yw-android", "yw-app", "yw-engine"],
+            "the scanned crates today"
+        );
         let production = crate::app::tests::s4_results::production_crates();
         assert_eq!(
             production, scanned,
