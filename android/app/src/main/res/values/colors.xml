@@ -2,4 +2,7 @@
 <resources>
     <!-- Launcher icon background (spec/15 §13 N21). -->
     <color name="icon_background">#FF1F4E79</color>
+    <!-- The warning bands of the main screen (spec/15 §1.1, §17; 2026-11-25 A2-5): dark text on amber. -->
+    <color name="band_background">#FFFFE8A3</color>
+    <color name="band_text">#FF4A3500</color>
 </resources>

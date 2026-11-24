@@ -30,6 +30,8 @@
 //! data, the account sources and the EVM activity row). [`file_storage`] holds the wallet data
 //! folder storage (`FileStorage`: the atomic commit, `.prev`, the set-aside copies, the link
 //! refusal) over the platform's `yw_platform::files::Files` (2026-11-25, spec/15 §17 A2-4a).
+//! [`protection`] holds the Android protection tier and the warning bands, pure decisions over the
+//! device facts the shell passes in (2026-11-25, spec/15 §1.1, §8.2, §17 A2-5).
 //!
 //! 2026-11-17 (spec/15 §11.4 S2, E1): created; these modules moved out of yw-app unchanged except
 //! for their `use` paths. E2 added the settings, metadata, explain and pipeline modules, E3 the
@@ -69,6 +71,7 @@ pub mod network;
 // test seam installs; source check `the_probe_is_installed_only_by_tests`).
 #[doc(hidden)]
 pub mod probe;
+pub mod protection;
 pub mod received;
 pub mod rpc;
 pub mod screen;

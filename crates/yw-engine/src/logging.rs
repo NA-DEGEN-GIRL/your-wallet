@@ -338,7 +338,7 @@ pub fn warn(area: &'static str, event: &'static str, fields: &[(&'static str, Fi
     log(LogLevel::Warn, area, event, fields);
 }
 
-/// How often [`panic_line`] tries the logger, 1 ms apart.
+/// How often [`panic_line`] and [`fatal_line`] try the logger, 1 ms apart.
 const PANIC_LOCK_TRIES: u32 = 10;
 
 /// The panic hook's line (spec/04 §1.5, §8): `ERROR app app.panic at=<file>:<line>`, never the
@@ -346,17 +346,19 @@ const PANIC_LOCK_TRIES: u32 = 10;
 /// be lost: the process aborts right after). The logger is only tried, briefly: this thread may
 /// have panicked while holding it.
 pub fn panic_line(location: Option<&Location<'_>>) {
+    let at = location.map(|location| ("at", Field::Source(location)));
+    fatal_line("app.panic", at.as_slice());
+}
+
+/// Another fatal end's line, written the same way as [`panic_line`]: `ERROR app <event>` with
+/// `fields`, at once, the logger only tried briefly. 2026-11-25 (spec/15 §3.3, §17 A2-5): the
+/// Android shell's `app.java_uncaught` (Java's uncaught-exception handler; no class, message or
+/// stack). `panic_line` writes through it the same bytes as before.
+pub fn fatal_line(event: &'static str, fields: &[(&'static str, Field<'_>)]) {
     let Some(logger) = LOGGER.get() else {
         return;
     };
-    let at = location.map(|location| ("at", Field::Source(location)));
-    let line = format_line(
-        log_line_unix_ms(),
-        LogLevel::Error,
-        "app",
-        "app.panic",
-        at.as_slice(),
-    );
+    let line = format_line(log_line_unix_ms(), LogLevel::Error, "app", event, fields);
     for _ in 0..PANIC_LOCK_TRIES {
         if let Ok(mut sink) = logger.sink.try_lock() {
             sink.write_line(&line, true);

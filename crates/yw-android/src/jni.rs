@@ -31,7 +31,9 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use yw_core::lang::Lang;
 use yw_core::secret::Zeroizing;
+use yw_engine::protection::Surface;
 
 use crate::interim::{self, Interim};
 use crate::io_request;
@@ -116,21 +118,39 @@ fn clear_exception(jni: JniEnv) {
 /// [`interim::MAX_INPUT`] bytes, which are not read) is answered with null. The engine joins in A2-6.
 /// 2026-11-25 A2-4b: also the start input ([`interim::start_dir`], at most
 /// [`interim::START_MAX`] bytes read): the shell starts on that folder ([`crate::shell::start`])
-/// and answers the status line, or null when it could not.
+/// and answers the status line, or null when it could not. 2026-11-25 A2-5: the uncaught-exception
+/// event writes its line (`panic_hook::java_uncaught`); the facts input ([`interim::facts`]) is
+/// kept ([`crate::device::record`]) and answered with the main screen's bands in the default
+/// language (Korean until the settings are read, A2-8); a `-DeviceTest` build checks its fault
+/// points on the status request (`crate::devtest::fault_points`).
 extern "C" fn call(jni: JniEnv, _class: JObject, input: JObject) -> JObject {
     when_loaded(core::ptr::null_mut(), || {
         let Some(bytes) = read_bytes(jni, input, interim::START_MAX) else {
             return core::ptr::null_mut();
         };
         match interim::classify(&bytes) {
-            Interim::Status => new_byte_array(jni, interim::STATUS_LINE.as_bytes()),
-            Interim::JavaUncaught => crate::panic_hook::fatal_end(),
-            Interim::Unknown => match interim::start_dir(&bytes) {
-                Some(dir) if crate::shell::start(&dir) => {
-                    new_byte_array(jni, interim::STATUS_LINE.as_bytes())
+            Interim::Status => {
+                #[cfg(yw_device_test)]
+                crate::devtest::fault_points();
+                new_byte_array(jni, interim::STATUS_LINE.as_bytes())
+            }
+            Interim::JavaUncaught => crate::panic_hook::java_uncaught(),
+            Interim::Unknown => {
+                if let Some(dir) = interim::start_dir(&bytes) {
+                    if crate::shell::start(&dir) {
+                        new_byte_array(jni, interim::STATUS_LINE.as_bytes())
+                    } else {
+                        core::ptr::null_mut()
+                    }
+                } else if let Some(facts) = interim::facts(&bytes) {
+                    let now = crate::shell::now_unix_ms();
+                    crate::device::record(facts, now);
+                    let bands = crate::device::bands(Surface::Main, now);
+                    new_byte_array(jni, &interim::bands_answer(&bands, Lang::default()))
+                } else {
+                    core::ptr::null_mut()
                 }
-                _ => core::ptr::null_mut(),
-            },
+            }
         }
     })
 }

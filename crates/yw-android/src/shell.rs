@@ -80,6 +80,16 @@ pub(crate) fn app_store() -> Option<AndroidStore> {
     ))
 }
 
+/// The wall clock in Unix milliseconds (0 when it reads before 1970), for the protection bands'
+/// patch age (2026-11-25 A2-5, `crate::device`).
+pub(crate) fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
 /// The data folder, once [`start`] succeeded.
 pub(crate) fn data() -> Option<&'static Path> {
     DATA.get().map(PathBuf::as_path)

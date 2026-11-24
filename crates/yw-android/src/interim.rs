@@ -10,7 +10,7 @@
 //!   device smoke of the skeleton;
 //! - [`JAVA_UNCAUGHT`]: the fixed event of Java's uncaught-exception handler (spec/15 §3.3): the
 //!   process ends like a panic (every slot wiped, then `_exit`). The one log line of that end comes
-//!   with A2-5.
+//!   with A2-5. (2026-11-25 A2-5: it came: `app.java_uncaught`, written after the wipe.)
 //!
 //! 2026-11-25 A2-4b: the start input `{"t":"start","dir":"<path>"}` ([`start_dir`]), sent once by
 //! `App.onCreate` with `Context.getNoBackupFilesDir()`: the shell's data folder is `<path>/v3`
@@ -18,12 +18,25 @@
 //! (strict, an object of exactly those two members) and the path must be absolute, printable
 //! ASCII, without `..` components, at most [`START_MAX`] bytes in all; anything else is unknown.
 //!
-//! A2-6 replaces all three with the yw-json input format (`Input`, spec/15 §3.2, §18 8).
+//! 2026-11-25 A2-5: the facts input
+//! `{"t":"facts","sdk":<n>,"patch":"<YYYY-MM-DD or empty>","adb":<bool>,"adbw":<bool>}`
+//! ([`facts`], spec/15 §1.1, §8.2), sent by `App.onCreate` after the start input and by the main
+//! Activity's `onStart` (`Settings.Global` `adb_enabled`/`adb_wifi_enabled` change while the app
+//! runs), parsed strictly like the start input (exactly those five members, `sdk` an integer up
+//! to [`SDK_MAX`], `patch` a string of at most [`PATCH_MAX`] bytes that is read as unknown unless it is a
+//! valid `YYYY-MM-DD`, at most [`START_MAX`] bytes). Its answer
+//! is the main screen's warning bands ([`bands_answer`]: their texts in UTF-8, one per line, at
+//! most [`BANDS_MAX`] bytes).
+//!
+//! A2-6 replaces all four with the yw-json input format (`Input`, spec/15 §3.2, §18 8).
 //! Platform-neutral (no `unsafe`), so the gate's Windows build tests it; the JVM runner pins the
 //! same bytes on the Java side (`JvmTests.interimInputs`).
 #![forbid(unsafe_code)]
 
 use std::path::PathBuf;
+
+use yw_core::lang::Lang;
+use yw_engine::protection::{Band, DeviceFacts, PatchDate};
 
 /// The status request (`{"t":"status"}`).
 pub const STATUS: &[u8] = br#"{"t":"status"}"#;
@@ -106,6 +119,71 @@ pub fn start_dir(input: &[u8]) -> Option<PathBuf> {
     Some(PathBuf::from(dir))
 }
 
+/// The largest `sdk` a facts input may carry (a sanity bound, far above any API level).
+pub const SDK_MAX: u64 = 1_000;
+
+/// The longest `patch` string of a facts input (a longer one makes the input unknown).
+pub const PATCH_MAX: usize = 16;
+
+/// The longest answer of the facts input (Java's `Wire.BANDS_MAX`).
+pub const BANDS_MAX: usize = 1_024;
+
+/// The device facts of a facts input (module doc), `None` for any other input.
+#[must_use]
+pub fn facts(input: &[u8]) -> Option<DeviceFacts> {
+    if input.len() > START_MAX {
+        return None;
+    }
+    let limits = yw_json::Limits {
+        max_bytes: START_MAX,
+        max_depth: 1,
+        max_nodes: 12,
+        max_items: 8,
+    };
+    let value = yw_json::parse(input, &limits).ok()?;
+    let object = value.as_object()?;
+    if object.len() != 5 || object.get("t")?.as_str()? != "facts" {
+        return None;
+    }
+    let sdk = object.get("sdk")?.as_number()?.as_u64()?;
+    if sdk > SDK_MAX {
+        return None;
+    }
+    // Any patch string that is not a valid date (Java sends "" for one) reads as unknown, so as
+    // old: the input is still taken, and the weak-protection band shows.
+    let patch_text = object.get("patch")?.as_str()?;
+    if patch_text.len() > PATCH_MAX {
+        return None;
+    }
+    let patch = PatchDate::parse(patch_text);
+    Some(DeviceFacts {
+        sdk: u32::try_from(sdk).ok()?,
+        patch,
+        adb: object.get("adb")?.as_bool()?,
+        adb_wifi: object.get("adbw")?.as_bool()?,
+    })
+}
+
+/// The answer of the facts input: the bands' texts in `lang`, one per line (no line end after the
+/// last), never more than [`BANDS_MAX`] bytes (a band that would pass it is left out with the
+/// ones after it; the three texts are far shorter).
+#[must_use]
+pub fn bands_answer(bands: &[Band], lang: Lang) -> Vec<u8> {
+    let mut out = Vec::new();
+    for band in bands {
+        let text = band.text(lang).as_bytes();
+        let extra = usize::from(!out.is_empty());
+        if out.len().saturating_add(extra).saturating_add(text.len()) > BANDS_MAX {
+            break;
+        }
+        if extra == 1 {
+            out.push(b'\n');
+        }
+        out.extend_from_slice(text);
+    }
+    out
+}
+
 // The status line is printable ASCII that Java accepts (`Wire.STATUS_MAX` = 64), and both inputs fit
 // `MAX_INPUT`, at compile time.
 const _: () = {
@@ -124,8 +202,12 @@ const _: () = {
 mod tests {
     use std::path::Path;
 
+    use yw_core::lang::Lang;
+    use yw_engine::protection::{Band, DeviceFacts, PatchDate};
+
     use super::{
-        ABI, Interim, JAVA_UNCAUGHT, MAX_INPUT, START_MAX, STATUS, STATUS_LINE, classify, start_dir,
+        ABI, BANDS_MAX, Interim, JAVA_UNCAUGHT, MAX_INPUT, START_MAX, STATUS, STATUS_LINE,
+        bands_answer, classify, facts, start_dir,
     };
 
     /// The same bytes as `dev.yw.app.Wire` (pinned on the Java side by `JvmTests.interimInputs`).
@@ -200,5 +282,86 @@ mod tests {
                 .all(|unit| (0x20..=0x7e).contains(&unit))
         );
         assert!(STATUS_LINE.len() <= 64);
+    }
+
+    /// The bytes `Wire.facts` builds for the test device (`JvmTests.factsInput`).
+    #[test]
+    fn the_facts_input() {
+        assert_eq!(
+            facts(b"{\"t\":\"facts\",\"sdk\":29,\"patch\":\"2021-01-01\",\"adb\":true,\"adbw\":false}"),
+            Some(DeviceFacts {
+                sdk: 29,
+                patch: PatchDate::parse("2021-01-01"),
+                adb: true,
+                adb_wifi: false,
+            })
+        );
+        assert_eq!(
+            facts(b"{\"t\":\"facts\",\"sdk\":36,\"patch\":\"\",\"adb\":false,\"adbw\":true}"),
+            Some(DeviceFacts {
+                sdk: 36,
+                patch: None,
+                adb: false,
+                adb_wifi: true,
+            })
+        );
+        // A patch that is not a valid date is unknown, not a refused input.
+        for patch in ["2021-1-01", "x", "2021-13-45", "0000000000000000"] {
+            let input = format!(
+                "{{\"t\":\"facts\",\"sdk\":29,\"patch\":\"{patch}\",\"adb\":false,\"adbw\":false}}"
+            );
+            assert_eq!(
+                facts(input.as_bytes()).map(|facts| facts.patch),
+                Some(None),
+                "{patch}"
+            );
+        }
+        for bad in [
+            &b"{\"t\":\"facts\",\"sdk\":29,\"patch\":\"2021-01-01-01-01-0\",\"adb\":true,\"adbw\":false}"[..],
+            b"{\"t\":\"facts\",\"sdk\":29,\"patch\":7,\"adb\":true,\"adbw\":false}",
+            b"{\"t\":\"facts\",\"sdk\":-1,\"patch\":\"\",\"adb\":true,\"adbw\":false}",
+            b"{\"t\":\"facts\",\"sdk\":29.5,\"patch\":\"\",\"adb\":true,\"adbw\":false}",
+            b"{\"t\":\"facts\",\"sdk\":1001,\"patch\":\"\",\"adb\":true,\"adbw\":false}",
+            b"{\"t\":\"facts\",\"sdk\":\"29\",\"patch\":\"\",\"adb\":true,\"adbw\":false}",
+            b"{\"t\":\"facts\",\"sdk\":29,\"patch\":\"\",\"adb\":1,\"adbw\":false}",
+            b"{\"t\":\"facts\",\"sdk\":29,\"patch\":\"\",\"adb\":true}",
+            b"{\"t\":\"facts\",\"sdk\":29,\"patch\":\"\",\"adb\":true,\"adbw\":false,\"x\":1}",
+            b"{\"t\":\"facts\",\"sdk\":29,\"patch\":\"\",\"adb\":true,\"adb\":false}",
+            b"{\"t\":\"fact\",\"sdk\":29,\"patch\":\"\",\"adb\":true,\"adbw\":false}",
+            b"{\"t\":\"start\",\"dir\":\"/a\"}",
+            STATUS,
+            JAVA_UNCAUGHT,
+        ] {
+            assert_eq!(facts(bad), None, "{}", String::from_utf8_lossy(bad));
+        }
+        assert_eq!(
+            classify(b"{\"t\":\"facts\",\"sdk\":29,\"patch\":\"\",\"adb\":true,\"adbw\":false}"),
+            Interim::Unknown
+        );
+    }
+
+    #[test]
+    fn the_bands_answer_is_lines_of_text() {
+        assert_eq!(bands_answer(&[], Lang::Ko), b"");
+        let answer = bands_answer(&[Band::TestBuild, Band::WeakDevice], Lang::Ko);
+        let text = String::from_utf8(answer).unwrap();
+        assert_eq!(
+            text.split('\n').collect::<Vec<_>>(),
+            [
+                Band::TestBuild.text(Lang::Ko),
+                Band::WeakDevice.text(Lang::Ko)
+            ]
+        );
+        let all = bands_answer(
+            &[Band::TestBuild, Band::WeakDevice, Band::Debugging],
+            Lang::En,
+        );
+        assert!(all.len() <= BANDS_MAX);
+        assert_eq!(all.split(|unit| *unit == b'\n').count(), 3);
+        assert!(all.iter().all(|unit| *unit >= 0x20 || *unit == b'\n'));
+        let many = [Band::Debugging; 40];
+        let capped = bands_answer(&many, Lang::Ko);
+        assert!(capped.len() <= BANDS_MAX && !capped.is_empty());
+        assert!(!capped.ends_with(b"\n"));
     }
 }

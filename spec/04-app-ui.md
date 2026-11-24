@@ -1405,7 +1405,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 
 | 기록한다 | 기록하지 않는다 |
 |---|---|
-| 시작·종료(버전, OS 빌드, 인자), 패닉 위치(`app.panic at=<파일>:<줄>`, §1.5-6), `AppMode` 전이, 잠금 사유, 잠금 해제 성공·실패(횟수만) | 비밀번호, passphrase, 니모닉 단어, 개인키, 시드, DEK·KEK, 백업 확인 답, 패닉 메시지 |
+| 시작·종료(버전, OS 빌드, 인자), 패닉 위치(`app.panic at=<파일>:<줄>`, §1.5-6; 2026-11-25 [15](15-android.md) A2-5, Android만: Java 예외의 끝 `app.java_uncaught`(필드 없음), 기기 사실 `device.facts tier=<등급> sdk=<n> old_patch=<yes\|no>`), `AppMode` 전이, 잠금 사유, 잠금 해제 성공·실패(횟수만) | 비밀번호, passphrase, 니모닉 단어, 개인키, 시드, DEK·KEK, 백업 확인 답, 패닉 메시지 |
 | 오류 코드와 분류 입력(HTTP 상태, JSON-RPC 코드, Win32 오류 번호, enum 이름) | API 키, RPC 엔드포인트 URL의 어느 부분도(호스트·엔드포인트 이름·경로·쿼리·토큰), 템플릿 자격 정보, `Authorization` 헤더 |
 | RPC 메서드 이름, `NetworkId`, 지연, 응답 크기 | RPC·LLM 요청·응답 본문(`debug`의 잘린 원격 오류 문자열 제외, §7) |
 | dApp 요청: 메서드 이름, 내부 요청 번호, `QueueOutcome` | dApp origin, personal_sign 내용, 타입 데이터, calldata |

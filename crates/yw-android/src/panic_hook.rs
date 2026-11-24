@@ -5,7 +5,9 @@
 //! and register-adjacent memory even with `PR_SET_DUMPABLE 0` (P0-1 F1-2 measured it), and the Rust
 //! default hook is not called (nothing goes to stderr). 2026-11-24 A2-1: the skeleton; the Java
 //! uncaught-exception path joins it in A2-5, and the log sink is installed in A2-4b (until then the
-//! line has nowhere to go and is dropped).
+//! line has nowhere to go and is dropped). (2026-11-25 A2-5: [`java_uncaught`] is that path's end,
+//! with its own line `app.java_uncaught`; a `-DeviceTest` build has two fault points that panic
+//! on purpose, `crate::devtest::fault_point`.)
 //!
 //! 2026-11-24 A2-1 review: the wipe comes first, before the log line. The line does not depend on the
 //! slots, and the log path can itself end the process by abort (an allocation failure, a panic inside
@@ -25,6 +27,16 @@ pub(crate) fn install() {
         logging::panic_line(info.location());
         fatal_end();
     }));
+}
+
+/// Java's uncaught-exception event (spec/15 §3.3, the interim `java_uncaught` input): the same end
+/// as a panic, in the same order — every slot wiped, then the one `app.java_uncaught` line (no
+/// class, message or stack: Java never sends them), then `_exit`. 2026-11-25 A2-5: the line;
+/// before, this end wrote none.
+pub(crate) fn java_uncaught() -> ! {
+    crate::slot::wipe_all();
+    logging::fatal_line("app.java_uncaught", &[]);
+    fatal_end();
 }
 
 /// Wipes every slot and ends the process at once (no unwinding, no `atexit` handlers, no abort).

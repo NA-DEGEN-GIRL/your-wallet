@@ -24,7 +24,14 @@
 //! Android only: `android_files` (the std/`libc` `Files`), `purge` (`mallopt(M_PURGE)`), `shell`
 //! (the broker, the data folder, the Argon2 wrapper) and, in a `-DeviceTest` debug build only,
 //! `devtest` (the create → kill → reopen round trip).
+//!
+//! 2026-11-25 A2-5 (spec/15 §1.1, §3.3, §5.3, §8.2): [`device`] (the newest device facts from the
+//! interim facts input and the build's test-build constant; the tier and band decisions are
+//! yw-engine `protection`), Java's uncaught-exception end with its own log line
+//! (`panic_hook::java_uncaught`), and in a `-DeviceTest` build the panic test's fault points
+//! (`devtest::fault_points`).
 
+pub mod device;
 pub mod device_key;
 pub mod interim;
 pub mod io_request;

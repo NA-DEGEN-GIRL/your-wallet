@@ -15,6 +15,9 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>2026-11-25 A2-4b: and the start input ({@link #start(String)}), the data folder's parent.
  *
+ * <p>2026-11-25 A2-5: and the facts input ({@link #facts}), whose answer is the main screen's warning bands
+ * ({@link #bands}); the uncaught-exception event now also leaves one log line (Rust's app.java_uncaught).
+ *
  * <p>Platform-neutral: tested by the JVM runner (§18 42 N15).
  */
 final class Wire {
@@ -59,6 +62,79 @@ final class Wire {
         }
         byte[] input = ("{\"t\":\"start\",\"dir\":\"" + dir + "\"}").getBytes(StandardCharsets.US_ASCII);
         return input.length <= START_MAX ? input : null;
+    }
+
+    /** The largest sdk value Rust accepts (yw-android interim::SDK_MAX). */
+    static final int SDK_MAX = 1000;
+
+    /** The longest bands answer Java accepts (yw-android interim::BANDS_MAX). */
+    static final int BANDS_MAX = 1024;
+
+    /**
+     * The facts input {"t":"facts","sdk":N,"patch":"YYYY-MM-DD","adb":B,"adbw":B} (2026-11-25 A2-5, spec/15 §1.1,
+     * §8.2): the API level, the security patch date and whether USB or wireless debugging is on. A patch that is not
+     * exactly four digits, '-', two digits, '-', two digits is sent as "" (Rust reads an unknown patch as old, so the
+     * weak-protection band shows); an sdk outside 0..SDK_MAX is sent as 0 (the lowest tier). The same rules as
+     * yw-android interim::facts.
+     */
+    static byte[] facts(int sdk, String patch, boolean adb, boolean adbWifi) {
+        int level = sdk < 0 || sdk > SDK_MAX ? 0 : sdk;
+        String date = isDate(patch) ? patch : "";
+        return ("{\"t\":\"facts\",\"sdk\":" + level + ",\"patch\":\"" + date + "\",\"adb\":" + adb + ",\"adbw\":" + adbWifi
+                        + "}")
+                .getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static boolean isDate(String text) {
+        if (text == null || text.length() != 10) {
+            return false;
+        }
+        for (int at = 0; at < 10; at++) {
+            char unit = text.charAt(at);
+            boolean dash = at == 4 || at == 7;
+            if (dash ? unit != '-' : unit < '0' || unit > '9') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * The band texts of Rust's answer to the facts input, top first (2026-11-25 A2-5): strict UTF-8, at most BANDS_MAX
+     * bytes, lines split at '\n', no other control character and no empty line. Anything else is not drawn as text
+     * Rust wrote: an empty array for an empty answer, null for a bad one (the caller then draws no band text).
+     */
+    static String[] bands(byte[] answer) {
+        if (answer == null || answer.length > BANDS_MAX) {
+            return null;
+        }
+        if (answer.length == 0) {
+            return new String[0];
+        }
+        String text;
+        try {
+            text = StandardCharsets.UTF_8
+                    .newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(answer))
+                    .toString();
+        } catch (java.nio.charset.CharacterCodingException bad) {
+            return null;
+        }
+        String[] lines = text.split("\n", -1);
+        for (String line : lines) {
+            if (line.isEmpty()) {
+                return null;
+            }
+            for (int at = 0; at < line.length(); at++) {
+                char unit = line.charAt(at);
+                if (unit < 0x20 || unit == 0x7f) {
+                    return null;
+                }
+            }
+        }
+        return lines;
     }
 
     /** The status line in Rust's answer, or null unless it is 1 to STATUS_MAX printable ASCII bytes. */

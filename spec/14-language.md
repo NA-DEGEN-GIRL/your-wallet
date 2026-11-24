@@ -13,7 +13,7 @@
 - 앱이 정하는 기본 이름(`계정 N`/`Account N`, `복구 단어 N`/`Recovery words N`)은 만드는 순간의 언어로 정하고 이름으로 저장한다. 저장된 이름은 언어를 바꿔도 다시 쓰지 않는다(사용자가 붙인 이름과 같은 데이터다). 지갑 초기화의 확인 문구는 언어마다 다르다(`초기화` / `reset`, [04] §2).
 - AI 설명([06])은 앱 언어로 요청하고 그 언어의 문자 규칙으로 거른다.
 - Chrome 확장 팝업은 자기 토글(`chrome.storage.local`)을 쓴다([05] §2.12). 페이지에 던지는 고정 오류 문구는 모두 영어다([05] §2.13·§5).
-- Android 앱([15] §3.3 N24; 2026-11-24 A2-3): Java 쪽은 고정 문구를 갖지 않고 모든 문구는 카탈로그에서 화면 모델로 온다. 예외 하나는 매니페스트의 앱 이름(`android:label`, `android/app/src/main/res/values/strings.xml`의 `app_name`)으로, 실행기와 시스템 화면이 앱 코드 없이 보이므로 Android 리소스여야 한다. 값은 `Your Wallet`이고 두 언어에서 같은 제품 이름이라(한국어 문구도 `Your Wallet 앱`이라 부른다) `values-ko`를 두지 않는다. A2-3의 주 화면은 낱말 없는 상태 줄(`yw <판> <ABI>`) 하나뿐이다. `scripts/i18n-scan.mjs`는 `android/app/src`의 `.java`에서 한글 리터럴을 모두 위반으로 보고(카탈로그가 없다), Android 리소스 XML의 한글은 `res/values-ko/strings.xml`에서만 받으며, `crates/yw-android/src`도 본다.
+- Android 앱([15] §3.3 N24; 2026-11-24 A2-3): Java 쪽은 고정 문구를 갖지 않고 모든 문구는 카탈로그에서 화면 모델로 온다. 예외 하나는 매니페스트의 앱 이름(`android:label`, `android/app/src/main/res/values/strings.xml`의 `app_name`)으로, 실행기와 시스템 화면이 앱 코드 없이 보이므로 Android 리소스여야 한다. 값은 `Your Wallet`이고 두 언어에서 같은 제품 이름이라(한국어 문구도 `Your Wallet 앱`이라 부른다) `values-ko`를 두지 않는다. A2-3의 주 화면은 낱말 없는 상태 줄(`yw <판> <ABI>`) 하나뿐이다. `scripts/i18n-scan.mjs`는 `android/app/src`의 `.java`에서 한글 리터럴을 모두 위반으로 보고(카탈로그가 없다), Android 리소스 XML의 한글은 `res/values-ko/strings.xml`에서만 받으며, `crates/yw-android/src`도 본다. (2026-11-25 A2-5: 주 화면의 경고 띠(시험용 빌드, 약한 보호, 그리고 비밀·승인 화면의 디버깅 띠, [15] §1.1·§8.2·§17)와 보호 등급 이름은 엔진 카탈로그 `yw_engine::protection::text`(§5)이고, Rust가 그 문구를 Java에 답으로 넘겨 Java는 색만 정해 그린다. 설정을 읽기 전인 A2에서는 기본 언어(한국어)로 답한다 — 설정 언어는 화면 모델이 생기는 A2-6·A2-8부터.)
 
 ## 2. 구조 (새 crate 없음)
 
@@ -1591,6 +1591,17 @@
 | BTC_ACCOUNT_LABEL | Bitcoin {0} | Bitcoin {0} |
 | ROLLBACK | 지갑 파일(vault.ywv)이 예전 사본으로 바뀌었을 수 있습니다: 이 지갑은 세대 {0}까지 저장했는데 지금 파일은 세대 {1}입니다. 직접 백업에서 되돌린 것이 아니라면 지운 계정·키가 다시 나타나거나 최근 변경이 사라졌을 수 있으니 확인하세요. | The wallet file (vault.ywv) may have been replaced by an older copy: this wallet saved up to generation {0}, but the file is now generation {1}. Unless you restored it from a backup yourself, removed accounts or keys may have come back or recent changes may be lost, so check. |
 
+<!-- catalogue: yw_engine::protection::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| TIER_FULL | 완전 | Full |
+| TIER_BASIC | 기본 | Basic |
+| TIER_WEAK | 약함 | Weak |
+| TIER_TEST | 시험용 | Test only |
+| BAND_TEST_BUILD | 시험용 빌드입니다. 실제 복구 단어와 실제 자금을 쓰지 마세요 | This is a test build. Do not use a real recovery phrase or real funds. |
+| BAND_WEAK_DEVICE | 이 기기는 보호가 약합니다(시험용으로만 쓰세요) | This device's protection is weak (use it for testing only). |
+| BAND_DEBUGGING | USB·무선 디버깅이 켜져 있습니다. 컴퓨터가 대신 누를 수 있습니다 | USB or wireless debugging is on. A computer can press buttons for you. |
 <!-- catalogue: yw_engine::received::btc::text -->
 
 | 이름 | 한국어 | English |

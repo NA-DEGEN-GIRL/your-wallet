@@ -12,6 +12,9 @@ import android.content.Context;
  * <p>2026-11-25 A2-4b: in onCreate the main process starts the I/O thread ({@link IoLoop}, the Keystore device key
  * and the memory facts that Rust requests, §3.2) and then sends the start input with the no-backup folder (§5.1),
  * where Rust keeps the data folder v3 and its log file.
+ *
+ * <p>2026-11-25 A2-5: then the device facts (DeviceFacts, spec/15 §1.1, §8.2), so that Rust logs the protection tier
+ * once at start; the main Activity sends them again on every onStart.
  */
 public final class App extends Application {
     private static volatile boolean loaded;
@@ -35,6 +38,7 @@ public final class App extends Application {
             if (start != null) {
                 Native.call(start);
             }
+            Native.call(DeviceFacts.input(this));
         }
     }
 

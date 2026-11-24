@@ -23,6 +23,8 @@ public final class JvmTests {
         run("I/O statuses and kind strings are Rust's", JvmTests::ioConstants);
         run("memory facts are the bytes Rust parses", JvmTests::memoryFacts);
         run("only the create request may make the device key", JvmTests::createFrame);
+        run("facts input is the bytes Rust parses", JvmTests::factsInput);
+        run("bands answer is strict UTF-8 lines", JvmTests::bandsAnswer);
         System.out.println("jvmTest: " + passed + " passed, " + failed + " failed");
         if (failed != 0 || passed == 0) {
             System.exit(1);
@@ -183,5 +185,52 @@ public final class JvmTests {
 
     private static byte[] ascii(String text) {
         return text.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static void factsInput() {
+        // The same bytes as yw-android interim's the_facts_input test.
+        check(
+                Arrays.equals(
+                        Wire.facts(29, "2021-01-01", true, false),
+                        ascii("{\"t\":\"facts\",\"sdk\":29,\"patch\":\"2021-01-01\",\"adb\":true,\"adbw\":false}")),
+                "test device");
+        check(
+                Arrays.equals(
+                        Wire.facts(36, "", false, true),
+                        ascii("{\"t\":\"facts\",\"sdk\":36,\"patch\":\"\",\"adb\":false,\"adbw\":true}")),
+                "no patch");
+        for (String bad : new String[] {null, "", "2021-1-01", "2021/01/01", "2021-01-01 ", "x\"}", "2021-01-0a"}) {
+            String sent = new String(Wire.facts(31, bad, false, false), StandardCharsets.US_ASCII);
+            check(sent.contains("\"patch\":\"\""), "patch sent as empty: " + bad);
+        }
+        check(new String(Wire.facts(-1, "", false, false), StandardCharsets.US_ASCII).contains("\"sdk\":0,"), "negative");
+        check(
+                new String(Wire.facts(Wire.SDK_MAX + 1, "", false, false), StandardCharsets.US_ASCII)
+                        .contains("\"sdk\":0,"),
+                "too large");
+        check(
+                new String(Wire.facts(Wire.SDK_MAX, "", false, false), StandardCharsets.US_ASCII)
+                        .contains("\"sdk\":" + Wire.SDK_MAX + ","),
+                "largest");
+    }
+
+    private static void bandsAnswer() {
+        String first = "\uC2DC\uD5D8\uC6A9 \uBE4C\uB4DC";
+        String second = "This device's protection is weak (use it for testing only).";
+        String[] two = Wire.bands((first + "\n" + second).getBytes(StandardCharsets.UTF_8));
+        check(two != null && two.length == 2 && two[0].equals(first) && two[1].equals(second), "two lines");
+        check(Wire.bands(new byte[0]).length == 0, "no band");
+        check(Wire.bands(null) == null, "null");
+        check(Wire.bands(new byte[] {(byte) 0xC3}) == null, "cut UTF-8");
+        check(Wire.bands(new byte[] {(byte) 0xED, (byte) 0xA0, (byte) 0x80}) == null, "surrogate");
+        check(Wire.bands(ascii("a\n")) == null, "empty last line");
+        check(Wire.bands(ascii("a\n\nb")) == null, "empty line");
+        check(Wire.bands(ascii("a\rb")) == null, "control");
+        check(Wire.bands(ascii("a\tb")) == null, "tab");
+        check(Wire.bands(new byte[] {'a', 0x7f}) == null, "delete");
+        byte[] longest = new byte[Wire.BANDS_MAX];
+        Arrays.fill(longest, (byte) 'a');
+        check(Wire.bands(longest) != null, "longest");
+        check(Wire.bands(Arrays.copyOf(longest, Wire.BANDS_MAX + 1)) == null, "too long");
     }
 }

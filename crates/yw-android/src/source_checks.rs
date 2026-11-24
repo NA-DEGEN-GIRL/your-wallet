@@ -58,7 +58,8 @@ fn purge_is_the_one_mallopt() {
 
 /// The device round trip (a vault from the public test vector under a fixed password) is compiled
 /// only with `--cfg yw_device_test` (spec/09 §2.6): `lib.rs` declares it under that cfg, and only
-/// `shell.rs` names it, under the same cfg.
+/// `shell.rs` (the round trip) and, since 2026-11-25 A2-5, `jni.rs` (the panic test's fault points on
+/// the status request) name it, each under the same cfg.
 #[test]
 fn the_device_test_is_cfg_gated() {
     for (name, text) in sources() {
@@ -69,7 +70,10 @@ fn the_device_test_is_cfg_gated() {
                 continue;
             }
             assert!(
-                matches!(name.as_str(), "lib.rs" | "shell.rs" | "source_checks.rs"),
+                matches!(
+                    name.as_str(),
+                    "lib.rs" | "shell.rs" | "jni.rs" | "source_checks.rs"
+                ),
                 "{name} names devtest: {line}"
             );
             let before = at.checked_sub(1).and_then(|prev| lines.get(prev)).copied();
@@ -81,7 +85,9 @@ fn the_device_test_is_cfg_gated() {
                         "mod devtest;"
                     )
                 ),
-                "shell.rs" => assert_eq!(before, Some("#[cfg(yw_device_test)]"), "{line}"),
+                "shell.rs" | "jni.rs" => {
+                    assert_eq!(before, Some("#[cfg(yw_device_test)]"), "{name}: {line}");
+                }
                 _ => {}
             }
         }

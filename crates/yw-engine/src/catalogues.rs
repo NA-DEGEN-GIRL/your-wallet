@@ -15,7 +15,8 @@
 //! (`screens` became `core`), the `rpc.json` card's `screen::build::rpc_import::text` (before
 //! `yw_app::app_rpc_import::text`), S23's `screen::extension::text` (before
 //! `yw_app::app_extension::text`) and the receive note's `screen::qr::text` (before
-//! `yw_app::ui::qr::text`), moved with the builders.)
+//! `yw_app::ui::qr::text`), moved with the builders. 2026-11-25, spec/15 §17 A2-5: the Android
+//! protection tier names and warning bands `protection::text`, new.)
 
 use yw_core::lang::Entry;
 
@@ -47,6 +48,7 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
     ),
     ("yw_engine::hypercore::text", crate::hypercore::text::ALL),
     ("yw_engine::meta::text", crate::meta::text::ALL),
+    ("yw_engine::protection::text", crate::protection::text::ALL),
     (
         "yw_engine::received::btc::text",
         crate::received::btc::text::ALL,
