@@ -2230,7 +2230,12 @@ fn screenshot_tour() {
         ));
     });
     set_screen(&app, UNLOCKED, Screen::Settings(SettingsSection::Other));
-    entry(&app).open_extension_help();
+    // 2026-11-24 (spec/15 §11.4 S5-9): S23's `Chrome 확장 설치` is the wallet's press (before,
+    // the shell's `App::open_extension_help`, called here).
+    entry(&app).dispatch(yw_engine::cmd::Cmd::Press {
+        press: yw_engine::cmd::Press::Ext(yw_engine::cmd::ExtPress::Open),
+        input: yw_engine::form::PressInput::default(),
+    });
     save(main_hwnd(&app), "45-chrome-extension");
     crate::app_extension::TOUR_EXTENSION_DIR.with(|dir| *dir.borrow_mut() = None);
     // A new site asks to connect (EVM): the account chooser of the connect window.

@@ -44,7 +44,9 @@ use crate::ui::cmd_table::{self, IDCANCEL, IDOK};
 use crate::ui::theme::{FontCache, FontRole, wide};
 use yw_core::lang::Lang;
 use yw_engine::approval::flow::OpenOutcome;
-use yw_engine::cmd::{Cmd, CorePress, Press, TickPart};
+use yw_engine::cmd::{
+    ClipNote, Cmd, CorePress, ExtPress, MainStep, PlatformNote, Press, RpcImportPress, TickPart,
+};
 use yw_engine::effect::TimerId;
 use yw_engine::workers::rpc::RpcJob;
 // `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
@@ -54,8 +56,8 @@ use yw_engine::form::{CredField, EditField};
 // to `yw_engine::screen` (the scroll effects carry them). P10a re-exported them as
 // `crate::app::SettingsSection` and `crate::app_scroll::ScrollPlace`; 2026-11-21 (S4b final
 // review, AGENTS.md §4 "no new re-exports"): the callers name `yw_engine::screen` directly.
+use yw_engine::screen::SettingsSection;
 use yw_engine::screen::facts::PlatformFlags;
-use yw_engine::screen::{SettingsSection, Tone};
 // 2026-11-24 (spec/15 §11.4 S5-8): the secret windows' form is the engine's; the shell owns the
 // instance (`App::secret`) and paints it (`ui::secret::paint_form`).
 use yw_engine::secret::form::{FormAction, SecretForm};
@@ -103,11 +105,10 @@ use yw_engine::wallet::Purpose;
 use yw_engine::wallet::Screen;
 #[cfg(debug_assertions)]
 use yw_engine::wallet::cred_fingerprint;
-use yw_engine::wallet::text::T_CLIP_NOT_CLEARED;
 use yw_engine::wallet::{AppMode, Wallet};
 
+use text::PASTE_CLEARED;
 pub use text::PASTE_EDGE_SPACE;
-use text::{PASTE_CLEARED, T_CLIP_CLEARED_LATE};
 const MAIN_TIMER_ID: usize = 1;
 const LOG_FLUSH_MS: u64 = 2_000;
 const SESSION_RETRY_MS: u64 = 1_000;
@@ -156,7 +157,7 @@ impl PendingClip {
 
     /// A copy an earlier run may have left behind ([`App::clear_earlier_secret_clip`]). `noticed`
     /// starts set: until a clear finds one nothing says it is there, so a busy clipboard is
-    /// retried without [`T_CLIP_NOT_CLEARED`], and a clear that empties it says so.
+    /// retried without `T_CLIP_NOT_CLEARED`, and a clear that empties it says so.
     const fn earlier_run(now: u64) -> Self {
         Self {
             clip: SecretClip::ANY,
@@ -179,8 +180,9 @@ impl PendingClip {
 struct ClipRetry {
     /// When a clear first found the clipboard busy: retried every tick from then on.
     busy_since_ms: Option<u64>,
-    /// [`T_CLIP_NOT_CLEARED`] is showing (or, for an earlier run's copy, is never to show): a
-    /// clear that empties the clipboard then shows [`T_CLIP_CLEARED_LATE`].
+    /// `T_CLIP_NOT_CLEARED` is showing (or, for an earlier run's copy, is never to show): a
+    /// clear that empties the clipboard then shows `T_CLIP_CLEARED_LATE` (the wallet's notices,
+    /// `Cmd::SecretClip`, 2026-11-24 S5-9).
     noticed: bool,
 }
 
@@ -189,7 +191,7 @@ struct ClipRetry {
 enum ClipStep {
     /// Cleared, or replaced by another copy meanwhile (`true` = it was emptied).
     Done(bool),
-    /// Busy: try again on the next tick (`true` = show [`T_CLIP_NOT_CLEARED`] now).
+    /// Busy: try again on the next tick (`true` = show `T_CLIP_NOT_CLEARED` now).
     Retry(bool),
     /// Busy for [`SECRET_CLIPBOARD_RETRY_MS`]: stop retrying.
     GiveUp,
@@ -351,8 +353,8 @@ pub struct App {
     /// The approval window's shell state (2026-11-19, S4 B4b, spec/15 §11.4 S4): shown exactly
     /// while `evm.approval` is (was part of `EvmUi.window`).
     pub(crate) approval_win: Option<crate::app_approval::ApprovalWin>,
-    /// S23 `Chrome 확장 설치` (spec/04 §2.21).
-    pub(crate) ext: crate::app_extension::ExtensionUi,
+    // 2026-11-24 (spec/15 §11.4 S5-9): `ext` (`app_extension::ExtensionUi`, S23's way back) is
+    // gone: S23's presses are the wallet's, and its way back the wallet's `ext_back`.
     /// The shell (2026-11-21, S4 W1, plan §3.3: the state cut out of the wallet's parts): how a
     /// link or a folder is opened (`explorer.exe`; unit-test builds record it). Only the effect
     /// executor uses it (`Effect::OpenUrl`, `Effect::OpenFolder`). Before W1,
@@ -670,7 +672,6 @@ impl App {
             cred_shadow: Vec::new(),
             placed: Placed::default(),
             approval_win: None,
-            ext: crate::app_extension::ExtensionUi::default(),
             launcher: crate::explorer_launcher::Launcher::default(),
             pipe: None,
             workers: Vec::new(),
@@ -685,31 +686,17 @@ impl App {
 }
 
 impl App {
-    /// The installed commit read at start (`build_info::read_install_commit`, already checked).
-    /// 2026-11-22 (S4c W15): `main.rs`'s start step, handed to the wallet
-    /// ([`Wallet::install_commit_read`]); before, written here.
-    pub fn set_install_commit(&mut self, commit: Option<String>) {
-        self.wallet.install_commit_read(commit);
-    }
-
-    /// `WerAddExcludedApplication` failed at startup (review L9): a banner now and a line in
-    /// settings → 보안 for the rest of the run. 2026-11-22 (S4c W15): `main.rs`'s start step,
-    /// handed to the wallet ([`Wallet::wer_unprotected_noted`]); before, written here.
-    pub fn note_wer_unprotected(&mut self) {
-        self.wallet.wer_unprotected_noted();
-    }
-
-    /// A banner of `main.rs`'s start (`settings.json` values refused, `apikeys.dpapi`
-    /// unreadable): [`Wallet::banner`] (2026-11-22, S4c W15: `main.rs` called it on the `App`).
-    pub fn start_banner(&mut self, code: Option<ErrorCode>, text: String) {
-        self.wallet.banner(code, text);
-    }
-
-    /// `main.rs`'s start: the networks added since the addresses were made get the template's
-    /// address ([`Wallet::fill_template_gaps`]; 2026-11-22, S4c W15: `main.rs` called it on the
-    /// `App`).
-    pub fn start_fill_template_gaps(&mut self) {
-        let _ = self.wallet.fill_template_gaps();
+    /// One of `main.rs`'s start findings (spec/04 §1.4 steps 4–5): the refused `settings.json`
+    /// values, whether `apikeys.dpapi` was readable (the template then fills the networks added
+    /// since the addresses were made), a failed crash-report exclusion (review L9), the
+    /// installed commit (`build_info::read_install_commit`). Handed to the wallet as
+    /// `Cmd::Platform`, not drained: `main.rs` drains once after its start steps, as before.
+    /// 2026-11-24 (spec/15 §11.4 S5-9): before, four shell fns called the wallet's
+    /// `banner`, `fill_template_gaps`, `wer_unprotected_noted` and `install_commit_read` by name
+    /// (`start_banner`, `start_fill_template_gaps`, `note_wer_unprotected`, `set_install_commit`;
+    /// since 2026-11-22, S4c W15; before W15, `main.rs` called them on the `App`).
+    pub fn platform_note(&mut self, note: PlatformNote) {
+        self.wallet.on_cmd(Cmd::Platform(note));
     }
 }
 
@@ -794,7 +781,10 @@ impl App {
                 self.session_next_ms = self.clock.now_ms().saturating_add(SESSION_RETRY_MS);
                 if self.session_retries >= SESSION_RETRY_MAX {
                     self.session_retries = 0;
-                    self.wallet.error_banner(ErrorCode::App004);
+                    // E-APP-004 (2026-11-24, spec/15 §11.4 S5-9: as `Cmd::Platform`; before,
+                    // the wallet's `error_banner` called here).
+                    self.wallet
+                        .on_cmd(Cmd::Platform(PlatformNote::SessionUnregistered));
                 }
             }
         }
@@ -811,7 +801,9 @@ impl App {
         {
             main.flash();
         }
-        self.wallet.refresh();
+        // The first layout (2026-11-24, spec/15 §11.4 S5-9: as `Cmd::Main`; before, the
+        // wallet's `refresh` called here).
+        self.wallet.on_cmd(Cmd::Main(MainStep::Relayout));
     }
 
     /// `Effect::RaiseMain` (2026-11-20, S4 P4; was the start of [`Self::activate`]): the main
@@ -942,8 +934,9 @@ impl App {
                 Reply::Handled(0)
             }
             Msg::Size { .. } => {
-                self.wallet.refresh();
-                self.drain();
+                // 2026-11-24 (spec/15 §11.4 S5-9): the layout as `Cmd::Main`, then the same
+                // drain (before, the wallet's `refresh` called here, then `drain`).
+                self.dispatch(Cmd::Main(MainStep::Relayout));
                 self.window_state.changed(self.clock.now_ms());
                 Reply::Default
             }
@@ -985,9 +978,9 @@ impl App {
             // on a control, also closes an open drop-down (2026-11-12).
             Msg::MouseDown { x, y } => {
                 self.hold_down(*x, *y, self.clock.now_ms());
-                if self.wallet.close_pickers() {
-                    self.wallet.refresh();
-                }
+                // 2026-11-24 (spec/15 §11.4 S5-9): as `Cmd::Main` (before, the wallet's
+                // `close_pickers`, then `refresh` when it closed one, called here).
+                self.wallet.on_cmd(Cmd::Main(MainStep::Clicked));
                 Reply::Default
             }
             Msg::MouseMove { x, y } => {
@@ -1258,9 +1251,11 @@ impl App {
     pub(crate) fn escape_key(&mut self) {
         match self.escape_target() {
             EscTarget::Press(id) => self.on_command(id),
+            // 2026-11-24 (spec/15 §11.4 S5-9): as two `Cmd::Main` steps (before, the wallet's
+            // `close_pickers` and `refresh` called here).
             EscTarget::ClosePickers => {
-                let _ = self.wallet.close_pickers();
-                self.wallet.refresh();
+                self.wallet.on_cmd(Cmd::Main(MainStep::ClosePickers));
+                self.wallet.on_cmd(Cmd::Main(MainStep::Relayout));
             }
             EscTarget::Nothing => {}
         }
@@ -1457,7 +1452,11 @@ impl App {
         self.tick_part(now, TickPart::Wait);
         self.tick_part(now, TickPart::ResetHold);
         if self.secret_clip.is_some_and(|pending| pending.due(now)) {
-            self.clear_secret_clip(now);
+            // 2026-11-24 (spec/15 §11.4 S5-9): the clear's notice goes to the wallet as
+            // `Cmd::SecretClip`, then the same drain (before, the clear wrote it itself).
+            if let Some(note) = self.clear_secret_clip(now) {
+                self.wallet.on_cmd(note);
+            }
             self.drain();
         }
         self.window_state_tick(now);
@@ -1486,19 +1485,21 @@ impl App {
     /// at lock). The first attempt retries `OpenClipboard` 5 times 20 ms apart; while another
     /// program holds the clipboard, every main tick tries once more (no sleep) for
     /// [`SECRET_CLIPBOARD_RETRY_MS`], and after [`SECRET_CLIPBOARD_NOTICE_MS`] of that the main
-    /// window says so ([`T_CLIP_NOT_CLEARED`]) instead of leaving the user believing it is gone.
-    fn clear_secret_clip(&mut self, now: u64) {
+    /// window says so (`T_CLIP_NOT_CLEARED`) instead of leaving the user believing it is gone.
+    ///
+    /// 2026-11-24 (spec/15 §11.4 S5-9): returns the notice the clear's result calls for, as
+    /// `Cmd::SecretClip` (`None`: nothing to say), which the main tick sends and the lock's
+    /// `SecretEffect::ClearClip` answers with; the wallet writes the notices. Before, this fn
+    /// wrote them itself where the clipboard answered (the wallet's `drop_clip_notice`, `notice`
+    /// and `refresh`, the executor's one wallet write), in the same order.
+    fn clear_secret_clip(&mut self, now: u64) -> Option<Cmd> {
         #[cfg(test)]
         secret_seam::log(secret_seam::Op::ClearClip {
             at_exit: false,
             pending: self.secret_clip.is_some(),
         });
-        let Some(mut pending) = self.secret_clip.take() else {
-            return;
-        };
-        let Some(main) = self.main.as_ref() else {
-            return;
-        };
+        let mut pending = self.secret_clip.take()?;
+        let main = self.main.as_ref()?;
         let retrying = pending.retry.busy_since_ms.is_some();
         let result = if retrying {
             clipboard::try_clear_secret(main, &pending.clip)
@@ -1520,35 +1521,20 @@ impl App {
                 &[("cleared", Field::Word(outcome))],
             );
         }
-        match step {
-            ClipStep::Done(cleared) => {
-                if pending.retry.noticed {
-                    self.wallet.drop_clip_notice();
-                    if cleared {
-                        let text = T_CLIP_CLEARED_LATE.get(self.settings.language).to_owned();
-                        self.wallet.notice(text, Tone::Info);
-                    }
-                    self.wallet.refresh();
-                }
-            }
+        let note = match step {
+            ClipStep::Done(cleared) => pending
+                .retry
+                .noticed
+                .then_some(ClipNote::NoticeEnds { cleared }),
             ClipStep::Retry(notice) => {
                 self.secret_clip = Some(pending);
-                if notice {
-                    let text = T_CLIP_NOT_CLEARED.get(self.settings.language).to_owned();
-                    self.wallet.notice(text, Tone::Warn);
-                    self.wallet.refresh();
-                }
+                notice.then_some(ClipNote::NotCleared)
             }
             // The banner stays: the copy may still be there. (Not shown yet only when the PC
             // slept through the whole retry period.)
-            ClipStep::GiveUp => {
-                if !pending.retry.noticed {
-                    let text = T_CLIP_NOT_CLEARED.get(self.settings.language).to_owned();
-                    self.wallet.notice(text, Tone::Warn);
-                    self.wallet.refresh();
-                }
-            }
-        }
+            ClipStep::GiveUp => (!pending.retry.noticed).then_some(ClipNote::NotCleared),
+        };
+        note.map(Cmd::SecretClip)
     }
 
     /// At start-up, right after the main window (spec/04 §1.4-6, §4.8): clears a secret copy an
@@ -1568,9 +1554,11 @@ impl App {
         let outcome = match clip_step(&mut pending.retry, now, result) {
             // The usual start: nothing left behind (not logged).
             ClipStep::Done(false) => return,
+            // 2026-11-24 (spec/15 §11.4 S5-9): the wallet's notice, as `Cmd::SecretClip`
+            // (before, the wallet's `notice` called here).
             ClipStep::Done(true) => {
-                let text = T_CLIP_CLEARED_LATE.get(self.settings.language).to_owned();
-                self.wallet.notice(text, Tone::Info);
+                self.wallet
+                    .on_cmd(Cmd::SecretClip(ClipNote::EarlierRunCleared));
                 "yes"
             }
             ClipStep::Retry(_) | ClipStep::GiveUp => {
@@ -1977,13 +1965,16 @@ impl App {
             }
             // S4 P7b: the lock's clear of a pending secret copy (spec/04 §5.3 step 4), with the
             // clock read where the lock read it before.
+            // 2026-11-24 (spec/15 §11.4 S5-9): answered with the clear's notice
+            // (`Cmd::SecretClip`) when it has one; before, the clear wrote the notice itself here,
+            // the executor's one wallet write.
             SecretEffect::ClearClip { at_exit } => {
                 if at_exit {
                     self.clear_secret_clip_at_exit();
+                    None
                 } else {
-                    self.clear_secret_clip(self.clock.now_ms());
+                    self.clear_secret_clip(self.clock.now_ms())
                 }
-                None
             }
         }
     }
@@ -2425,10 +2416,12 @@ impl App {
             Err(_) => secret.form.set_error(Some(ErrorCode::Sec002.text_in(lang))),
         }
         secret.window.invalidate();
-        // This copy replaced the earlier one whose clear was still being retried.
+        // This copy replaced the earlier one whose clear was still being retried: its notice
+        // ends (2026-11-24, spec/15 §11.4 S5-9: as `Cmd::SecretClip`; before, the wallet's
+        // `drop_clip_notice` and `refresh` called here).
         if replaced.is_some_and(|old| old.retry.noticed) {
-            self.wallet.drop_clip_notice();
-            self.wallet.refresh();
+            self.wallet
+                .on_cmd(Cmd::SecretClip(ClipNote::NoticeEnds { cleared: false }));
         }
     }
 }
@@ -2481,9 +2474,15 @@ impl App {
     /// repaint (cosmetic only).
     fn on_command(&mut self, id: u16) {
         self.note_input();
+        // 2026-11-24 (spec/15 §11.4 S5-9): an open drop-down closes as `Cmd::Main` (before, the
+        // wallet's `close_pickers` called here; it answered whether one was open, which the
+        // shell's `pickers_open` reads, as Esc's resolution does).
         let closed = !matches!(id, IDOK | IDCANCEL)
             && !crate::ui::cmd_table::is_picker_button(id)
-            && self.wallet.close_pickers();
+            && self.pickers_open();
+        if closed {
+            self.wallet.on_cmd(Cmd::Main(MainStep::ClosePickers));
+        }
         // 2026-11-24 (spec/15 §11.4 S5-6): no `Cmd::Form` first — the engine keeps what the plain
         // edits show (`EN_CHANGE` → `Cmd::Edit`, its own field writes, `Cmd::Rendered`).
         let input = cmd_table::capture(id, &self.controls, self.main.as_ref(), &self.wc.file_text);
@@ -2505,12 +2504,17 @@ impl App {
                 // input's wipe and the dispatch's drain followed it, and both now precede it).
                 Press::Core(CorePress::Exit) => self.shutdown(),
                 // The shell's press handlers (2026-11-22, S4c W15, critique B-5; see above), each
-                // drained at once (W15 review).
-                Press::Ext(press) => {
-                    self.on_ext(press);
+                // drained at once (W15 review). 2026-11-24 (spec/15 §11.4 S5-9): only the presses
+                // that need the shell's files — S23's `경로 복사` (the extension folder) and the
+                // `rpc.json` read and delete; the rest of both families are the wallet's, handled
+                // in the press.
+                Press::Ext(ExtPress::CopyPath) => {
+                    self.on_ext_copy_path();
                     self.drain();
                 }
-                Press::RpcImport(press) => {
+                Press::RpcImport(
+                    press @ (RpcImportPress::Import | RpcImportPress::DeleteConfirm),
+                ) => {
                     self.on_rpc_import(press);
                     self.drain();
                 }
@@ -2518,10 +2522,12 @@ impl App {
             }
         } else {
             // 2026-11-22 (S4c W15): the wallet's own fn; before, `self.copied = None` here.
-            self.wallet.forget_copy_mark();
+            // 2026-11-24 (spec/15 §11.4 S5-9): as `Cmd::Main` (before, `forget_copy_mark`).
+            self.wallet.on_cmd(Cmd::Main(MainStep::NotAPress));
         }
         if closed {
-            self.wallet.refresh();
+            // 2026-11-24 (S5-9): as `Cmd::Main` (before, the wallet's `refresh`).
+            self.wallet.on_cmd(Cmd::Main(MainStep::Relayout));
         }
         self.drain();
     }

@@ -91,6 +91,17 @@
 //! enters through a typed in-process call; the lock and the shutdown are the shell's
 //! compositions of the wallet's halves around the shell's own wait for the key worker (spec/04
 //! §1.5, §5.3).
+//!
+//! 2026-11-24 (spec/15 §11.4 S5-9, S5 plan owner item O-11): the shell's named wallet steps are
+//! `Cmd`s or answers ([`MainStep`], [`PlatformNote`], [`ClipNote`], [`Cmd::RpcJsonDeleted`]): the
+//! main window's layouts, drop-down closes and the copy mark of an id that is no press
+//! ([`Cmd::Main`]), the start's findings and a failed session registration ([`Cmd::Platform`]),
+//! the secret clipboard's clear notices ([`Cmd::SecretClip`]; the answer of
+//! `SecretEffect::ClearClip` when it noticed something) and the `rpc.json` delete's result.
+//! Before, the Windows shell called the wallet's fns for them by name. What stays outside `Cmd`:
+//! the typed in-process entries (a worker's event, a secret window's action, the display secret's
+//! move, the parsed `rpc.json` plan, the started workers' and browser bridge's handles, the
+//! extension folder's path to copy) and the lock and shutdown compositions.
 
 use core::fmt;
 
@@ -117,6 +128,7 @@ mod mn;
 mod received;
 mod reset;
 mod rpc_import;
+mod shell;
 mod sidecar;
 mod sites;
 mod sol;
@@ -139,6 +151,7 @@ pub use mn::MnPress;
 pub use received::ReceivedPress;
 pub use reset::ResetPress;
 pub use rpc_import::RpcImportPress;
+pub use shell::{ClipNote, MainStep, PlatformNote};
 pub use sidecar::SidecarPress;
 pub use sites::SitesPress;
 pub use sol::{SolPress, SolScanAction};
@@ -256,6 +269,25 @@ pub enum Cmd {
         /// Which part.
         part: TickPart,
     },
+    /// A main-window step (2026-11-24, spec/15 §11.4 S5-9; spec/04 §1.3): a layout after
+    /// `WM_SIZE` or the first show, a drop-down closed by Esc, a press or a click on the window,
+    /// and the copy mark of an id that is no press. Before, the shell called `refresh`,
+    /// `close_pickers` and `forget_copy_mark` itself.
+    Main(MainStep),
+    /// What the shell found about its platform (2026-11-24, S5-9; spec/04 §1.4): `main.rs`'s
+    /// start findings, in its order, and a failed session registration. Before, the shell called
+    /// `banner`, `fill_template_gaps`, `wer_unprotected_noted`, `install_commit_read` and
+    /// `error_banner` itself.
+    Platform(PlatformNote),
+    /// A secret copy's clear as the clipboard answered it (2026-11-24, S5-9; spec/04 §4.8): the
+    /// main tick's and the start's clears send it, and `SecretEffect::ClearClip` (the lock's
+    /// clear) answers with it when its clear noticed something. Before, the shell wrote the
+    /// notices itself (`notice`, `drop_clip_notice`, `refresh`).
+    SecretClip(ClipNote),
+    /// The shell deleted `rpc.json` (`rpc.json 지우기` confirmed; spec/01 §4.6) with this result
+    /// (2026-11-24, S5-9: before, the typed call `Wallet::on_rpc_json_deleted`). The file, its
+    /// path and the delete stay the shell's (owner decision O-13).
+    RpcJsonDeleted(Result<(), crate::wallet::app_rpc_plan::DeleteError>),
 }
 
 /// The wallet's parts of the main timer's period, in the order the Windows timer sends them
@@ -345,6 +377,13 @@ impl fmt::Debug for Cmd {
                 .debug_struct("Tick")
                 .field("now_ms", now_ms)
                 .field("part", part)
+                .finish(),
+            Self::Main(step) => formatter.debug_tuple("Main").field(step).finish(),
+            Self::Platform(note) => formatter.debug_tuple("Platform").field(note).finish(),
+            Self::SecretClip(note) => formatter.debug_tuple("SecretClip").field(note).finish(),
+            Self::RpcJsonDeleted(deleted) => formatter
+                .debug_tuple("RpcJsonDeleted")
+                .field(deleted)
                 .finish(),
         }
     }

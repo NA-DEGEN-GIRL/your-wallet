@@ -62,6 +62,8 @@
 
 (2026-11-24, [15] §11.4 S5-5) 화면 빌더가 yw-app의 `ui/screens*.rs`·`ui/removed.rs`에서 yw-engine `screen::build`로 옮겨 가면서 그 카탈로그도 함께 옮겨 엔진 목록 `yw_engine::catalogues`에 엔진의 실제 경로로 등록했다(S5 계획 검토 C6). 문구와 항목 이름은 그대로이고 이름만 바뀌었다: `yw_app::ui::screens::text` → `yw_engine::screen::build::core::text`, `yw_app::ui::screens_<묶음>::text` → `yw_engine::screen::build::<묶음>::text`(`book`·`btc`·`evm`·`explorer`·`hypercore`·`keys`·`links`·`llm`·`mnemonics`·`received`·`reset`·`sites`·`sol`·`walletconnect`·`yubikey`·`zec`), `yw_app::ui::removed::text` → `yw_engine::screen::build::removed::text`. 빌더가 그리던 셸 카탈로그도 옮겼다(검토 C7): `rpc.json` 카드의 `yw_app::app_rpc_import::text` → `yw_engine::screen::build::rpc_import::text`, S23의 `yw_app::app_extension::text` → `yw_engine::screen::extension::text`(상태 `ExtensionStatus`와 Chrome 주소 `CHROME_EXTENSIONS_URL`도 함께), 받기 안내 `yw_app::ui::qr::text` → `yw_engine::screen::qr::text`; 셸 카탈로그 `yw_app::app::text`의 `T_PASSWORD_OLD_COPIES`(설정 → 보안)는 `yw_engine::screen::build::core::text`로 갔고 `yw_app::app::text`에는 다섯 개가 남는다. 아래 표는 그대로 `print_spec14_tables` 출력이다.
 
+(2026-11-24, [15] §11.4 S5-9) 셸의 이름 붙은 지갑 단계가 `Cmd`가 되면서 비밀 복사의 클립보드 알림을 지갑이 쓰게 되었고(`Cmd::SecretClip`, [04] §4.8), 그 문구 `T_CLIP_CLEARED_LATE`가 `yw_app::app::text`에서 `yw_engine::wallet::text`로 옮겼다(문구 그대로). 이제 `yw_app::app::text` 표는 셸만 쓰는 네 개(`PASTE_CLEARED`·`PASTE_EDGE_SPACE`·`COPY_OFF`·`COPIED_SECRET`; `T_PASSWORD_OLD_COPIES`는 S5-5에 화면 카탈로그로 옮겼다)다. 아래 표는 그대로 `print_spec14_tables` 출력이다.
+
 <!-- 아래 표는 print_spec14_tables 출력이다. -->
 
 <!-- catalogue: yw_core::evm::risk (rules) -->
@@ -3972,6 +3974,7 @@
 | 이름 | 한국어 | English |
 |---|---|---|
 | T_CLIP_NOT_CLEARED | 복사한 복구 단어·개인키를 클립보드에서 지우지 못했습니다(다른 프로그램이 클립보드를 쓰고 있습니다). 아직 클립보드에 남아 있을 수 있으니 다른 텍스트를 복사해 덮어쓰세요. | The copied recovery words or private key could not be cleared from the clipboard (another program is using it). They may still be on the clipboard, so copy some other text over them. |
+| T_CLIP_CLEARED_LATE | 클립보드에 남아 있던 복구 단어·개인키를 지웠습니다. | The recovery words or private key left on the clipboard were cleared. |
 | PASSWORD_CHANGED | 비밀번호를 바꾸고 지갑의 암호화 키도 새로 만들었습니다. 이제부터 더하거나 고치는 내용은 바꾸기 전에 만든 지갑 파일 사본(백업한 vault.ywv, 격리된 손상 파일)과 예전 비밀번호로 열 수 없습니다. 그 사본 자체는 예전 비밀번호로 계속 열리고 그 안에 이미 있던 복구 단어·개인키가 드러납니다. 예전 비밀번호가 약했다면 그 사본은 나중에 오프라인으로 풀릴 수 있습니다 — 예전 비밀번호와 사본이 함께 샜을 수 있다면 사본을 지우고 자산을 새로 만든 별도 지갑으로 옮기세요. | The password was changed and the wallet's encryption key was renewed. From now on, what you add or change cannot be opened with wallet file copies made before the change (a backed-up vault.ywv, quarantined damaged files) and the old password. Those copies themselves still open with the old password and reveal the recovery words and private keys they already hold. If the old password was weak, such a copy may be cracked offline later — if the old password and a copy may have leaked together, delete the copy and move your assets to a new, separate wallet. |
 | PASSWORD_CHANGED_PREV | 비밀번호를 바꿨습니다. 지금부터는 새 비밀번호로 엽니다. 다만 일부 파일(이전 복사본 vault.ywv.prev, meta.ywm, journal.ywj)을 새 암호화 키로 아직 다시 쓰지 못했습니다. 그 파일들에는 바꾸기 전 내용만 있고, 다음 잠금 해제나 저장 때 마저 바꿉니다. 그때까지 vault.ywv.prev는 예전 비밀번호로 열릴 수 있습니다. 이미 만들어 둔 지갑 파일 사본은 예전 비밀번호로 계속 열리고(예전 비밀번호가 약했다면 나중에 오프라인으로 풀릴 수 있습니다), 예전 비밀번호와 사본이 함께 샜을 수 있다면 자산을 새로 만든 별도 지갑으로 옮기세요. | The password was changed. From now on the wallet opens with the new password. However, some files (the previous copy vault.ywv.prev, meta.ywm, journal.ywj) could not be rewritten with the new encryption key yet. They hold only the content from before the change and are finished at the next unlock or save. Until then, vault.ywv.prev may open with the old password. Wallet file copies made earlier still open with the old password (if it was weak, they may be cracked offline later); if the old password and a copy may have leaked together, move your assets to a new, separate wallet. |
 | PASSWORD_UNCONFIRMED | 비밀번호 변경이 저장됐는지 확인하지 못해 지갑을 잠갔습니다. 새 비밀번호로 열어 보고, 열리지 않으면 예전 비밀번호로 여세요. 새 비밀번호로 열리면 변경이 적용된 것이고 남은 단계는 그 잠금 해제가 마칩니다. | Whether the password change was saved could not be confirmed, so the wallet was locked. Try the new password; if it does not open, use the old one. If the new password opens it, the change took effect and that unlock finishes the remaining steps. |
@@ -4144,7 +4147,6 @@
 
 | 이름 | 한국어 | English |
 |---|---|---|
-| T_CLIP_CLEARED_LATE | 클립보드에 남아 있던 복구 단어·개인키를 지웠습니다. | The recovery words or private key left on the clipboard were cleared. |
 | PASTE_CLEARED | 붙여넣은 뒤 클립보드를 비웠습니다. Windows 클립보드 기록(Win+V)을 쓴다면 그 항목도 지우세요. | The clipboard was emptied after pasting. If you use the Windows clipboard history (Win+V), delete that entry too. |
 | PASTE_EDGE_SPACE | 앞/뒤 공백이 포함되어 있습니다. 공백도 그대로 비밀번호·passphrase의 일부가 됩니다. | It starts or ends with a space. Spaces become part of the password or passphrase as they are. |
 | COPY_OFF | 복사가 꺼져 있습니다. 설정에서 바꿀 수 있습니다. | Copying is off. You can change this in settings. |

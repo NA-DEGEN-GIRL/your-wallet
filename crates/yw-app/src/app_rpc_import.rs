@@ -27,7 +27,7 @@ use yw_core::secret::Zeroizing;
 use yw_win::file::read_limited_no_reparse;
 
 use crate::app::App;
-use yw_engine::cmd::RpcImportPress;
+use yw_engine::cmd::{Cmd, RpcImportPress};
 use yw_engine::network::NetworkId;
 use yw_engine::settings::Settings;
 use yw_engine::wallet::app_rpc_plan::{DeleteError, ImportError, ImportPlan, plan_from_bytes};
@@ -153,6 +153,13 @@ impl App {
     /// own drain (nothing to apply) runs before it, and `on_command` drains its effects and
     /// their answers right after it, before a closed drop-down's repaint, as inside the press
     /// (2026-11-22, W15 review).
+    ///
+    /// 2026-11-24 (spec/15 §11.4 S5-9): only the two presses that need the file — the read
+    /// (`rpc.json에서 가져오기`) and the delete (`지우기`); `App::on_command` runs this for them
+    /// alone. The confirmation, its `취소` and the delete question need no file and are the
+    /// wallet's, handled in the press (`Wallet::on_rpc_import_press`; before, the arms here
+    /// called the wallet's `finish_rpc_import`, `rpc_import_cancel` and
+    /// `rpc_json_delete_asked` by name). The delete's result goes as `Cmd::RpcJsonDeleted`.
     pub(crate) fn on_rpc_import(&mut self, press: RpcImportPress) {
         match press {
             RpcImportPress::Import => {
@@ -160,25 +167,27 @@ impl App {
                     self.begin_rpc_import(&path);
                 }
             }
-            RpcImportPress::Overwrite => self.wallet.finish_rpc_import(true),
-            RpcImportPress::Fill => self.wallet.finish_rpc_import(false),
-            RpcImportPress::Cancel => self.wallet.rpc_import_cancel(),
-            RpcImportPress::Delete | RpcImportPress::DeleteCancel => {
-                self.wallet
-                    .rpc_json_delete_asked(press == RpcImportPress::Delete);
-            }
             RpcImportPress::DeleteConfirm => {
                 if let Some(path) = rpc_json_path() {
                     self.delete_rpc_json(&path);
                 }
             }
+            // The wallet's (`Wallet::on_rpc_import_press`, in the press).
+            RpcImportPress::Overwrite
+            | RpcImportPress::Fill
+            | RpcImportPress::Cancel
+            | RpcImportPress::Delete
+            | RpcImportPress::DeleteCancel => {}
         }
     }
 }
 
 impl App {
     /// Test adapter (S3 C5, plan §3.2): presses an import-card control `id` directly, as the
-    /// module tests did before; `false` when `id` is not one.
+    /// module tests did before; `false` when `id` is not one. 2026-11-24 (spec/15 §11.4 S5-9):
+    /// the presses that need no file are the wallet's, so they go as the press itself
+    /// (`Cmd::Press`, which also makes it the last press); the read and the delete go to the
+    /// shell's half as before.
     #[cfg(test)]
     pub(crate) fn on_rpc_import_command(&mut self, id: u16) -> bool {
         self.press_family(
@@ -188,7 +197,15 @@ impl App {
                 _ => None,
             },
             |app, press| {
-                app.on_rpc_import(press);
+                match press {
+                    RpcImportPress::Import | RpcImportPress::DeleteConfirm => {
+                        app.on_rpc_import(press);
+                    }
+                    _ => app.dispatch(Cmd::Press {
+                        press: yw_engine::cmd::Press::RpcImport(press),
+                        input: yw_engine::form::PressInput::default(),
+                    }),
+                }
                 true
             },
         )
@@ -198,9 +215,12 @@ impl App {
     /// 2026-11-22 (S4c W13, critique B-5): the shell's half, the delete; the wallet's half,
     /// `on_rpc_json_deleted`, takes its result. Before, this fn did both and cleared the
     /// confirmation before the delete (now right after it: nothing reads it in between).
+    /// 2026-11-24 (spec/15 §11.4 S5-9): the result goes as `Cmd::RpcJsonDeleted` (plain data;
+    /// not drained here: the press's entry `App::on_command` drains right after, as before);
+    /// before, the typed call `on_rpc_json_deleted`.
     pub(crate) fn delete_rpc_json(&mut self, path: &Path) {
         let deleted = delete_file(path);
-        self.wallet.on_rpc_json_deleted(deleted);
+        self.wallet.on_cmd(Cmd::RpcJsonDeleted(deleted));
     }
 }
 

@@ -27,6 +27,7 @@ use crate::apikeys::parse_quicknode_url;
 use crate::apikeys::template_entry;
 use crate::apikeys::template_url;
 use crate::apikeys::valid_provider_token;
+use crate::cmd::RpcImportPress;
 use crate::logging;
 use crate::logging::Field;
 use crate::network::NetworkId;
@@ -290,14 +291,34 @@ impl RpcImportUi {
 }
 
 impl Wallet {
+    /// The `rpc.json` card's presses that need no file (2026-11-24, spec/15 §11.4 S5-9): the
+    /// confirmation (`덮어쓰기`/`가져오기`, `비어 있는 네트워크만`), its `취소` and the delete
+    /// question (`rpc.json 지우기…` and its `취소`), handled in the press as every family's.
+    /// `rpc.json에서 가져오기` and the delete's `지우기` read or delete the file, so the shell's
+    /// `App::on_command` runs them right after the press (owner decision O-13), and they do
+    /// nothing here. From 2026-11-22 (S4c W15, critique B-5) until S5-9 the shell's
+    /// `App::on_rpc_import` handled all seven after the press and called these wallet fns by
+    /// name.
+    pub(crate) fn on_rpc_import_press(&mut self, press: RpcImportPress) {
+        match press {
+            RpcImportPress::Overwrite => self.finish_rpc_import(true),
+            RpcImportPress::Fill => self.finish_rpc_import(false),
+            RpcImportPress::Cancel => self.rpc_import_cancel(),
+            RpcImportPress::Delete | RpcImportPress::DeleteCancel => {
+                self.rpc_json_delete_asked(press == RpcImportPress::Delete);
+            }
+            RpcImportPress::Import | RpcImportPress::DeleteConfirm => {}
+        }
+    }
+
     /// `취소` of the confirmation list: the plan is dropped (its credentials wiped).
-    pub fn rpc_import_cancel(&mut self) {
+    pub(crate) fn rpc_import_cancel(&mut self) {
         self.rpc_import = RpcImportUi::default();
         self.refresh();
     }
 
     /// `rpc.json 지우기…` (`ask`) or its `취소`: whether the delete waits for its confirmation.
-    pub fn rpc_json_delete_asked(&mut self, ask: bool) {
+    pub(crate) fn rpc_json_delete_asked(&mut self, ask: bool) {
         self.rpc_import.confirm_delete = ask;
         self.refresh();
     }
@@ -305,8 +326,10 @@ impl Wallet {
 
 impl Wallet {
     /// The wallet's half of `rpc.json 지우기` (2026-11-22, S4c W13, critique B-5): the shell
-    /// deleted the file, `deleted` is the result; the band says what happened.
-    pub fn on_rpc_json_deleted(&mut self, deleted: Result<(), DeleteError>) {
+    /// deleted the file, `deleted` is the result; the band says what happened. 2026-11-24
+    /// (spec/15 §11.4 S5-9): reached as `Cmd::RpcJsonDeleted` (the result is plain data); before,
+    /// the shell called it by name (`pub`).
+    pub(crate) fn on_rpc_json_deleted(&mut self, deleted: Result<(), DeleteError>) {
         self.rpc_import.confirm_delete = false;
         let message = match deleted {
             Ok(()) => {
@@ -370,7 +393,7 @@ impl Wallet {
     /// `on_rpc_json_read` and waits in the wallet's import state (B-5 keeps the plan there, so
     /// it enters once, at the read, not again with `overwrite`): `apply_plan`, `save_apikeys`,
     /// `save_settings`, `fill_template_gaps`, `queue_rpc_tests` in today's order, unchanged.
-    pub fn finish_rpc_import(&mut self, overwrite: bool) {
+    pub(crate) fn finish_rpc_import(&mut self, overwrite: bool) {
         let Some(plan) = self.rpc_import.plan.take() else {
             return;
         };

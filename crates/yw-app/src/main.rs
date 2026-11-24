@@ -26,6 +26,7 @@ use yw_app::shell_msg::{
 use yw_app::store::WinKeyPlatform;
 use yw_app::system_clock::ArcClock;
 use yw_core::lang::Lang;
+use yw_engine::cmd::PlatformNote;
 use yw_engine::errors::ErrorCode;
 use yw_engine::events::{EventQueue, KeyJob, UiEvent};
 use yw_engine::flow::evm::Limits;
@@ -259,16 +260,17 @@ fn main() -> ExitCode {
     )));
     {
         let mut state = app.borrow_mut();
+        // 2026-11-24 (spec/15 §11.4 S5-9): each finding goes to the wallet as
+        // `Cmd::Platform(PlatformNote::…)` in this order (the wallet builds the banners' texts in
+        // the language read above); before, `App::start_banner`, `start_fill_template_gaps`,
+        // `note_wer_unprotected` and `set_install_commit` called the wallet's fns by name.
         if !loaded.banners.is_empty() {
             logging::warn(
                 "app",
                 "settings.invalid",
                 &[("code", Field::Code(ErrorCode::App001))],
             );
-            state.start_banner(
-                Some(ErrorCode::App001),
-                ErrorCode::App001.render_in(lang, &loaded.banners.join(", ")),
-            );
+            state.platform_note(PlatformNote::SettingsRefused(loaded.banners));
         }
         if apikeys_unreadable {
             logging::warn(
@@ -276,16 +278,16 @@ fn main() -> ExitCode {
                 "apikeys.unreadable",
                 &[("code", Field::Code(ErrorCode::Key001))],
             );
-            state.start_banner(Some(ErrorCode::Key001), ErrorCode::Key001.text_in(lang));
-        } else {
-            // Networks added since the addresses were made get the template's address.
-            state.start_fill_template_gaps();
         }
+        // Readable: the networks added since the addresses were made get the template's address.
+        state.platform_note(PlatformNote::ApiKeys {
+            readable: !apikeys_unreadable,
+        });
         if wer_unprotected {
             // Review L9: crash dumps are possible; say so instead of only logging it.
-            state.note_wer_unprotected();
+            state.platform_note(PlatformNote::WerUnprotected);
         }
-        state.set_install_commit(install_commit);
+        state.platform_note(PlatformNote::InstallCommit(install_commit));
         // 2026-11-20 (S4 P10b): each start step is an entry: what it emitted is applied before
         // its borrow ends (here before the main window exists, as before).
         state.drain();

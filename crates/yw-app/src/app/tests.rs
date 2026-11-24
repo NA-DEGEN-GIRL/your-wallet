@@ -7949,7 +7949,8 @@ fn converted_handlers_reach_the_main_window_only_through_effects() {
 /// [`converted_handlers_reach_the_main_window_only_through_effects`] (`body` is its fn reader):
 /// the shell's half — `on_command` resolves Enter and Esc right after their own press (and,
 /// since 2026-11-22 S4c W3b, runs the shutdown right after the `종료` press; since S4c W15, the
-/// S23 and `rpc.json` press handlers, each drained before the closed drop-down's repaint),
+/// S23 and `rpc.json` press handlers, each drained before the closed drop-down's repaint; since
+/// 2026-11-24 S5-9, of those only the presses that need the shell's files),
 /// `enter_key` reads the window's focus, and the resolvers press what they find through
 /// `on_command`. Whitespace dropped, so only the code's shape counts.
 fn shell_resolves_the_keys(body: &dyn Fn(&str, &str) -> String) {
@@ -7968,11 +7969,17 @@ fn shell_resolves_the_keys(body: &dyn Fn(&str, &str) -> String) {
             // `rpc.json` import (before, the wallet's family router called them), each drained
             // at once, so its effects and answers come before the closed drop-down's repaint, as
             // inside the press before W15 (2026-11-22, W15 review).
+            // 2026-11-24 (spec/15 §11.4 S5-9): only the two presses that need the shell's files
+            // (S23's `경로 복사`, the `rpc.json` read and delete; the rest of both families are
+            // the wallet's, in the press), and the main window's steps as `Cmd::Main` (before,
+            // `forget_copy_mark` and `refresh` by name).
             "self.dispatch(Cmd::Press{press,input});matchpress{Press::Enter=>self.enter_key(),\
              Press::Back=>self.escape_key(),Press::Core(CorePress::Exit)=>self.shutdown(),\
-             Press::Ext(press)=>{self.on_ext(press);self.drain();}\
-             Press::RpcImport(press)=>{self.on_rpc_import(press);self.drain();}_=>{}}\
-             }else{self.wallet.forget_copy_mark();}ifclosed{self.wallet.refresh();}self.drain();",
+             Press::Ext(ExtPress::CopyPath)=>{self.on_ext_copy_path();self.drain();}\
+             Press::RpcImport(press@(RpcImportPress::Import|RpcImportPress::DeleteConfirm),)=>\
+             {self.on_rpc_import(press);self.drain();}_=>{}}\
+             }else{self.wallet.on_cmd(Cmd::Main(MainStep::NotAPress));}\
+             ifclosed{self.wallet.on_cmd(Cmd::Main(MainStep::Relayout));}self.drain();",
         ),
         (
             "    fn enter_key(&mut self) {",
@@ -7986,9 +7993,10 @@ fn shell_resolves_the_keys(body: &dyn Fn(&str, &str) -> String) {
         (
             "    pub(crate) fn escape_key(&mut self) {",
             // 2026-11-22 (S4c W15): the two wallet fns are named on the wallet.
+            // 2026-11-24 (spec/15 §11.4 S5-9): as two `Cmd::Main` steps.
             "matchself.escape_target(){EscTarget::Press(id)=>self.on_command(id),\
-             EscTarget::ClosePickers=>{let_=self.wallet.close_pickers();self.wallet.refresh();}\
-             EscTarget::Nothing=>{}}",
+             EscTarget::ClosePickers=>{self.wallet.on_cmd(Cmd::Main(MainStep::ClosePickers));\
+             self.wallet.on_cmd(Cmd::Main(MainStep::Relayout));}EscTarget::Nothing=>{}}",
         ),
     ];
     for (head, call) in shell {

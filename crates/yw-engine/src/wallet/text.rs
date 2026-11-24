@@ -1,12 +1,17 @@
 //! Fixed texts of the wallet (notices, secret-window steps and timeouts, settings actions, the
 //! RPC rows; spec/04 §2, §4, spec/14). 2026-11-23 (spec/15 §11.4 S4d E1): moved here from yw-app
-//! `app::text` (wording unchanged; the shell's texts stay there).
+//! `app::text` (wording unchanged; the shell's texts stay there). 2026-11-24 (spec/15 §11.4
+//! S5-9): `T_CLIP_CLEARED_LATE` moved here from yw-app `app::text` (wording unchanged) with the
+//! clip notices, which the wallet writes now (`Cmd::SecretClip`).
 
 yw_core::texts! {
     /// T-CLIP-NOT-CLEARED (spec/04 §4.8): the main-window banner while a secret copy could not
     /// be cleared.
     T_CLIP_NOT_CLEARED = "복사한 복구 단어·개인키를 클립보드에서 지우지 못했습니다(다른 프로그램이 클립보드를 쓰고 있습니다). 아직 클립보드에 남아 있을 수 있으니 다른 텍스트를 복사해 덮어쓰세요."
         / "The copied recovery words or private key could not be cleared from the clipboard (another program is using it). They may still be on the clipboard, so copy some other text over them.";
+    /// The banner after a clear that succeeded only on a retry.
+    T_CLIP_CLEARED_LATE = "클립보드에 남아 있던 복구 단어·개인키를 지웠습니다."
+        / "The recovery words or private key left on the clipboard were cleared.";
     /// The notice after a password change that completed.
     PASSWORD_CHANGED = "비밀번호를 바꾸고 지갑의 암호화 키도 새로 만들었습니다. 이제부터 더하거나 고치는 내용은 바꾸기 전에 만든 지갑 파일 사본(백업한 vault.ywv, 격리된 손상 파일)과 예전 비밀번호로 열 수 없습니다. 그 사본 자체는 예전 비밀번호로 계속 열리고 그 안에 이미 있던 복구 단어·개인키가 드러납니다. 예전 비밀번호가 약했다면 그 사본은 나중에 오프라인으로 풀릴 수 있습니다 — 예전 비밀번호와 사본이 함께 샜을 수 있다면 사본을 지우고 자산을 새로 만든 별도 지갑으로 옮기세요."
         / "The password was changed and the wallet's encryption key was renewed. From now on, what you add or change cannot be opened with wallet file copies made before the change (a backed-up vault.ywv, quarantined damaged files) and the old password. Those copies themselves still open with the old password and reveal the recovery words and private keys they already hold. If the old password was weak, such a copy may be cracked offline later — if the old password and a copy may have leaked together, delete the copy and move your assets to a new, separate wallet.";

@@ -13,21 +13,15 @@
 //! 2026-11-24 (spec/15 §11.4 S5-5, S5 plan critic C7): the status `ExtensionStatus`, its texts and
 //! the page address `CHROME_EXTENSIONS_URL` moved to `yw_engine::screen::extension` with the screen
 //! builders (S23 is drawn there); this file keeps the folder, its checks and the presses.
+//! 2026-11-24 (spec/15 §11.4 S5-9): of the presses, only `경로 복사`'s folder path
+//! ([`App::on_ext_copy_path`]); the others are the wallet's (`Wallet::on_ext`).
 
 use std::path::{Path, PathBuf};
 
-use yw_engine::cmd::CopyBand;
-use yw_engine::screen::extension::CHROME_EXTENSIONS_URL;
-
 use crate::app::App;
-use yw_engine::wallet::{AppMode, Screen};
 
-/// S23 state.
-#[derive(Debug, Default)]
-pub struct ExtensionUi {
-    /// Where `← 돌아가기` returns to.
-    pub back: Option<Screen>,
-}
+// 2026-11-24 (spec/15 §11.4 S5-9): the S23 state `ExtensionUi` (its way back, `back`) is the
+// wallet's `ext_back`, with S23's presses; before, the shell's.
 
 /// Whether `path` is a plain folder named `extension` with a plain `manifest.json` inside.
 #[must_use]
@@ -107,66 +101,21 @@ pub fn expected_dir() -> Option<PathBuf> {
 // state) moved to `ui/screens_reset.rs`, and the screens ask the folders through `App::facts()`
 // (`screen_facts::WinFacts` calls `extension_dir`/`expected_dir` here).
 impl App {
-    /// `Chrome 확장 설치` links (S08, S13, settings). 2026-11-22 (S4c W15): the shell's (its way
-    /// back, `ext`, is shell state); the screen change is the wallet's `set_screen`, named on
-    /// the wallet (non-test builds have no `DerefMut`).
-    pub(crate) fn open_extension_help(&mut self) {
-        if self.screen != Screen::Extension {
-            self.ext.back = Some(self.screen.clone());
-        }
-        self.wallet.set_screen(Screen::Extension);
-    }
-
-    /// `← 돌아가기` of S23. 2026-11-22 (S4c W15): the return is the wallet's `return_to`.
-    fn close_extension_help(&mut self) {
-        let back = self.ext.back.take();
-        let fallback = match self.mode {
-            AppMode::Unlocked { .. } => Screen::Main,
-            AppMode::BackupPending => Screen::BackupPending,
-            AppMode::NoVault => Screen::FirstRun,
-            _ => Screen::Locked,
-        };
-        // `← 돌아가기` opens the screen where it was left (2026-11-10).
-        self.wallet.return_to(back.unwrap_or(fallback));
-    }
-
-    /// Presses of S23 (2026-11-18, S3 C5: an `ExtPress`; before, the control id).
-    /// 2026-11-22 (S4c W15, critique B-5): the shell's press handler, run by `App::on_command`
-    /// right after the press reached the wallet (before, by the wallet's family router inside
-    /// it); what it changes of the wallet goes through the wallet's fns (`set_screen`,
-    /// `return_to`, `emit`, `copy_with_band`), not as `Cmd`s, because the screen it returns to
-    /// is a yw-app `Screen`, no engine data until S4d E0a. Same steps, same order; only the
-    /// press's own drain (nothing to apply) runs before it, and `on_command` drains its effects
-    /// and their answers right after it, before a closed drop-down's repaint, as inside the press
-    /// (2026-11-22, W15 review; the W15 commit left them to the final drain, behind that repaint).
-    pub(crate) fn on_ext(&mut self, press: yw_engine::cmd::ExtPress) {
-        use yw_engine::cmd::ExtPress;
-        match press {
-            ExtPress::Open => self.open_extension_help(),
-            ExtPress::Back => self.close_extension_help(),
-            // 2026-11-20 (S4 P3): the shell resolves and opens the folder
-            // (`Effect::OpenFolder`); a folder it does not find comes back as
-            // `Cmd::FolderMissing` (`on_folder_missing`). Before, this resolved the folder and
-            // started `explorer.exe` itself.
-            ExtPress::OpenFolder => {
-                self.wallet.emit(yw_engine::effect::Effect::OpenFolder(
-                    yw_engine::effect::Folder::Extension,
-                ));
-            }
-            // A setup step: its instruction stays a band (not the mark at the button).
-            // 2026-11-20 (S4 P6): the band rides in the copy's mark and is set when the result
-            // arrives (`Wallet::copy_done`: the band, then the layout); before, this read the result
-            // right after the copy (`if self.copied.take().is_some()`) and set both itself.
-            ExtPress::CopyPath => {
-                if let Some(dir) = extension_dir() {
-                    self.wallet
-                        .copy_with_band(&dir.display().to_string(), CopyBand::ExtensionPath);
-                }
-            }
-            ExtPress::CopyUrl => {
-                self.wallet
-                    .copy_with_band(CHROME_EXTENSIONS_URL, CopyBand::ExtensionsUrl);
-            }
+    /// S23 `확장 폴더 경로 복사`: the folder this installation found ([`extension_dir`]) goes to
+    /// the wallet's typed in-process entry `Wallet::copy_extension_path` (a path never rides in a
+    /// `Cmd`), which copies it as a setup step (its band when the copy's result arrives); a
+    /// folder not found copies nothing, as before. Run by `App::on_command` right after the press
+    /// reached the wallet, which does nothing for it.
+    ///
+    /// 2026-11-24 (spec/15 §11.4 S5-9): the shell's only S23 step. From 2026-11-22 (S4c W15,
+    /// critique B-5) until then every S23 press was the shell's (`App::on_ext`, run right after
+    /// the press): `열기`/`← 돌아가기` (the way back was shell state, and a yw-app `Screen` was no
+    /// `Cmd` data before S4d E0a) called the wallet's `set_screen`/`return_to`, `폴더 열기` its
+    /// `emit(Effect::OpenFolder(..))` and the two copies its `copy_with_band`; those presses are
+    /// the wallet's now (`Wallet::on_ext`), with the same steps in the same order.
+    pub(crate) fn on_ext_copy_path(&mut self) {
+        if let Some(dir) = extension_dir() {
+            self.wallet.copy_extension_path(&dir.display().to_string());
         }
     }
 }

@@ -1298,7 +1298,7 @@ const NEXT_CALL_OF_AN_ENTRY: [&str; 0] = [];
 /// code emits queues behind the open and is applied after the answer in the same drain. Not
 /// converted because the fn would become an opener for every caller (each revoke and removal
 /// path, the shell's press entry, every `refresh`).
-const READS_NO_ANSWER: [&str; 9] = [
+const READS_NO_ANSWER: [&str; 19] = [
     // After the press: the press input is put back (the outer press's) and this press's is
     // wiped (`used`, debug: its unread credential count). An open's answer reads no press input:
     // `take_cred` (core, RPC, LLM and EVM settings handlers) and `take_clip`/`take_image` (the
@@ -1340,6 +1340,35 @@ const READS_NO_ANSWER: [&str; 9] = [
     // itself and called nothing.
     "approval app.rs on_command note_input 1",
     "approval main.rs main note_input 1",
+    // 2026-11-24 (spec/15 §11.4 S5-9): the shell's named wallet steps are `Cmd`s now, and each
+    // counts because `on_cmd` also routes an open's answer; none of these `Cmd`s opens an
+    // approval or secret window, and the code after each reads and changes nothing an open's
+    // answer does (before, the calls were the wallet's fns by name, which open nothing).
+    // `on_command`'s two: `Cmd::Main(ClosePickers)` (closes a drop-down: two flags; then the
+    // press is captured and sent) and `Cmd::Main(NotAPress)` (the copy mark; then the closed
+    // drop-down's layout and the drain). `escape_key`'s `Cmd::Main(ClosePickers)`, then its
+    // `Cmd::Main(Relayout)`; `escape_key` ends with that `Cmd` (whose `refresh` is a listed site
+    // above), so `on_command`'s Esc arm counts, followed by the same layout and drain.
+    "approval app.rs on_command on_cmd 2",
+    "approval app.rs escape_key on_cmd 1",
+    "approval app.rs on_command escape_key 1",
+    // `Cmd::SecretClip(EarlierRunCleared)` adds one notice; after it, the clear's log line.
+    "approval app.rs clear_earlier_secret_clip on_cmd 1",
+    // `register_session` ends with `Cmd::Platform(SessionUnregistered)` (the E-APP-004 banner);
+    // after it, the main tick's parts, each an entry of its own (`tick_part` drains), and
+    // `main.rs`'s next start steps.
+    "approval app.rs tick register_session 1",
+    "approval main.rs main register_session 1",
+    // `main.rs`'s start findings (`Cmd::Platform`: banners, the template's gaps, the installed
+    // commit), then its next start steps, drained where they were drained before; and
+    // `show_main`, which ends with `Cmd::Main(Relayout)`, then the start's last drain and the
+    // message loop.
+    "approval main.rs main platform_note 4",
+    "approval main.rs main show_main 1",
+    // The secret kind counts the same `main.rs` sites: the start's later `::new(` calls name the
+    // session reader `new` (`Wallet::new`); no secret window is open at start.
+    "secret main.rs main platform_note 4",
+    "secret main.rs main register_session 1",
 ];
 
 /// Sites the check reports whose opening path never reaches the code after them (it has no
@@ -2101,21 +2130,12 @@ const MUTATING: [&str; 26] = [
 /// followed, and allowed only from the fn named. Nothing else of the executor writes wallet
 /// state (2026-11-21, S4 W2 review: but the cells of `EXECUTOR_CELL_WRITES`; 2026-11-24, S5-5:
 /// none since the render builders left `impl App`).
-const EXECUTOR_WALLET_CALLS: [(&str, &str, &str); 3] = [
-    (
-        "clear_secret_clip",
-        "drop_clip_notice",
-        "the clip-clear notices (spec/04 §4.8): the fn is shared with the main tick (a shell \
-         entry) and `SecretEffect::ClearClip` (the lock's clear); its band changes are the \
-         wallet's, made where the clear's result is known",
-    ),
-    ("clear_secret_clip", "notice", "the same notices"),
-    (
-        "clear_secret_clip",
-        "refresh",
-        "the repaint of those notices",
-    ),
-];
+///
+/// 2026-11-24 (spec/15 §11.4 S5-9): none. The clip-clear notices of `clear_secret_clip`
+/// (`drop_clip_notice`, `notice`, `refresh`: spec/04 §4.8), the three lines here before, are the
+/// wallet's `Cmd::SecretClip`, which `SecretEffect::ClearClip` answers with (and the main tick
+/// sends); the executor writes no wallet state at all but its listed cell.
+const EXECUTOR_WALLET_CALLS: [(&str, &str, &str); 0] = [];
 
 /// The methods an executor fn that takes `&mut self` may call on a wallet field, each with why it
 /// only reads (2026-11-21, S4 W2 review: before, the check matched a list of mutating names,
@@ -2601,7 +2621,7 @@ fn typed_app_names(text: &str) -> BTreeSet<String> {
 /// and calls into the wallet's `impl App` fns only as [`EXECUTOR_WALLET_CALLS`] lists. So the
 /// executor's wallet writes are the clip notices of `clear_secret_clip`, listed with its reason
 /// (2026-11-24, S5-5: and, until then, the two drawn-row maps the `impl App` render builders
-/// refilled). 2026-11-21 (S4 W2 review): before, only `&mut self` fns were followed (the render
+/// refilled; 2026-11-24, S5-9: none — the notices are the answer `Cmd::SecretClip`). 2026-11-21 (S4 W2 review): before, only `&mut self` fns were followed (the render
 /// builders `render_main` reaches were taken to change nothing, and those two cell writes went
 /// unseen), and only [`MUTATING`] calls, assignments and `&mut` borrows through `self.` counted
 /// (a `&mut self.wallet` alias, a `Self { wallet: … }` pattern or `self.idle.input(..)` passed).
@@ -3991,11 +4011,31 @@ fn word_sites_on_made_up_code() {
 /// names the wallet (`self.wallet.<fn>(`), and
 /// [`the_shell_writes_wallet_state_only_through_entries`] allows these and nothing else. They are
 /// the wallet's entries: a `Cmd` (`on_cmd`), the outbox (`next_effect`), the typed in-process
-/// entries of what may hold a secret (a worker's event, a secret window's action, the display
-/// secret's move, the `rpc.json` plan), the shell's compositions around its own waits (lock,
-/// shutdown) and the named wallet steps of shell code that S5 turns into `Cmd`s or answers
-/// (2026-11-23, S4 end: S4d kept them; was "S4d/S5").
-const SHELL_WALLET_CALLS: [(&str, &str, &str); 46] = [
+/// entries of what may not be a `Cmd` (a worker's event, a secret window's action, the display
+/// secret's move, the `rpc.json` plan, the started workers' and browser bridge's handles, the
+/// extension folder's path), the shell's compositions around its own waits (lock, shutdown) and
+/// debug builds' credential check; each wallet fn's kind is [`SHELL_WALLET_KINDS`].
+///
+/// 2026-11-24 (spec/15 §11.4 S5-9, S5 plan owner item O-11): the named wallet steps of shell code
+/// that S4 kept for S5 are `Cmd`s or answers: the main window's `refresh` (after `WM_SIZE`, Esc,
+/// a closed drop-down, the first show), `close_pickers` and `forget_copy_mark` are `Cmd::Main`;
+/// `register_session`'s `error_banner` and `main.rs`'s start steps (`banner`,
+/// `fill_template_gaps`, `wer_unprotected_noted`, `install_commit_read`, through
+/// `start_banner`, `start_fill_template_gaps`, `note_wer_unprotected`, `set_install_commit`) are
+/// `Cmd::Platform`; the clip notices (`drop_clip_notice`, `notice`, `refresh` of
+/// `clear_secret_clip`, `clear_earlier_secret_clip`, `copy_secret`) are `Cmd::SecretClip` (the
+/// answer of `SecretEffect::ClearClip` when the lock's clear has one); S23's `set_screen`,
+/// `return_to`, `emit` and `copy_with_band` (`open_extension_help`, `close_extension_help`,
+/// `on_ext`) and the `rpc.json` card's `finish_rpc_import`, `rpc_import_cancel` and
+/// `rpc_json_delete_asked` are the wallet's own press handlers (`Wallet::on_ext`,
+/// `on_rpc_import_press`), and `on_rpc_json_deleted` is `Cmd::RpcJsonDeleted`. Kept, as typed
+/// in-process entries: `browser_attached` and `workers_attached` (their handles — a dispatcher, a
+/// queue, a channel — are no `Cmd` data; S5 plan §6 S5-9 named them for conversion, which a
+/// plain-data `Cmd` cannot carry: spec/15 §18 38) and the path of S23's `경로 복사`
+/// (`copy_extension_path`; a path never rides in a `Cmd`). Before, 46 lines here and 4 in
+/// `SHELL_WALLET_RPC_CALLS`, which is gone (its one kept line, `begin_rpc_import` →
+/// `on_rpc_json_read`, is here).
+const SHELL_WALLET_CALLS: [(&str, &str, &str); 33] = [
     (
         "dispatch",
         "on_cmd",
@@ -4019,13 +4059,9 @@ const SHELL_WALLET_CALLS: [(&str, &str, &str); 46] = [
     (
         "on_main_msg",
         "on_cmd",
-        "`Cmd::HoldEnd`, `Cmd::Activate` and `Cmd::Tick` (`ReadsDue`) of the main window's messages",
-    ),
-    ("on_main_msg", "refresh", "the layout after `WM_SIZE`"),
-    (
-        "on_main_msg",
-        "close_pickers",
-        "a click on the window itself closes an open drop-down (2026-11-12)",
+        "`Cmd::HoldEnd`, `Cmd::Activate`, `Cmd::Tick` (`ReadsDue`) and (2026-11-24, S5-9) \
+         `Cmd::Main(Clicked)` (a click on the window closes an open drop-down, 2026-11-12) of \
+         the main window's messages",
     ),
     (
         "hold_down",
@@ -4044,87 +4080,71 @@ const SHELL_WALLET_CALLS: [(&str, &str, &str); 46] = [
     ),
     (
         "escape_key",
-        "close_pickers",
-        "Esc closes an open drop-down (P4)",
-    ),
-    ("escape_key", "refresh", "the layout after that"),
-    (
-        "on_command",
-        "close_pickers",
-        "a press closes an open drop-down first (2026-11-12)",
+        "on_cmd",
+        "`Cmd::Main`: Esc closes an open drop-down (P4), then the layout (S5-9)",
     ),
     (
         "on_command",
-        "forget_copy_mark",
-        "an id that is no press only clears the copy mark (S3 D3)",
-    ),
-    (
-        "on_command",
-        "refresh",
-        "the layout after a closed drop-down",
+        "on_cmd",
+        "`Cmd::Main`: a press closes an open drop-down first (2026-11-12) and lays the screen \
+         out after it; an id that is no press only clears the copy mark (S3 D3) (S5-9)",
     ),
     (
         "show_main",
-        "refresh",
-        "the first layout of the main window shown",
+        "on_cmd",
+        "`Cmd::Main(Relayout)`: the first layout of the main window shown (S5-9)",
     ),
     (
         "register_session",
-        "error_banner",
-        "E-APP-004 after the session registration's last retry (spec/04 §1.4-6)",
+        "on_cmd",
+        "`Cmd::Platform(SessionUnregistered)`: E-APP-004 after the session registration's last \
+         retry (spec/04 §1.4-6) (S5-9)",
     ),
     (
-        "set_install_commit",
-        "install_commit_read",
-        "`main.rs`'s start: the installation record's commit",
+        "platform_note",
+        "on_cmd",
+        "`Cmd::Platform`: `main.rs`'s start findings in its order — refused settings, \
+         `apikeys.dpapi` read or not, crash reports, the installed commit (S5-9)",
     ),
     (
-        "note_wer_unprotected",
-        "wer_unprotected_noted",
-        "`main.rs`'s start: crash reports may be written (review L9)",
+        "tick",
+        "on_cmd",
+        "`Cmd::SecretClip`: the main tick's clip clear noticed something (spec/04 §4.8) (S5-9)",
     ),
     (
-        "start_banner",
-        "banner",
-        "`main.rs`'s start: refused settings, unreadable `apikeys.dpapi`",
+        "clear_earlier_secret_clip",
+        "on_cmd",
+        "`Cmd::SecretClip(EarlierRunCleared)`: a copy an earlier run left, cleared late (S5-9)",
     ),
     (
-        "start_fill_template_gaps",
-        "fill_template_gaps",
-        "`main.rs`'s start: networks added since the addresses were made",
+        "copy_secret",
+        "on_cmd",
+        "`Cmd::SecretClip(NoticeEnds)`: a new secret copy replaced one whose clear was noticed \
+         (spec/04 §4.8) (S5-9)",
+    ),
+    (
+        "delete_rpc_json",
+        "on_cmd",
+        "`Cmd::RpcJsonDeleted`: the shell deleted `rpc.json` (O-13), its result (S5-9)",
     ),
     (
         "attach_browser",
         "browser_attached",
-        "`main.rs`'s start: the dispatcher (the pipe end stays the shell's, W1)",
+        "`main.rs`'s start: the dispatcher (the pipe end stays the shell's, W1); a handle, no \
+         `Cmd` data (spec/15 §18 38)",
     ),
     (
         "attach_workers",
         "workers_attached",
-        "`main.rs`'s start: the event queue and the RPC sender (the threads are the shell's)",
+        "`main.rs`'s start: the event queue and the RPC sender (the threads are the shell's); \
+         handles, no `Cmd` data (spec/15 §18 38)",
     ),
     (
-        "clear_secret_clip",
-        "drop_clip_notice",
-        "the clip-clear notices (spec/04 §4.8), where the clipboard answered",
+        "on_ext_copy_path",
+        "copy_extension_path",
+        "S23's `경로 복사`: the extension folder the shell found (B-5), a path, which never rides \
+         in a `Cmd` (D28; S5 plan §6 S5-9 Sec) (S5-9)",
     ),
-    ("clear_secret_clip", "notice", "the same notices"),
-    (
-        "clear_secret_clip",
-        "refresh",
-        "the repaint of those notices",
-    ),
-    (
-        "clear_earlier_secret_clip",
-        "notice",
-        "a copy an earlier run left, cleared late",
-    ),
-    (
-        "copy_secret",
-        "drop_clip_notice",
-        "a new secret copy replaced one whose clear was noticed (spec/04 §4.8)",
-    ),
-    ("copy_secret", "refresh", "the repaint of that band"),
     (
         "lock",
         "lock_steps",
@@ -4173,70 +4193,84 @@ const SHELL_WALLET_CALLS: [(&str, &str, &str); 46] = [
         "a secret window's action, typed in-process (a submission holds secrets, §7.3)",
     ),
     (
+        "begin_rpc_import",
+        "on_rpc_json_read",
+        "the parsed plan, typed in-process (it holds RPC URLs and a token, §7)",
+    ),
+    (
         "run_step",
         "toggle_ai_panel",
-        "`Step::AiExpand`: the shown flow's AI panel (no `Cmd::Approval`: see `AnyWindow`)",
+        "`Step::AiExpand`: the shown flow's AI panel (no `Cmd::Approval`: see `AnyWindow`; S5-10)",
     ),
     (
         "run_step",
         "ai_tick",
-        "`Step::TimerTail` after the window timer's `Tick` (B6 review: no id check)",
+        "`Step::TimerTail` after the window timer's `Tick` (B6 review: no id check; S5-10)",
     ),
     (
         "run_step",
         "rebuild_view_with",
-        "the same tail: the view while the simulation runs",
+        "the same tail: the view while the simulation runs (S5-10)",
     ),
     (
         "paint_ai_body",
         "hold_shown_ai_for_ack",
-        "the AI panel's held flag before the AI body paints (spec/06 §3.2; never the gate)",
-    ),
-    (
-        "open_extension_help",
-        "set_screen",
-        "S23 (B-5: its way back is shell state; a yw-app `Screen` is no `Cmd` data before E0a)",
-    ),
-    (
-        "close_extension_help",
-        "return_to",
-        "S23's `← 돌아가기` (the same)",
-    ),
-    (
-        "on_ext",
-        "emit",
-        "`Effect::OpenFolder(Folder::Extension)`, which the shell resolves (P3)",
-    ),
-    (
-        "on_ext",
-        "copy_with_band",
-        "S23's two copies, the path the shell found (B-5) and the page address",
-    ),
-    (
-        "on_rpc_import",
-        "finish_rpc_import",
-        "the import's confirmation (B-5: the wallet's half of `rpc.json`, W13)",
+        "the AI panel's held flag before the AI body paints (spec/06 §3.2; never the gate; \
+         S5-10)",
     ),
 ];
 
-/// [`SHELL_WALLET_CALLS`]'s `rpc.json` lines (2026-11-22, S4c W15, critique B-5): the shell's
-/// three fns of the import hand the rest to the wallet's typed halves (W13).
-const SHELL_WALLET_RPC_CALLS: [(&str, &str, &str); 4] = [
-    ("on_rpc_import", "rpc_import_cancel", "the import's `취소`"),
+/// The kind of every wallet fn [`SHELL_WALLET_CALLS`] lists (2026-11-24, spec/15 §11.4 S5-9,
+/// S5 plan §6 S5-9 "lists only the kept kinds"): [`the_shell_writes_wallet_state_only_through_entries`]
+/// fails on a listed call whose wallet fn has no kind here, so a named wallet step cannot come
+/// back as a line of its own. The last four are the approval window's steps that S5-10 turns
+/// into `Cmd::Approval` signals or answers (S5 plan owner item O-12).
+const SHELL_WALLET_KINDS: [(&str, &str); 19] = [
     (
-        "on_rpc_import",
-        "rpc_json_delete_asked",
-        "`rpc.json 지우기…` or its `취소`",
+        "on_cmd",
+        "a `Cmd` (Android's `call`, spec/15 §3.2), sent or an answer",
+    ),
+    ("next_effect", "the outbox (Android's `next`)"),
+    ("take_cred_log", "debug builds' credential check (B-11)"),
+    ("worker_event", "typed in-process entry: a worker's event"),
+    (
+        "on_secret_action",
+        "typed in-process entry: a secret window's action",
     ),
     (
-        "delete_rpc_json",
-        "on_rpc_json_deleted",
-        "the delete's result, typed in-process",
+        "open_display_window",
+        "typed in-process entry: the display secret's move",
     ),
     (
-        "begin_rpc_import",
         "on_rpc_json_read",
-        "the parsed plan, typed in-process (it holds RPC URLs and a token, §7)",
+        "typed in-process entry: the parsed `rpc.json` plan",
+    ),
+    (
+        "browser_attached",
+        "typed in-process entry: the browser bridge's dispatcher",
+    ),
+    (
+        "workers_attached",
+        "typed in-process entry: the workers' queue and sender",
+    ),
+    (
+        "copy_extension_path",
+        "typed in-process entry: a path to copy",
+    ),
+    ("lock_steps", "the lock's composition"),
+    ("lock_after_wait", "the lock's composition"),
+    ("shutdown_begin", "the shutdown's composition"),
+    ("shutdown_steps", "the shutdown's composition"),
+    ("shutdown_after_wait", "the shutdown's composition"),
+    ("toggle_ai_panel", "the approval window's step, until S5-10"),
+    ("ai_tick", "the approval window's step, until S5-10"),
+    (
+        "rebuild_view_with",
+        "the approval window's step, until S5-10",
+    ),
+    (
+        "hold_shown_ai_for_ack",
+        "the approval window's step, until S5-10",
     ),
 ];
 
@@ -4317,7 +4351,8 @@ fn wallet_chains(body: &str) -> Vec<(Vec<String>, bool)> {
 /// ([`wallet_writes`]), the whole wallet is never taken ([`whole_wallet`]), a wallet cell is
 /// never borrowed mutably (2026-11-24, S5-5; before, only as `EXECUTOR_CELL_WRITES` listed: the
 /// render builders were `impl App`), a wallet fn that takes `&mut self`
-/// is called only as [`SHELL_WALLET_CALLS`] (and [`SHELL_WALLET_RPC_CALLS`]) list, and a method
+/// is called only as [`SHELL_WALLET_CALLS`] lists (2026-11-24, S5-9: and every listed wallet fn
+/// has a kind in [`SHELL_WALLET_KINDS`]; before, also as `SHELL_WALLET_RPC_CALLS` listed), and a method
 /// called on a wallet field named through `self.wallet.` is one of [`SHELL_WALLET_READS`]. Every
 /// listed call is found, with its reason (A-20). Before W15, `impl App` code wrote the wallet
 /// through `DerefMut` and only the executor was checked
@@ -4349,11 +4384,7 @@ fn the_shell_writes_wallet_state_only_through_entries() {
         .map(|(name, _)| name.as_str())
         .collect();
     assert!(writers.contains("on_cmd") && writers.contains("emit"));
-    let listed: Vec<(&str, &str, &str)> = SHELL_WALLET_CALLS
-        .iter()
-        .chain(SHELL_WALLET_RPC_CALLS.iter())
-        .copied()
-        .collect();
+    let listed: Vec<(&str, &str, &str)> = SHELL_WALLET_CALLS.to_vec();
     let mut seen = BTreeSet::new();
     let mut findings = Vec::new();
     for (name, bodies) in &shell_fns {
@@ -4414,6 +4445,7 @@ fn the_shell_writes_wallet_state_only_through_entries() {
         }
     }
     assert!(findings.is_empty(), "{findings:#?}");
+    assert_kept_kinds(&listed);
     for (from, to, reason) in &listed {
         assert!(!reason.is_empty(), "{from} → {to}: no reason");
         assert!(
@@ -4423,6 +4455,28 @@ fn the_shell_writes_wallet_state_only_through_entries() {
         assert!(
             seen.contains(&((*from).to_owned(), (*to).to_owned())),
             "{from} → {to}: not found"
+        );
+    }
+}
+
+/// Part of [`the_shell_writes_wallet_state_only_through_entries`] (2026-11-24, spec/15 §11.4
+/// S5-9): every listed call's wallet fn has a kept kind ([`SHELL_WALLET_KINDS`]: a `Cmd`, the
+/// outbox, a typed in-process entry, a composition, the debug check, or one of S5-10's approval
+/// steps), and every kind is used.
+fn assert_kept_kinds(listed: &[(&str, &str, &str)]) {
+    for (wallet_fn, kind) in SHELL_WALLET_KINDS {
+        assert!(!kind.is_empty(), "{wallet_fn}: no kind");
+        assert!(
+            listed.iter().any(|&(_, to, _)| to == wallet_fn),
+            "{wallet_fn}: a kind but no listed call"
+        );
+    }
+    for (from, to, _) in listed {
+        assert!(
+            SHELL_WALLET_KINDS
+                .iter()
+                .any(|&(wallet_fn, _)| wallet_fn == *to),
+            "{from} → {to}: no kept kind (a named wallet step is a `Cmd` or an answer since S5-9)"
         );
     }
 }
@@ -4733,7 +4787,7 @@ fn wallet_chains_on_made_up_code() {
 /// S5-5 (2026-11-24, spec/15 §11.4 S5-5): `screen`, the screen's one entry (`&self`; the
 /// builders it calls are yw-engine's `impl Screen<'_>`, not `impl Wallet`), which yw-app's
 /// `App::items` calls (a read, so not a [`SHELL_WALLET_CALLS`] line).
-static WALLET_FNS: [(&str, &str); 990] = [
+static WALLET_FNS: [(&str, &str); 998] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -5732,6 +5786,16 @@ static WALLET_FNS: [(&str, &str); 990] = [
     ("E1", "test_import_held"),
     ("E1", "test_challenge"),
     ("S5-5", "screen"),
+    // 2026-11-24 (spec/15 §11.4 S5-9): the shell's named steps as `Cmd`s, and the press handlers
+    // of S23 and the `rpc.json` card that need no file (before, the shell's).
+    ("S5-9", "main_step"),
+    ("S5-9", "platform_note"),
+    ("S5-9", "clip_note"),
+    ("S5-9", "on_ext"),
+    ("S5-9", "open_extension_help"),
+    ("S5-9", "close_extension_help"),
+    ("S5-9", "copy_extension_path"),
+    ("S5-9", "on_rpc_import_press"),
 ];
 
 /// The `self.` field names `body` reads or writes: the first segment of each `self.` chain that
@@ -7455,41 +7519,39 @@ fn assert_secret_form_shell_reach(app: &Src, shell_calls: &BTreeSet<String>) {
 /// 2026-11-22 (S4c W15): resolved the first way — `drop_clip_notice` is `impl Wallet` (row W15
 /// of [`WALLET_FNS`]) and `copy_secret` calls both on the wallet (`self.wallet.`), as
 /// [`SHELL_WALLET_CALLS`] lists; they stay here as the shell half's only `App`-level calls.
-const SECRET_FORM_SHELL_WALLET_CALLS: [(&str, &str, &str); 2] = [
-    (
-        "copy_secret",
-        "drop_clip_notice",
-        "the clip-clear notice (spec/04 §4.8): a new copy replaced one whose clear was still \
-         being retried and noticed, so T-CLIP-NOT-CLEARED leaves the wallet's `banners`; the \
-         shell knows it where the clipboard answered. Wallet code since W15 (2026-11-22), \
-         called on the wallet",
-    ),
-    ("copy_secret", "refresh", "the repaint of that band"),
-];
+/// 2026-11-24 (spec/15 §11.4 S5-9): resolved the other way — the notice's end is the
+/// `Cmd::SecretClip(ClipNote::NoticeEnds { cleared: false })` it sends (before, the two lines
+/// `drop_clip_notice` and `refresh`).
+const SECRET_FORM_SHELL_WALLET_CALLS: [(&str, &str, &str); 1] = [(
+    "copy_secret",
+    "on_cmd",
+    "the clip-clear notice (spec/04 §4.8): a new copy replaced one whose clear was still being \
+     retried and noticed, so T-CLIP-NOT-CLEARED leaves the wallet's `banners` and the screen is \
+     laid out again; the shell knows it where the clipboard answered and sends it as \
+     `Cmd::SecretClip` (2026-11-24, S5-9)",
+)];
 
 /// The shell's fns of the `rpc.json` import and the `App` fns each may call (2026-11-22, S4c
 /// W13, critique B-5): `(shell fn, its App calls)`. The press handler finds the file
 /// (`rpc_json_path`, a free fn) and hands each press on; the read and the delete do the file
 /// work (`read_plan`, `delete_file`) and hand the result to the wallet's half. The networks a
 /// plan is built for (`url_networks`) are read from the wallet.
+///
+/// 2026-11-24 (spec/15 §11.4 S5-9): the press handler takes only the read and the delete (the
+/// confirmation, its cancel and the delete question are the wallet's `on_rpc_import_press`, in
+/// the press; before, its arms called `finish_rpc_import`, `rpc_import_cancel` and
+/// `rpc_json_delete_asked`), and the delete's result goes as `Cmd::RpcJsonDeleted` (`on_cmd`;
+/// before, `on_rpc_json_deleted` by name).
 const RPC_IMPORT_SHELL_CALLS: [(&str, &[&str]); 3] = [
-    (
-        "on_rpc_import",
-        &[
-            "begin_rpc_import",
-            "delete_rpc_json",
-            "finish_rpc_import",
-            "rpc_import_cancel",
-            "rpc_json_delete_asked",
-        ],
-    ),
+    ("on_rpc_import", &["begin_rpc_import", "delete_rpc_json"]),
     ("begin_rpc_import", &["on_rpc_json_read", "url_networks"]),
-    ("delete_rpc_json", &["on_rpc_json_deleted"]),
+    ("delete_rpc_json", &["on_cmd"]),
 ];
 
 /// The wallet's halves of the `rpc.json` import (2026-11-22, S4c W13, critique B-5), all W13
-/// lines of [`WALLET_FNS`].
-const RPC_IMPORT_WALLET_FNS: [&str; 6] = [
+/// lines of [`WALLET_FNS`] (2026-11-24, S5-9: and its press handler `on_rpc_import_press`, S5-9's).
+const RPC_IMPORT_WALLET_FNS: [&str; 7] = [
+    "on_rpc_import_press",
     "on_rpc_json_read",
     "finish_rpc_import",
     "rpc_import_cancel",
@@ -7550,8 +7612,8 @@ fn the_rpc_import_plan_enters_the_wallet_typed() {
     }
     for wallet_fn in RPC_IMPORT_WALLET_FNS {
         assert!(
-            WALLET_FNS.contains(&("W13", wallet_fn)),
-            "{wallet_fn} is W13 wallet code"
+            WALLET_FNS.contains(&("W13", wallet_fn)) || WALLET_FNS.contains(&("S5-9", wallet_fn)),
+            "{wallet_fn} is W13 (or S5-9) wallet code"
         );
         let bodies = fn_bodies(plan, wallet_fn);
         assert_eq!(bodies.len(), 1, "one {wallet_fn}");
@@ -7590,10 +7652,7 @@ fn the_rpc_import_plan_enters_the_wallet_typed() {
         callers_of("on_rpc_json_read"),
         ["yw-app/src/app_rpc_import.rs:begin_rpc_import"]
     );
-    assert_eq!(
-        callers_of("on_rpc_json_deleted"),
-        ["yw-app/src/app_rpc_import.rs:delete_rpc_json"]
-    );
+    rpc_import_results_enter_as_cmds(&files);
     // The shell's fns are reached from the press path only (2026-11-22, S4c W13 review): the
     // family router, then the press handler. No wallet fn reaches the file work through them,
     // directly or through a helper. 2026-11-22 (S4c W15, critique B-5): the shell's press entry
@@ -7627,6 +7686,41 @@ fn the_rpc_import_plan_enters_the_wallet_typed() {
             assert!(!src.code.contains(name), "{} names {name}", src.file);
         }
     }
+}
+
+/// Part of [`the_rpc_import_plan_enters_the_wallet_typed`] (2026-11-24, spec/15 §11.4 S5-9): the
+/// delete's result arrives as `Cmd::RpcJsonDeleted` (`on_cmd`), sent by `delete_rpc_json`
+/// alone, and the card's other presses are the wallet's press handler, which only the family
+/// router calls. Before, `delete_rpc_json` called `on_rpc_json_deleted` by name, and the shell's
+/// `on_rpc_import` called the other wallet halves.
+fn rpc_import_results_enter_as_cmds(files: &[Src]) {
+    let in_fns = |wanted: &dyn Fn(&str) -> bool| {
+        files
+            .iter()
+            .flat_map(|src| {
+                fn_blocks(src)
+                    .into_iter()
+                    .map(move |(name, body)| (src, name, body))
+            })
+            .filter(|(_, _, body)| wanted(body))
+            .map(|(src, name, _)| format!("{}:{name}", src.file))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        in_fns(&|body| app_calls(body).contains("on_rpc_json_deleted")),
+        ["yw-engine/src/wallet/mod.rs:on_cmd"]
+    );
+    assert_eq!(
+        in_fns(&|body| normalized(body).contains("Cmd::RpcJsonDeleted(")),
+        [
+            "yw-app/src/app_rpc_import.rs:delete_rpc_json",
+            "yw-engine/src/wallet/mod.rs:on_cmd"
+        ]
+    );
+    assert_eq!(
+        in_fns(&|body| app_calls(body).contains("on_rpc_import_press")),
+        ["yw-engine/src/wallet/mod.rs:on_family"]
+    );
 }
 
 /// The confirmation's order (2026-11-22, S4c W13 review; critique B-5: "in today's order"),

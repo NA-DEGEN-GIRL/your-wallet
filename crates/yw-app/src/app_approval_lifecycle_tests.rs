@@ -1662,7 +1662,15 @@ fn rpc_import_on_temp_data() -> Vec<String> {
     fx.app().on_rpc_import(RpcImportPress::Import);
     rec.snap("import");
     rec.fact("plan", &plan(&fx));
-    fx.app().on_rpc_import(RpcImportPress::Overwrite);
+    // 2026-11-24 (spec/15 §11.4 S5-9): the confirmation and the delete question are the
+    // wallet's presses (`Wallet::on_rpc_import_press`, in the press), so they go as the press
+    // (`Cmd::Press`); the file's read and delete stay the shell's `on_rpc_import`. Before, all
+    // four went to `on_rpc_import`, whose arms called the wallet's fns by name.
+    let wallet_press = |press| yw_engine::cmd::Cmd::Press {
+        press: yw_engine::cmd::Press::RpcImport(press),
+        input: yw_engine::form::PressInput::default(),
+    };
+    fx.app().dispatch(wallet_press(RpcImportPress::Overwrite));
     rec.snap("overwrite");
     let app = fx.app.borrow();
     let fact = format!(
@@ -1687,7 +1695,7 @@ fn rpc_import_on_temp_data() -> Vec<String> {
     );
     drop(app);
     rec.fact("saved", &fact);
-    fx.app().on_rpc_import(RpcImportPress::Delete);
+    fx.app().dispatch(wallet_press(RpcImportPress::Delete));
     fx.app().on_rpc_import(RpcImportPress::DeleteConfirm);
     rec.snap("delete");
     rec.fact(

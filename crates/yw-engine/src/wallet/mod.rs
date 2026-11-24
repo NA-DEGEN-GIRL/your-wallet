@@ -82,7 +82,10 @@ use crate::wallet::secret_session::{AfterShown, SecretAction, SecretSession};
 // were constants of this file).
 use crate::app_store::AppStore;
 use crate::approval::flow::OpenOutcome;
-use crate::cmd::{Cmd, CorePress, Press, Row, RpcImportPress, RpcRowAction, TickPart};
+use crate::cmd::{
+    ClipNote, Cmd, CorePress, ExtPress, MainStep, PlatformNote, Press, Row, RpcImportPress,
+    RpcRowAction, TickPart,
+};
 use crate::effect::{Effect, Folder, RevealTarget, TimerId};
 use crate::workers::key::new_account;
 use crate::workers::rpc::RpcJob;
@@ -101,7 +104,7 @@ use crate::secret::{
 };
 use crate::services::Services;
 
-use text::T_CLIP_NOT_CLEARED;
+use text::{T_CLIP_CLEARED_LATE, T_CLIP_NOT_CLEARED};
 
 /// App mode (spec/04 §2.1): `VaultStatus` plus progress states.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -612,6 +615,9 @@ pub struct Wallet {
     /// `설정 → 브라우저·정보 → 정보`: the commit of the installation record next to the executable
     /// (`build_info`), checked; `None` = a development build.
     pub install_commit: Option<String>,
+    /// S23 `Chrome 확장 설치`: the screen its `← 돌아가기` returns to (2026-11-24, spec/15 §11.4
+    /// S5-9: the wallet's, as S23's presses are; before, the shell's `ExtensionUi.back`).
+    pub(crate) ext_back: Option<Screen>,
     /// The text of each plain edit (2026-11-18 S3 B5, spec/15 §11.4): kept equal to what the
     /// edits show — read again at every press (`Cmd::Form`), on every `EN_CHANGE`
     /// (`Cmd::Edit`) and after every render (Windows-transitional; engine-owned in S5).
@@ -795,6 +801,7 @@ impl Wallet {
             recover_return: None,
             settings_last: SettingsSection::Security,
             install_commit: None,
+            ext_back: None,
             form: FormState::default(),
             form_sync: crate::form::FormSync::default(),
             input: PressInput::default(),
@@ -1012,14 +1019,16 @@ impl Wallet {
 
 impl Wallet {
     /// The installed commit read at start, kept when it is a commit (2026-11-22, S4c W15: the
-    /// body of `App::set_install_commit` before).
-    pub fn install_commit_read(&mut self, commit: Option<String>) {
+    /// body of `App::set_install_commit` before). 2026-11-24 (spec/15 §11.4 S5-9): reached as
+    /// `Cmd::Platform(PlatformNote::InstallCommit)`; before, the shell called it (`pub`).
+    pub(crate) fn install_commit_read(&mut self, commit: Option<String>) {
         self.install_commit = commit.filter(|commit| crate::logging::is_commit(commit));
     }
 
     /// `WerAddExcludedApplication` failed at startup (2026-11-22, S4c W15: the body of
-    /// `App::note_wer_unprotected` before).
-    pub fn wer_unprotected_noted(&mut self) {
+    /// `App::note_wer_unprotected` before). 2026-11-24 (S5-9): reached as
+    /// `Cmd::Platform(PlatformNote::WerUnprotected)`; before, the shell called it (`pub`).
+    pub(crate) fn wer_unprotected_noted(&mut self) {
         self.guard.wer_unprotected = true;
         let text = crate::wallet::text::T_WER_UNPROTECTED
             .get(self.settings.language)
@@ -1400,10 +1409,71 @@ impl Wallet {
     /// Removes [`T_CLIP_NOT_CLEARED`] (the caller refreshes). 2026-11-22 (S4c W15): wallet code
     /// (it changes the wallet's `banners`), called by the shell's clip clear and secret copy
     /// where the clipboard answered; before, an `impl App` fn reached through `DerefMut`.
-    pub fn drop_clip_notice(&mut self) {
+    /// 2026-11-24 (spec/15 §11.4 S5-9): called by [`Self::clip_note`] (`Cmd::SecretClip`), the
+    /// shell's clipboard answer; before, by the shell itself (`pub`).
+    pub(crate) fn drop_clip_notice(&mut self) {
         self.banners.retain(|banner| {
             banner.text != T_CLIP_NOT_CLEARED.ko && banner.text != T_CLIP_NOT_CLEARED.en
         });
+    }
+}
+
+impl Wallet {
+    /// S23's presses (spec/04 §2.21; 2026-11-24, spec/15 §11.4 S5-9: the wallet's; from
+    /// 2026-11-22, S4c W15, until then the shell's `App::on_ext`, run right after the press, and
+    /// before W15 called by the family router as here): open and leave S23, open the extension
+    /// folder (the shell resolves it, `Effect::OpenFolder`), copy the page address. `경로 복사`
+    /// copies a path only the shell can find: `App::on_command` hands it to
+    /// [`Self::copy_extension_path`] right after this press, which does nothing for it.
+    pub(crate) fn on_ext(&mut self, press: ExtPress) {
+        match press {
+            ExtPress::Open => self.open_extension_help(),
+            ExtPress::Back => self.close_extension_help(),
+            // 2026-11-20 (S4 P3): the shell resolves and opens the folder; a folder it does not
+            // find comes back as `Cmd::FolderMissing` (`on_folder_missing`).
+            ExtPress::OpenFolder => self.emit(Effect::OpenFolder(Folder::Extension)),
+            ExtPress::CopyPath => {}
+            // A setup step: its instruction stays a band (not the mark at the button), set when
+            // the copy's result arrives (2026-11-20, S4 P6: `Wallet::copy_done`).
+            ExtPress::CopyUrl => self.copy_with_band(
+                crate::screen::extension::CHROME_EXTENSIONS_URL,
+                crate::cmd::CopyBand::ExtensionsUrl,
+            ),
+        }
+    }
+
+    /// `Chrome 확장 설치` (S08, S13, settings): S23 opens, and its way back is the screen it was
+    /// opened from (a second open from S23 itself keeps the first). The body of the shell's
+    /// `App::open_extension_help` before 2026-11-24 (S5-9).
+    fn open_extension_help(&mut self) {
+        if self.screen != Screen::Extension {
+            self.ext_back = Some(self.screen.clone());
+        }
+        self.set_screen(Screen::Extension);
+    }
+
+    /// S23's `← 돌아가기`: back to where it was opened, else the mode's home screen, opened where
+    /// it was left (2026-11-10). The body of the shell's `App::close_extension_help` before
+    /// 2026-11-24 (S5-9).
+    fn close_extension_help(&mut self) {
+        let back = self.ext_back.take();
+        let fallback = match self.mode {
+            AppMode::Unlocked { .. } => Screen::Main,
+            AppMode::BackupPending => Screen::BackupPending,
+            AppMode::NoVault => Screen::FirstRun,
+            _ => Screen::Locked,
+        };
+        self.return_to(back.unwrap_or(fallback));
+    }
+
+    /// S23's `경로 복사` with the extension folder the shell found (2026-11-24, spec/15 §11.4
+    /// S5-9): the shell's `App::on_command` calls it right after that press reached the wallet,
+    /// only when it found the folder (else nothing happens, as before). A typed in-process
+    /// entry, not a `Cmd`: a file path never rides in a `Cmd` (D28; S5 plan §6 S5-9 Sec). The
+    /// copy is a setup step's: its band is set when the result arrives (S4 P6). Before, the shell
+    /// called the wallet's `copy_with_band` with the path and the band itself.
+    pub fn copy_extension_path(&mut self, path: &str) {
+        self.copy_with_band(path, crate::cmd::CopyBand::ExtensionPath);
     }
 }
 
@@ -3221,8 +3291,9 @@ impl Wallet {
 
 impl Wallet {
     /// An id that is no press clears the copy mark and nothing else (2026-11-22, S4c W15: the
-    /// shell's `on_command` wrote `copied` itself before).
-    pub fn forget_copy_mark(&mut self) {
+    /// shell's `on_command` wrote `copied` itself before). 2026-11-24 (spec/15 §11.4 S5-9):
+    /// reached as `Cmd::Main(MainStep::NotAPress)`; before, the shell called it (`pub`).
+    pub(crate) fn forget_copy_mark(&mut self) {
         self.copied = None;
     }
 
@@ -3315,6 +3386,81 @@ impl Wallet {
             // The main window was hidden, minimized, shown or restored (2026-11-21, S4 W3,
             // critique B-10): the wallet's mirror, read by the polling ticks.
             Cmd::MainHidden(hidden) => self.main_hidden = hidden,
+            // The shell's named steps (2026-11-24, spec/15 §11.4 S5-9; before, the shell called
+            // these wallet fns itself, each listed in `SHELL_WALLET_CALLS`).
+            Cmd::Main(step) => self.main_step(step),
+            Cmd::Platform(note) => self.platform_note(note),
+            Cmd::SecretClip(note) => self.clip_note(note),
+            Cmd::RpcJsonDeleted(deleted) => self.on_rpc_json_deleted(deleted),
+        }
+    }
+
+    /// `Cmd::Main` (2026-11-24, spec/15 §11.4 S5-9): the main window's steps, each the call the
+    /// shell made before at the same point (`App::on_main_msg`, `escape_key`, `on_command`,
+    /// `show_main`).
+    fn main_step(&mut self, step: MainStep) {
+        match step {
+            MainStep::Relayout => self.refresh(),
+            MainStep::ClosePickers => {
+                let _ = self.close_pickers();
+            }
+            MainStep::Clicked => {
+                if self.close_pickers() {
+                    self.refresh();
+                }
+            }
+            MainStep::NotAPress => self.forget_copy_mark(),
+        }
+    }
+
+    /// `Cmd::Platform` (2026-11-24, spec/15 §11.4 S5-9; spec/04 §1.4): the start's findings,
+    /// sent by `main.rs` in its order (the refused settings' banner, the API keys' banner or the
+    /// template's gaps, the crash-report banner, the installed commit), and the session
+    /// registration's last failure. The bodies are what the shell called before (`banner`,
+    /// `fill_template_gaps`, `wer_unprotected_noted`, `install_commit_read`, `error_banner`); the
+    /// E-APP-001 text is built here, in the wallet's language, which is the language `main.rs`
+    /// read from the same settings.
+    fn platform_note(&mut self, note: PlatformNote) {
+        let lang = self.settings.language;
+        match note {
+            PlatformNote::SettingsRefused(keys) => {
+                let text = ErrorCode::App001.render_in(lang, &keys.join(", "));
+                self.banner(Some(ErrorCode::App001), text);
+            }
+            PlatformNote::ApiKeys { readable: false } => {
+                self.banner(Some(ErrorCode::Key001), ErrorCode::Key001.text_in(lang));
+            }
+            // Networks added since the addresses were made get the template's address.
+            PlatformNote::ApiKeys { readable: true } => {
+                let _ = self.fill_template_gaps();
+            }
+            PlatformNote::WerUnprotected => self.wer_unprotected_noted(),
+            PlatformNote::InstallCommit(commit) => self.install_commit_read(commit),
+            PlatformNote::SessionUnregistered => self.error_banner(ErrorCode::App004),
+        }
+    }
+
+    /// `Cmd::SecretClip` (2026-11-24, spec/15 §11.4 S5-9; spec/04 §4.8): the notices of a secret
+    /// copy's clear as the shell's clipboard answered it. Each arm is what the shell did before
+    /// where the clipboard answered (`App::clear_secret_clip`, `clear_earlier_secret_clip`,
+    /// `copy_secret`), in the same order.
+    fn clip_note(&mut self, note: ClipNote) {
+        let lang = self.settings.language;
+        match note {
+            ClipNote::NoticeEnds { cleared } => {
+                self.drop_clip_notice();
+                if cleared {
+                    self.notice(T_CLIP_CLEARED_LATE.get(lang).to_owned(), Tone::Info);
+                }
+                self.refresh();
+            }
+            ClipNote::NotCleared => {
+                self.notice(T_CLIP_NOT_CLEARED.get(lang).to_owned(), Tone::Warn);
+                self.refresh();
+            }
+            ClipNote::EarlierRunCleared => {
+                self.notice(T_CLIP_CLEARED_LATE.get(lang).to_owned(), Tone::Info);
+            }
         }
     }
 
@@ -3373,9 +3519,15 @@ impl Wallet {
             Press::YkManage(press) => self.on_yk_manage_press(press),
             Press::YkConnect(press) => self.on_yk_connect(press),
             Press::Yk(press) => self.on_yk(press),
-            // Ext and the `rpc.json` import: the shell's press handlers, run by `App::on_command`
-            // right after this press (2026-11-22, S4c W15, critique B-5); before, called here.
-            Press::Back | Press::Enter | Press::Ext(_) | Press::RpcImport(_) => {}
+            // S23 and the `rpc.json` import (2026-11-24, spec/15 §11.4 S5-9): the wallet's
+            // handlers, but for the two presses that need the shell's files (`경로 복사`'s
+            // extension folder, `rpc.json`'s read and delete), which `App::on_command` runs right
+            // after this press. From 2026-11-22 (S4c W15, critique B-5) every press of the two
+            // families was the shell's there (S23's way back was shell state, and a yw-app
+            // `Screen` no `Cmd` data); before W15, called here.
+            Press::Ext(press) => self.on_ext(press),
+            Press::RpcImport(press) => self.on_rpc_import_press(press),
+            Press::Back | Press::Enter => {}
         }
     }
 
