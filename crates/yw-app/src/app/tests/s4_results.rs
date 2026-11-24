@@ -4806,7 +4806,7 @@ fn wallet_chains_on_made_up_code() {
 /// §11.4 S5-10): `timer_tail`, the window timer's tail after its `Tick` (`ApprovalSignal::TimerTail`;
 /// was the shell's `Step::TimerTail` arm); `toggle_ai_panel` and `hold_shown_ai_for_ack` above
 /// are reached through `ApprovalSignal::AiExpand`/`AiPaint` since, no longer from the shell.
-static WALLET_FNS: [(&str, &str); 999] = [
+static WALLET_FNS: [(&str, &str); 1004] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -5816,6 +5816,13 @@ static WALLET_FNS: [(&str, &str); 999] = [
     ("S5-9", "copy_extension_path"),
     ("S5-9", "on_rpc_import_press"),
     ("S5-10", "timer_tail"),
+    // 2026-11-25 (spec/15 §3.2, §18 8, A2-6): the Android wire's half of the wallet
+    // (`wallet/app_wire.rs`): the drawn model and the inputs resolved against it.
+    ("A2-6", "draw"),
+    ("A2-6", "drawn"),
+    ("A2-6", "on_input"),
+    ("A2-6", "current_slot"),
+    ("A2-6", "wire_press"),
 ];
 
 /// The `self.` field names `body` reads or writes: the first segment of each `self.` chain that

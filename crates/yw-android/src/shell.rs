@@ -12,22 +12,33 @@
 //!   45): the memory facts (an I/O request), [`kdf_gate::gate`], the run, then `mallopt(M_PURGE)`
 //!   whatever the result. In A2-4b the only runs are the device round trip's (`devtest`); A2-8
 //!   wires the key worker's Argon2 jobs through it.
+//! - 2026-11-25 A2-6: the screen host ([`start_screen`], [`ui_input`]): a `crate::ui_host::UiHost`
+//!   behind a lock, made by the start input, which `call` hands every screen input; its frames go
+//!   to [`BROKER`] for `next`.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use yw_core::error::VaultError;
 use yw_core::vault::LockedSlot;
+use yw_engine::apikeys::ApiKeys;
 use yw_engine::logging::{self, Field, LogLevel};
+use yw_engine::services::Services;
+use yw_engine::settings::Settings;
+use yw_engine::wallet::Wallet;
+use yw_engine::wire::WireError;
+use yw_platform::clock::Clock;
 use yw_platform::files::Files;
 
 use crate::android_files::AndroidFiles;
+use crate::clock::AndroidClock;
 use crate::device_key::{BrokerKey, FACTS_TIMEOUT, memory_facts};
 use crate::io_request::IoBroker;
 use crate::kdf_gate::{self, Gate};
 use crate::log_file::LogFile;
 use crate::slot::AndroidSlot;
 use crate::storage::{DATA_FOLDER, DataPlatform, DataStore};
+use crate::ui_host::UiHost;
 
 /// The process's platform I/O broker.
 pub(crate) static BROKER: IoBroker = IoBroker::new();
@@ -67,11 +78,7 @@ pub(crate) const fn platform() -> AndroidPlatform {
     DataPlatform::new(AndroidFiles, BrokerKey::new(&BROKER), new_slot)
 }
 
-/// The app store of the started data folder.
-#[expect(
-    dead_code,
-    reason = "the app store is used from A2-6/A2-8 on (spec/15 §17 A2)"
-)]
+/// The app store of the started data folder (2026-11-25 A2-6: the screen host's wallet holds it).
 pub(crate) fn app_store() -> Option<AndroidStore> {
     Some(DataStore::new(
         AndroidFiles,
@@ -115,7 +122,85 @@ pub(crate) fn start(no_backup: &Path) -> bool {
     logging::info("app", "app.start", &[]);
     #[cfg(yw_device_test)]
     crate::devtest::spawn(folder);
+    start_screen();
     true
+}
+
+/// The screen host (2026-11-25 A2-6, `crate::ui_host`): made by the start input. Java sends every
+/// screen input on its main thread; the lock keeps one input (and the effects it queued) whole.
+static HOST: Mutex<Option<UiHost>> = Mutex::new(None);
+
+/// Makes the screen host on the started data folder and posts its first frames (2026-11-25
+/// A2-6). The wallet starts in `Starting` with the default settings and no workers: the key
+/// worker that classifies the vault, the settings read and the locks come with A2-8. A
+/// `-DeviceTest` build starts it on S01 instead, so the device run can press through the wire.
+fn start_screen() {
+    let Some(store) = app_store() else {
+        return;
+    };
+    let clock = Arc::new(AndroidClock::new());
+    let now = clock.now_ms();
+    #[cfg_attr(
+        not(yw_device_test),
+        expect(unused_mut, reason = "set only in -DeviceTest")
+    )]
+    let mut wallet = Wallet::new(
+        Box::new(store),
+        Services {
+            llm: Arc::new(|_endpoint| None),
+            walletconnect: None,
+            ua_platform: "android",
+        },
+        false,
+        Settings::default(),
+        ApiKeys::default(),
+        clock,
+        now,
+    );
+    #[cfg(yw_device_test)]
+    {
+        wallet.mode = yw_engine::wallet::AppMode::NoVault;
+        wallet.screen = yw_engine::wallet::Screen::FirstRun;
+    }
+    let mut host = UiHost::new(wallet);
+    for frame in host.start() {
+        BROKER.post_ui(&frame);
+    }
+    if let Ok(mut slot) = HOST.lock() {
+        *slot = Some(host);
+    }
+}
+
+/// One screen input from `call` (2026-11-25 A2-6): handed to the host, its frames
+/// posted for `next`. An input that is no input is dropped with one `wire.refused` line (its kind
+/// only, never its bytes).
+pub(crate) fn ui_input(bytes: &[u8]) {
+    let Ok(mut slot) = HOST.lock() else {
+        return;
+    };
+    let Some(host) = slot.as_mut() else {
+        return;
+    };
+    match host.on_wire_input(bytes) {
+        Ok((_outcome, frames)) => {
+            for frame in frames {
+                BROKER.post_ui(&frame);
+            }
+        }
+        Err(error) => logging::warn(
+            "ui",
+            "wire.refused",
+            &[("why", Field::Word(wire_word(error)))],
+        ),
+    }
+}
+
+const fn wire_word(error: WireError) -> &'static str {
+    match error {
+        WireError::TooLarge => "too_large",
+        WireError::Json => "json",
+        WireError::Shape => "shape",
+    }
 }
 
 /// Runs one Argon2id `run` behind the memory check, then purges (module doc). A refusal is

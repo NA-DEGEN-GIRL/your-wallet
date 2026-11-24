@@ -87,7 +87,9 @@ pub mod token_view;
 pub mod wallet_files;
 // 2026-11-23 (spec/15 §11.4 S4d E1): the wallet state, its handlers and the approval flow.
 pub mod wallet;
+// 2026-11-25 (spec/15 §3.2, §18 8, A2-6): the Android wire format of inputs and the screen model.
 pub mod walletconnect;
+pub mod wire;
 pub mod workers;
 pub mod yubikey;
 pub mod zec;

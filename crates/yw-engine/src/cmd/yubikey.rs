@@ -11,6 +11,11 @@
 //! `YubiKey` code (S4d E1), and whether these variants collapse into them is S5 (it changes
 //! `cmd_table` and the census keys). 2026-11-24 (spec/15 §18 40 (3), S5 plan owner item O-5):
 //! not S5 — decided with the A phase's wire format (spec/15 §18 8); the variants stay until then.
+//! 2026-11-25 (spec/15 §18 8, 40 (3), A2-6): they collapsed — [`YkPress::Pgp`] carries
+//! [`PgpKind`], [`YkManagePress::ReslotChain`] the re-slot [`Chain`], [`YkManagePress::Preset`]
+//! the [`Preset`] and [`YkConnectPress::Choice`] the connect [`Choice`]. The other per-value
+//! variants (touch radios, PIN modes, management-key modes, Zcash networks, clear modes) have no
+//! engine choice enum and stay.
 //!
 //! 2026-11-18 (S3 C11): created.
 
@@ -19,6 +24,9 @@ use yw_core::yubikey::plan::{PgpKey, TouchPolicy};
 use yw_core::zec::ZecNetwork;
 
 use crate::cmd::Row;
+use crate::wallet::app_yubikey::PgpKind;
+use crate::wallet::app_yubikey::connect::Choice;
+use crate::wallet::app_yubikey::manage::{Chain, Preset};
 
 /// A press of the `YubiKey` settings tab and the enrolment wizard. The row presses name a card
 /// by its position in the list as drawn (`Row`); a row past the list does nothing. The check
@@ -103,16 +111,11 @@ pub enum YkPress {
     PinsUnified,
     /// "PIN 설정" mode "하나씩 따로".
     PinsSeparate,
-    /// An `OpenPGP` slot's kind radio: nothing.
-    PgpNone(PgpKey),
-    /// An `OpenPGP` slot's kind radio: EVM account `i`.
-    PgpEvm(PgpKey),
-    /// An `OpenPGP` slot's kind radio: Bitcoin single address `i`.
-    PgpBtc(PgpKey),
-    /// An `OpenPGP` slot's kind radio: the EVM shared key (spec/10 §3.2).
-    PgpShared(PgpKey),
-    /// An `OpenPGP` slot's kind radio: Zcash transparent address `i`.
-    PgpZec(PgpKey),
+    /// An `OpenPGP` slot's kind radio (nothing, EVM account `i`, Bitcoin single address `i`, the
+    /// EVM shared key of spec/10 §3.2, Zcash transparent address `i`). 2026-11-25 (spec/15 §18 8,
+    /// 40 (3), A2-6): one variant with the kind; before, `PgpNone`, `PgpEvm`, `PgpBtc`,
+    /// `PgpShared`, `PgpZec`.
+    Pgp(PgpKey, PgpKind),
     /// An `OpenPGP` slot's Bitcoin address-type radio.
     PgpScript(PgpKey, ScriptType),
     /// An `OpenPGP` slot's touch-policy radio.
@@ -141,26 +144,17 @@ pub enum YkManagePress {
     Clear(Row),
     /// "백업 `YubiKey`에도 같은 구성 적용" of a card row.
     ReslotBackup(Row),
-    /// A re-slot slot's chain radio: EVM account `i`.
-    ReslotEvm(PgpKey),
-    /// A re-slot slot's chain radio: Bitcoin single address `i`.
-    ReslotBtc(PgpKey),
-    /// A re-slot slot's chain radio: Zcash transparent address `i`.
-    ReslotZec(PgpKey),
-    /// A re-slot slot's chain radio: the EVM shared key (advanced).
-    ReslotShared(PgpKey),
+    /// A re-slot slot's chain radio (EVM account `i`, Bitcoin single address `i`, Zcash
+    /// transparent address `i`, the EVM shared key (advanced)). 2026-11-25 (spec/15 §18 8, 40 (3),
+    /// A2-6): one variant with the chain; before, `ReslotEvm`, `ReslotBtc`, `ReslotZec`,
+    /// `ReslotShared`.
+    ReslotChain(PgpKey, Chain),
     /// A re-slot slot's Bitcoin address-type radio.
     ReslotScript(PgpKey, ScriptType),
-    /// Preset radio SIG = EVM, AUT = Bitcoin.
-    PresetEvmBtc,
-    /// Preset radio SIG = EVM, AUT = Zcash.
-    PresetEvmZec,
-    /// Preset radio SIG = Bitcoin, AUT = Zcash.
-    PresetBtcZec,
-    /// Preset radio SIG = EVM `i`, AUT = EVM `i + 1`.
-    PresetEvmEvm,
-    /// Preset radio: chosen per slot.
-    PresetCustom,
+    /// A preset radio (SIG = EVM, AUT = Bitcoin; EVM + Zcash; Bitcoin + Zcash; EVM `i` + EVM
+    /// `i + 1`; chosen per slot). 2026-11-25 (A2-6): one variant with the preset; before,
+    /// `PresetEvmBtc`, `PresetEvmZec`, `PresetBtcZec`, `PresetEvmEvm`, `PresetCustom`.
+    Preset(Preset),
     /// Re-slot Zcash network "메인넷".
     ZecMain,
     /// Re-slot Zcash network "테스트넷".
@@ -227,14 +221,8 @@ pub enum YkConnectPress {
     Pin,
     /// `저장`.
     Save,
-    /// A found key's choice radio: EVM account.
-    ChoiceEvm(Row),
-    /// A found key's choice radio: a Bitcoin address of this type.
-    ChoiceBtc(Row, ScriptType),
-    /// A found key's choice radio: Zcash transparent address.
-    ChoiceZec(Row),
-    /// A found key's choice radio: Solana account.
-    ChoiceSol(Row),
-    /// A found key's choice radio: not connected.
-    ChoiceSkip(Row),
+    /// A found key's choice radio (EVM account, a Bitcoin address of a type, Zcash transparent
+    /// address, Solana account, not connected). 2026-11-25 (A2-6): one variant with the choice;
+    /// before, `ChoiceEvm`, `ChoiceBtc(_, ScriptType)`, `ChoiceZec`, `ChoiceSol`, `ChoiceSkip`.
+    Choice(Row, Choice),
 }

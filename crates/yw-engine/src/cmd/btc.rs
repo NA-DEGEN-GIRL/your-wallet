@@ -7,6 +7,7 @@
 use yw_core::btc::{BtcNetwork, ScriptType};
 
 use crate::cmd::Row;
+use crate::wallet::app_btc::BtcFeeChoice;
 
 /// A Bitcoin press. The row presses name an item by its position in the list as drawn (`Row`);
 /// a row past the list does nothing. The fee radios are one variant per choice and form (S3: the
@@ -15,7 +16,10 @@ use crate::cmd::Row;
 /// `BtcFeeChoice` moves to yw-engine with the wallet's Bitcoin code (S4d E1), and whether these
 /// variants collapse into it is S5 (it changes `cmd_table` and the census keys). 2026-11-24
 /// (spec/15 §18 40 (3), S5 plan owner item O-5): not S5 — decided with the A phase's wire format
-/// (spec/15 §18 8); the variants stay until then.
+/// (spec/15 §18 8); the variants stay until then. 2026-11-25 (spec/15 §18 8, 40 (3), A2-6): the fee
+/// radios collapsed into [`BtcPress::Fee`] and [`BtcPress::BumpFee`] carrying [`BtcFeeChoice`];
+/// the other per-value variants (units, networks, indexers, address modes) have no engine choice
+/// enum and stay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BtcPress {
     /// Tab `Bitcoin`.
@@ -72,14 +76,9 @@ pub enum BtcPress {
     UnitSats,
     /// `보내기 최대` (toggles; the box is not read).
     SendMax,
-    /// Send fee `빠름`.
-    FeeFast,
-    /// Send fee `보통`.
-    FeeNormal,
-    /// Send fee `느림`.
-    FeeSlow,
-    /// Send fee `직접 입력`.
-    FeeManual,
+    /// A send fee radio (`빠름`, `보통`, `느림`, `직접 입력`). 2026-11-25 (spec/15 §18 8, 40 (3),
+    /// A2-6): one variant with the choice; before, `FeeFast`, `FeeNormal`, `FeeSlow`, `FeeManual`.
+    Fee(BtcFeeChoice),
     /// Send `검토`.
     SendReview,
     /// Send `취소`.
@@ -90,14 +89,9 @@ pub enum BtcPress {
     ResultRetry,
     /// Result `보내기 화면으로`.
     ResultToSend,
-    /// Bump fee `빠름`.
-    BumpFeeFast,
-    /// Bump fee `보통`.
-    BumpFeeNormal,
-    /// Bump fee `느림`.
-    BumpFeeSlow,
-    /// Bump fee `직접 입력`.
-    BumpFeeManual,
+    /// A fee-bump fee radio. 2026-11-25 (A2-6): one variant with the choice; before,
+    /// `BumpFeeFast`, `BumpFeeNormal`, `BumpFeeSlow`, `BumpFeeManual`.
+    BumpFee(BtcFeeChoice),
     /// Bump `검토`.
     BumpReview,
     /// Bump `취소`.

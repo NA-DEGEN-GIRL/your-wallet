@@ -2,7 +2,10 @@ package dev.yw.app;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 /**
@@ -12,31 +15,92 @@ import android.widget.TextView;
  * <p>2026-11-25 A2-5: above the status line, the warning bands that cannot be closed (spec/15 §1.1, §17): on every
  * onStart the device facts are sent again (debugging can be switched while the app is in the background) and the
  * bands Rust answers are drawn, top first. Their texts come from Rust's catalogues; Java has only their colours.
+ *
+ * <p>2026-11-25 A2-6: below the bands, the screen Rust builds (spec/15 §11.3): each model frame is drawn by
+ * {@link ScreenView} and answered with the rendered input; a press or a typed text goes back as an input naming the
+ * model's revision and the control's slot (spec/15 §18 8). While the Activity is in front it sends the lifetime events
+ * (front, back) and the main timer's tick every {@link UiWire#TICK_MS}. The status line is gone (the model replaces
+ * it).
  */
 public final class MainActivity extends Activity {
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private final Runnable tick = this::tick;
     private LinearLayout bands;
+    private ScrollView scroll;
+    private ScreenView screen;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        String status = App.loaded() ? Wire.statusLine(Native.call(Wire.statusRequest())) : null;
         int padding = dp(16);
+        // 2026-11-25 A2-6: from API 35 a target-36 app is drawn edge to edge, and the platform action bar and the status
+        // bar covered the warning bands (seen on the API 35 emulator; the API 29 test device draws below them). The
+        // bar goes (its only text is the app label; every screen has its own title) and the root keeps clear of the
+        // system bars, so the bands are always the first thing in sight.
+        if (getActionBar() != null) {
+            getActionBar().hide();
+        }
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
+        root.setFitsSystemWindows(true);
         bands = new LinearLayout(this);
         bands.setOrientation(LinearLayout.VERTICAL);
         root.addView(bands);
-        TextView line = new TextView(this);
-        line.setText(status == null ? "" : status);
-        line.setPadding(padding, padding, padding, padding);
-        root.addView(line);
+        scroll = new ScrollView(this);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(padding, padding, padding, padding);
+        scroll.addView(content);
+        root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        screen = new ScreenView(this, content, new ScreenView.Sink() {
+            @Override
+            public void press(long rev, long slot) {
+                Screen.send(UiWire.press(rev, slot));
+            }
+
+            @Override
+            public void edit(long rev, long slot, String text) {
+                Screen.send(UiWire.edit(rev, slot, text));
+            }
+        });
         setContentView(root);
     }
 
     @Override
     protected void onStart() {
         super.onStart();
-        String[] texts = App.loaded() ? Wire.bands(Native.call(DeviceFacts.input(this))) : null;
+        drawBands(App.loaded() ? Wire.bands(Native.call(DeviceFacts.input(this))) : null);
+        Screen.attach(this);
+        Screen.send(UiWire.life("front"));
+        main.postDelayed(tick, UiWire.TICK_MS);
+    }
+
+    @Override
+    protected void onStop() {
+        main.removeCallbacks(tick);
+        Screen.send(UiWire.life("back"));
+        Screen.detach(this);
+        super.onStop();
+    }
+
+    private void tick() {
+        Screen.send(UiWire.tick());
+        main.postDelayed(tick, UiWire.TICK_MS);
+    }
+
+    /** Draws a model frame and answers it (the focused plain edit of the screen shown before). */
+    void drawModel(Object model) {
+        long before = screen.rev();
+        long focus = screen.draw(model);
+        Screen.send(UiWire.rendered(screen.rev(), focus, before));
+    }
+
+    /** A field, reveal or top frame. */
+    void applyFrame(Object frame) {
+        screen.apply(frame, scroll);
+    }
+
+    private void drawBands(String[] texts) {
         bands.removeAllViews();
         int padding = dp(12);
         if (texts == null) {

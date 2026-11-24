@@ -270,6 +270,7 @@ pub mod ids {
     pub fn press_of(id: u16) -> Option<yw_engine::cmd::BtcPress> {
         use yw_core::btc::{BtcNetwork, ScriptType};
         use yw_engine::cmd::{BtcActivityAction, BtcPress, Row};
+        use yw_engine::wallet::app_btc::BtcFeeChoice;
         let within = |base: u16, span: u16| id.checked_sub(base).filter(|offset| *offset < span);
         for net in BtcNetwork::ALL {
             let (_, save, default, test) = esplora_ids(net);
@@ -315,19 +316,19 @@ pub mod ids {
             UNIT_BTC => BtcPress::UnitBtc,
             UNIT_SATS => BtcPress::UnitSats,
             SEND_MAX => BtcPress::SendMax,
-            FEE_FAST => BtcPress::FeeFast,
-            FEE_NORMAL => BtcPress::FeeNormal,
-            FEE_SLOW => BtcPress::FeeSlow,
-            FEE_MANUAL => BtcPress::FeeManual,
+            FEE_FAST => BtcPress::Fee(BtcFeeChoice::Fast),
+            FEE_NORMAL => BtcPress::Fee(BtcFeeChoice::Normal),
+            FEE_SLOW => BtcPress::Fee(BtcFeeChoice::Slow),
+            FEE_MANUAL => BtcPress::Fee(BtcFeeChoice::Manual),
             SEND_REVIEW => BtcPress::SendReview,
             SEND_CANCEL => BtcPress::SendCancel,
             RESULT_COPY => BtcPress::ResultCopy,
             RESULT_RETRY => BtcPress::ResultRetry,
             RESULT_TO_SEND => BtcPress::ResultToSend,
-            BUMP_FEE_FAST => BtcPress::BumpFeeFast,
-            BUMP_FEE_NORMAL => BtcPress::BumpFeeNormal,
-            BUMP_FEE_SLOW => BtcPress::BumpFeeSlow,
-            BUMP_FEE_MANUAL => BtcPress::BumpFeeManual,
+            BUMP_FEE_FAST => BtcPress::BumpFee(BtcFeeChoice::Fast),
+            BUMP_FEE_NORMAL => BtcPress::BumpFee(BtcFeeChoice::Normal),
+            BUMP_FEE_SLOW => BtcPress::BumpFee(BtcFeeChoice::Slow),
+            BUMP_FEE_MANUAL => BtcPress::BumpFee(BtcFeeChoice::Manual),
             BUMP_REVIEW => BtcPress::BumpReview,
             BUMP_CANCEL => BtcPress::BumpCancel,
             COPY_ADDRESS => BtcPress::CopyAddress,
@@ -369,6 +370,7 @@ pub mod ids {
     pub const fn id_of(press: yw_engine::cmd::BtcPress) -> u16 {
         use yw_core::btc::ScriptType;
         use yw_engine::cmd::{BtcActivityAction, BtcPress, Row};
+        use yw_engine::wallet::app_btc::BtcFeeChoice;
         match press {
             BtcPress::TabBtc => TAB_BTC,
             BtcPress::SectionBtc => SECTION_BTC,
@@ -403,19 +405,19 @@ pub mod ids {
             BtcPress::UnitBtc => UNIT_BTC,
             BtcPress::UnitSats => UNIT_SATS,
             BtcPress::SendMax => SEND_MAX,
-            BtcPress::FeeFast => FEE_FAST,
-            BtcPress::FeeNormal => FEE_NORMAL,
-            BtcPress::FeeSlow => FEE_SLOW,
-            BtcPress::FeeManual => FEE_MANUAL,
+            BtcPress::Fee(BtcFeeChoice::Fast) => FEE_FAST,
+            BtcPress::Fee(BtcFeeChoice::Normal) => FEE_NORMAL,
+            BtcPress::Fee(BtcFeeChoice::Slow) => FEE_SLOW,
+            BtcPress::Fee(BtcFeeChoice::Manual) => FEE_MANUAL,
             BtcPress::SendReview => SEND_REVIEW,
             BtcPress::SendCancel => SEND_CANCEL,
             BtcPress::ResultCopy => RESULT_COPY,
             BtcPress::ResultRetry => RESULT_RETRY,
             BtcPress::ResultToSend => RESULT_TO_SEND,
-            BtcPress::BumpFeeFast => BUMP_FEE_FAST,
-            BtcPress::BumpFeeNormal => BUMP_FEE_NORMAL,
-            BtcPress::BumpFeeSlow => BUMP_FEE_SLOW,
-            BtcPress::BumpFeeManual => BUMP_FEE_MANUAL,
+            BtcPress::BumpFee(BtcFeeChoice::Fast) => BUMP_FEE_FAST,
+            BtcPress::BumpFee(BtcFeeChoice::Normal) => BUMP_FEE_NORMAL,
+            BtcPress::BumpFee(BtcFeeChoice::Slow) => BUMP_FEE_SLOW,
+            BtcPress::BumpFee(BtcFeeChoice::Manual) => BUMP_FEE_MANUAL,
             BtcPress::BumpReview => BUMP_REVIEW,
             BtcPress::BumpCancel => BUMP_CANCEL,
             BtcPress::CopyAddress => COPY_ADDRESS,

@@ -9,6 +9,7 @@
 //! `Press::Enter` (the shell still resolves the focus), `Cmd::Form` (the edits' text read back
 //! from the window) and the positional [`Row`]. 2026-11-24 (spec/15 §18 40 (3)): `Cmd::Form`
 //! went in S5-6; the positional `Row` stays until the A phase's wire format (spec/15 §18 8).
+//! 2026-11-25 (A2-6): it stays; see [`Row`].
 //!
 //! 2026-11-18 (S3 C1): the received-history, hidden-account, side-file and drop-down/recipient
 //! families (`Press::{Received, Hidden, Sidecar, Links}`) and the two press facts the shell's
@@ -163,6 +164,9 @@ pub use zec::ZecPress;
 /// A list row as the screen drew it (positional: resolved against the list rebuilt when the
 /// press is handled; S5 → stable keys). 2026-11-24 (spec/15 §18 40 (3), S5 plan owner item O-5):
 /// the stable keys are not S5 but the A phase's wire format (spec/15 §18 8); positional until then.
+/// 2026-11-25 (spec/15 §18 8, 40 (3), A2-6): it stays positional; the Android wire keys a pressed
+/// row by the drawn item's content instead (`Wallet::on_input` presses only a control whose item
+/// is built the same now as when it was drawn), and Windows resolves the row it drew.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Row(pub u16);
 
@@ -663,6 +667,49 @@ impl Press {
                 Self::Reset(ResetPress::SettingsCheck(None))
             }
             Self::Sidecar(SidecarPress::ResetAck(_)) => Self::Sidecar(SidecarPress::ResetAck(None)),
+            other => other,
+        }
+    }
+
+    /// The press with its check box's state set to `state` (every other press unchanged): what a
+    /// click on that box sends when the shell knows the state it leaves the box in (2026-11-25,
+    /// spec/15 §3.2, A2-6: the Android wire's press of a drawn check box, whose state after the
+    /// click is the drawn state turned over; Windows reads the box after the click instead).
+    #[must_use]
+    pub const fn with_check(self, state: Option<bool>) -> Self {
+        match self {
+            Self::Book(BookPress::Verified(_)) => Self::Book(BookPress::Verified(state)),
+            Self::Book(BookPress::Favorite(_)) => Self::Book(BookPress::Favorite(state)),
+            Self::Book(BookPress::FormAck(_)) => Self::Book(BookPress::FormAck(state)),
+            Self::Book(BookPress::PromptAck(_)) => Self::Book(BookPress::PromptAck(state)),
+            Self::Core(CorePress::MismatchCheck(_)) => Self::Core(CorePress::MismatchCheck(state)),
+            Self::Core(CorePress::CopyToggle(_)) => Self::Core(CorePress::CopyToggle(state)),
+            Self::Core(CorePress::LocalhostToggle(_)) => {
+                Self::Core(CorePress::LocalhostToggle(state))
+            }
+            Self::Core(CorePress::AutolaunchToggle(_)) => {
+                Self::Core(CorePress::AutolaunchToggle(state))
+            }
+            Self::Core(CorePress::OverwriteCheck(_)) => {
+                Self::Core(CorePress::OverwriteCheck(state))
+            }
+            Self::Evm(EvmPress::SendAck(_)) => Self::Evm(EvmPress::SendAck(state)),
+            Self::Evm(EvmPress::TokenHideZero(_)) => Self::Evm(EvmPress::TokenHideZero(state)),
+            Self::Evm(EvmPress::RepinCheck(_)) => Self::Evm(EvmPress::RepinCheck(state)),
+            Self::Llm(LlmPress::Enable(_)) => Self::Llm(LlmPress::Enable(state)),
+            Self::Llm(LlmPress::NoticeCheck(_)) => Self::Llm(LlmPress::NoticeCheck(state)),
+            Self::Received(ReceivedPress::Toggle { chain, .. }) => {
+                Self::Received(ReceivedPress::Toggle {
+                    chain,
+                    checked: state,
+                })
+            }
+            Self::Reset(ResetPress::SettingsCheck(_)) => {
+                Self::Reset(ResetPress::SettingsCheck(state))
+            }
+            Self::Sidecar(SidecarPress::ResetAck(_)) => {
+                Self::Sidecar(SidecarPress::ResetAck(state))
+            }
             other => other,
         }
     }

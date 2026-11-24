@@ -1038,7 +1038,7 @@ fn the_view_reads_what_the_form_holds() {
         },
         PlatformFlags::WINDOWS,
     );
-    shown.set_timeout_note(Some("note"));
+    shown.set_timeout_note(Some(crate::secret::TimeoutNote::Mnemonics));
     let view = shown.paint_view();
     assert_eq!(view.shown_text(), Some("abandon about"));
     assert_eq!(view.shown_address(), Some("address"));
@@ -1056,8 +1056,9 @@ fn the_view_reads_what_the_form_holds() {
     assert_eq!(
         view.countdown_line(1_000 + 61_500),
         Some(format!(
-            "{} note",
-            super::text::COUNTDOWN.fill(Lang::Ko, ["3", "59"])
+            "{} {}",
+            super::text::COUNTDOWN.fill(Lang::Ko, ["3", "59"]),
+            crate::secret::TimeoutNote::Mnemonics.text(Lang::Ko)
         ))
     );
     assert!(view.fields().next().is_none() && view.first_field().is_none());

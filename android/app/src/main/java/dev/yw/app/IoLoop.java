@@ -12,6 +12,9 @@ import java.util.Arrays;
  * <p>The request frame is zeroed right after it was served (the wrap request carries the plain file key), and so
  * is the answer body after ioComplete returns (the unwrap answer is the plain file key). A frame this build cannot
  * read gets no answer here unless it has an id (BAD_REQUEST); Rust's deadline ends it either way.
+ *
+ * <p>2026-11-25 A2-6: {@code next} also hands out the UI frames of the screen (UiWire); this thread passes each to the
+ * main thread ({@link Screen#post}). They carry no secret.
  */
 final class IoLoop implements Runnable {
     /** How long one next call waits. */
@@ -41,6 +44,11 @@ final class IoLoop implements Runnable {
     }
 
     private void serve(byte[] frame) {
+        if (frame.length > 0 && (frame[0] & 0xff) == UiWire.FRAME_UI) {
+            // 2026-11-25 A2-6: a UI frame goes to the main thread (Screen).
+            Screen.post(frame);
+            return;
+        }
         if (frame.length < IoFrame.HEADER || (frame[0] & 0xff) != IoFrame.FRAME_IO) {
             Arrays.fill(frame, (byte) 0);
             return;

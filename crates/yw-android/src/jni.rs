@@ -112,6 +112,14 @@ fn clear_exception(jni: JniEnv) {
     }
 }
 
+/// The longest input `call` reads: a screen input (yw-engine `wire::INPUT_MAX`), longer than the
+/// interim ones (2026-11-25 A2-6; before, [`interim::START_MAX`]).
+const INPUT_READ_MAX: usize = if yw_engine::wire::INPUT_MAX > interim::START_MAX {
+    yw_engine::wire::INPUT_MAX
+} else {
+    interim::START_MAX
+};
+
 /// `byte[] call(byte[] cmd)`: the engine's input (spec/15 §3.2). 2026-11-24 A2-3: only the two
 /// interim inputs ([`interim`]): the status request is answered with the status line, the
 /// uncaught-exception event ends the process like a panic; anything else (or more than
@@ -125,10 +133,13 @@ fn clear_exception(jni: JniEnv) {
 /// A2-8); a `-DeviceTest` build checks its fault points on the status request
 /// (`crate::devtest::fault_points`). (2026-11-25 A2-5 review: an input that begins like a facts
 /// input ([`interim::is_facts`]) but is refused is answered with the worst case's bands, never
-/// null, so the test-build band cannot go missing.)
+/// null, so the test-build band cannot go missing.) 2026-11-25 A2-6: every other input (up to
+/// [`INPUT_READ_MAX`] bytes) is a screen input of the wire format (yw-engine `wire`, spec/15 §18 8):
+/// the screen host takes it (`crate::shell::ui_input`) and `call` answers null; the
+/// frames it makes go out through `next`.
 extern "C" fn call(jni: JniEnv, _class: JObject, input: JObject) -> JObject {
     when_loaded(core::ptr::null_mut(), || {
-        let Some(bytes) = read_bytes(jni, input, interim::START_MAX) else {
+        let Some(bytes) = read_bytes(jni, input, INPUT_READ_MAX) else {
             return core::ptr::null_mut();
         };
         match interim::classify(&bytes) {
@@ -151,6 +162,8 @@ extern "C" fn call(jni: JniEnv, _class: JObject, input: JObject) -> JObject {
                     let bands = crate::device::bands_with(fresh, Surface::Main, now);
                     new_byte_array(jni, &interim::bands_answer(&bands, Lang::default()))
                 } else {
+                    // 2026-11-25 A2-6: a screen input; its frames go out through `next`.
+                    crate::shell::ui_input(&bytes);
                     core::ptr::null_mut()
                 }
             }
@@ -231,7 +244,9 @@ const NEXT_WAIT_MAX_MS: u64 = 10_000;
 /// A2-4b: the platform I/O requests of [`crate::io_request`] (the Keystore device key, the memory
 /// facts), waiting up to `timeoutMs` (at most [`NEXT_WAIT_MAX_MS`]); null when none came. The
 /// Rust copy of the frame is wiped once the Java array holds it (the wrap request carries the
-/// plain file key, spec/15 §3.2). Effects and the screen model join in A2-6.
+/// plain file key, spec/15 §3.2). 2026-11-25 A2-6: and the UI frames of the screen host
+/// ([`io_request::FRAME_UI`]: the screen model and the effects Java applies, `crate::ui_host`),
+/// after any waiting I/O request.
 extern "C" fn next(jni: JniEnv, _class: JObject, timeout_ms: i64) -> JObject {
     when_loaded(core::ptr::null_mut(), || {
         let wait = u64::try_from(timeout_ms).map_or(0, |ms| ms.min(NEXT_WAIT_MAX_MS));

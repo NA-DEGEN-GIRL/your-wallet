@@ -141,17 +141,17 @@ fn local_time(facts: &dyn crate::screen::facts::ScreenFacts, unix_ms: u64) -> St
 pub const fn fee_presses(bump: bool) -> [BtcPress; 4] {
     if bump {
         [
-            BtcPress::BumpFeeFast,
-            BtcPress::BumpFeeNormal,
-            BtcPress::BumpFeeSlow,
-            BtcPress::BumpFeeManual,
+            BtcPress::BumpFee(BtcFeeChoice::Fast),
+            BtcPress::BumpFee(BtcFeeChoice::Normal),
+            BtcPress::BumpFee(BtcFeeChoice::Slow),
+            BtcPress::BumpFee(BtcFeeChoice::Manual),
         ]
     } else {
         [
-            BtcPress::FeeFast,
-            BtcPress::FeeNormal,
-            BtcPress::FeeSlow,
-            BtcPress::FeeManual,
+            BtcPress::Fee(BtcFeeChoice::Fast),
+            BtcPress::Fee(BtcFeeChoice::Normal),
+            BtcPress::Fee(BtcFeeChoice::Slow),
+            BtcPress::Fee(BtcFeeChoice::Manual),
         ]
     }
 }

@@ -42,6 +42,7 @@ pub mod app_sol_commands;
 pub mod app_sol_dapp;
 pub mod app_tokens;
 pub mod app_walletconnect;
+pub mod app_wire;
 pub mod app_yubikey;
 pub mod app_zec;
 pub mod approval_flow;
@@ -630,6 +631,10 @@ pub struct Wallet {
     /// ([`Wallet::next_effect`]) and `Cmd::Rendered` keep it; [`Wallet::screen`] keeps the plan of
     /// the model it built.
     pub(crate) form_sync: crate::form::FormSync,
+    /// The model the Android shell drew last and its revision (2026-11-25, spec/15 §3.2, §18 8,
+    /// A2-6): [`Wallet::draw`] keeps it, [`Wallet::on_input`] resolves an input's slot against
+    /// it and drops one of another revision. Windows never draws through it.
+    pub(crate) wire: crate::wire::WireState,
     /// The credential units captured with the press being handled (S3 B5), wiped when it ends.
     /// 2026-11-23 (S4d final review, A-15): crate-private again (E1 had it `#[doc(hidden)] pub`);
     /// the press comes in with `Cmd::Press`, the tests swap it through `testkit`.
@@ -804,6 +809,7 @@ impl Wallet {
             ext_back: None,
             form: FormState::default(),
             form_sync: crate::form::FormSync::default(),
+            wire: crate::wire::WireState::default(),
             input: PressInput::default(),
             evm: crate::wallet::app_evm::EvmUi::default(),
             sol: crate::wallet::app_sol::SolUi::default(),
@@ -916,7 +922,7 @@ const fn step_labels<const N: usize>(steps: [Text; N], lang: Lang) -> [&'static 
 }
 
 /// The step labels of the flows shown in secret windows, per language.
-mod flow_labels {
+pub(crate) mod flow_labels {
     use super::{CREATE_STEPS, IMPORT_STEPS, step_labels};
     use crate::wallet::app_keys::KEY_START_STEPS;
     use crate::wallet::app_yubikey::YK_WALLET_STEPS;
@@ -932,51 +938,43 @@ mod flow_labels {
     pub const YK_EN: [&str; YK_WALLET_STEPS.len()] = step_labels(YK_WALLET_STEPS, Lang::En);
 }
 
-fn flow_step(lang: Lang, purpose: Purpose) -> Option<SecretStep> {
-    use flow_labels::{CREATE_EN, CREATE_KO, IMPORT_EN, IMPORT_KO, KEY_EN, KEY_KO, YK_EN, YK_KO};
-    use text::{FLOW_CREATE, FLOW_IMPORT, FLOW_KEY_START, FLOW_YK_WALLET};
-    let create: &'static [&'static str] = lang.pick(&CREATE_KO, &CREATE_EN);
-    let import: &'static [&'static str] = lang.pick(&IMPORT_KO, &IMPORT_EN);
-    let key: &'static [&'static str] = lang.pick(&KEY_KO, &KEY_EN);
-    let yk: &'static [&'static str] = lang.pick(&YK_KO, &YK_EN);
-    let (flow, labels, current): (Text, &'static [&'static str], usize) = match purpose {
-        Purpose::CreatePassword => (FLOW_CREATE, create, 1),
-        Purpose::ShowForBackup => (FLOW_CREATE, create, 2),
-        Purpose::Backup => (FLOW_CREATE, create, 3),
-        Purpose::ImportPassword => (FLOW_IMPORT, import, 1),
-        Purpose::ImportMnemonic | Purpose::ImportPassphrase => (FLOW_IMPORT, import, 2),
-        Purpose::KeyStartPassword => (FLOW_KEY_START, key, 1),
-        Purpose::KeyStartKey => (FLOW_KEY_START, key, 2),
+fn flow_step(purpose: Purpose) -> Option<SecretStep> {
+    use crate::secret::StepFlow;
+    let (flow, current) = match purpose {
+        Purpose::CreatePassword => (StepFlow::Create, 1),
+        Purpose::ShowForBackup => (StepFlow::Create, 2),
+        Purpose::Backup => (StepFlow::Create, 3),
+        Purpose::ImportPassword => (StepFlow::Import, 1),
+        Purpose::ImportMnemonic | Purpose::ImportPassphrase => (StepFlow::Import, 2),
+        Purpose::KeyStartPassword => (StepFlow::KeyStart, 1),
+        Purpose::KeyStartKey => (StepFlow::KeyStart, 2),
         // The new YubiKey wallet has five steps: the wizard is 4 and its PIN setup 5
         // (2026-11-10; it showed n/3 and seemed to end at the backup check).
         Purpose::YubiKey(crate::wallet::app_yubikey::YkPurpose::NewPassword) => {
-            (FLOW_YK_WALLET, yk, 1)
+            (StepFlow::YkWallet, 1)
         }
         Purpose::YubiKey(crate::wallet::app_yubikey::YkPurpose::ShowWords) => {
-            (FLOW_YK_WALLET, yk, 2)
+            (StepFlow::YkWallet, 2)
         }
-        Purpose::YubiKey(crate::wallet::app_yubikey::YkPurpose::Backup) => (FLOW_YK_WALLET, yk, 3),
+        Purpose::YubiKey(crate::wallet::app_yubikey::YkPurpose::Backup) => (StepFlow::YkWallet, 3),
         _ => return None,
     };
-    Some(SecretStep {
-        flow: flow.get(lang),
-        labels,
-        current,
-    })
+    // 2026-11-25 (spec/15 §18 29, A2-6): the flow's catalogue key; the window reads its title
+    // and labels in its language. Before, the texts picked here in `lang`.
+    Some(SecretStep { flow, current })
 }
 
 /// What W08's countdown adds on a first display (`다 적었습니다`, spec/04 §4.9): where the words
 /// can be seen again after the window closes, or that they are wiped (a new `YubiKey` wallet).
-const fn timeout_note(lang: Lang, purpose: Purpose) -> Option<&'static str> {
-    let note = match purpose {
-        Purpose::ShowForBackup => text::TIMEOUT_BACKUP,
-        Purpose::YubiKey(crate::wallet::app_yubikey::YkPurpose::ShowWords) => {
-            text::TIMEOUT_YK_WORDS
-        }
-        Purpose::Mnemonics(_) => text::TIMEOUT_MNEMONICS,
+/// 2026-11-25 (spec/15 §18 29, A2-6): the note's catalogue key; before, its text in `lang`.
+const fn timeout_note(purpose: Purpose) -> Option<crate::secret::TimeoutNote> {
+    use crate::secret::TimeoutNote;
+    Some(match purpose {
+        Purpose::ShowForBackup => TimeoutNote::Backup,
+        Purpose::YubiKey(crate::wallet::app_yubikey::YkPurpose::ShowWords) => TimeoutNote::YkWords,
+        Purpose::Mnemonics(_) => TimeoutNote::Mnemonics,
         _ => return None,
-    };
-    Some(note.get(lang))
+    })
 }
 
 fn eip55(address: &Address) -> String {
@@ -2472,7 +2470,7 @@ impl Wallet {
         self.emit(Effect::Secret(SecretEffect::OpenInput {
             serial,
             kind,
-            step: flow_step(lang, purpose),
+            step: flow_step(purpose),
             topmost,
             lang,
         }));
@@ -2592,8 +2590,8 @@ impl Wallet {
         self.emit(Effect::Secret(SecretEffect::OpenDisplay {
             serial,
             kind,
-            step: flow_step(lang, purpose),
-            timeout_note: timeout_note(lang, purpose),
+            step: flow_step(purpose),
+            timeout_note: timeout_note(purpose),
             lang,
         }));
     }
@@ -2658,7 +2656,7 @@ impl Wallet {
         serial: u64,
         kind: SecretKind,
         step: Option<SecretStep>,
-        timeout_note: Option<&'static str>,
+        timeout_note: Option<crate::secret::TimeoutNote>,
         lang: Lang,
     ) -> OpenOutcome {
         if !self.secret_unshown(serial) {

@@ -794,11 +794,7 @@ pub enum PgpAction {
 #[must_use]
 pub const fn pgp_of(press: YkPress) -> Option<(PgpKey, PgpAction)> {
     Some(match press {
-        YkPress::PgpNone(key) => (key, PgpAction::Kind(PgpKind::None)),
-        YkPress::PgpEvm(key) => (key, PgpAction::Kind(PgpKind::Evm)),
-        YkPress::PgpBtc(key) => (key, PgpAction::Kind(PgpKind::Btc)),
-        YkPress::PgpShared(key) => (key, PgpAction::Kind(PgpKind::Shared)),
-        YkPress::PgpZec(key) => (key, PgpAction::Kind(PgpKind::Zec)),
+        YkPress::Pgp(key, kind) => (key, PgpAction::Kind(kind)),
         YkPress::PgpScript(key, script) => (key, PgpAction::Script(script)),
         YkPress::PgpTouch(key, touch) => (key, PgpAction::Touch(touch)),
         YkPress::PgpZecNetwork(key, network) => (key, PgpAction::Zec(network)),
@@ -811,11 +807,7 @@ pub const fn pgp_of(press: YkPress) -> Option<(PgpKey, PgpAction)> {
 #[must_use]
 pub const fn pgp_press(key: PgpKey, action: PgpAction) -> YkPress {
     match action {
-        PgpAction::Kind(PgpKind::None) => YkPress::PgpNone(key),
-        PgpAction::Kind(PgpKind::Evm) => YkPress::PgpEvm(key),
-        PgpAction::Kind(PgpKind::Btc) => YkPress::PgpBtc(key),
-        PgpAction::Kind(PgpKind::Shared) => YkPress::PgpShared(key),
-        PgpAction::Kind(PgpKind::Zec) => YkPress::PgpZec(key),
+        PgpAction::Kind(kind) => YkPress::Pgp(key, kind),
         PgpAction::Script(script) => YkPress::PgpScript(key, script),
         PgpAction::Touch(touch) => YkPress::PgpTouch(key, touch),
         PgpAction::Zec(network) => YkPress::PgpZecNetwork(key, network),
@@ -2614,11 +2606,7 @@ impl Wallet {
                 self.refresh();
             }
             // The `OpenPGP` radios ran above (`pgp_of`).
-            YkPress::PgpNone(_)
-            | YkPress::PgpEvm(_)
-            | YkPress::PgpBtc(_)
-            | YkPress::PgpShared(_)
-            | YkPress::PgpZec(_)
+            YkPress::Pgp(..)
             | YkPress::PgpScript(..)
             | YkPress::PgpTouch(..)
             | YkPress::PgpZecNetwork(..) => {}

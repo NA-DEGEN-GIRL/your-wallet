@@ -2069,7 +2069,7 @@ impl App {
         serial: u64,
         kind: SecretKind,
         step: Option<SecretStep>,
-        timeout_note: Option<&'static str>,
+        timeout_note: Option<yw_engine::secret::TimeoutNote>,
         lang: Lang,
     ) -> Cmd {
         // 2026-11-20 (S4 P8): the recording secret host notes every effect's `Debug` (its scan

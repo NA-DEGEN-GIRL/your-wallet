@@ -622,8 +622,13 @@ impl SecretForm {
     /// W08 `create`: the note after the countdown (where the words can be seen again, or that
     /// they are wiped when the window closes). 2026-11-24 (S5-8): crate-private, set by
     /// `Wallet::open_display_window` (the shell's host set it before).
-    pub(crate) const fn set_timeout_note(&mut self, note: Option<&'static str>) {
-        self.timeout_note = note;
+    /// 2026-11-25 (spec/15 §18 29, A2-6): it takes the catalogue key and resolves it in the
+    /// window's language (the language the logic picked the text in before).
+    pub(crate) const fn set_timeout_note(&mut self, note: Option<super::TimeoutNote>) {
+        self.timeout_note = match note {
+            Some(note) => Some(note.text(self.lang)),
+            None => None,
+        };
     }
 
     /// W10: the list verdict of field `index` ([`WordMark`]).

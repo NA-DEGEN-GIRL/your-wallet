@@ -137,9 +137,9 @@ fn paint_steps(
         &wide(&text::STEPS.fill(
             lang,
             [
-                step.flow,
+                step.title(lang),
                 &step.current.to_string(),
-                &step.labels.len().to_string(),
+                &step.labels(lang).len().to_string(),
             ],
         )),
         Rect::new(margin, y, width, px(18)),
@@ -147,11 +147,11 @@ fn paint_steps(
     );
     let top = y.saturating_add(px(22));
     let dot = px(20);
-    let count = i32::try_from(step.labels.len()).unwrap_or(1).max(1);
+    let count = i32::try_from(step.labels(lang).len()).unwrap_or(1).max(1);
     let column = width / count;
     // Five labels share the width: the caption font keeps each on its line.
-    let small = step.labels.len() > 3;
-    for (index, label) in step.labels.iter().enumerate() {
+    let small = step.labels(lang).len() > 3;
+    for (index, label) in step.labels(lang).iter().enumerate() {
         let number = index.saturating_add(1);
         let x = margin.saturating_add(column.saturating_mul(i32::try_from(index).unwrap_or(0)));
         let reached = number <= step.current;

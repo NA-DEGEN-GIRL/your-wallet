@@ -1010,6 +1010,7 @@ mod tests {
         use yw_core::btc::{BtcNetwork, ScriptType};
         use yw_engine::cmd::{BtcActivityAction, BtcPress, Row};
         use yw_engine::received::RecvChain;
+        use yw_engine::wallet::app_btc::BtcFeeChoice;
         let controls = ControlSet::default();
         for id in 9_000..10_000 {
             let btc = matches!(id, 9_000..=9_019 | 9_022..=9_028 | 9_031..=9_036 | 9_038..=9_042
@@ -1078,8 +1079,8 @@ mod tests {
             }
         }
         for (id, press) in [
-            (ids::FEE_MANUAL, BtcPress::FeeManual),
-            (ids::BUMP_FEE_FAST, BtcPress::BumpFeeFast),
+            (ids::FEE_MANUAL, BtcPress::Fee(BtcFeeChoice::Manual)),
+            (ids::BUMP_FEE_FAST, BtcPress::BumpFee(BtcFeeChoice::Fast)),
             (ids::ACCOUNT_BASE + 64, BtcPress::Account(Row(64))),
             (ids::UTXO_BASE + 299, BtcPress::Utxo(Row(299))),
             (ids::EVM_ACCOUNT_BASE + 31, BtcPress::EvmAccount(Row(31))),
@@ -1448,6 +1449,9 @@ mod tests {
         };
         use yw_engine::logging::LogLevel;
         use yw_engine::settings::RpcTemplate;
+        use yw_engine::wallet::app_yubikey::PgpKind;
+        use yw_engine::wallet::app_yubikey::connect::Choice;
+        use yw_engine::wallet::app_yubikey::manage::Chain;
         // A row variant's press for a row.
         type RowPress = fn(Row) -> Press;
         // The exhaustive matches fail to compile on a new variant until it is placed here.
@@ -1485,11 +1489,11 @@ mod tests {
         // Values with no row: every one is drawn but the Taproot scripts and `Never`.
         for key in [PgpKey::Sig, PgpKey::Aut] {
             for press in [
-                YkPress::PgpNone(key),
-                YkPress::PgpEvm(key),
-                YkPress::PgpBtc(key),
-                YkPress::PgpShared(key),
-                YkPress::PgpZec(key),
+                YkPress::Pgp(key, PgpKind::None),
+                YkPress::Pgp(key, PgpKind::Evm),
+                YkPress::Pgp(key, PgpKind::Btc),
+                YkPress::Pgp(key, PgpKind::Shared),
+                YkPress::Pgp(key, PgpKind::Zec),
             ] {
                 cases.push((Press::Yk(press), true));
             }
@@ -1510,10 +1514,10 @@ mod tests {
                 cases.push((Press::Yk(YkPress::PgpZecNetwork(key, network)), true));
             }
             for press in [
-                YkManagePress::ReslotEvm(key),
-                YkManagePress::ReslotBtc(key),
-                YkManagePress::ReslotZec(key),
-                YkManagePress::ReslotShared(key),
+                YkManagePress::ReslotChain(key, Chain::Evm),
+                YkManagePress::ReslotChain(key, Chain::Btc),
+                YkManagePress::ReslotChain(key, Chain::Zec),
+                YkManagePress::ReslotChain(key, Chain::Shared),
             ] {
                 cases.push((Press::YkManage(press), true));
             }
@@ -1649,16 +1653,16 @@ mod tests {
         for row in around(yk::CONNECT_CHOICE_SPAN, yk::CONNECT_CHOICE_STRIDE) {
             let inside = row < yk::CONNECT_CHOICE_ROWS;
             for press in [
-                YkConnectPress::ChoiceEvm(Row(row)),
-                YkConnectPress::ChoiceZec(Row(row)),
-                YkConnectPress::ChoiceSol(Row(row)),
-                YkConnectPress::ChoiceSkip(Row(row)),
+                YkConnectPress::Choice(Row(row), Choice::Evm),
+                YkConnectPress::Choice(Row(row), Choice::Zec),
+                YkConnectPress::Choice(Row(row), Choice::Sol),
+                YkConnectPress::Choice(Row(row), Choice::Skip),
             ] {
                 cases.push((Press::YkConnect(press), inside));
             }
             for script in scripts {
                 cases.push((
-                    Press::YkConnect(YkConnectPress::ChoiceBtc(Row(row), script)),
+                    Press::YkConnect(YkConnectPress::Choice(Row(row), Choice::Btc(script))),
                     inside && script_drawn(script),
                 ));
             }

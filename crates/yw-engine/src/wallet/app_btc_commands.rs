@@ -39,14 +39,8 @@ const fn esplora_field(net: BtcNetwork) -> EditField {
 #[must_use]
 pub(crate) const fn fee_choice(press: BtcPress) -> Option<(BtcFeeChoice, bool)> {
     Some(match press {
-        BtcPress::FeeFast => (BtcFeeChoice::Fast, false),
-        BtcPress::FeeNormal => (BtcFeeChoice::Normal, false),
-        BtcPress::FeeSlow => (BtcFeeChoice::Slow, false),
-        BtcPress::FeeManual => (BtcFeeChoice::Manual, false),
-        BtcPress::BumpFeeFast => (BtcFeeChoice::Fast, true),
-        BtcPress::BumpFeeNormal => (BtcFeeChoice::Normal, true),
-        BtcPress::BumpFeeSlow => (BtcFeeChoice::Slow, true),
-        BtcPress::BumpFeeManual => (BtcFeeChoice::Manual, true),
+        BtcPress::Fee(choice) => (choice, false),
+        BtcPress::BumpFee(choice) => (choice, true),
         _ => return None,
     })
 }
@@ -282,14 +276,8 @@ impl Wallet {
             // The fee radios and the rows (the legacy `other` arm). Listed by name, not a
             // catch-all (2026-11-18, S3 C7-C9 review): a new `BtcPress` must be routed on
             // purpose.
-            BtcPress::FeeFast
-            | BtcPress::FeeNormal
-            | BtcPress::FeeSlow
-            | BtcPress::FeeManual
-            | BtcPress::BumpFeeFast
-            | BtcPress::BumpFeeNormal
-            | BtcPress::BumpFeeSlow
-            | BtcPress::BumpFeeManual
+            BtcPress::Fee(_)
+            | BtcPress::BumpFee(_)
             | BtcPress::AccountAddType(_)
             | BtcPress::EvmAccount(_)
             | BtcPress::Account(_)

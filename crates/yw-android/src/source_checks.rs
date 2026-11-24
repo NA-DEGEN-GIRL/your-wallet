@@ -151,3 +151,21 @@ fn rust_never_calls_java() {
         }
     }
 }
+
+/// spec/15 §18 8 (2026-11-25 A2-6): nothing on the Android wire builds an approval window's input.
+/// The shell answers an approval window's open (`ApprovalEffect`, `Cmd::ApprovalOpened`) but no
+/// code of this crate names `ApprovalInput`, `ApprovalSignal` or `Cmd::Approval(`: an approval
+/// input is made only by the Android mapper of touch facts (A3), never decoded from `call`.
+#[test]
+fn no_approval_input_is_decoded() {
+    for (name, text) in sources() {
+        if name == "source_checks.rs" {
+            continue;
+        }
+        for line in code_lines(&text) {
+            for token in ["ApprovalInput", "ApprovalSignal", "Cmd::Approval("] {
+                assert!(!line.contains(token), "{name}: {line}");
+            }
+        }
+    }
+}

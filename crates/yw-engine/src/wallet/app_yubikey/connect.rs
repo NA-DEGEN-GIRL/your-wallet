@@ -162,13 +162,8 @@ const fn default_choice(slot: CardSlot) -> Choice {
 #[must_use]
 pub fn choice_of(press: YkConnectPress) -> Option<(usize, Choice)> {
     use crate::cmd::Row;
-    let (Row(row), choice) = match press {
-        YkConnectPress::ChoiceEvm(row) => (row, Choice::Evm),
-        YkConnectPress::ChoiceBtc(row, script) => (row, Choice::Btc(script)),
-        YkConnectPress::ChoiceZec(row) => (row, Choice::Zec),
-        YkConnectPress::ChoiceSol(row) => (row, Choice::Sol),
-        YkConnectPress::ChoiceSkip(row) => (row, Choice::Skip),
-        _ => return None,
+    let YkConnectPress::Choice(Row(row), choice) = press else {
+        return None;
     };
     Some((usize::from(row), choice))
 }
@@ -181,13 +176,7 @@ pub fn choice_of(press: YkConnectPress) -> Option<(usize, Choice)> {
 pub fn choice_press(row: usize, choice: Choice) -> YkConnectPress {
     use crate::cmd::Row;
     let row = Row(u16::try_from(row).unwrap_or(u16::MAX));
-    match choice {
-        Choice::Evm => YkConnectPress::ChoiceEvm(row),
-        Choice::Btc(script) => YkConnectPress::ChoiceBtc(row, script),
-        Choice::Zec => YkConnectPress::ChoiceZec(row),
-        Choice::Sol => YkConnectPress::ChoiceSol(row),
-        Choice::Skip => YkConnectPress::ChoiceSkip(row),
-    }
+    YkConnectPress::Choice(row, choice)
 }
 
 impl Wallet {
@@ -531,11 +520,7 @@ impl Wallet {
             YkConnectPress::Pin => self.yk_connect_pin(),
             YkConnectPress::Save => self.yk_connect_save(),
             // The choice radios ran above.
-            YkConnectPress::ChoiceEvm(_)
-            | YkConnectPress::ChoiceBtc(..)
-            | YkConnectPress::ChoiceZec(_)
-            | YkConnectPress::ChoiceSol(_)
-            | YkConnectPress::ChoiceSkip(_) => {}
+            YkConnectPress::Choice(..) => {}
         }
     }
 }

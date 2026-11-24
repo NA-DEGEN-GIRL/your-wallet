@@ -188,10 +188,7 @@ pub enum ReslotAction {
 #[must_use]
 pub const fn reslot_of(press: YkManagePress) -> Option<(PgpKey, ReslotAction)> {
     Some(match press {
-        YkManagePress::ReslotEvm(key) => (key, ReslotAction::Chain(Chain::Evm)),
-        YkManagePress::ReslotBtc(key) => (key, ReslotAction::Chain(Chain::Btc)),
-        YkManagePress::ReslotZec(key) => (key, ReslotAction::Chain(Chain::Zec)),
-        YkManagePress::ReslotShared(key) => (key, ReslotAction::Chain(Chain::Shared)),
+        YkManagePress::ReslotChain(key, chain) => (key, ReslotAction::Chain(chain)),
         YkManagePress::ReslotScript(key, script) => (key, ReslotAction::Script(script)),
         _ => return None,
     })
@@ -203,10 +200,7 @@ pub const fn reslot_of(press: YkManagePress) -> Option<(PgpKey, ReslotAction)> {
 #[must_use]
 pub const fn reslot_press(key: PgpKey, action: ReslotAction) -> YkManagePress {
     match action {
-        ReslotAction::Chain(Chain::Evm) => YkManagePress::ReslotEvm(key),
-        ReslotAction::Chain(Chain::Btc) => YkManagePress::ReslotBtc(key),
-        ReslotAction::Chain(Chain::Zec) => YkManagePress::ReslotZec(key),
-        ReslotAction::Chain(Chain::Shared) => YkManagePress::ReslotShared(key),
+        ReslotAction::Chain(chain) => YkManagePress::ReslotChain(key, chain),
         ReslotAction::Script(script) => YkManagePress::ReslotScript(key, script),
     }
 }
@@ -215,27 +209,17 @@ pub const fn reslot_press(key: PgpKey, action: ReslotAction) -> YkManagePress {
 /// control id `ui::screens_yubikey::ids::preset_id` before).
 #[must_use]
 pub const fn preset_press(preset: Preset) -> YkManagePress {
-    match preset {
-        Preset::EvmBtc => YkManagePress::PresetEvmBtc,
-        Preset::EvmZec => YkManagePress::PresetEvmZec,
-        Preset::BtcZec => YkManagePress::PresetBtcZec,
-        Preset::EvmEvm => YkManagePress::PresetEvmEvm,
-        Preset::Custom => YkManagePress::PresetCustom,
-    }
+    YkManagePress::Preset(preset)
 }
 
 /// The preset of a preset radio press; `None` for every other press.
 /// 2026-11-22 (S4d E0c): moved from `ui::screens_yubikey::ids` (wallet code maps the press).
 #[must_use]
 pub const fn preset_of(press: YkManagePress) -> Option<Preset> {
-    Some(match press {
-        YkManagePress::PresetEvmBtc => Preset::EvmBtc,
-        YkManagePress::PresetEvmZec => Preset::EvmZec,
-        YkManagePress::PresetBtcZec => Preset::BtcZec,
-        YkManagePress::PresetEvmEvm => Preset::EvmEvm,
-        YkManagePress::PresetCustom => Preset::Custom,
-        _ => return None,
-    })
+    match press {
+        YkManagePress::Preset(preset) => Some(preset),
+        _ => None,
+    }
 }
 
 impl Chain {
@@ -1463,16 +1447,9 @@ impl Wallet {
             YkManagePress::Reslot(_)
             | YkManagePress::Clear(_)
             | YkManagePress::ReslotBackup(_)
-            | YkManagePress::ReslotEvm(_)
-            | YkManagePress::ReslotBtc(_)
-            | YkManagePress::ReslotZec(_)
-            | YkManagePress::ReslotShared(_)
+            | YkManagePress::ReslotChain(..)
             | YkManagePress::ReslotScript(..)
-            | YkManagePress::PresetEvmBtc
-            | YkManagePress::PresetEvmZec
-            | YkManagePress::PresetBtcZec
-            | YkManagePress::PresetEvmEvm
-            | YkManagePress::PresetCustom => return,
+            | YkManagePress::Preset(_) => return,
         }
         self.refresh();
     }

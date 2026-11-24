@@ -31,6 +31,7 @@
 //! (`panic_hook::java_uncaught`), and in a `-DeviceTest` build the panic test's fault points
 //! (`devtest::fault_points`).
 
+pub mod clock;
 pub mod device;
 pub mod device_key;
 pub mod interim;
@@ -41,6 +42,7 @@ pub mod log_file;
 pub mod sealed_files;
 pub mod slot_plan;
 pub mod storage;
+pub mod ui_host;
 
 #[cfg(target_os = "android")]
 mod android_files;

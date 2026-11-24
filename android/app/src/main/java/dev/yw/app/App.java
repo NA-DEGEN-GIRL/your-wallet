@@ -15,6 +15,9 @@ import android.content.Context;
  *
  * <p>2026-11-25 A2-5: then the device facts (DeviceFacts, spec/15 §1.1, §8.2), so that Rust logs the protection tier
  * once at start; the main Activity sends them again on every onStart.
+ *
+ * <p>2026-11-25 A2-6: the screen state keeps the application context (the clipboard of a copy) before the I/O thread
+ * starts handing it frames; the start input makes Rust post the first screen model.
  */
 public final class App extends Application {
     private static volatile boolean loaded;
@@ -33,6 +36,7 @@ public final class App extends Application {
     public void onCreate() {
         super.onCreate();
         if (loaded) {
+            Screen.init(this);
             IoLoop.start(this);
             byte[] start = Wire.start(getNoBackupFilesDir().getAbsolutePath());
             if (start != null) {

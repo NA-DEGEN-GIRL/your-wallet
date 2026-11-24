@@ -584,11 +584,7 @@ pub mod ids {
         use yw_engine::cmd::{Row, YkPress};
         if let Some((key, action)) = pgp_action(id) {
             return Some(match action {
-                PgpAction::Kind(PgpKind::None) => YkPress::PgpNone(key),
-                PgpAction::Kind(PgpKind::Evm) => YkPress::PgpEvm(key),
-                PgpAction::Kind(PgpKind::Btc) => YkPress::PgpBtc(key),
-                PgpAction::Kind(PgpKind::Shared) => YkPress::PgpShared(key),
-                PgpAction::Kind(PgpKind::Zec) => YkPress::PgpZec(key),
+                PgpAction::Kind(kind) => YkPress::Pgp(key, kind),
                 PgpAction::Script(script) => YkPress::PgpScript(key, script),
                 PgpAction::Touch(touch) => YkPress::PgpTouch(key, touch),
                 PgpAction::Zec(network) => YkPress::PgpZecNetwork(key, network),
@@ -720,11 +716,11 @@ pub mod ids {
             YkPress::PinsUnified => PINS_UNIFIED,
             YkPress::PinsSeparate => PINS_SEPARATE,
             // `KINDS` order, Zcash at 12 (see `pgp_id`).
-            YkPress::PgpNone(key) => pgp(key, 0),
-            YkPress::PgpEvm(key) => pgp(key, 1),
-            YkPress::PgpBtc(key) => pgp(key, 2),
-            YkPress::PgpShared(key) => pgp(key, 3),
-            YkPress::PgpZec(key) => pgp(key, 12),
+            YkPress::Pgp(key, PgpKind::None) => pgp(key, 0),
+            YkPress::Pgp(key, PgpKind::Evm) => pgp(key, 1),
+            YkPress::Pgp(key, PgpKind::Btc) => pgp(key, 2),
+            YkPress::Pgp(key, PgpKind::Shared) => pgp(key, 3),
+            YkPress::Pgp(key, PgpKind::Zec) => pgp(key, 12),
             YkPress::PgpScript(key, script) => pgp(key, script_offset(script)),
             // `PGP_TOUCH` order at 8–11; `Never` is not drawn (the index edit, as `pgp_id`).
             YkPress::PgpTouch(key, touch) => pgp(
@@ -769,21 +765,12 @@ pub mod ids {
         }
         if let Some((key, action)) = reslot_action(id) {
             return Some(match action {
-                ReslotAction::Chain(Chain::Evm) => YkManagePress::ReslotEvm(key),
-                ReslotAction::Chain(Chain::Btc) => YkManagePress::ReslotBtc(key),
-                ReslotAction::Chain(Chain::Zec) => YkManagePress::ReslotZec(key),
-                ReslotAction::Chain(Chain::Shared) => YkManagePress::ReslotShared(key),
+                ReslotAction::Chain(chain) => YkManagePress::ReslotChain(key, chain),
                 ReslotAction::Script(script) => YkManagePress::ReslotScript(key, script),
             });
         }
         if let Some(preset) = preset(id) {
-            return Some(match preset {
-                Preset::EvmBtc => YkManagePress::PresetEvmBtc,
-                Preset::EvmZec => YkManagePress::PresetEvmZec,
-                Preset::BtcZec => YkManagePress::PresetBtcZec,
-                Preset::EvmEvm => YkManagePress::PresetEvmEvm,
-                Preset::Custom => YkManagePress::PresetCustom,
-            });
+            return Some(YkManagePress::Preset(preset));
         }
         Some(match id {
             RESLOT_ZEC_MAIN => YkManagePress::ZecMain,
@@ -831,17 +818,17 @@ pub mod ids {
             YkManagePress::Clear(Row(row)) => CLEAR_BASE.wrapping_add(row),
             YkManagePress::ReslotBackup(Row(row)) => RESLOT_BACKUP_BASE.wrapping_add(row),
             // `Chain::ALL` order.
-            YkManagePress::ReslotEvm(key) => slot(key, 0),
-            YkManagePress::ReslotBtc(key) => slot(key, 1),
-            YkManagePress::ReslotZec(key) => slot(key, 2),
-            YkManagePress::ReslotShared(key) => slot(key, 3),
+            YkManagePress::ReslotChain(key, Chain::Evm) => slot(key, 0),
+            YkManagePress::ReslotChain(key, Chain::Btc) => slot(key, 1),
+            YkManagePress::ReslotChain(key, Chain::Zec) => slot(key, 2),
+            YkManagePress::ReslotChain(key, Chain::Shared) => slot(key, 3),
             YkManagePress::ReslotScript(key, script) => slot(key, script_offset(script)),
             // `Preset::ALL` order.
-            YkManagePress::PresetEvmBtc => PRESET_BASE,
-            YkManagePress::PresetEvmZec => PRESET_BASE + 1,
-            YkManagePress::PresetBtcZec => PRESET_BASE + 2,
-            YkManagePress::PresetEvmEvm => PRESET_BASE + 3,
-            YkManagePress::PresetCustom => PRESET_BASE + 4,
+            YkManagePress::Preset(Preset::EvmBtc) => PRESET_BASE,
+            YkManagePress::Preset(Preset::EvmZec) => PRESET_BASE + 1,
+            YkManagePress::Preset(Preset::BtcZec) => PRESET_BASE + 2,
+            YkManagePress::Preset(Preset::EvmEvm) => PRESET_BASE + 3,
+            YkManagePress::Preset(Preset::Custom) => PRESET_BASE + 4,
             YkManagePress::ZecMain => RESLOT_ZEC_MAIN,
             YkManagePress::ZecTest => RESLOT_ZEC_TEST,
             YkManagePress::Advanced => RESLOT_ADVANCED,
@@ -874,16 +861,9 @@ pub mod ids {
     #[must_use]
     pub fn connect_press_of(id: u16) -> Option<yw_engine::cmd::YkConnectPress> {
         use yw_engine::cmd::{Row, YkConnectPress};
-        use yw_engine::wallet::app_yubikey::connect::Choice;
         if let Some((row, choice)) = connect_choice(id) {
             let row = Row(u16::try_from(row).ok()?);
-            return Some(match choice {
-                Choice::Evm => YkConnectPress::ChoiceEvm(row),
-                Choice::Btc(script) => YkConnectPress::ChoiceBtc(row, script),
-                Choice::Zec => YkConnectPress::ChoiceZec(row),
-                Choice::Sol => YkConnectPress::ChoiceSol(row),
-                Choice::Skip => YkConnectPress::ChoiceSkip(row),
-            });
+            return Some(YkConnectPress::Choice(row, choice));
         }
         Some(match id {
             CONNECT_START => YkConnectPress::Start,
@@ -904,6 +884,7 @@ pub mod ids {
     #[must_use]
     pub const fn connect_id_of(press: yw_engine::cmd::YkConnectPress) -> u16 {
         use yw_engine::cmd::{Row, YkConnectPress};
+        use yw_engine::wallet::app_yubikey::connect::Choice;
         // `CONNECT_CHOICES` order; a Bitcoin type the flow does not offer is column 0, as
         // `connect_choice_id` places it.
         const fn choice(Row(row): Row, column: u16) -> u16 {
@@ -919,8 +900,8 @@ pub mod ids {
             YkConnectPress::Back => CONNECT_BACK,
             YkConnectPress::Pin => CONNECT_PIN,
             YkConnectPress::Save => CONNECT_SAVE,
-            YkConnectPress::ChoiceEvm(row) => choice(row, 0),
-            YkConnectPress::ChoiceBtc(row, script) => choice(
+            YkConnectPress::Choice(row, Choice::Evm) => choice(row, 0),
+            YkConnectPress::Choice(row, Choice::Btc(script)) => choice(
                 row,
                 match script {
                     ScriptType::P2wpkh => 1,
@@ -929,9 +910,9 @@ pub mod ids {
                     ScriptType::P2tr => 0,
                 },
             ),
-            YkConnectPress::ChoiceZec(row) => choice(row, 4),
-            YkConnectPress::ChoiceSol(row) => choice(row, 5),
-            YkConnectPress::ChoiceSkip(row) => choice(row, 6),
+            YkConnectPress::Choice(row, Choice::Zec) => choice(row, 4),
+            YkConnectPress::Choice(row, Choice::Sol) => choice(row, 5),
+            YkConnectPress::Choice(row, Choice::Skip) => choice(row, 6),
         }
     }
 }

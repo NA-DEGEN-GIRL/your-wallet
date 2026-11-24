@@ -13,8 +13,11 @@
 //!   32-byte file key (the one exception to "no secret in `next`", spec/15 §3.2), the unwrap
 //!   answer carries it back.
 //!
-//! The frame `next` returns (little-endian): `0x01` (an I/O request; A2-6 adds the other frame
-//! kinds) ‖ op ‖ kind ‖ id (8) ‖ body. Platform-neutral (std only, no `unsafe`): the gate's
+//! The frame `next` returns (little-endian): `0x01` (an I/O request) ‖ op ‖ kind ‖ id (8) ‖ body.
+//! 2026-11-25 A2-6: or `0x02` ‖ a UI frame (yw-json, UTF-8: the screen model and the effects Java
+//! applies, `crate::ui_host`), posted with [`IoBroker::post_ui`]. Java's I/O thread hands a UI
+//! frame to the main thread. An I/O request goes first (a Rust thread waits for it); at most
+//! [`UI_MAX`] UI frames wait, and a full queue drops its oldest (a later model replaces it). Platform-neutral (std only, no `unsafe`): the gate's
 //! Windows build tests it, and Java's `IoFrame` reads the same layout (`JvmTests`).
 #![forbid(unsafe_code)]
 
@@ -27,6 +30,10 @@ use yw_core::secret::Zeroizing;
 
 /// The first byte of an I/O request frame.
 pub const FRAME_IO: u8 = 0x01;
+/// The first byte of a UI frame (2026-11-25 A2-6).
+pub const FRAME_UI: u8 = 0x02;
+/// The most UI frames waiting for Java (2026-11-25 A2-6).
+pub const UI_MAX: usize = 256;
 /// The frame header: kind byte, op, kind, id.
 pub const FRAME_HEADER: usize = 1 + 1 + 1 + 8;
 /// The largest body Rust reads from an `ioComplete` (the ops' answers are at most 60 bytes).
@@ -122,6 +129,8 @@ enum Answer {
 struct State {
     last_id: u64,
     queue: VecDeque<Queued>,
+    /// UI frames for Java, tagged (2026-11-25 A2-6).
+    ui: VecDeque<Vec<u8>>,
     waiting: BTreeMap<u64, Answer>,
 }
 
@@ -154,6 +163,7 @@ impl IoBroker {
             state: Mutex::new(State {
                 last_id: 0,
                 queue: VecDeque::new(),
+                ui: VecDeque::new(),
                 waiting: BTreeMap::new(),
             }),
             queued: Condvar::new(),
@@ -230,11 +240,30 @@ impl IoBroker {
             if let Some(queued) = state.queue.pop_front() {
                 return Some(queued.frame);
             }
+            if let Some(frame) = state.ui.pop_front() {
+                return Some(Zeroizing::new(frame));
+            }
             let left = deadline
                 .checked_duration_since(Instant::now())
                 .filter(|left| !left.is_zero())?;
             state = self.queued.wait_timeout(state, left).ok()?.0;
         }
+    }
+
+    /// Queues one UI frame (`json`, tagged here with [`FRAME_UI`]) for Java's `next` (2026-11-25
+    /// A2-6). A full queue drops its oldest frame first. Nothing happens on a poisoned lock.
+    pub fn post_ui(&self, json: &[u8]) {
+        let Ok(mut state) = self.lock() else {
+            return;
+        };
+        while state.ui.len() >= UI_MAX {
+            let _ = state.ui.pop_front();
+        }
+        let mut frame = Vec::with_capacity(json.len().saturating_add(1));
+        frame.push(FRAME_UI);
+        frame.extend_from_slice(json);
+        state.ui.push_back(frame);
+        self.queued.notify_one();
     }
 
     /// Java's `ioComplete`: the answer of `id`. Dropped (and `body` wiped) unless `id` is waiting
@@ -281,7 +310,9 @@ mod tests {
 
     use yw_core::secret::Zeroizing;
 
-    use super::{FRAME_IO, IoBroker, IoError, Op, QUEUE_MAX, parse_frame, status};
+    use super::{
+        FRAME_IO, FRAME_UI, IoBroker, IoError, Op, QUEUE_MAX, UI_MAX, parse_frame, status,
+    };
 
     const LONG: Duration = Duration::from_secs(5);
     const SHORT: Duration = Duration::from_millis(50);
@@ -431,5 +462,33 @@ mod tests {
     fn take_waits_and_gives_up() {
         let broker = IoBroker::new();
         assert!(broker.take(SHORT).is_none());
+    }
+
+    /// 2026-11-25 A2-6: UI frames are tagged, come after a waiting I/O request, in order, and a
+    /// full queue drops its oldest.
+    #[test]
+    fn ui_frames_follow_requests_in_order() {
+        let broker = Arc::new(IoBroker::new());
+        broker.post_ui(b"{\"t\":\"top\"}");
+        let requester = std::thread::spawn({
+            let broker = Arc::clone(&broker);
+            move || broker.request(Op::Memory, 0, &[], LONG).is_ok()
+        });
+        // Java's side: whichever comes first, the request is never behind a UI frame queued later.
+        let first = broker.take(LONG).unwrap();
+        let first = if first[0] == FRAME_UI {
+            assert_eq!(&first[1..], b"{\"t\":\"top\"}");
+            broker.take(LONG).unwrap()
+        } else {
+            first
+        };
+        let (_, _, id, _) = parse_frame(&first).unwrap();
+        assert!(broker.complete(id, status::OK, Zeroizing::new(Vec::new())));
+        assert!(requester.join().unwrap());
+        for at in 0..UI_MAX + 2 {
+            broker.post_ui(at.to_string().as_bytes());
+        }
+        let oldest = broker.take(SHORT).unwrap();
+        assert_eq!(&oldest[..], [&[FRAME_UI][..], b"2"].concat());
     }
 }

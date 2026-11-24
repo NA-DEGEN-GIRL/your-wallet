@@ -245,16 +245,134 @@ impl SecretKind {
 }
 
 /// The flow a secret window belongs to and its step (the main window's step indicator, spec/04
-/// §2.3–§2.4): the flow title, the step labels (three; five for the new `YubiKey` wallet) and
-/// the current step (1-based).
+/// §2.3–§2.4): the flow, whose title and step labels (three; five for the new `YubiKey` wallet)
+/// the shell reads from the catalogue in the window's language, and the current step (1-based).
+///
+/// 2026-11-25 (spec/15 §18 29, §3.2, A2-6): a catalogue key ([`StepFlow`]) instead of the texts —
+/// before, `flow: &'static str` and `labels: &'static [&'static str]`, picked by the logic in the
+/// app language. A key can cross the Android wire as a word; the texts are the same (Windows paints
+/// [`SecretStep::title`] and [`SecretStep::labels`] in the window's language, which is the language
+/// the logic picked them in).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SecretStep {
-    /// 새 지갑 만들기 / 기존 지갑 가져오기.
-    pub flow: &'static str,
-    /// The step labels.
-    pub labels: &'static [&'static str],
+    /// 새 지갑 만들기 / 기존 지갑 가져오기 / 개인키로 시작하기 / `YubiKey` 지갑 만들기.
+    pub flow: StepFlow,
     /// Current step, 1-based.
     pub current: usize,
+}
+
+impl SecretStep {
+    /// The flow's title in `lang`.
+    #[must_use]
+    pub const fn title(self, lang: Lang) -> &'static str {
+        self.flow.title(lang)
+    }
+
+    /// The flow's step labels in `lang`.
+    #[must_use]
+    pub const fn labels(self, lang: Lang) -> &'static [&'static str] {
+        self.flow.labels(lang)
+    }
+}
+
+/// A flow with a step indicator in its secret windows (a catalogue key, 2026-11-25 A2-6, spec/15
+/// §18 29).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepFlow {
+    /// 새 지갑 만들기 (three steps).
+    Create,
+    /// 기존 지갑 가져오기 (three steps).
+    Import,
+    /// 개인키로 시작하기 (three steps).
+    KeyStart,
+    /// `YubiKey` 지갑 만들기 (five steps).
+    YkWallet,
+}
+
+impl StepFlow {
+    /// Every flow (the wire's word table).
+    pub const ALL: [Self; 4] = [Self::Create, Self::Import, Self::KeyStart, Self::YkWallet];
+
+    /// The key's word on the Android wire (spec/15 §3.2).
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Import => "import",
+            Self::KeyStart => "key_start",
+            Self::YkWallet => "yk_wallet",
+        }
+    }
+
+    /// The flow's title in `lang`.
+    #[must_use]
+    pub const fn title(self, lang: Lang) -> &'static str {
+        use crate::wallet::text::{FLOW_CREATE, FLOW_IMPORT, FLOW_KEY_START, FLOW_YK_WALLET};
+        match self {
+            Self::Create => FLOW_CREATE,
+            Self::Import => FLOW_IMPORT,
+            Self::KeyStart => FLOW_KEY_START,
+            Self::YkWallet => FLOW_YK_WALLET,
+        }
+        .get(lang)
+    }
+
+    /// The flow's step labels in `lang`.
+    #[must_use]
+    pub const fn labels(self, lang: Lang) -> &'static [&'static str] {
+        use crate::wallet::flow_labels::{
+            CREATE_EN, CREATE_KO, IMPORT_EN, IMPORT_KO, KEY_EN, KEY_KO, YK_EN, YK_KO,
+        };
+        match (self, lang) {
+            (Self::Create, Lang::Ko) => &CREATE_KO,
+            (Self::Create, Lang::En) => &CREATE_EN,
+            (Self::Import, Lang::Ko) => &IMPORT_KO,
+            (Self::Import, Lang::En) => &IMPORT_EN,
+            (Self::KeyStart, Lang::Ko) => &KEY_KO,
+            (Self::KeyStart, Lang::En) => &KEY_EN,
+            (Self::YkWallet, Lang::Ko) => &YK_KO,
+            (Self::YkWallet, Lang::En) => &YK_EN,
+        }
+    }
+}
+
+/// W08's note after its countdown (a catalogue key, 2026-11-25 A2-6, spec/15 §18 29): where the
+/// words can be seen again after the window closes, or that they are wiped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeoutNote {
+    /// The create flow's first display: `복구 단어 보고 백업 확인` shows them again.
+    Backup,
+    /// A new `YubiKey` wallet's words: wiped when the window closes.
+    YkWords,
+    /// Settings → 복구 단어 shows them again.
+    Mnemonics,
+}
+
+impl TimeoutNote {
+    /// Every note (the wire's word table).
+    pub const ALL: [Self; 3] = [Self::Backup, Self::YkWords, Self::Mnemonics];
+
+    /// The key's word on the Android wire (spec/15 §3.2).
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Backup => "backup",
+            Self::YkWords => "yk_words",
+            Self::Mnemonics => "mnemonics",
+        }
+    }
+
+    /// The note in `lang`.
+    #[must_use]
+    pub const fn text(self, lang: Lang) -> &'static str {
+        use crate::wallet::text::{TIMEOUT_BACKUP, TIMEOUT_MNEMONICS, TIMEOUT_YK_WORDS};
+        match self {
+            Self::Backup => TIMEOUT_BACKUP,
+            Self::YkWords => TIMEOUT_YK_WORDS,
+            Self::Mnemonics => TIMEOUT_MNEMONICS,
+        }
+        .get(lang)
+    }
 }
 
 /// What the logic asks the shell to do with a secret window (2026-11-20, S4 P7a1; inside
@@ -313,8 +431,9 @@ pub enum SecretEffect {
         /// the shell resolves; like `step`'s texts (also in `OpenInput`) it becomes a catalogue
         /// key before an `Effect` has to round-trip through the yw-json codec or the Android
         /// shell (S4d E2). 2026-11-23 (S4 end, spec/15 §18 29): S4d E2 serialises no effect, so
-        /// the key comes with the A-phase codec (spec/15 §18 8).
-        timeout_note: Option<&'static str>,
+        /// the key comes with the A-phase codec (spec/15 §18 8). 2026-11-25 (A2-6): it did — a
+        /// [`TimeoutNote`] key; the window resolves it in its language.
+        timeout_note: Option<TimeoutNote>,
         /// The language the window draws its texts in.
         lang: Lang,
     },
@@ -623,8 +742,7 @@ mod tests {
                 serial: 12_345_678,
             },
             step: Some(SecretStep {
-                flow: "flow",
-                labels: &["one", "two", "three"],
+                flow: StepFlow::Create,
                 current: 2,
             }),
             topmost: true,
@@ -650,7 +768,7 @@ mod tests {
             serial: 4,
             kind: SecretKind::ShowMnemonic { create: true },
             step: None,
-            timeout_note: Some("note text"),
+            timeout_note: Some(TimeoutNote::Backup),
             lang: Lang::Ko,
         };
         assert_eq!(

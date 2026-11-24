@@ -26,6 +26,10 @@ public final class JvmTests {
         run("facts input is the bytes Rust parses", JvmTests::factsInput);
         run("bands answer is strict UTF-8 lines", JvmTests::bandsAnswer);
         run("an unreadable debugging setting reads as on", JvmTests::settingOn);
+        run("JSON is read strictly", JvmTests::jsonStrict);
+        run("the pinned model frame is read as Rust writes it", JvmTests::modelFrame);
+        run("screen inputs are the bytes Rust decodes", JvmTests::screenInputs);
+        run("QR modules are read from their hex", JvmTests::qrModules);
         System.out.println("jvmTest: " + passed + " passed, " + failed + " failed");
         if (failed != 0 || passed == 0) {
             System.exit(1);
@@ -245,5 +249,88 @@ public final class JvmTests {
             check(Wire.settingOn(raws[at], false) == on[at], "setting " + name);
             check(Wire.settingOn(raws[at], true) == onWhenAbsentIsOff[at], "setting before API 30 " + name);
         }
+    }
+
+    private static void jsonStrict() {
+        // 2026-11-25 A2-6: the reader of the UI frames.
+        Object value = Json.parse(utf8("{\"a\":[1,-2,true,false,null],\"b\":\"x\\u00e9\\n\\\"\"}"));
+        check(Json.list(value, "a").size() == 5, "array");
+        check(Long.valueOf(-2).equals(Json.list(value, "a").get(1)), "negative");
+        check(Json.list(value, "a").get(4) == Json.NULL, "null");
+        check("x\u00e9\n\"".equals(Json.string(value, "b")), "escapes");
+        check(Json.parse(utf8("{\"a\":1,\"a\":2}")) == null, "duplicate key");
+        check(Json.parse(utf8("1.5")) == null, "fraction");
+        check(Json.parse(utf8("1e3")) == null, "exponent");
+        check(Json.parse(utf8("01")) == null, "leading zero");
+        check(Json.parse(utf8("{} x")) == null, "trailing");
+        check(Json.parse(utf8("\"a\nb\"")) == null, "raw control");
+        check(Json.parse(new byte[] {'"', (byte) 0xC3, '"'}) == null, "cut UTF-8");
+        check(Json.parse(utf8("[".repeat(33) + "]".repeat(33))) == null, "too deep");
+        check(Json.parse(utf8("[".repeat(32) + "]".repeat(32))) != null, "deep enough");
+        check(Json.parse(utf8("99999999999999999999")) == null, "too large");
+        check("\"a\\\"b\\\\c\\u0001\"".equals(Json.quote("a\"b\\c\u0001")), "quote");
+    }
+
+    /** The same string as yw-engine tests/wire.rs MODEL_FRAME (Rust pins its bytes, Java reads them). */
+    private static final String MODEL_FRAME = "{\"t\":\"model\",\"rev\":7,\"items\":[{\"k\":\"title\",\"text\":\"Hi\"},"
+            + "{\"k\":\"banner\",\"text\":\"état \\\"x\\\"\",\"tone\":\"warn\",\"tag\":\"Caution\"},"
+            + "{\"k\":\"row\",\"ctls\":[{\"s\":0,\"c\":\"button\",\"style\":\"primary\",\"text\":\"Go\",\"on\":true,"
+            + "\"checked\":null,\"first\":null,\"password\":null,\"readonly\":null,\"limit\":null,\"badge\":null,"
+            + "\"compact\":false,\"face\":null,\"tip\":null},{\"s\":1,\"c\":\"check\",\"style\":null,\"text\":\"C\","
+            + "\"on\":false,\"checked\":true,\"first\":null,\"password\":null,\"readonly\":null,\"limit\":null,"
+            + "\"badge\":null,\"compact\":false,\"face\":null,\"tip\":null}]},{\"k\":\"lrow\",\"label\":\"N\","
+            + "\"ctls\":[{\"s\":2,\"c\":\"edit\",\"style\":null,\"text\":\"a\",\"on\":true,\"checked\":null,"
+            + "\"first\":null,\"password\":false,\"readonly\":false,\"limit\":32,\"badge\":null,"
+            + "\"compact\":false,\"face\":null,\"tip\":null}]}]}";
+
+    private static void modelFrame() {
+        byte[] json = utf8(MODEL_FRAME);
+        byte[] framed = new byte[json.length + 1];
+        framed[0] = (byte) UiWire.FRAME_UI;
+        System.arraycopy(json, 0, framed, 1, json.length);
+        Object frame = UiWire.frame(framed);
+        check("model".equals(Json.string(frame, "t")), "kind");
+        check(Json.number(frame, "rev", -1) == 7, "rev");
+        java.util.List<?> items = Json.list(frame, "items");
+        check(items.size() == 4, "items");
+        check("état \"x\"".equals(Json.string(items.get(1), "text")), "banner text");
+        check("Caution".equals(Json.string(items.get(1), "tag")), "banner tag");
+        Object box = Json.list(items.get(2), "ctls").get(1);
+        check(Json.number(box, "s", -1) == 1, "slot 1");
+        check(Boolean.FALSE.equals(Json.bool(box, "on")) && Boolean.TRUE.equals(Json.bool(box, "checked")), "check");
+        Object edit = Json.list(items.get(3), "ctls").get(0);
+        check(Json.number(edit, "s", -1) == 2 && Json.number(edit, "limit", -1) == 32, "edit");
+        check(UiWire.frame(json) == null, "untagged");
+        check(UiWire.frame(new byte[] {(byte) UiWire.FRAME_UI, '{'}) == null, "cut");
+    }
+
+    private static void screenInputs() {
+        // The same strings the Rust tests decode (yw-engine wire::tests, tests/fuzz_lite_android_input.rs seeds).
+        check(Arrays.equals(UiWire.press(3, 7), utf8("{\"t\":\"press\",\"rev\":3,\"slot\":7}")), "press");
+        check(Arrays.equals(UiWire.edit(2, 1, "a\"b"), utf8("{\"t\":\"edit\",\"rev\":2,\"slot\":1,\"text\":\"a\\\"b\"}")), "edit");
+        check(UiWire.edit(1, 1, "a".repeat(UiWire.INPUT_MAX)) == null, "edit too long");
+        check(Arrays.equals(UiWire.rendered(9, -1, 8), utf8("{\"t\":\"rendered\",\"rev\":9,\"focus\":null,\"of\":null}")),
+                "rendered none");
+        check(Arrays.equals(UiWire.rendered(9, 4, 8), utf8("{\"t\":\"rendered\",\"rev\":9,\"focus\":4,\"of\":8}")), "rendered");
+        check(Arrays.equals(UiWire.life("back"), utf8("{\"t\":\"life\",\"e\":\"back\"}")), "life");
+        check(Arrays.equals(UiWire.tick(), utf8("{\"t\":\"tick\"}")), "tick");
+        check(Arrays.equals(UiWire.timer("send_check"), utf8("{\"t\":\"timer\",\"id\":\"send_check\"}")), "timer");
+        check(Arrays.equals(UiWire.copied(5, true), utf8("{\"t\":\"copied\",\"id\":5,\"ok\":true}")), "copied");
+        check(UiWire.TICK_MS == 250, "tick period");
+    }
+
+    private static void qrModules() {
+        // 3 x 3 modules: 101 010 101 -> 1010 1010 1(000 0000) -> "aa80".
+        boolean[] dark = UiWire.qrModules(3, "aa80");
+        check(dark != null && dark.length == 9, "size");
+        boolean[] want = {true, false, true, false, true, false, true, false, true};
+        check(Arrays.equals(dark, want), "modules");
+        check(UiWire.qrModules(3, "aa8") == null, "short");
+        check(UiWire.qrModules(3, "aa8z") == null, "not hex");
+        check(UiWire.qrModules(0, "") == null, "empty");
+    }
+
+    private static byte[] utf8(String text) {
+        return text.getBytes(StandardCharsets.UTF_8);
     }
 }
