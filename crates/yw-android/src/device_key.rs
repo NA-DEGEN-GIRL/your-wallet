@@ -9,6 +9,12 @@
 //!
 //! Every failure is an error code ([`DeviceCode`]), never a damaged file: a missing or unusable
 //! key, a Keystore refusal, a locked device or no answer in time must not lead to a quarantine.
+//!
+//! The key is made only by [`MakeKey::make_key`] (the I/O op `Create`), which only
+//! [`crate::sealed_files::SealedFiles`] asks for, and only when a wrap found no key and the data
+//! folder holds no sealed file (spec/15 §5.2; 2026-11-25 A2-4b review: before, Java's wrap made a
+//! missing key itself, so after a real key loss the first write would have made a new key without
+//! a word, and the old files would have answered "crypto failed" instead of "key missing").
 //! Platform-neutral: tested on the Windows gate with a Java stand-in thread.
 #![forbid(unsafe_code)]
 
@@ -34,6 +40,8 @@ pub struct DeviceCode;
 impl DeviceCode {
     /// The common prefix (`"yw"`).
     pub const BASE: u32 = 0x7977_0000;
+    /// Java's status `KEY_MISSING`: the device key does not exist.
+    pub const KEY_MISSING: u32 = Self::BASE + 0x01;
     /// No answer in time.
     pub const TIMEOUT: u32 = Self::BASE + 0x100;
     /// Too many requests waiting.
@@ -55,6 +63,17 @@ impl DeviceCode {
             }
         }
     }
+}
+
+/// Making the device key (module doc): only [`crate::sealed_files::SealedFiles`] calls it, when a
+/// wrap answered [`DeviceCode::KEY_MISSING`] and the data folder holds no sealed file.
+pub trait MakeKey: DeviceKey {
+    /// Makes the device key when there is none; an existing key is kept, never replaced.
+    ///
+    /// # Errors
+    ///
+    /// [`EnvelopeError::Device`]: the key could not be made (no wallet, fail closed).
+    fn make_key(&self) -> Result<(), EnvelopeError>;
 }
 
 /// [`DeviceKey`] over the broker.
@@ -112,6 +131,20 @@ impl DeviceKey for BrokerKey<'_> {
     }
 }
 
+impl MakeKey for BrokerKey<'_> {
+    fn make_key(&self) -> Result<(), EnvelopeError> {
+        let answer = self
+            .broker
+            .request(Op::Create, 0, &[], self.timeout)
+            .map_err(|error| EnvelopeError::Device(DeviceCode::of(error)))?;
+        if answer.is_empty() {
+            Ok(())
+        } else {
+            Err(EnvelopeError::Device(DeviceCode::BAD_ANSWER))
+        }
+    }
+}
+
 /// The memory facts now, or `None` (no answer, a malformed one): the caller then runs no Argon2.
 #[must_use]
 pub fn memory_facts(broker: &IoBroker, timeout: Duration) -> Option<MemoryFacts> {
@@ -127,7 +160,7 @@ mod tests {
     use yw_core::secret::Zeroizing;
     use yw_core::vault::envelope::{self, DeviceKey, EnvelopeError, SealKind};
 
-    use super::{BrokerKey, DeviceCode, memory_facts};
+    use super::{BrokerKey, DeviceCode, MakeKey, memory_facts};
     use crate::io_request::{IoBroker, parse_frame, status};
     use crate::kdf_gate::{Gate, gate};
 
@@ -223,6 +256,45 @@ mod tests {
             Err(EnvelopeError::Device(DeviceCode::BAD_ANSWER))
         );
         server.join().unwrap();
+    }
+
+    /// The create op: kind 0, no body; an empty answer is done, a status is its code, a body is
+    /// refused.
+    #[test]
+    fn make_key_is_its_own_op() {
+        let broker = Arc::new(IoBroker::new());
+        let server = std::thread::spawn({
+            let broker = Arc::clone(&broker);
+            move || {
+                let mut seen = Vec::new();
+                for answer in [
+                    (status::OK, Vec::new()),
+                    (status::KEY_FAILED, Vec::new()),
+                    (status::OK, vec![1]),
+                ] {
+                    let frame = broker.take(Duration::from_secs(5)).unwrap();
+                    let (op, kind, id, body) = parse_frame(&frame).unwrap();
+                    seen.push((op, kind, body.len()));
+                    broker.complete(id, answer.0, Zeroizing::new(answer.1));
+                }
+                seen
+            }
+        });
+        let key = BrokerKey::new(&broker);
+        assert_eq!(key.make_key(), Ok(()));
+        assert_eq!(
+            key.make_key(),
+            Err(EnvelopeError::Device(DeviceCode::BASE + 2))
+        );
+        assert_eq!(
+            key.make_key(),
+            Err(EnvelopeError::Device(DeviceCode::BAD_ANSWER))
+        );
+        assert_eq!(server.join().unwrap(), [(4, 0, 0); 3]);
+        assert_eq!(
+            DeviceCode::KEY_MISSING,
+            DeviceCode::of(crate::io_request::IoError::Status(status::KEY_MISSING))
+        );
     }
 
     #[test]

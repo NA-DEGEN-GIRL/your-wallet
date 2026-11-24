@@ -22,9 +22,11 @@ import javax.crypto.spec.GCMParameterSpec;
  * <p>The device key: AES-256-GCM in AndroidKeyStore, no user authentication, not exportable, no StrongBox (§5.2),
  * setUnlockedDeviceRequired(true) (§5.2, N25), setRandomizedEncryptionRequired(true): the Keystore makes every
  * encryption IV and neither Java nor Rust ever supplies one (P0-10); unwrapping gives the IV read from the envelope.
- * AAD = the kind's string. A wrap makes the key when it does not exist yet; an unwrap never does (a missing key is
- * KEY_MISSING: the files cannot be opened, fail closed, and no new key replaces the lost one silently). A key that
- * cannot be made means no wallet (§5.2).
+ * AAD = the kind's string. Only the create request ({@link IoFrame#OP_CREATE}, {@link #make}) makes the key, and
+ * only when there is none; a wrap and an unwrap never do: a missing key is KEY_MISSING for both (the files cannot be
+ * opened, fail closed, and no new key replaces the lost one silently). Rust sends the create request only when a
+ * wrap answered KEY_MISSING and the data folder holds no sealed file (yw-android sealed_files). A key that cannot be
+ * made means no wallet (§5.2). (2026-11-25 A2-4b review: before, a wrap made a missing key itself.)
  *
  * <p>Errors are fixed statuses ({@link IoFrame}); no exception's class or message goes anywhere (§3.3). The plain
  * file key: the wrap reads it straight from the request frame (which the I/O thread zeroes after), and the unwrap's
@@ -103,11 +105,11 @@ final class DeviceKeys {
         SecretKey key;
         try {
             key = load();
-            if (key == null) {
-                key = create();
-            }
         } catch (Throwable error) {
             return Answer.of(IoFrame.KEY_FAILED);
+        }
+        if (key == null) {
+            return Answer.of(IoFrame.KEY_MISSING);
         }
         try {
             Cipher cipher = Cipher.getInstance(TRANSFORM);
@@ -153,6 +155,21 @@ final class DeviceKeys {
             return Answer.ok(plain);
         } catch (Throwable error) {
             return Answer.of(failure(context, error));
+        }
+    }
+
+    /** Makes the device key when there is none (frame: a create request); an existing key is kept. */
+    static Answer make(byte[] frame) {
+        if (!IoFrame.makesKey(frame)) {
+            return Answer.of(IoFrame.BAD_REQUEST);
+        }
+        try {
+            if (load() == null) {
+                create();
+            }
+            return Answer.of(IoFrame.OK);
+        } catch (Throwable error) {
+            return Answer.of(IoFrame.KEY_FAILED);
         }
     }
 

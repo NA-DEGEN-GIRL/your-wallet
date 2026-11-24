@@ -11,6 +11,16 @@
 //!   rename → folder sync), `apikeys.ks` sealed ([`SealKind::ApiKeys`]; a damaged file is
 //!   "unreadable", never its raw bytes), the `vault.ywv` facts (the generation needs the device key:
 //!   the inner header is inside the envelope), `.prev` checks; no reset candidates (as above).
+//!   Its names (`settings.json`, `apikeys.ks` and their `.tmp`) never start with `vault.ywv`,
+//!   `meta.ywm` or `journal.ywj`, so they never meet a quarantine or set-aside name of the key
+//!   worker's `rename_no_replace` (spec/15 §5.1; test `the_app_store_names_are_not_the_vault_files`).
+//! - (2026-11-25 A2-4b review) [`AppStore::vault_file_info`] is not a plain file read here as on
+//!   Windows: it unwraps `vault.ywv` through the Keystore (one I/O request, up to
+//!   [`crate::device_key::KEY_TIMEOUT`]) and holds that file's key in the calling thread. The
+//!   engine calls it on the wallet thread (lock screen, settings, the meta write's rollback
+//!   check). Before A2-6/A2-8 wire [`DataStore`] into the wallet, the generation must come from
+//!   the key worker (which reads the vault anyway), or this call must run off the wallet thread
+//!   with a short deadline that gives `None` (spec/15 §5.2).
 //!
 //! Platform-neutral over any [`Files`] (the Windows gate tests it in memory); Android passes
 //! `android_files::AndroidFiles` and the broker's device key.
@@ -20,7 +30,7 @@ use std::path::{Path, PathBuf};
 
 use yw_core::error::{StorageError, VaultError};
 use yw_core::lang::Lang;
-use yw_core::vault::envelope::{DeviceKey, SealKind};
+use yw_core::vault::envelope::SealKind;
 use yw_core::vault::{FileKind, LockedSlot, peek_generation};
 use yw_engine::app_store::{AppStore, SealedRead};
 use yw_engine::file_storage::FileStorage;
@@ -28,6 +38,7 @@ use yw_engine::wallet_files::{ResetError, ResetReport, file_name, with_suffix};
 use yw_engine::workers::key::platform::{KeyPlatform, WalletStore};
 use yw_platform::files::{Files, FsError};
 
+use crate::device_key::MakeKey;
 use crate::sealed_files::SealedFiles;
 
 /// The data folder under `Context.getNoBackupFilesDir()` (spec/15 §5.1).
@@ -73,7 +84,7 @@ impl<F, D> DataPlatform<F, D> {
 impl<F, D> KeyPlatform for DataPlatform<F, D>
 where
     F: Files + Clone + 'static,
-    D: DeviceKey + Send + Clone + 'static,
+    D: MakeKey + Send + Clone + 'static,
 {
     fn open_storage(&self, dir: &Path) -> Result<Box<dyn WalletStore>, StorageError> {
         let sealed = SealedFiles::new(self.files.clone(), self.device.clone());
@@ -107,7 +118,7 @@ impl<F, D> fmt::Debug for DataStore<F, D> {
     }
 }
 
-impl<F: Files, D: DeviceKey + Send> DataStore<F, D> {
+impl<F: Files, D: MakeKey + Send> DataStore<F, D> {
     /// The store of the data folder `data`.
     pub fn new(files: F, device: D, data: &Path) -> Self {
         Self {
@@ -140,7 +151,7 @@ impl<F: Files, D: DeviceKey + Send> DataStore<F, D> {
     }
 }
 
-impl<F: Files, D: DeviceKey + Send> AppStore for DataStore<F, D> {
+impl<F: Files, D: MakeKey + Send> AppStore for DataStore<F, D> {
     fn write_settings(&self, json: &[u8]) -> bool {
         self.atomic(SETTINGS_NAME, |tmp| {
             self.sealed.plain().write_new_synced(tmp, json)
@@ -212,12 +223,47 @@ mod tests {
     use yw_engine::workers::key::platform::KeyPlatform;
 
     use super::{DataPlatform, DataStore};
+    use crate::device_key::{DeviceCode, MakeKey};
     use crate::sealed_files::SealedFiles;
     use crate::sealed_files::testing::{FakeKey, MemFiles};
 
+    /// The state of a [`SharedKey`]: [`FakeKey`]'s `refuse`, `missing` and `made`.
+    #[derive(Debug, Default)]
+    struct KeyState {
+        refuse: Option<u32>,
+        missing: bool,
+        made: u32,
+    }
+
     /// A shareable stand-in device key (the platform clones it per storage).
     #[derive(Clone, Debug, Default)]
-    struct SharedKey(std::sync::Arc<std::sync::Mutex<Option<u32>>>);
+    struct SharedKey(std::sync::Arc<std::sync::Mutex<KeyState>>);
+
+    impl SharedKey {
+        fn refuse(&self, code: Option<u32>) {
+            self.0.lock().unwrap().refuse = code;
+        }
+
+        fn lose(&self) {
+            self.0.lock().unwrap().missing = true;
+        }
+
+        fn made(&self) -> u32 {
+            self.0.lock().unwrap().made
+        }
+
+        /// Runs `call` on a [`FakeKey`] with this state and keeps what it changed.
+        fn with<T>(&self, call: impl FnOnce(&FakeKey) -> T) -> T {
+            let mut state = self.0.lock().unwrap();
+            let fake = FakeKey::default();
+            fake.refuse.set(state.refuse);
+            fake.missing.set(state.missing);
+            let out = call(&fake);
+            state.missing = fake.missing.get();
+            state.made += fake.made.get();
+            out
+        }
+    }
 
     impl yw_core::vault::envelope::DeviceKey for SharedKey {
         fn wrap(
@@ -225,9 +271,7 @@ mod tests {
             kind: SealKind,
             file_key: &[u8; 32],
         ) -> Result<[u8; 60], yw_core::vault::envelope::EnvelopeError> {
-            let fake = FakeKey::default();
-            fake.refuse.set(*self.0.lock().unwrap());
-            fake.wrap(kind, file_key)
+            self.with(|fake| fake.wrap(kind, file_key))
         }
 
         fn unwrap(
@@ -236,9 +280,13 @@ mod tests {
             wrapped: &[u8; 60],
         ) -> Result<yw_core::secret::Zeroizing<[u8; 32]>, yw_core::vault::envelope::EnvelopeError>
         {
-            let fake = FakeKey::default();
-            fake.refuse.set(*self.0.lock().unwrap());
-            fake.unwrap(kind, wrapped)
+            self.with(|fake| fake.unwrap(kind, wrapped))
+        }
+    }
+
+    impl MakeKey for SharedKey {
+        fn make_key(&self) -> Result<(), yw_core::vault::envelope::EnvelopeError> {
+            self.with(MakeKey::make_key)
         }
     }
 
@@ -361,7 +409,7 @@ mod tests {
         let inner = vec![3_u8; 80];
         storage.commit(FileKind::Meta, None, &inner).unwrap();
         let before = files.raw(&Path::new(DIR).join("meta.ywm")).unwrap();
-        *key.0.lock().unwrap() = Some(0x7977_0004);
+        key.refuse(Some(0x7977_0004));
         assert_eq!(
             storage.load(FileKind::Meta),
             Err(StorageError::Io(0x7977_0004))
@@ -376,6 +424,144 @@ mod tests {
             "nothing moved"
         );
         assert_eq!(files.names(), ["meta.ywm"]);
+    }
+
+    /// spec/15 §5.2 (2026-11-25 A2-4b review): the device key is made only by a write into a
+    /// folder with no sealed file; with sealed files there a missing key is "key missing"
+    /// (`StorageError::Io(0x7977_0001)`), nothing is written and no key is made.
+    #[test]
+    fn a_lost_device_key_is_never_replaced() {
+        use yw_platform::files::FsError;
+        let files = MemFiles::default();
+        let key = SharedKey::default();
+        key.lose();
+        // A new folder (settings and logs are no sealed files): the first write makes the key.
+        files.put(&Path::new(DIR).join("settings.json"), b"{}");
+        files.put(&Path::new(DIR).join("logs").join("yw.log"), b"x");
+        let mut storage = sealed_storage(&files, &key);
+        let inner = sidecar(META_MAGIC, FileKind::Meta, 1);
+        storage.commit(FileKind::Meta, None, &inner).unwrap();
+        assert_eq!(key.made(), 1);
+        assert_eq!(storage.load(FileKind::Meta).unwrap().unwrap(), inner);
+        // The key is lost while sealed files exist: reads and every write say "key missing".
+        key.lose();
+        let missing = StorageError::Io(DeviceCode::KEY_MISSING);
+        assert_eq!(missing, StorageError::Io(0x7977_0001));
+        let before = files.names();
+        assert_eq!(storage.load(FileKind::Meta), Err(missing));
+        let journal = sidecar(JOURNAL_MAGIC, FileKind::Journal, 1);
+        assert_eq!(
+            storage.commit(FileKind::Journal, None, &journal),
+            Err(missing)
+        );
+        let store = DataStore::new(files.clone(), key.clone(), Path::new(DIR));
+        assert!(
+            !store.write_sealed_keys(b"rpc:keys"),
+            "a write with no read first"
+        );
+        let sealed = SealedFiles::new(files.clone(), key.clone());
+        assert_eq!(
+            sealed.write_sealed(&Path::new(DIR).join("vault.ywv.tmp"), SealKind::Vault, b"v"),
+            Err(FsError::Os(DeviceCode::KEY_MISSING))
+        );
+        assert_eq!(files.names(), before, "nothing written");
+        assert_eq!(key.made(), 1, "no new key");
+        // A quarantined copy alone still counts: it was sealed with the lost key.
+        files.0.lock().unwrap().clear();
+        files.put(&Path::new(DIR).join("meta.ywm.corrupt-9"), b"old");
+        assert_eq!(
+            sealed.write_sealed(&Path::new(DIR).join("meta.ywm.tmp"), SealKind::Meta, b"m"),
+            Err(FsError::Os(DeviceCode::KEY_MISSING))
+        );
+        assert_eq!(files.names(), ["meta.ywm.corrupt-9"]);
+        assert_eq!(key.made(), 1);
+        // Once the old files are moved away, the next write makes a new key.
+        files.0.lock().unwrap().clear();
+        assert!(store.write_sealed_keys(b"rpc:keys"));
+        assert_eq!(key.made(), 2);
+        // A key that cannot be made: no file (fail closed).
+        files.0.lock().unwrap().clear();
+        key.lose();
+        key.refuse(Some(DeviceCode::BASE + 2));
+        assert!(!store.write_sealed_keys(b"x"));
+        assert!(files.names().is_empty());
+        assert_eq!(key.made(), 2);
+    }
+
+    /// A folder that cannot be listed counts as holding sealed files: no key is made.
+    #[test]
+    fn an_unlistable_folder_makes_no_key() {
+        use yw_platform::files::{Files, FsError};
+
+        #[derive(Debug)]
+        struct NoList(MemFiles);
+
+        impl Files for NoList {
+            fn ensure_dir(&self, dir: &Path) -> Result<(), FsError> {
+                self.0.ensure_dir(dir)
+            }
+            fn reject_link(&self, path: &Path) -> Result<(), FsError> {
+                self.0.reject_link(path)
+            }
+            fn read_limited_no_follow(&self, path: &Path, max: u64) -> Result<Vec<u8>, FsError> {
+                self.0.read_limited_no_follow(path, max)
+            }
+            fn write_new_synced(&self, path: &Path, bytes: &[u8]) -> Result<(), FsError> {
+                self.0.write_new_synced(path, bytes)
+            }
+            fn replace(&self, from: &Path, to: &Path) -> Result<(), FsError> {
+                self.0.replace(from, to)
+            }
+            fn rename_no_replace(&self, from: &Path, to: &Path) -> Result<(), FsError> {
+                self.0.rename_no_replace(from, to)
+            }
+            fn flush_dir(&self, dir: &Path) -> Result<(), FsError> {
+                self.0.flush_dir(dir)
+            }
+            fn remove_file(&self, path: &Path) -> Result<(), FsError> {
+                self.0.remove_file(path)
+            }
+            fn exists(&self, path: &Path) -> bool {
+                self.0.exists(path)
+            }
+            fn is_file(&self, path: &Path) -> bool {
+                self.0.is_file(path)
+            }
+            fn list_dir(&self, _dir: &Path) -> Result<Vec<std::ffi::OsString>, FsError> {
+                Err(FsError::Os(13))
+            }
+        }
+
+        let files = MemFiles::default();
+        let key = FakeKey::default();
+        key.missing.set(true);
+        let sealed = SealedFiles::new(NoList(files.clone()), key);
+        assert_eq!(
+            sealed.write_new_synced(&Path::new(DIR).join("vault.ywv.tmp"), b"v"),
+            Err(FsError::Os(DeviceCode::KEY_MISSING))
+        );
+        assert!(files.names().is_empty());
+    }
+
+    /// spec/15 §5.1 (2026-11-25 A2-4b review): the app store's names never start with a vault,
+    /// meta or journal name, so they never meet a `rename_no_replace` target of the key worker
+    /// (`<name>.corrupt-<t>`, `<name>.prev.corrupt-<t>`).
+    #[test]
+    fn the_app_store_names_are_not_the_vault_files() {
+        for name in [
+            super::SETTINGS_NAME,
+            "settings.json.tmp",
+            super::APIKEYS_NAME,
+            "apikeys.ks.tmp",
+        ] {
+            for base in ["vault.ywv", "meta.ywm", "journal.ywj"] {
+                assert!(!name.starts_with(base), "{name}");
+            }
+            assert!(matches!(
+                crate::sealed_files::kind_of(Path::new(name)),
+                None | Some(SealKind::ApiKeys)
+            ));
+        }
     }
 
     #[test]
@@ -470,7 +656,7 @@ mod tests {
         }
         // A refusing device key: the vault does not even load; no file changes.
         let before = files.names();
-        *key.0.lock().unwrap() = Some(0x7977_0001);
+        key.refuse(Some(0x7977_0001));
         let storage = platform.open_storage(Path::new(DIR)).unwrap();
         assert!(matches!(
             Vault::load(storage).map(|_| ()),
@@ -511,7 +697,7 @@ mod tests {
         damaged[95] ^= 1;
         files.put(&Path::new(DIR).join("apikeys.ks"), &damaged);
         assert!(matches!(store.read_sealed_keys(), SealedRead::Unreadable));
-        *key.0.lock().unwrap() = Some(0x7977_0002);
+        key.refuse(Some(0x7977_0002));
         assert!(!store.write_sealed_keys(b"x"));
         assert!(store.vault_file_info().is_none());
         assert!(!store.prev_exists(FileKind::Vault));

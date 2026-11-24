@@ -23,6 +23,11 @@ final class IoFrame {
     static final int OP_WRAP = 1;
     static final int OP_UNWRAP = 2;
     static final int OP_MEMORY = 3;
+    /**
+     * Make the device key when there is none (kind 0, no body): the only op that makes it; a wrap and an unwrap
+     * never do (spec/15 §5.2; 2026-11-25 A2-4b review, before a wrap made a missing key).
+     */
+    static final int OP_CREATE = 4;
 
     /** A file key. */
     static final int KEY_LEN = 32;
@@ -57,9 +62,16 @@ final class IoFrame {
                 return body == WRAPPED_LEN && aad(kind(frame)) != null;
             case OP_MEMORY:
                 return body == 0;
+            case OP_CREATE:
+                return body == 0 && kind(frame) == 0;
             default:
                 return false;
         }
+    }
+
+    /** Whether frame is the one request that may make the device key: a valid create frame. */
+    static boolean makesKey(byte[] frame) {
+        return valid(frame) && op(frame) == OP_CREATE;
     }
 
     static int op(byte[] frame) {

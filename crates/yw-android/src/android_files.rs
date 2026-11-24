@@ -10,8 +10,12 @@
 //!   `fsync` of the folder opened `O_DIRECTORY | O_NOFOLLOW`.
 //! - `rename_no_replace` checks that the target is absent (`lstat`, a link counts as present) and
 //!   then `rename(2)`s. Only quarantine and the `.prev` set-aside use it, with a fresh
-//!   `.corrupt-<t>` name, and the one writer of the folder is the key worker, so nothing races the
-//!   check. The atomic ways are not open to the app: `renameat2(RENAME_NOREPLACE)` has no bionic
+//!   `<name>.corrupt-<t>` / `<name>.prev.corrupt-<t>` name of `vault.ywv`, `meta.ywm` or
+//!   `journal.ywj`, and both run only on the key worker. The folder's other writers (the app
+//!   store `storage::DataStore` on the wallet thread: `settings.json`, `apikeys.ks` and their
+//!   `.tmp`; the log file under `logs/`) use only names disjoint from every such target, so
+//!   nothing races the check. (2026-11-25 A2-4b review: before, this said the key worker was the
+//!   folder's one writer, which is not so.) The atomic ways are not open to the app: `renameat2(RENAME_NOREPLACE)` has no bionic
 //!   wrapper before API 30 (the app's seccomp filter on API 29 is not known to allow the raw
 //!   call), and `link(2)` + `unlink(2)` was refused on the test device with `EPERM`/`EACCES`
 //!   (2026-11-25, spec/09 §2.6; most likely the platform policy against app hard links), so it

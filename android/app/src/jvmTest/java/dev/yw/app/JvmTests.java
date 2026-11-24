@@ -22,6 +22,7 @@ public final class JvmTests {
         run("I/O frames are read as Rust writes them", JvmTests::ioFrames);
         run("I/O statuses and kind strings are Rust's", JvmTests::ioConstants);
         run("memory facts are the bytes Rust parses", JvmTests::memoryFacts);
+        run("only the create request may make the device key", JvmTests::createFrame);
         System.out.println("jvmTest: " + passed + " passed, " + failed + " failed");
         if (failed != 0 || passed == 0) {
             System.exit(1);
@@ -143,6 +144,31 @@ public final class JvmTests {
         first[0] = 0;
         check(IoFrame.aad(1)[0] == 'v', "aad is a fresh array");
         check(IoFrame.HEADER == 11 && IoFrame.WRAPPED_LEN == 60 && IoFrame.KEY_LEN == 32, "lengths");
+    }
+
+    private static void createFrame() {
+        // yw-android device_key::tests::make_key_is_its_own_op: op 4, kind 0, no body (2026-11-25 A2-4b review).
+        byte[] create = {0x01, 0x04, 0x00, 0x07, 0, 0, 0, 0, 0, 0, 0};
+        check(IoFrame.OP_CREATE == 4, "op number");
+        check(IoFrame.valid(create) && IoFrame.makesKey(create), "create request");
+        byte[] withKind = create.clone();
+        withKind[2] = 1;
+        check(!IoFrame.valid(withKind) && !IoFrame.makesKey(withKind), "create with a kind");
+        check(!IoFrame.makesKey(Arrays.copyOf(create, IoFrame.HEADER + 1)), "create with a body");
+        byte[] wrap = Arrays.copyOf(create, IoFrame.HEADER + IoFrame.KEY_LEN);
+        wrap[1] = IoFrame.OP_WRAP;
+        wrap[2] = 1;
+        check(IoFrame.valid(wrap) && !IoFrame.makesKey(wrap), "a wrap never makes the key");
+        byte[] unwrap = Arrays.copyOf(create, IoFrame.HEADER + IoFrame.WRAPPED_LEN);
+        unwrap[1] = IoFrame.OP_UNWRAP;
+        unwrap[2] = 1;
+        check(IoFrame.valid(unwrap) && !IoFrame.makesKey(unwrap), "an unwrap never makes the key");
+        byte[] memory = Arrays.copyOf(create, IoFrame.HEADER);
+        memory[1] = IoFrame.OP_MEMORY;
+        check(IoFrame.valid(memory) && !IoFrame.makesKey(memory), "memory");
+        create[0] = 0x02;
+        check(!IoFrame.makesKey(create), "another frame kind");
+        check(!IoFrame.makesKey(null), "null");
     }
 
     private static void memoryFacts() {

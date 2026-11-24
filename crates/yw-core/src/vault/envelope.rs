@@ -25,6 +25,10 @@
 //! `XChaCha` tag is [`EnvelopeError::Damaged`]: the file's own bytes are wrong. A device key that
 //! cannot wrap or unwrap (missing, unusable, a refused GCM tag, no answer in time) is
 //! [`EnvelopeError::Device`]: the file may be fine, so nothing may treat it as damaged.
+//! Consequence (2026-11-25 A2-4b review, a recorded residual of spec/15 §5.2 and spec/02 §5.5):
+//! damage inside the wrapped key (bytes 8–67) fails the Keystore's GCM tag, so it is a device
+//! error, not damage — such a file is never quarantined and never falls back to its `.prev`
+//! automatically.
 #![deny(clippy::indexing_slicing)]
 #![deny(clippy::arithmetic_side_effects)]
 
@@ -305,7 +309,7 @@ pub fn looks_sealed(kind: SealKind, bytes: &[u8]) -> bool {
     reason = "test vectors index fixed offsets"
 )]
 mod tests {
-    use core::cell::Cell;
+    use core::cell::{Cell, RefCell};
 
     use zeroize::Zeroizing;
 
@@ -316,13 +320,20 @@ mod tests {
     use crate::entropy::RandomSource;
     use crate::error::KeyError;
 
-    /// A stand-in device key: "wraps" by XOR with a fixed pad and a kind byte, so a wrong kind
-    /// or a flipped byte unwraps to another key (the payload tag then fails) unless `refuse`.
+    /// A stand-in device key: "wraps" by XOR with a fixed pad and a kind byte, and like the
+    /// Keystore's GCM it refuses (`Device(`[`CRYPTO_FAILED`]`)`) any wrapped key it did not make
+    /// for that kind, so a flipped byte of the wrapped key is a device error, not damage
+    /// (2026-11-25 A2-4b review: before, it unwrapped any bytes and the flip read as damage);
+    /// `refuse` fails every call.
     struct FakeDevice {
         refuse: Cell<Option<u32>>,
         wraps: Cell<u32>,
         unwraps: Cell<u32>,
+        made: RefCell<Vec<(SealKind, [u8; WRAPPED_KEY_LEN])>>,
     }
+
+    /// Java's status `CRYPTO_FAILED` (spec/15 §3.2), the GCM tag's refusal.
+    const CRYPTO_FAILED: u32 = 3;
 
     impl FakeDevice {
         fn new() -> Self {
@@ -330,6 +341,7 @@ mod tests {
                 refuse: Cell::new(None),
                 wraps: Cell::new(0),
                 unwraps: Cell::new(0),
+                made: RefCell::new(Vec::new()),
             }
         }
     }
@@ -350,6 +362,7 @@ mod tests {
             for (at, byte) in file_key.iter().enumerate() {
                 out[12 + at] = byte ^ PAD ^ kind.number();
             }
+            self.made.borrow_mut().push((kind, out));
             Ok(out)
         }
 
@@ -361,6 +374,9 @@ mod tests {
             self.unwraps.set(self.unwraps.get() + 1);
             if let Some(code) = self.refuse.get() {
                 return Err(EnvelopeError::Device(code));
+            }
+            if !self.made.borrow().contains(&(kind, *wrapped)) {
+                return Err(EnvelopeError::Device(CRYPTO_FAILED));
             }
             let mut key = Zeroizing::new([0_u8; 32]);
             for (at, byte) in key.iter_mut().enumerate() {
@@ -461,8 +477,11 @@ mod tests {
         assert_ne!(first, second);
     }
 
+    /// Every one-byte change: of the header fields, the nonce, the sealed bytes or the tag it is
+    /// damage; of the wrapped key (bytes 8..68) it is the device key's refusal, as with the real
+    /// Keystore GCM (2026-11-25 A2-4b review; spec/02 §5.5 residual).
     #[test]
-    fn every_header_and_tag_change_is_damage() {
+    fn header_and_payload_changes_are_damage_wrapped_key_changes_are_device_errors() {
         let device = FakeDevice::new();
         let sealed = seal(SealKind::Journal, b"journal bytes", &device).unwrap();
         // Another kind with the same bytes: the header's kind number refuses it.
@@ -475,7 +494,12 @@ mod tests {
             let mut bad = sealed.clone();
             bad[at] ^= 0x01;
             let result = open(SealKind::Journal, &bad, &device).map(|_| ());
-            assert_eq!(result, Err(EnvelopeError::Damaged), "byte {at}");
+            let want = if (8..8 + WRAPPED_KEY_LEN).contains(&at) {
+                EnvelopeError::Device(CRYPTO_FAILED)
+            } else {
+                EnvelopeError::Damaged
+            };
+            assert_eq!(result, Err(want), "byte {at}");
         }
         for len in [0, 1, 4, OVERHEAD - 1] {
             assert_eq!(

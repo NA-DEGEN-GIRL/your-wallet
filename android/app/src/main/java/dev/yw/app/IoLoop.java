@@ -54,6 +54,8 @@ final class IoLoop implements Runnable {
                 answer = DeviceKeys.wrap(context, frame);
             } else if (IoFrame.op(frame) == IoFrame.OP_UNWRAP) {
                 answer = DeviceKeys.unwrap(context, frame);
+            } else if (IoFrame.makesKey(frame)) {
+                answer = DeviceKeys.make(frame);
             } else {
                 answer = DeviceKeys.memory(context);
             }

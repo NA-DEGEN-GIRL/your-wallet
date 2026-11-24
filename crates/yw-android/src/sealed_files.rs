@@ -9,6 +9,16 @@
 //!   other name is refused for reading and writing ([`NOT_SEALED`]): nothing else may pass
 //!   through this type unsealed (settings and logs use the plain `Files`).
 //! - Each write seals with a fresh file key ([`envelope::seal`]); each read unwraps again.
+//! - The device key is made here and nowhere else (spec/15 §5.2, spec/02 §5.5; 2026-11-25 A2-4b
+//!   review): when a write's wrap answers "key missing" ([`DeviceCode::KEY_MISSING`]) and the
+//!   folder of the file holds no file with a sealed name (any of the four names above, alone or
+//!   with a suffix, `.corrupt-<t>` copies included; a folder that cannot be listed counts as
+//!   holding one), [`MakeKey::make_key`] makes it and the write seals again. That is the first
+//!   write of a new data folder (or one whose files the user moved away). With any sealed file
+//!   there, the write fails with "key missing" and writes nothing: a lost key is reported as lost
+//!   and never replaced by a new one without a word (the old files would then answer "crypto
+//!   failed", and a false "missing" would make every file unreadable for good). A read never
+//!   makes the key.
 //! - A file that is no envelope of its kind, or whose payload tag fails, reads as **zero bytes**:
 //!   no inner format parses an empty file (the vault header, meta and journal decoders all refuse
 //!   it), so spec/02's handling of a damaged file applies unchanged (E-VLT-006 for a sidecar, the
@@ -27,13 +37,15 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use yw_core::secret::Zeroizing;
-use yw_core::vault::envelope::{self, DeviceKey, EnvelopeError, OVERHEAD, SealKind};
+use yw_core::vault::envelope::{self, EnvelopeError, OVERHEAD, SealKind};
 use yw_platform::files::{Files, FsError};
 
+use crate::device_key::{DeviceCode, MakeKey};
+
 /// The error code of a name that is not one of the sealed files.
-pub const NOT_SEALED: u32 = crate::device_key::DeviceCode::BASE + 0x110;
+pub const NOT_SEALED: u32 = DeviceCode::BASE + 0x110;
 /// The error code of an envelope that could not be made (no randomness, too large).
-pub const SEAL_FAILED: u32 = crate::device_key::DeviceCode::BASE + 0x111;
+pub const SEAL_FAILED: u32 = DeviceCode::BASE + 0x111;
 
 /// The kind of a sealed file by its name (module doc), `None` for any other name.
 #[must_use]
@@ -68,7 +80,7 @@ pub struct SealedFiles<F, D> {
     device: D,
 }
 
-impl<F: Files, D: DeviceKey + Send> SealedFiles<F, D> {
+impl<F: Files, D: MakeKey + Send> SealedFiles<F, D> {
     /// The sealed view of `files` with `device`.
     pub const fn new(files: F, device: D) -> Self {
         Self { files, device }
@@ -105,18 +117,35 @@ impl<F: Files, D: DeviceKey + Send> SealedFiles<F, D> {
         }
     }
 
-    /// Seals `bytes` as `kind` and writes them create-new to `path`, synced.
+    /// Seals `bytes` as `kind` and writes them create-new to `path`, synced. Makes the device key
+    /// first only when it is missing and the folder holds no sealed file (module doc).
     ///
     /// # Errors
     ///
-    /// A device-key error or the plain write's error.
+    /// A device-key error (`KEY_MISSING` when the key is missing and sealed files exist; nothing is
+    /// written then) or the plain write's error.
     pub fn write_sealed(&self, path: &Path, kind: SealKind, bytes: &[u8]) -> Result<(), FsError> {
-        let sealed = envelope::seal(kind, bytes, &self.device).map_err(device_error)?;
+        let sealed = match envelope::seal(kind, bytes, &self.device) {
+            Err(EnvelopeError::Device(DeviceCode::KEY_MISSING)) if self.holds_no_sealed(path) => {
+                self.device.make_key().map_err(device_error)?;
+                envelope::seal(kind, bytes, &self.device)
+            }
+            other => other,
+        }
+        .map_err(device_error)?;
         self.files.write_new_synced(path, &sealed)
+    }
+
+    /// Whether the folder of `path` holds no file with a sealed name (module doc); `false` when
+    /// it cannot be listed.
+    fn holds_no_sealed(&self, path: &Path) -> bool {
+        path.parent()
+            .and_then(|dir| self.files.list_dir(dir).ok())
+            .is_some_and(|names| names.iter().all(|name| kind_of(Path::new(name)).is_none()))
     }
 }
 
-impl<F: Files, D: DeviceKey + Send> Files for SealedFiles<F, D> {
+impl<F: Files, D: MakeKey + Send> Files for SealedFiles<F, D> {
     fn ensure_dir(&self, dir: &Path) -> Result<(), FsError> {
         self.files.ensure_dir(dir)
     }
@@ -181,6 +210,8 @@ pub(crate) mod testing {
     use yw_core::secret::Zeroizing;
     use yw_core::vault::envelope::{DeviceKey, EnvelopeError, SealKind, WRAPPED_KEY_LEN};
     use yw_platform::files::{Files, FsError};
+
+    use crate::device_key::{DeviceCode, MakeKey};
 
     /// One shared in-memory folder tree (files only; folders are implied).
     #[derive(Clone, Default, Debug)]
@@ -284,11 +315,40 @@ pub(crate) mod testing {
         }
     }
 
-    /// A stand-in device key (XOR with a pad and the kind byte); `refuse` fails every call.
+    /// A stand-in device key (XOR with a pad and the kind byte); `refuse` fails every call;
+    /// `missing` answers `KEY_MISSING` to a wrap and an unwrap until `make_key` (counted in `made`).
     #[derive(Debug, Default)]
     pub(crate) struct FakeKey {
         pub(crate) refuse: Cell<Option<u32>>,
+        pub(crate) missing: Cell<bool>,
+        pub(crate) made: Cell<u32>,
         pub(crate) calls: Cell<u32>,
+    }
+
+    impl FakeKey {
+        fn check(&self) -> Result<(), EnvelopeError> {
+            self.calls.set(self.calls.get() + 1);
+            if let Some(code) = self.refuse.get() {
+                return Err(EnvelopeError::Device(code));
+            }
+            if self.missing.get() {
+                return Err(EnvelopeError::Device(DeviceCode::KEY_MISSING));
+            }
+            Ok(())
+        }
+    }
+
+    impl MakeKey for FakeKey {
+        fn make_key(&self) -> Result<(), EnvelopeError> {
+            if let Some(code) = self.refuse.get() {
+                return Err(EnvelopeError::Device(code));
+            }
+            if self.missing.get() {
+                self.missing.set(false);
+                self.made.set(self.made.get() + 1);
+            }
+            Ok(())
+        }
     }
 
     impl DeviceKey for FakeKey {
@@ -297,10 +357,7 @@ pub(crate) mod testing {
             kind: SealKind,
             file_key: &[u8; 32],
         ) -> Result<[u8; WRAPPED_KEY_LEN], EnvelopeError> {
-            self.calls.set(self.calls.get() + 1);
-            if let Some(code) = self.refuse.get() {
-                return Err(EnvelopeError::Device(code));
-            }
+            self.check()?;
             let mut out = [0x11_u8; WRAPPED_KEY_LEN];
             for (at, byte) in file_key.iter().enumerate() {
                 out[12 + at] = byte ^ 0x5a ^ kind.number();
@@ -313,10 +370,7 @@ pub(crate) mod testing {
             kind: SealKind,
             wrapped: &[u8; WRAPPED_KEY_LEN],
         ) -> Result<Zeroizing<[u8; 32]>, EnvelopeError> {
-            self.calls.set(self.calls.get() + 1);
-            if let Some(code) = self.refuse.get() {
-                return Err(EnvelopeError::Device(code));
-            }
+            self.check()?;
             let mut key = Zeroizing::new([0_u8; 32]);
             for (at, byte) in key.iter_mut().enumerate() {
                 *byte = wrapped[12 + at] ^ 0x5a ^ kind.number();

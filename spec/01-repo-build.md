@@ -154,7 +154,7 @@ crates/
                               slot_plan.rs(잠근 슬롯의 크기·예산 계산, 모든 타깃), jni.rs(`JNI_OnLoad`, Android만),
                               slot.rs(`LockedSlot` 페이지, Android만), panic_hook.rs(패닉 훅: 슬롯 지우기·로그 한 줄·`_exit`, Android만),
                               2026-11-25 A2-4b부터 저장([15] §5.1–§5.3, §3.2): io_request.rs(플랫폼 I/O 요청, `next`·`ioComplete`),
-                              device_key.rs(Keystore 기기 키를 yw-core `vault::envelope::DeviceKey`로, 메모리 사실),
+                              device_key.rs(Keystore 기기 키를 yw-core `vault::envelope::DeviceKey`로, 키 만들기 `MakeKey`, 메모리 사실),
                               sealed_files.rs(`YWK2` 봉투를 씌운 `Files`), storage.rs(키 작업자 `KeyPlatform`·`AppStore`),
                               kdf_gate.rs(Argon2 전 메모리 규칙), log_file.rs(로그 파일) — 모두 모든 타깃;
                               android_files.rs(std·`libc` 깃발의 `Files`, `unsafe` 없음), purge.rs(`mallopt(M_PURGE)`),
@@ -810,7 +810,8 @@ Invoke-Step "privacy" 27 "node" @("scripts/privacy-scan.mjs")
 Invoke-Step "audit-ext" 28 "node" @("scripts/audit-extension.mjs", "check", "--extension-root", "extension")
 Invoke-Step "icons" 30 "node" @("scripts/make-icons.mjs", "--check")   # 커밋된 아이콘 = 생성기 출력([04] §1.7, [05] §2.2)
 # Android([15] §13, [09] §2.2; 2026-11-24 A2-3, 종료 33 — 31은 winui다, §18 42 N1): scripts/build-android.ps1 -Check가 aarch64
-# clippy(-D warnings), check-core-deps.mjs의 두 Android 표, 릴리스 libyw.so와 그 검사, 새 Gradle 홈의 엄격 검증 assembleDebug·assembleRelease(-Offline이면 오프라인; release는 2026-11-25 A2-3 검토부터),
+# clippy(-D warnings; 2026-11-25 A2-4b 검토부터 --cfg yw_device_test로 한 번 더, 따로 둔 대상 폴더에서), check-core-deps.mjs의 두 Android 표,
+# 릴리스 libyw.so와 그 검사(-DeviceTest 없는 .so에 devtest 코드 없음 포함), 새 Gradle 홈의 엄격 검증 assembleDebug·assembleRelease(-Offline이면 오프라인; release는 2026-11-25 A2-3 검토부터),
 # JVM 단위 시험, 런타임 닫힘 대조(check-android-deps.mjs), APK·매니페스트 검사를 돈다. 도구가 없으면 "android: skipped (<이유>)"로
 # 넘어가되(rustup 타깃과 NDK가 있으면 clippy와 Android 표는 건너뛰지 않는다), -RequireAndroid 또는 YW_CHECK_ANDROID=1이면 건너뛰기도
 # 실패다. yw-android·yw-engine·android/를 바꾸는 커밋 전 게이트는 -RequireAndroid로 돈다(AGENTS.md §2).

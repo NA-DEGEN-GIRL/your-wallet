@@ -88,6 +88,40 @@ fn the_device_test_is_cfg_gated() {
     }
 }
 
+/// spec/15 §5.2 (2026-11-25 A2-4b review): Java makes the device key only in the create
+/// request's handler `DeviceKeys.make`; its wrap and unwrap never call `create()` (a missing key
+/// is `KEY_MISSING` for both), and the I/O thread sends only a create frame there.
+#[test]
+fn only_the_create_request_makes_the_device_key() {
+    let java = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../android/app/src/main/java/dev/yw/app");
+    let keys = std::fs::read_to_string(java.join("DeviceKeys.java")).unwrap();
+    let mut method = "";
+    let mut makers = Vec::new();
+    for line in code_lines(&keys) {
+        if line.starts_with("static Answer ") || line.starts_with("private static ") {
+            method = line;
+        }
+        if line.contains("create()") && !line.starts_with("private static SecretKey create()") {
+            makers.push((method, line));
+        }
+    }
+    assert_eq!(
+        makers,
+        [("static Answer make(byte[] frame) {", "create();")],
+        "DeviceKeys.java"
+    );
+    let io = std::fs::read_to_string(java.join("IoLoop.java")).unwrap();
+    let calls: Vec<&str> = code_lines(&io)
+        .filter(|line| line.contains("DeviceKeys.make("))
+        .collect();
+    assert_eq!(calls, ["answer = DeviceKeys.make(frame);"]);
+    let guard: Vec<&str> = code_lines(&io)
+        .filter(|line| line.contains("IoFrame.makesKey("))
+        .collect();
+    assert_eq!(guard, ["} else if (IoFrame.makesKey(frame)) {"]);
+}
+
 /// Rust never calls Java (spec/15 §3.2): no thread attach, no global reference, no method call
 /// entry of the JNI table in any code line.
 #[test]

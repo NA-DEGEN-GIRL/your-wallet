@@ -4,6 +4,7 @@
 #      게이트: ... -File scripts/build-android.ps1 -Check [-Require] [-Offline]  (scripts/check.ps1의 android 단계, 종료 33)
 #      기기 왕복 시험(2026-11-25 A2-4b, [09] §2.6): ... -Variant debug -DeviceTest -SignKey <키> -SignPassFile <파일> — libyw.so에 --cfg yw_device_test를 더해
 #      공개 시험 니모닉 vault를 만들고 다시 여는 devtest를 넣는다. -Check·release와 함께 쓰면 멈춘다(게이트·릴리스 APK에는 절대 들어가지 않는다).
+#      3의 .so 검사가 이를 확인한다: -DeviceTest 없는 .so에 "devtest." 문자열이 있으면, -DeviceTest인데 없으면 멈춘다(2026-11-25 A2-4b 검토).
 # 순서([15] §13): 1 도구 판 확인(android/toolchain.sha256, §4.4) → 2 cargo로 libyw.so(--release, 경로 지우기) → 3 .so 검사
 # (LOAD 정렬 0x4000, 내보낸 기호 다섯, 빌드 PC 경로 문자열 없음) → 4 Gradle(--no-daemon, 검증 메타데이터 강제)이 서명 전 APK →
 # 5 zipalign -P 16 -f, -c -P 16, APK·매니페스트 검사 → 6 -SignKey가 있으면 apksigner(정렬 뒤에만).
@@ -131,9 +132,9 @@ function Set-TargetEnv([string]$Triple) {
 }
 # --config "target.<타깃>.rustflags=[...]": 링크 타깃과 경로 지우기(§13 2). 설정 파일의 같은 배열(serial cfg)과 합쳐진다.
 # 값은 TOML 작은따옴표 리터럴이라 '\'와 '#'이 그대로 가고, 안쪽 큰따옴표가 없어 Windows PowerShell 5.1에서도 그대로 넘어간다.
-function Get-TargetConfig([string]$Triple, [bool]$Remap) {
+function Get-TargetConfig([string]$Triple, [bool]$Remap, [bool]$Devtest) {
     $flags = @("-Clink-arg=--target=${Triple}29")
-    if ($DeviceTest) { $flags += "--cfg"; $flags += "yw_device_test" }
+    if ($Devtest) { $flags += "--cfg"; $flags += "yw_device_test" }
     if ($Remap) {
         foreach ($pair in @(@($RepoRoot, "yw"), @($CargoHome, "cargo"), @($RustupHome, "rustup"))) {
             if (-not $pair[0]) { Stop-Build "cannot build the path remap (CARGO_HOME, RUSTUP_HOME or USERPROFILE missing)" }
@@ -154,13 +155,25 @@ if ($Check) {
     $env:TMP = $CargoTmp; $env:TEMP = $CargoTmp
     # 빌드와 같은 rustflags(경로 지우기 포함): 다르면 cargo가 둘을 오갈 때마다 의존을 다시 컴파일한다.
     $clippy = @("clippy", "--target", "aarch64-linux-android", "-p", "yw-android", "--all-targets") + $CargoNet +
-        (Get-TargetConfig "aarch64-linux-android" $true) + @("--", "-D", "warnings")
+        (Get-TargetConfig "aarch64-linux-android" $true $false) + @("--", "-D", "warnings")
     Push-Location -LiteralPath $RepoRoot
     & cargo @clippy
     $clippyExit = $LASTEXITCODE
     Pop-Location
+    if ($clippyExit -ne 0) { $env:TMP = $savedTmp; $env:TEMP = $savedTemp; Stop-Build "clippy aarch64-linux-android (exit $clippyExit)" }
+    # 2026-11-25 A2-4b 검토: 기기 왕복 시험 코드(--cfg yw_device_test)도 clippy로 본다. 꾸러미로 만들지 않고, 다른 rustflags가
+    # 위의 캐시를 다시 컴파일하게 하지 않도록 따로 둔 대상 폴더(target-devtest)에서 돈다. 전에는 손으로만 돌았다.
+    Write-Host "android: clippy aarch64-linux-android --cfg yw_device_test"
+    $env:CARGO_TARGET_DIR = Join-Path $Tools "target-devtest"
+    $clippy = @("clippy", "--target", "aarch64-linux-android", "-p", "yw-android", "--all-targets") + $CargoNet +
+        (Get-TargetConfig "aarch64-linux-android" $true $true) + @("--", "-D", "warnings")
+    Push-Location -LiteralPath $RepoRoot
+    & cargo @clippy
+    $clippyExit = $LASTEXITCODE
+    Pop-Location
+    $env:CARGO_TARGET_DIR = $TargetDir
     $env:TMP = $savedTmp; $env:TEMP = $savedTemp
-    if ($clippyExit -ne 0) { Stop-Build "clippy aarch64-linux-android (exit $clippyExit)" }
+    if ($clippyExit -ne 0) { Stop-Build "clippy aarch64-linux-android --cfg yw_device_test (exit $clippyExit)" }
     foreach ($triple in "aarch64-linux-android", "x86_64-linux-android") {
         Write-Host "android: deps $triple"
         $depsArgs = @((Join-Path $RepoRoot "scripts\check-core-deps.mjs"), "--target", $triple)
@@ -217,7 +230,7 @@ foreach ($triple in $Triples) {
     Set-TargetEnv $triple
     $savedTmp = $env:TMP; $savedTemp = $env:TEMP
     $env:TMP = $CargoTmp; $env:TEMP = $CargoTmp
-    $build = @("build", "--release", "--target", $triple, "-p", "yw-android") + $CargoNet + (Get-TargetConfig $triple $true)
+    $build = @("build", "--release", "--target", $triple, "-p", "yw-android") + $CargoNet + (Get-TargetConfig $triple $true $DeviceTest.IsPresent)
     Push-Location -LiteralPath $RepoRoot
     $cOutput = @(& cargo @build 2>&1 | ForEach-Object { $text = "$_"; Write-Host $text; $text })
     $buildExit = $LASTEXITCODE
@@ -241,10 +254,16 @@ foreach ($triple in $Triples) {
     } | Sort-Object -Unique)
     if (($exported -join ",") -ne (($ExpectedExports | Sort-Object) -join ",")) { Stop-Build "exported symbols of libyw.so ($triple): $($exported -join ', ')" }
     $hits = 0
+    $devtestHits = 0
     foreach ($text in @(& (Join-Path $NdkBin "llvm-strings.exe") -n 4 $so)) {
+        if ("$text".Contains("devtest.")) { $devtestHits += 1 }
         foreach ($needle in $needles) { if ("$text".IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $hits += 1; break } }
     }
     if ($hits -gt 0) { Stop-Build "libyw.so ($triple) holds $hits build-PC path strings" }
+    # 2026-11-25 A2-4b 검토: 기기 왕복 시험 코드(고정 시험 암호, 공개 니모닉 vault)는 -DeviceTest 빌드에만 있다. 그 사건 이름
+    # (devtest.done·devtest.failed)이 -DeviceTest 없이 만든 .so에 있으면 멈추고, -DeviceTest인데 없으면 멈춘다.
+    if ($DeviceTest -and $devtestHits -eq 0) { Stop-Build "libyw.so ($triple) built with -DeviceTest holds no devtest code" }
+    if (-not $DeviceTest -and $devtestHits -gt 0) { Stop-Build "libyw.so ($triple) holds devtest code without -DeviceTest" }
     $abiDir = Join-Path $JniDir $AbiOf[$triple]
     [void](New-Item -ItemType Directory -Force -Path $abiDir)
     Copy-Item -LiteralPath $so -Destination (Join-Path $abiDir "libyw.so")

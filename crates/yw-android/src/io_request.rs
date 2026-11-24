@@ -43,6 +43,10 @@ pub enum Op {
     Unwrap,
     /// The memory facts before an Argon2 run (body: none; answer: [`crate::kdf_gate`]'s 25 bytes).
     Memory,
+    /// Make the device key when there is none, never replacing one (body: none, kind 0; answer:
+    /// none). The only op that makes the key: a wrap and an unwrap never do (spec/15 §5.2;
+    /// 2026-11-25 A2-4b review, before a wrap made a missing key).
+    Create,
 }
 
 impl Op {
@@ -53,6 +57,7 @@ impl Op {
             Self::Wrap => 1,
             Self::Unwrap => 2,
             Self::Memory => 3,
+            Self::Create => 4,
         }
     }
 }
@@ -61,7 +66,8 @@ impl Op {
 pub mod status {
     /// Done; the body is the answer.
     pub const OK: i32 = 0;
-    /// The device key does not exist (unwrap).
+    /// The device key does not exist (wrap and unwrap; 2026-11-25 A2-4b review: before, only an
+    /// unwrap answered it, a wrap made the key).
     pub const KEY_MISSING: i32 = 1;
     /// The device key could not be made or loaded.
     pub const KEY_FAILED: i32 = 2;
@@ -335,6 +341,7 @@ mod tests {
         assert_eq!(parse_frame(&[0x02; 12]), None);
         assert_eq!(parse_frame(&[FRAME_IO; 10]), None);
         assert_eq!(Op::Memory.number(), 3);
+        assert_eq!(Op::Create.number(), 4);
     }
 
     #[test]
