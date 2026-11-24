@@ -1733,8 +1733,13 @@ impl App {
                 // id check: a panel or AI-body message passed it while any flow was shown, and the
                 // steps after it (`FocusApproval`, `PanelClick`, `MoveFocus`, `AiExpand`) acted on
                 // the shown window and flow, not on the window that got the message (2026-11-20,
-                // S4 B6 review). Windows cannot reach the difference (an ended window gets no
-                // message), so its behaviour is unchanged.
+                // S4 B6 review). An ended window gets no message; but (2026-11-24, S5-10 review)
+                // a panel or AI-body press past its request's deadline, in the gap before the
+                // 50 ms `Tick` expires it, expires it with its own `Event(OtherPress)` and opens
+                // the next request's window inside this message: it now stops here, as an A01
+                // press does since S4 F1, and no longer focuses that next window or clicks or
+                // toggles its panel (before, `AnyWindow` let it on). A Windows change that only
+                // drops actions (security-neutral); no golden line covers it.
                 if shown.is_none_or(|shown| self.wallet.shown_now() != Some(shown)) {
                     return Some(reply);
                 }
@@ -2535,8 +2540,14 @@ impl App {
         // `ApprovalFlow::hold_ai_for_ack` sets it from the issued request and the gate, then the
         // body paints from `ApprovalPaint`; was `ai.panel.set_held(held_for_ack(..))` here.)
         // 2026-11-24 (spec/15 §11.4 S5-10, S5 plan owner item O-12): `ApprovalSignal::AiPaint`
-        // of the window being painted, through the flow's id check (no effect; its drain applies
-        // nothing). Before, the wallet's `hold_shown_ai_for_ack` on the shown flow, whose `false`
+        // of the window being painted, through the flow's id check (it emits no effect). It is
+        // sent with `dispatch`, so a full drain runs here, before `BeginPaint` (2026-11-24, S5-10
+        // review: "its drain applies nothing" said only that): an edit change the `App`'s borrow
+        // dropped (`edit_changed_in_borrow`) goes to the wallet here rather than in
+        // `surface_entry`'s drain after the message, and the debug builds' form checks run here;
+        // the executor writes no wallet state and a re-entrant message is dropped by the
+        // `Forward`'s `try_borrow_mut`, so this moves drain work only (security-neutral).
+        // Before, the wallet's `hold_shown_ai_for_ack` on the shown flow, whose `false`
         // (no AI explanation) ended the paint here; the paint now ends on the same condition below
         // (`paint.ai` is `None`), after a second font lookup that finds the first one's.
         self.window_signal(Some(window.shown), ApprovalSignal::AiPaint);

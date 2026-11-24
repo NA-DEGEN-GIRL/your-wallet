@@ -557,7 +557,9 @@ pub enum Step {
     /// else end with this reply. 2026-11-24 (spec/15 §11.4 S5-10, S5 plan owner item O-12,
     /// spec/04 §3.4): also the guard of the panel's and the AI body's presses and scroll-bar
     /// messages; before, those went on while any approval window was open (`AnyWindow`, gone),
-    /// and the steps after it acted on the window and flow shown then.
+    /// and the steps after it acted on the window and flow shown then. (S5-10 review: so a panel
+    /// or AI-body press that expires its own request no longer focuses, clicks or toggles the
+    /// next request's window it opened; actions dropped only.)
     SameWindow(Reply),
     /// `SetFocus` on the window that got the message (A01).
     FocusReceiver,

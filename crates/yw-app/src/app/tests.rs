@@ -2401,14 +2401,20 @@ fn the_settings_check_starts_the_llm_worker_only_with_its_consent() {
 /// against the vault's snapshot (no unlock yet). 2026-11-24 (spec/15 §11.4 S5-10): moved here
 /// from the integration test `llm_mock` (`e1_off_means_no_worker_and_no_connection`, which keeps
 /// the loopback part): it read the wallet's `llm_running` on an `App`, which only test builds of
-/// the library can do now (no non-test `Deref`). The same five settings, nothing sent anywhere
-/// (no request, and the endpoint is a closed loopback port).
+/// the library can do now (no non-test `Deref`). The same five settings, no request. 2026-11-24
+/// (S5-10 review): the endpoint is a counting loopback listener of this test, as the moved part
+/// had (`llm_mock`'s counting mock endpoint): all five `App`s stay alive for 300 ms and the
+/// listener must have accepted no connection (D21: zero network calls while off); before the
+/// review, a closed loopback port that nothing watched.
 #[test]
 fn a_new_app_runs_no_llm_worker_before_its_check() {
     use std::sync::Arc;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
     let configured = yw_engine::settings::LlmSettings {
         enabled: false,
-        endpoint: "http://127.0.0.1:9/v1/chat/completions".to_owned(),
+        endpoint: format!("http://127.0.0.1:{port}/v1/chat/completions"),
         model: "mock-model".to_owned(),
         privacy_notice_version: 1,
         ..yw_engine::settings::LlmSettings::default()
@@ -2440,6 +2446,7 @@ fn a_new_app_runs_no_llm_worker_before_its_check() {
             },
         ),
     ];
+    let mut alive = Vec::new();
     for (tag, llm) in cases {
         let dir = temp_dir(&format!("llm-e1-{tag}"));
         let mut app = App::new(
@@ -2461,6 +2468,16 @@ fn a_new_app_runs_no_llm_worker_before_its_check() {
             tx,
         );
         assert!(!app.llm_running(), "{tag}: no worker");
+        alive.push((app, dir));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let mut accepts = 0_usize;
+    while listener.accept().is_ok() {
+        accepts = accepts.saturating_add(1);
+    }
+    assert_eq!(accepts, 0, "no connection while off or unchecked");
+    for (app, dir) in alive {
+        drop(app);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

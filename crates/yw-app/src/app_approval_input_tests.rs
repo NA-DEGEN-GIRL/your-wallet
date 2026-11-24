@@ -2353,15 +2353,41 @@ fn the_ai_panel_repaints_through_an_effect() {
 /// `RepaintAi { body_only: true }` in the first 50 ms of a second (the A3 fixture with the
 /// headless approval host and the explanation worker on its in-process transport, as in
 /// [`the_ai_panel_repaints_through_an_effect`]: no window, no socket, no answer fed back). The
-/// tail after an expiry that opened the next window runs on the new flow, as before; no golden
-/// changes (`flow.txt` `stale_window_input_is_dropped` `stale-timer` is byte-equal).
+/// tail after an expiry that opened the next window runs on the new flow, as before (the last
+/// case, 2026-11-24 S5-10 review); no golden changes (`flow.txt` `stale_window_input_is_dropped`
+/// `stale-timer` is byte-equal).
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "six tick and tail cases, then the expiry case"
+)]
 fn the_timer_tail_follows_only_its_own_windows_tick() {
     use super::headless_host::{self, OpenAnswer};
     use crate::ui::approval_input::window_input;
+    use std::time::Duration;
     use yw_engine::approval::flow::{ApprovalEffect, ApprovalSignal, ShownId};
     use yw_engine::cmd::Cmd;
+    use yw_engine::explain::LlmDone;
     use yw_engine::wallet::approval_flow::ApprovalFlow;
+
+    /// [`no_network_llm`] whose worker reports each answer on `sink` (never fed back).
+    fn llm_to(sink: std::sync::mpsc::Sender<LlmDone>) -> ExplainService {
+        let config = LlmConfig::new(
+            parse_endpoint("https://llm.example.test/v1/chat/completions").unwrap(),
+            ModelName::parse("mock-model").unwrap(),
+            None,
+            ResponseFormatMode::JsonSchema,
+            0,
+        );
+        ExplainService::start_with(
+            config,
+            Box::new(NoNetwork),
+            Box::new(move |done| {
+                let _ = sink.send(done);
+            }),
+        )
+        .unwrap()
+    }
 
     /// A case: its label, the inputs sent in order and the AI repaints they emit.
     type Case = (
@@ -2379,7 +2405,8 @@ fn the_timer_tail_follows_only_its_own_windows_tick() {
 
     let fx = Fixture::new("timer-tail", HostMode::Hidden);
     headless_host::install(OpenAnswer::Shown);
-    fx.app().llm = Some(no_network_llm());
+    let (sink, done) = std::sync::mpsc::channel();
+    fx.app().llm = Some(llm_to(sink));
     let outlet = dapp(&fx, false, true);
     personal_sign(&fx, &outlet, 1, 600_000);
     let shown = fx
@@ -2439,6 +2466,186 @@ fn the_timer_tail_follows_only_its_own_windows_tick() {
         }
         assert_eq!(repaints(), expected, "{label}");
     }
+    // An expiry (2026-11-24, S5-10 review; spec/15 §18 39): the shown request's `Tick` past its
+    // deadline ends it and opens the next request's window inside the same message; that timer
+    // message's tail then runs on the new flow, as before S5-10. A check against the window
+    // shown now (`ticked == Some(shown) && shown_now() == Some(shown)`, the variant §18 39
+    // rejects) would skip it. The worker's answer to the first request is waited for (never fed
+    // back), so the next request's explanation goes out at once and waits.
+    let answered = done.recv_timeout(Duration::from_secs(10));
+    assert!(answered.is_ok(), "the worker answered the first request");
+    personal_sign(&fx, &outlet, 2, 600_000);
+    let _ = repaints();
+    fx.clock
+        .set(((fx.clock.peek() + 121_000) / 1_000 + 1) * 1_000 + 10);
+    for signal in [tick, tail] {
+        fx.app()
+            .dispatch(Cmd::Approval(window_input(shown, false, signal)));
+    }
+    let next = fx
+        .app
+        .borrow()
+        .evm
+        .approval
+        .as_ref()
+        .map(ApprovalFlow::shown)
+        .expect("the expiry showed the second request");
+    assert_ne!(next, shown, "the first request expired");
+    let after = repaints();
+    assert_eq!(
+        after.last(),
+        Some(&ApprovalEffect::RepaintAi {
+            shown: next,
+            body_only: true,
+        }),
+        "the expired window's tail ticks the next request's explanation: {after:?}"
+    );
+    {
+        let mut app = fx.app();
+        app.close_approval_window();
+        app.drain();
+    }
+    headless_host::remove();
+}
+
+/// The AI body's click and paint reach the flow only from the shown window (2026-11-24, S5-10
+/// review; spec/15 §11.4 S5-10, S5 plan owner item O-12, spec/06 §3.2, spec/04 §3.4):
+/// `ApprovalSignal::AiExpand` and `ApprovalSignal::AiPaint` of a window that is not the shown
+/// one change nothing — no `AiToggled`, the explanation stays folded, the held flag stays as it
+/// was — and the shown window's do (`AiToggled { shown }`, opened; held while the High-risk
+/// request's checkbox is clear). Before S5-10 the shell flipped and held the shown flow's panel
+/// with no id check. A site `eth_sendTransaction` with a reverted simulation (High risk, a
+/// transfer), its explanation answered as one that leaves the transfer out (inconsistent,
+/// folded), on the A3 fixture with the headless approval host and the in-process transport (no
+/// window, no socket; the worker's own answer is replaced before it is fed back). The headless
+/// approval never paints, so the held flag is written only by these signals.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "a High-risk send with an inconsistent explanation, then each signal from both windows"
+)]
+fn ai_signals_of_another_window_change_nothing() {
+    use super::headless_host::{self, OpenAnswer};
+    use crate::ui::approval_input::window_input;
+    use std::time::Duration;
+    use yw_core::approval::RiskLevel;
+    use yw_engine::approval::flow::{ApprovalEffect, ApprovalSignal, ShownId};
+    use yw_engine::cmd::Cmd;
+    use yw_engine::events::UiEvent;
+    use yw_engine::explain::{Explanation, LlmDone, RequestStats};
+
+    fn llm_to(sink: std::sync::mpsc::Sender<LlmDone>) -> ExplainService {
+        let config = LlmConfig::new(
+            parse_endpoint("https://llm.example.test/v1/chat/completions").unwrap(),
+            ModelName::parse("mock-model").unwrap(),
+            None,
+            ResponseFormatMode::JsonSchema,
+            0,
+        );
+        ExplainService::start_with(
+            config,
+            Box::new(NoNetwork),
+            Box::new(move |done| {
+                let _ = sink.send(done);
+            }),
+        )
+        .unwrap()
+    }
+
+    /// The shown flow's AI panel: (inconsistent, expanded, held).
+    fn panel(fx: &Fixture) -> (bool, bool, bool) {
+        let app = fx.app.borrow();
+        let ai = app.evm.approval.as_ref().and_then(|flow| flow.ai());
+        ai.map_or((false, false, false), |ai| {
+            (
+                ai.panel.inconsistent(),
+                ai.panel.expanded(),
+                ai.panel.held(),
+            )
+        })
+    }
+
+    fn toggles() -> Vec<ApprovalEffect> {
+        headless_host::take_effects()
+            .into_iter()
+            .filter(|effect| matches!(effect, ApprovalEffect::AiToggled { .. }))
+            .collect()
+    }
+
+    let fx = Fixture::new("ai-stale", HostMode::Hidden);
+    headless_host::install(OpenAnswer::Shown);
+    let (sink, done) = std::sync::mpsc::channel();
+    fx.app().llm = Some(llm_to(sink));
+    let outlet = dapp(&fx, false, true);
+    request(
+        &fx,
+        &outlet,
+        1,
+        "eth_sendTransaction",
+        r#"[{"from":"0x9858EfFD232B4033E47d90003D41EC34EcaEda94","to":"0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb","value":"0x2386f26fc10000"}]"#,
+        "signing",
+        600_000,
+    );
+    let job = fx
+        .rpc_jobs()
+        .into_iter()
+        .find_map(|job| match job {
+            RpcJob::Prepare(job) => Some(job),
+            _ => None,
+        })
+        .expect("a preparation job");
+    fx.answer_prepare(&job, "S3");
+    let (shown, risk) = {
+        let app = fx.app.borrow();
+        let flow = app.evm.approval.as_ref().expect("the send is shown");
+        (
+            flow.shown(),
+            flow.issued().map(|request| request.display.risk),
+        )
+    };
+    assert_eq!(risk, Some(RiskLevel::High), "a reverted simulation is High");
+    let mut answered = done
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the explanation was asked for");
+    answered.result = Ok(Explanation {
+        summary: "컨트랙트를 호출합니다.".to_owned(),
+        actions: Vec::new(),
+        unknowns: Vec::new(),
+    });
+    answered.stats = RequestStats::default();
+    fx.app().worker_event(UiEvent::Llm(Box::new(answered)));
+    assert_eq!(
+        panel(&fx),
+        (true, false, false),
+        "an inconsistent explanation, folded, not held"
+    );
+    let _ = toggles();
+    let stale = ShownId(shown.0.wrapping_sub(1));
+    let send = |window: ShownId, signal: ApprovalSignal| {
+        fx.app()
+            .dispatch(Cmd::Approval(window_input(window, false, signal)));
+    };
+    send(stale, ApprovalSignal::AiExpand);
+    assert_eq!(toggles(), [], "another window's click toggles nothing");
+    send(stale, ApprovalSignal::AiPaint);
+    assert_eq!(
+        panel(&fx),
+        (true, false, false),
+        "another window's click and paint leave the panel as it was"
+    );
+    send(shown, ApprovalSignal::AiExpand);
+    assert_eq!(
+        toggles(),
+        [ApprovalEffect::AiToggled { shown }],
+        "the shown window's click opens the explanation"
+    );
+    assert_eq!(panel(&fx), (true, true, false), "opened");
+    send(shown, ApprovalSignal::AiPaint);
+    assert_eq!(
+        panel(&fx),
+        (true, true, true),
+        "the shown window's paint holds the text until the checkbox is checked"
+    );
     {
         let mut app = fx.app();
         app.close_approval_window();

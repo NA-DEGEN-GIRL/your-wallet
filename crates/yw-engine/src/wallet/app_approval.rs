@@ -1932,7 +1932,10 @@ impl Wallet {
     /// before it, on the flow shown then — so a `Tick` that ended its request and opened the next
     /// one's window is still followed by the tail on the new flow, as before S5-10; a stale
     /// window's timer (its `Tick` dropped) runs no tail any more. Windows sends no message to an
-    /// ended window, so its behaviour is unchanged.
+    /// ended window; the one Windows change (2026-11-24, S5-10 review) is the shell's guard, not
+    /// this check: a panel or AI-body press that expires its own request (its `OtherPress` past
+    /// the deadline) now stops at `Step::SameWindow` and no longer focuses the next request's
+    /// window or clicks or toggles its panel (actions dropped only).
     pub(crate) fn on_approval_input(&mut self, input: ApprovalInput) {
         // 2026-11-22 (S4 W14b, preflight critic C5): the test builds' pairing check of the flow
         // and its window (`assert_flow_and_window_in_step`, the shell's) is made by the shell's
