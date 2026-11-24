@@ -52,19 +52,25 @@ EIP-6963, Wallet Standard) and forwards requests; it holds no secrets.
 | `crates/yw-json` | Own strict JSON parser/writer and framing. Zero dependencies | forbidden |
 | `crates/yw-platform` | Platform-neutral types and traits: HTTP URL/error/response types, the HTTP `Transport` and WebSocket `WsLink` traits, the `Clock` trait. Zero dependencies, no OS calls | forbidden |
 | `crates/yw-engine` | App logic shared by the platform shells (error codes, text rules, log format, `YubiKey` card operations, approval queue and interaction rules, secret input buffers; since 2026-11-17 S2 E2 also settings, the API-key file format, explorer links, token views, wallet metadata, HyperCore, the LLM explanation, the RPC pipelines (`rpc`, `flow`, `sol`, `btc`, `zec`, `received`) and the WalletConnect engine; since S2 E3 also the dApp dispatcher (`browser`, without the named-pipe server), the WalletConnect relay worker, the worker events, the key/RPC/journal workers and the approval content model `approval::view`; since 2026-11-23 (S4) also the wallet state, its handlers and the approval flow, `wallet`; since 2026-11-24 (S5) also the screen model and the screen builders, `screen`, and the secret windows' input state machine, `secret::form`). Depends only on yw-core, yw-json and yw-platform (and, since 2026-11-24, `qrcodegen` for the screen model's QR); no file, socket or environment access | forbidden |
-| `crates/yw-win` | The only crate allowed `unsafe`: Windows API wrappers (WinHTTP, DPAPI, pipe, UI, …); its WinHTTP client and WebSocket implement the yw-platform traits | allowed, each block has a `// SAFETY:` comment |
+| `crates/yw-win` | With `yw-android`, one of the two crates allowed `unsafe` (the only one before 2026-11-24): Windows API wrappers (WinHTTP, DPAPI, pipe, UI, …); its WinHTTP client and WebSocket implement the yw-platform traits | allowed, each block has a `// SAFETY:` comment |
 | `crates/yw-app` | The wallet binary: the Win32 shell (windows, screens — since 2026-11-24 it draws the screen model yw-engine builds —, the approval window), the named-pipe server, Windows storage, clock, PC/SC and WinHTTP glue | forbidden |
 | `crates/yw-host` | Native-messaging relay | forbidden |
+| `crates/yw-android` | (since 2026-11-24, in progress) The Android version's Rust half, `libyw.so`: the JNI entry `JNI_OnLoad` and its five registered methods, locked memory pages for the vault key (`mmap` + `mlock` + `madvise(MADV_DONTDUMP)`), the panic hook (wipe, one log line, `_exit`). Its FFI modules `jni`, `slot`, `panic_hook` are compiled for Android targets only; on Windows only its platform-neutral helpers `jni_table` and `slot_plan` build. Not part of the Windows app | allowed in the three FFI modules only (Android targets), each block has a `// SAFETY:` comment; `jni_table` and `slot_plan` forbid it |
 
 Check the `unsafe` claim:
 
 ```powershell
 git grep -n "forbid(unsafe_code)" -- crates
-Select-String -Path Cargo.toml, crates\yw-win\Cargo.toml -Pattern 'unsafe_code'
+git grep -n "^#!\[allow(unsafe_code)\]" -- crates
+Select-String -Path Cargo.toml, crates\yw-win\Cargo.toml, crates\yw-android\Cargo.toml -Pattern 'unsafe_code'
 ```
 
-Expected: `#![forbid(unsafe_code)]` in `yw-app` (lib and main), `yw-core`, `yw-host` (lib and main), `yw-json`, `yw-platform`, `yw-engine`; workspace
-lint `unsafe_code = "forbid"` and `yw-win` overriding to `"deny"` with per-module allows.
+Expected: `#![forbid(unsafe_code)]` in `yw-app` (lib and main), `yw-core`, `yw-host` (lib and main), `yw-json`, `yw-platform`, `yw-engine`,
+and in `yw-android`'s `jni_table.rs` and `slot_plan.rs`; workspace lint `unsafe_code = "forbid"`, and `yw-win` and `yw-android`
+overriding it to `"deny"` with per-module allows. The `#![allow(unsafe_code)]` first lines are all in `crates/yw-win/src/`
+and, for `yw-android`, only `crates/yw-android/src/jni.rs`, `slot.rs` and `panic_hook.rs` (each declared under
+`#[cfg(target_os = "android")]` in `crates/yw-android/src/lib.rs`). (2026-11-24: before, only `yw-win` was listed; the
+Android crate was added that day.)
 
 ---
 
@@ -273,10 +279,16 @@ Expected:
 
 - `54` registry crates, each with a `checksum` (README says 54 third-party crates).
 - Every `[workspace.dependencies]` entry uses an exact `=` version with `default-features = false`.
-- `.cargo/config.toml` adds only `--cfg curve25519_dalek_backend="serial"` and `/Brepro` (deterministic PE timestamps).
+- `.cargo/config.toml` adds only `--cfg curve25519_dalek_backend="serial"` and `/Brepro` (deterministic PE timestamps) for
+  `x86_64-pc-windows-msvc`, and (since 2026-11-24) the same serial `--cfg`, nothing else, for `aarch64-linux-android` and
+  `x86_64-linux-android` (no linker or path there; the Android build passes those per PC).
 - The installer and the gate build with `--locked`, so `Cargo.lock` cannot change silently.
 
-Per-crate allowlist: `scripts/check-core-deps.mjs`, object `POLICY`:
+Per-crate allowlist: `scripts/check-core-deps.mjs`, one table per target (`policyFor(target)`; `POLICY` is the Windows
+table). Since 2026-11-24 it checks three targets: `x86_64-pc-windows-msvc` (the Windows app), and `aarch64-linux-android`
+and `x86_64-linux-android` (the Android version in progress). The Android tables add `libc` 0.2.189 (and its `build.rs`)
+and skip the Windows-only members `yw-win`, `yw-app` and `yw-host`; the Windows table refuses `libc`. Before 2026-11-24 there
+was one Windows table only:
 
 | Crate | Allowed |
 |---|---|
@@ -287,15 +299,20 @@ Per-crate allowlist: `scripts/check-core-deps.mjs`, object `POLICY`:
 | `yw-win` | `windows-sys` 0.61.2 / `windows-link`; local `yw-platform` |
 | `yw-app` | the above (`qrcodegen` only through `yw-engine`, never directly); local `yw-engine` too |
 | `yw-host` | `yw-json` and `yw-win` only (and `yw-platform` through `yw-win`) |
+| `yw-android` | (since 2026-11-24, checked on every table) yw-core's crates (through yw-core) plus `libc` 0.2.189, its only direct third-party crate, on Android targets only; `qrcodegen` only through `yw-engine`; local `yw-core`, `yw-engine`, `yw-json`, `yw-platform` — never `yw-win` or `windows-sys` |
 
-Build scripts are allowed only for `generic-array`, `getrandom`, `secp256k1-sys`, `curve25519-dalek` and yw-app's own
-link-args `build.rs`. To run the check (needs Node 22+ and cargo; reads `cargo metadata`):
+On the Android tables `yw-core`'s row (and so every row built on it) also allows `libc`, which `getrandom` and
+`cpufeatures` pull in there. Build scripts are allowed only for `generic-array`, `getrandom`, `secp256k1-sys`,
+`curve25519-dalek`, yw-app's own link-args `build.rs` and, on the Android tables only, `libc`. To run the check (needs
+Node 22+ and cargo; reads `cargo metadata`):
 
 ```powershell
 node scripts/check-core-deps.mjs
+node scripts/check-core-deps.mjs --target x86_64-pc-windows-msvc   # one target only
 ```
 
-Expected: exit code 0 and no `not in allowlist` lines. On a fresh clone without cached crates, do not add `--offline`.
+Expected: exit code 0, an `OK` line per crate and target, and no `not in allowlist` lines. On a fresh clone without
+cached crates, do not add `--offline`.
 
 ---
 

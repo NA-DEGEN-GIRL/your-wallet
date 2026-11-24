@@ -3,10 +3,43 @@
 # (Java owns the network, spec/15 §3.1), reads no environment variable, and never aborts: the panic hook and every
 # fatal end wipe the slots and `_exit` (an abort leaves a tombstone, spec/15 §5.3). Files and threads stay allowed
 # (the storage service and the key worker, A2-4b).
+# 2026-11-24 A2-1 review: the libc paths too, since libc (the crate's one direct third-party dependency, Android
+# targets only) offers the same operations; before, only the std paths were banned. `_exit` stays allowed (the fatal
+# end). The libc entries are `allow-invalid`: libc is not a dependency on the Windows gate's target, where those paths
+# do not resolve. Each one resolves on both Android targets (checked without `allow-invalid`; libc 0.2.189 declares no
+# `posix_spawn`, `posix_spawnp` or `secure_getenv` for Android, so they cannot be called through it and are not listed).
+# Mutation probe: a call to a listed fn fails `cargo clippy --target aarch64-linux-android -p yw-android -- -D warnings`.
 avoid-breaking-exported-api = false
 msrv = "1.95.0"
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 disallowed-types = [ "std::net::TcpStream", "std::net::TcpListener", "std::net::UdpSocket", "std::process::Command" ]
 disallowed-methods = [ "std::process::abort", "std::env::var", "std::env::var_os", "std::env::vars",
-                       "std::env::vars_os", "std::net::ToSocketAddrs::to_socket_addrs" ]
+                       "std::env::vars_os", "std::net::ToSocketAddrs::to_socket_addrs",
+                       { path = "libc::socket", allow-invalid = true },
+                       { path = "libc::socketpair", allow-invalid = true },
+                       { path = "libc::connect", allow-invalid = true },
+                       { path = "libc::bind", allow-invalid = true },
+                       { path = "libc::listen", allow-invalid = true },
+                       { path = "libc::accept", allow-invalid = true },
+                       { path = "libc::accept4", allow-invalid = true },
+                       { path = "libc::fork", allow-invalid = true },
+                       { path = "libc::vfork", allow-invalid = true },
+                       { path = "libc::clone", allow-invalid = true },
+                       { path = "libc::execve", allow-invalid = true },
+                       { path = "libc::execv", allow-invalid = true },
+                       { path = "libc::execvp", allow-invalid = true },
+                       { path = "libc::execvpe", allow-invalid = true },
+                       { path = "libc::execl", allow-invalid = true },
+                       { path = "libc::execlp", allow-invalid = true },
+                       { path = "libc::execle", allow-invalid = true },
+                       { path = "libc::fexecve", allow-invalid = true },
+                       { path = "libc::system", allow-invalid = true },
+                       { path = "libc::popen", allow-invalid = true },
+                       { path = "libc::abort", allow-invalid = true },
+                       { path = "libc::raise", allow-invalid = true },
+                       { path = "libc::kill", allow-invalid = true },
+                       { path = "libc::tgkill", allow-invalid = true },
+                       { path = "libc::pthread_kill", allow-invalid = true },
+                       { path = "libc::getenv", allow-invalid = true },
+                       { path = "libc::exit", allow-invalid = true } ]

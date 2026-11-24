@@ -78,8 +78,9 @@ XChaCha20-Poly1305로 암호화합니다.
 **10. 검토할 수 있는 공급망.** Rust 외부 크레이트는 54개이고 `Cargo.lock` 체크섬으로 고정해 `--locked`로 빌드합니다.
 크레이트마다 의존성 허용 목록이 있어 새 크레이트는 검사 스크립트가 막고, 확장은 npm 패키지를 하나도 쓰지 않습니다. 서명·해시·
 암호화 같은 암호 기본 요소는 직접 구현하지 않고 널리 쓰이는 크레이트를 고정 버전으로 씁니다. `unsafe`는 Windows API를 감싸는
-크레이트 하나에서만 허용하고, 게이트는 1,400개가 넘는 테스트와 fuzz-lite 대상 22개, 개인정보 검사, 확장 정적 감사를 매번
-실행합니다.
+크레이트와, 2026-11-24부터 만들고 있는 Android판의 JNI·메모리 잠금 크레이트(`yw-android`, Android용으로만 빌드되며 Windows
+앱에는 들어가지 않음) 두 곳에서만 허용하고(전에는 Windows 크레이트 하나), 게이트는 1,400개가 넘는 테스트와 fuzz-lite 대상
+22개, 개인정보 검사, 확장 정적 감사를 매번 실행합니다.
 
 **11. YubiKey가 있다면 하드웨어 지갑처럼 (선택).** YubiKey는 없어도 되지만, 있다면 하드웨어 지갑처럼 쓸 수 있습니다.
 'YubiKey 지갑'(복구 단어를 PC에 저장하지 않는 지갑)을 만들면 복구 단어에서 고른 키를 YubiKey 5에 넣고, 그 뒤 PC에는
@@ -350,8 +351,10 @@ without the extension.
 **10. A supply chain you can review.** There are 54 third-party Rust crates, pinned with checksums in `Cargo.lock` and
 built with `--locked`. A per-crate dependency allowlist makes a check script reject any new crate, and the extension
 uses no npm packages. Cryptographic primitives (signatures, hashes, encryption) are never hand-rolled; they come from
-widely used crates at pinned versions. `unsafe` is allowed only in the one crate that wraps the Windows API, and the
-gate runs more than 1,400 tests, 22 fuzz-lite targets, a privacy scan and an extension static audit every time.
+widely used crates at pinned versions. `unsafe` is allowed only in two crates: the one that wraps the Windows API and,
+since 2026-11-24, the JNI and memory-locking crate of the Android version in progress (`yw-android`, built for Android
+only and not part of the Windows app; before, the Windows crate alone). The gate runs more than 1,400 tests, 22
+fuzz-lite targets, a privacy scan and an extension static audit every time.
 
 **11. Have a YubiKey? Use it like a hardware wallet (optional).** A YubiKey is not required, but if you have one you
 can use it like a hardware wallet. With a "YubiKey wallet" (one that never stores the recovery phrase on the PC), keys

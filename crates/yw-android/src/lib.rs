@@ -10,7 +10,9 @@
 //! 2026-11-24 A2-1 (spec/15 §17 A2): the skeleton. `JNI_OnLoad` calls `prctl(PR_SET_DUMPABLE, 0)`
 //! first, installs the panic hook and registers the five methods of spec/15 §3.2 as stubs; `slot`
 //! holds `LockedSlot` pages (`mmap` + `mlock` + `madvise(MADV_DONTDUMP)`, fail closed); the panic hook
-//! writes the one `app.panic` line, wipes every live slot and `_exit`s. The engine, the wire format,
+//! wipes every live slot, writes the one `app.panic` line and `_exit`s (2026-11-24 A2-1 review: wipe
+//! first; before, the line came first). `JNI_OnLoad` sets a loaded flag only after all five methods
+//! are registered, and each method answers "nothing" without it. The engine, the wire format,
 //! storage and the screens come in the later A2 steps.
 
 pub mod jni_table;

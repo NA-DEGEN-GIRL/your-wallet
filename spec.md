@@ -165,7 +165,8 @@ yw-core  (std, unsafe 금지, 네트워크·GUI·OS 호출 없음; yw-json은 EI
 yw-platform (std, unsafe 금지, 의존성 0, OS 호출 없음; HTTP URL·오류 타입, Clock — 2026-11-17)
    ▲
 yw-engine (yw-core + yw-json + yw-platform + qrcodegen, unsafe 금지, 파일·소켓·환경 변수 없음; 공유 앱 로직 — 2026-11-17 S2; qrcodegen은 화면 모델의 QR, 2026-11-24 S5-2)
-yw-win   (windows-sys + yw-platform, unsafe는 여기서만, 안전한 API로 감싸 제공)
+yw-win   (windows-sys + yw-platform, unsafe는 여기와 yw-android에서만 — 2026-11-24 A2-1 전에는 여기서만, 안전한 API로 감싸 제공)
+yw-android (yw-core + yw-engine + yw-json + yw-platform, Android 타깃에서만 libc; unsafe는 Android 전용 FFI 모듈에만; Android판의 libyw.so — 2026-11-24 A2-1, [15] §3)
    ▲
 yw-app   (yw-core + yw-engine + yw-json + yw-platform + yw-win, unsafe 금지; 2026-11-24 S5-2 전에는 + qrcodegen)
 yw-host  (yw-json + yw-win, unsafe 금지)

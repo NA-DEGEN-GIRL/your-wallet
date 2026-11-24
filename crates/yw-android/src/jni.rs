@@ -12,10 +12,33 @@
 //! 2026-11-24 A2-1: the five methods are stubs that read nothing and answer "nothing": `call` and
 //! `next` return null, `ioComplete` and `secretKey` do nothing, `secretFill` returns 0 and writes
 //! nothing (an unknown handle, spec/15 §3.2). A2-6 and A2-7 give them their bodies.
+//!
+//! 2026-11-24 A2-1 review: ART's `RegisterNatives` binds the methods in order and stops at the first
+//! it cannot find, leaving the earlier ones bound. So every method body runs only through
+//! [`when_loaded`], which answers "nothing" until `JNI_OnLoad` has registered all five and set
+//! [`LOADED`]: a Java caller that caught the `UnsatisfiedLinkError` of a failed load (or a second
+//! class loader) reaches no wallet code through a half-registered surface. Java treats a failed
+//! `System.loadLibrary` as fatal and never catches it (spec/15 §3.2); this flag does not rely on that.
+//! (Before, the stubs had no such check; `UnregisterNatives` on failure was not taken because its
+//! table index is not yet checked under `CheckJNI`.)
 
 use core::ffi::{c_char, c_int, c_void};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::jni_table::{JNI_ERR, JNI_OK, JNI_VERSION_1_6, METHODS, NATIVE_CLASS, env, vm};
+
+/// Set (`Release`) only after `RegisterNatives` returned `JNI_OK` for all five methods; never cleared.
+static LOADED: AtomicBool = AtomicBool::new(false);
+
+/// Runs `body` only when `JNI_OnLoad` succeeded (`LOADED`, `Acquire`); else answers `nothing`, the
+/// method's "no answer" (null, 0 or nothing done).
+fn when_loaded<T>(nothing: T, body: impl FnOnce() -> T) -> T {
+    if LOADED.load(Ordering::Acquire) {
+        body()
+    } else {
+        nothing
+    }
+}
 
 /// A function table: an array of C function pointers.
 type FnTable = *const *const c_void;
@@ -75,25 +98,29 @@ fn clear_exception(jni: JniEnv) {
 
 /// `byte[] call(byte[] cmd)`: the engine's input (spec/15 §3.2). Stub: no engine yet, no answer.
 extern "C" fn call(_jni: JniEnv, _class: JObject, _input: JObject) -> JObject {
-    core::ptr::null_mut()
+    when_loaded(core::ptr::null_mut(), core::ptr::null_mut)
 }
 
 /// `byte[] next(long timeoutMs)`: effects, the screen model and platform I/O requests. Stub: none.
 extern "C" fn next(_jni: JniEnv, _class: JObject, _timeout_ms: i64) -> JObject {
-    core::ptr::null_mut()
+    when_loaded(core::ptr::null_mut(), core::ptr::null_mut)
 }
 
 /// `void ioComplete(long id, int status, byte[] body)`: a platform I/O result. Stub: no request was
 /// ever issued, so every id is unknown and dropped (the body is not read).
-extern "C" fn io_complete(_jni: JniEnv, _class: JObject, _id: i64, _status: i32, _body: JObject) {}
+extern "C" fn io_complete(_jni: JniEnv, _class: JObject, _id: i64, _status: i32, _body: JObject) {
+    when_loaded((), || {});
+}
 
 /// `void secretKey(int field, int codeUnit)`: one app-keyboard key. Stub: no secret window is open.
-extern "C" fn secret_key(_jni: JniEnv, _class: JObject, _field: i32, _code_unit: i32) {}
+extern "C" fn secret_key(_jni: JniEnv, _class: JObject, _field: i32, _code_unit: i32) {
+    when_loaded((), || {});
+}
 
 /// `int secretFill(long handle, char[] out)`: a secret display fill. Stub: no handle is valid, so 0
 /// and nothing written (spec/15 §3.2).
 extern "C" fn secret_fill(_jni: JniEnv, _class: JObject, _handle: i64, _out: JObject) -> i32 {
-    0
+    when_loaded(0, || 0)
 }
 
 /// The function of each [`METHODS`] entry, in the same order.
@@ -179,7 +206,10 @@ pub unsafe extern "C" fn JNI_OnLoad(java_vm: JavaVm, _reserved: *mut c_void) -> 
         return JNI_ERR;
     }
     match register(jni.cast_const().cast()) {
-        Ok(()) => JNI_VERSION_1_6,
+        Ok(()) => {
+            LOADED.store(true, Ordering::Release);
+            JNI_VERSION_1_6
+        }
         Err(()) => JNI_ERR,
     }
 }

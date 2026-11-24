@@ -151,7 +151,7 @@ crates/
   yw-host/   Cargo.toml  src/{lib.rs, main.rs}  tests/               ([05](05-browser.md))
   yw-android/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, jni_table.rs(JNI 함수표 인덱스·등록하는 메서드 다섯, 모든 타깃),
                               slot_plan.rs(잠근 슬롯의 크기·예산 계산, 모든 타깃), jni.rs(`JNI_OnLoad`, Android만),
-                              slot.rs(`LockedSlot` 페이지, Android만), panic_hook.rs(패닉 훅·`_exit`, Android만)}
+                              slot.rs(`LockedSlot` 페이지, Android만), panic_hook.rs(패닉 훅: 슬롯 지우기·로그 한 줄·`_exit`, Android만)}
              (Android 셸의 Rust 쪽 `libyw.so`, cdylib + rlib, [15](15-android.md) §3; 2026-11-24 A2-1)
 extension/   manifest.json  package.json  extension-id.txt(M5)  src/*.js  popup/*  icons/icon-{16,32,48,128}.png([05] §2.2)
              native-host/*  tests/*.test.mjs  test-dapp/(M5)
@@ -1120,7 +1120,7 @@ const forbidden = [
 ### 5.1 unsafe와 경계
 
 - `unsafe`는 yw-win과 yw-android(2026-11-24 A2-1, D4·D40, [15](15-android.md) §3.1)에만 있다. yw-core·yw-json·yw-platform(2026-11-17)·yw-engine(2026-11-17 S2)·yw-app·yw-host는 workspace lint `unsafe_code = "forbid"`에 더해 `lib.rs`/`main.rs`에 `#![forbid(unsafe_code)]`를 둔다.
-- yw-win과 yw-android는 FFI 모듈 파일 첫 줄에만 `#![allow(unsafe_code)]`를 두고, 모든 `unsafe` 블록에 `// SAFETY:` 주석(어떤 전제가 왜 성립하는지)과 블록당 unsafe 연산 1개(clippy `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`). yw-android의 FFI 모듈(`jni`, `slot`, `panic_hook`)은 Android 타깃에서만 컴파일되므로 Windows 게이트의 clippy가 보지 못한다: 그 clippy는 `cargo clippy --target aarch64-linux-android -p yw-android -- -D warnings`이고 게이트 단계 `android`(A2-3, [15] §13)가 돌리며, 그 전(A2-1)에는 손으로 돌린다. 플랫폼 중립 모듈(`jni_table`, `slot_plan`)은 `#![forbid(unsafe_code)]`. `crates/yw-android/clippy.toml`은 루트 내용 + 소켓·프로세스 타입, `std::process::abort`(치명적 끝은 슬롯을 지운 뒤 `_exit`, [15] §5.3), `std::env::var` 계열, `to_socket_addrs`를 막는다(네트워크는 Java가 맡는다, [15] §3.1). 파일·스레드는 허용(저장 서비스·키 작업자, A2-4b).
+- yw-win과 yw-android는 FFI 모듈 파일 첫 줄에만 `#![allow(unsafe_code)]`를 두고, 모든 `unsafe` 블록에 `// SAFETY:` 주석(어떤 전제가 왜 성립하는지)과 블록당 unsafe 연산 1개(clippy `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`). yw-android의 FFI 모듈(`jni`, `slot`, `panic_hook`)은 Android 타깃에서만 컴파일되므로 Windows 게이트의 clippy가 보지 못한다: 그 clippy는 `cargo clippy --target aarch64-linux-android -p yw-android -- -D warnings`이고 게이트 단계 `android`(A2-3, [15] §13)가 돌리며, 그 전(A2-1)에는 손으로 돌린다. 플랫폼 중립 모듈(`jni_table`, `slot_plan`)은 `#![forbid(unsafe_code)]`. `crates/yw-android/clippy.toml`은 루트 내용 + 소켓·프로세스 타입, `std::process::abort`(치명적 끝은 슬롯을 지운 뒤 `_exit`, [15] §5.3), `std::env::var` 계열, `to_socket_addrs`를 막는다(네트워크는 Java가 맡는다, [15] §3.1). (2026-11-24 A2-1 검토) libc가 같은 일을 하는 함수도 막는다: 소켓(`socket`·`socketpair`·`connect`·`bind`·`listen`·`accept`·`accept4`), 프로세스(`fork`·`vfork`·`clone`·`exec*`·`fexecve`·`system`·`popen`), 신호·중단(`abort`·`raise`·`kill`·`tgkill`·`pthread_kill`), `getenv`, `exit`. `_exit`는 치명적 끝이라 허용한다. libc 항목은 `allow-invalid = true`다 — Windows 게이트 타깃에는 libc 의존이 없어 경로가 풀리지 않는다; 두 Android 타깃에서는 모두 풀린다(`allow-invalid` 없이 확인; libc 0.2.189는 Android용 `posix_spawn`·`posix_spawnp`·`secure_getenv`를 선언하지 않아 넣지 않았다). 변이 시험: 막은 함수를 부르면 `cargo clippy --target aarch64-linux-android -p yw-android -- -D warnings`가 실패한다. (전에는 std 경로만 막아, libc로는 같은 일을 할 수 있었다.) 파일·스레드는 허용(저장 서비스·키 작업자, A2-4b).
 - yw-win 공개 API에 원시 `HANDLE`·`HWND`·포인터를 노출하지 않는다. 모든 핸들은 `Drop`에서 닫는 RAII 타입이다. `static mut` 금지(전역 상태는 atomic·`OnceLock`).
 - yw-app은 windows-sys에 직접 의존하지 않는다. Win32 GUI 전체(클래스, wndproc, 루프, 그리기)는 yw-win의 안전 API다.
 - `crates/yw-core/clippy.toml`(루트 clippy.toml 내용 + 아래)로 yw-core의 OS 접근을 lint로 막는다(확인함: yw-core에서만 오류, yw-app은 무관):
