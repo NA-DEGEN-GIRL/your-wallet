@@ -9447,6 +9447,65 @@ const SECRET_FORM_FILE: &str = "yw-app/src/ui/secret.rs";
 const SECRET_MAP_FILE: &str = "yw-app/src/ui/secret_input.rs";
 const SECRET_EVENTS_FILE: &str = "yw-engine/src/secret/input.rs";
 
+/// The form entry, the map result its call in `App::on_secret` starts with, and the `Msg` arm
+/// it belongs in (2026-11-24, S5-7 review).
+const SECRET_ARMS: [(&str, &str, &str); 6] = [
+    (".on_key(", "map_secret_char(", "Char"),
+    (".on_key(", "map_secret_key(", "KeyDown"),
+    (".on_key(", "ime_key()", "ImeAttempt"),
+    (".on_pointer(", "hits.down(", "MouseDown"),
+    (".on_pointer(", "hits.up(", "MouseUp"),
+    (".on_pointer(", "hits.moved(", "MouseMove"),
+];
+
+/// The variant of the last `Msg::` path before `at` in `code` (the match arm a call is in).
+fn msg_arm_before(code: &str, at: usize) -> &str {
+    code[..at].rfind("Msg::").map_or("", |start| {
+        let rest = &code[start + "Msg::".len()..];
+        let end = rest
+            .bytes()
+            .position(|b| !is_ident(b))
+            .unwrap_or(rest.len());
+        &rest[..end]
+    })
+}
+
+/// 2026-11-24 (S5-7 review): the hit layout the pointer arms of `App::on_secret` read is the
+/// one the window's paint returned: `on_secret` paints the form once, in its `Msg::Paint` arm,
+/// and stores the result in `*hits`. Before, nothing checked it, and a dropped paint result (no
+/// press ever hit a field or button) passed every test.
+fn secret_paint_findings(src: &Src, findings: &mut Vec<String>) {
+    let name = src.file.as_str();
+    let code = src.code.as_str();
+    if name != "yw-app/src/app.rs" {
+        return;
+    }
+    let paints: Vec<usize> = code
+        .match_indices("form.paint(")
+        .map(|(at, _)| at)
+        .filter(|&at| fn_at(code, &src.blocks, at).as_deref() == Some("on_secret"))
+        .collect();
+    if paints.len() != 1 {
+        findings.push(format!(
+            "{name}: fn on_secret paints the form {} times",
+            paints.len()
+        ));
+    }
+    for at in paints {
+        let stored = code[..at]
+            .trim_end()
+            .strip_suffix('=')
+            .is_some_and(|before| before.trim_end().ends_with("*hits"));
+        let arm = msg_arm_before(code, at);
+        if !stored || arm != "Paint" {
+            findings.push(format!(
+                "{name}: fn on_secret's `form.paint(` in the `Msg::{arm}` arm is not stored in \
+                 `*hits`"
+            ));
+        }
+    }
+}
+
 /// What [`secret_keys_are_mapped_only_by_the_mapper`] finds in `files` (production code as
 /// [`production_code`] reads it), and how many form entries it found mapped.
 fn secret_key_findings(files: &[Src]) -> (Vec<String>, usize) {
@@ -9513,23 +9572,26 @@ fn secret_key_findings(files: &[Src]) -> (Vec<String>, usize) {
         for (at, call) in calls {
             let func = fn_at(code, &src.blocks, at).unwrap_or_default();
             let argument = code[at + call.len()..].trim_start();
-            let allowed: &[&str] = if call == ".on_key(" {
-                &["map_secret_char(", "map_secret_key(", "ime_key()"]
-            } else {
-                &["hits.down(", "hits.up(", "hits.moved("]
-            };
-            if name == "yw-app/src/app.rs"
-                && func == "on_secret"
-                && allowed.iter().any(|start| argument.starts_with(start))
-            {
-                mapped += 1;
-            } else {
-                findings.push(format!(
-                    "{name}: `{call}` in fn {func} takes `{}`",
-                    argument.chars().take(30).collect::<String>()
-                ));
+            // 2026-11-24 (S5-7 review): each map result goes with its own message arm, so a
+            // release that moves or a press that releases is reported.
+            let entry = SECRET_ARMS
+                .iter()
+                .find(|&&(entry, start, _)| entry == call && argument.starts_with(start));
+            let arm = msg_arm_before(code, at);
+            let shown = argument.chars().take(30).collect::<String>();
+            match entry {
+                Some(&(_, _, expected)) if name == "yw-app/src/app.rs" && func == "on_secret" => {
+                    mapped += 1;
+                    if arm != expected {
+                        findings.push(format!(
+                            "{name}: `{call}` in the `Msg::{arm}` arm of fn {func} takes `{shown}`"
+                        ));
+                    }
+                }
+                _ => findings.push(format!("{name}: `{call}` in fn {func} takes `{shown}`")),
             }
         }
+        secret_paint_findings(src, &mut findings);
         // The map's key fns are called nowhere else (their `use` aside).
         let bytes = code.as_bytes();
         let uses: Vec<(usize, usize)> = code
@@ -9559,7 +9621,10 @@ fn secret_key_findings(files: &[Src]) -> (Vec<String>, usize) {
 /// the map and the engine's `secret::input` names a `SecretKey`, `SecretPointer` or
 /// `SecretTarget` variant; every production call of the two entries is in `App::on_secret` and
 /// takes a map result (`map_secret_char`, `map_secret_key`, `ime_key()`, or the hit layout's
-/// `down`/`up`/`moved`), and the map's key fns are called nowhere else. Before S5-7 the form
+/// `down`/`up`/`moved`) in its own message's arm (`Char`, `KeyDown`, `ImeAttempt`, `MouseDown`,
+/// `MouseUp`, `MouseMove`; 2026-11-24, S5-7 review), the hit layout they read is the one the
+/// `Msg::Paint` arm's one `form.paint(` stored in `*hits`, and the map's key fns are called
+/// nowhere else. Before S5-7 the form
 /// compared the virtual-key codes itself (`on_key(vk, ctrl, shift, alt)`) and kept its own hit
 /// rects. The test-only callers (the tour hooks, the headless secret host, the SW tests and the
 /// differential test) are not production code.
@@ -9593,9 +9658,11 @@ fn secret_key_findings_on_made_up_code() {
         src(
             "yw-app/src/app.rs",
             "use crate::ui::secret_input::{ime_key, map_secret_char, map_secret_key}; impl App { \
-             fn on_secret(&mut self) { let a = form.on_key(map_secret_char(*unit), now); let b = \
-             form.on_key(map_secret_key(*vk, c, s, a), now); let c = form.on_key(ime_key(), now); \
-             let d = form.on_pointer(hits.down(*x, *y), now); } }",
+             fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = form.paint(&mut dc); } \
+             Msg::Char(unit) => form.on_key(map_secret_char(*unit), now), Msg::KeyDown { vk, .. } \
+             => form.on_key(map_secret_key(*vk, c, s, a), now), Msg::ImeAttempt => \
+             form.on_key(ime_key(), now), Msg::MouseDown { x, y } => \
+             form.on_pointer(hits.down(*x, *y), now), } } }",
         ),
     ];
     let (findings, mapped) = secret_key_findings(&clean);
@@ -9637,6 +9704,39 @@ fn secret_key_findings_on_made_up_code() {
             "yw-engine/src/wallet/mod.rs",
             "impl Wallet { fn key(&self) { let k = map_secret_key(9, false, false, false); } }",
             "`map_secret_key` in fn key",
+        ),
+        // 2026-11-24 (S5-7 review): a map result in another message's arm, and a paint whose
+        // hit layout is dropped or made outside the paint arm.
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = \
+             form.paint(&mut dc); } Msg::MouseUp { x, y } => form.on_pointer(hits.moved(*x, *y), \
+             now).0, } } }",
+            "`.on_pointer(` in the `Msg::MouseUp` arm of fn on_secret takes `hits.moved(",
+        ),
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = \
+             form.paint(&mut dc); } Msg::KeyDown { vk, .. } => form.on_key(map_secret_char(*vk), \
+             now), } } }",
+            "`.on_key(` in the `Msg::KeyDown` arm of fn on_secret takes `map_secret_char(",
+        ),
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn on_secret(&mut self) { match msg { Msg::Paint => { let _ = \
+             form.paint(&mut dc); } } } }",
+            "`form.paint(` in the `Msg::Paint` arm is not stored",
+        ),
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn on_secret(&mut self) { match msg { Msg::Size => { *hits = \
+             form.paint(&mut dc); } } } }",
+            "`form.paint(` in the `Msg::Size` arm is not stored",
+        ),
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn on_secret(&mut self) { match msg { Msg::Close => {} } } }",
+            "paints the form 0 times",
         ),
     ] {
         let (findings, _) = secret_key_findings(&[src(file, text)]);
