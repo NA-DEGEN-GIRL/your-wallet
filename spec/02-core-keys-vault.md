@@ -638,7 +638,7 @@ pub fn peek_generation(kind: FileKind, bytes: &[u8]) -> Option<u64>;
 pub fn check_vault_header(bytes: &[u8]) -> Result<u64, VaultError>;
 ```
 
-yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, §12). `commit` 절차(반드시):
+yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, §12). (2026-11-25 [15](15-android.md) §17 A2-4a: 아래 절차는 yw-engine `file_storage::FileStorage`가 yw-platform `files::Files` 위에서 하고, Windows는 `Files`를 yw-win `WinFiles`(같은 파일 함수)로, Android는 yw-android로 구현한다 — 절차와 오류 값은 그대로다. 그 전에는 yw-app `store`가 직접 했다.) `commit` 절차(반드시):
 
 1. 본 파일을 읽는다. `None`이면 본 파일이 없어야 한다(있으면 `AlreadyExists`). `Some(g)`이면 `peek_generation == Some(g)`여야 한다. 해석 불가면 `Corrupt`, 다르면 `GenerationConflict`. **이 경우 아무것도 쓰지 않는다.**
 2. 본 파일이 있으면 그 바이트를 `<name>.prev.tmp`에 쓰고 → `FlushFileBuffers` → `MoveFileExW(<name>.prev.tmp, <name>.prev, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`.

@@ -27,7 +27,9 @@
 //! holds the secret windows' kinds, flow step, effects and texts (never a secret). [`screen`]
 //! holds plain screen data the logic and the shell share (the settings sections, the remembered
 //! scroll places; since S4d E0a also the banner tone, the receive QR choice, the removal block's
-//! data, the account sources and the EVM activity row).
+//! data, the account sources and the EVM activity row). [`file_storage`] holds the wallet data
+//! folder storage (`FileStorage`: the atomic commit, `.prev`, the set-aside copies, the link
+//! refusal) over the platform's `yw_platform::files::Files` (2026-11-25, spec/15 §17 A2-4a).
 //!
 //! 2026-11-17 (spec/15 §11.4 S2, E1): created; these modules moved out of yw-app unchanged except
 //! for their `use` paths. E2 added the settings, metadata, explain and pipeline modules, E3 the
@@ -55,6 +57,8 @@ pub mod errors;
 pub mod events;
 pub mod explain;
 pub mod explorer;
+// 2026-11-25 (spec/15 §17 A2-4a): the wallet data folder storage over `yw_platform::files`.
+pub mod file_storage;
 pub mod flow;
 pub mod form;
 pub mod hypercore;

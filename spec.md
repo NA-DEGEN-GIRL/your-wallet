@@ -162,7 +162,7 @@
 yw-json  (std, unsafe 금지, 의존성 0)
    ▲
 yw-core  (std, unsafe 금지, 네트워크·GUI·OS 호출 없음; yw-json은 EIP-712 입력 등에 사용)
-yw-platform (std, unsafe 금지, 의존성 0, OS 호출 없음; HTTP URL·오류 타입, Clock — 2026-11-17)
+yw-platform (std, unsafe 금지, 의존성 0, OS 호출 없음; HTTP URL·오류 타입, Clock — 2026-11-17; 지갑 파일의 Files trait — 2026-11-25 A2-4a)
    ▲
 yw-engine (yw-core + yw-json + yw-platform + qrcodegen, unsafe 금지, 파일·소켓·환경 변수 없음; 공유 앱 로직 — 2026-11-17 S2; qrcodegen은 화면 모델의 QR, 2026-11-24 S5-2)
 yw-win   (windows-sys + yw-platform, unsafe는 여기와 yw-android에서만 — 2026-11-24 A2-1 전에는 여기서만, 안전한 API로 감싸 제공)

@@ -5,8 +5,11 @@
 //! (`write_new_file`, `DurableParentDirectory`): create-new → write → `FlushFileBuffers` → close →
 //! `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` → flush the parent directory. The building
 //! blocks are public so yw-app's `VaultStorage` can stop between steps (spec/02 §6.2, V-FS).
+//! 2026-11-25 (spec/15 §17 A2-4a): [`WinFiles`] hands the same blocks to yw-engine's
+//! `file_storage::FileStorage` as the yw-platform `Files` seam.
 
 use core::fmt;
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -17,6 +20,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_READ, FILE_SHARE_WRITE, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     MoveFileExW,
 };
+
+use yw_platform::files::{Files, FsError};
 
 use crate::error::WinError;
 use crate::wide::path_wide;
@@ -287,6 +292,74 @@ pub fn read_limited_no_reparse(path: &Path, max: u64) -> Result<Vec<u8>, FileErr
 pub fn ensure_dir(path: &Path) -> Result<(), FileError> {
     fs::create_dir_all(path)?;
     reject_reparse_point(path)
+}
+
+/// The platform-neutral error of a [`FileError`] (the Win32 code is kept).
+const fn neutral(error: FileError) -> FsError {
+    match error {
+        FileError::NotFound => FsError::NotFound,
+        FileError::ReparsePoint => FsError::Link,
+        FileError::TooLarge => FsError::TooLarge,
+        FileError::Os(WinError { code, .. }) => FsError::Os(code),
+        FileError::Io(kind) => FsError::Io(kind),
+    }
+}
+
+/// The Windows [`Files`] of the wallet data folder (2026-11-25, spec/15 §17 A2-4a): each
+/// method is the function of this module (or the std call) that yw-app's `store::FileStorage`
+/// called itself before yw-engine's `file_storage::FileStorage` took over its logic, with the
+/// same arguments; a link is a reparse point.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WinFiles;
+
+impl Files for WinFiles {
+    fn ensure_dir(&self, dir: &Path) -> Result<(), FsError> {
+        ensure_dir(dir).map_err(neutral)
+    }
+
+    fn reject_link(&self, path: &Path) -> Result<(), FsError> {
+        reject_reparse_point(path).map_err(neutral)
+    }
+
+    fn read_limited_no_follow(&self, path: &Path, max: u64) -> Result<Vec<u8>, FsError> {
+        read_limited_no_reparse(path, max).map_err(neutral)
+    }
+
+    fn write_new_synced(&self, path: &Path, bytes: &[u8]) -> Result<(), FsError> {
+        write_new_synced(path, bytes).map_err(neutral)
+    }
+
+    fn replace(&self, from: &Path, to: &Path) -> Result<(), FsError> {
+        replace_file(from, to).map_err(neutral)
+    }
+
+    fn rename_no_replace(&self, from: &Path, to: &Path) -> Result<(), FsError> {
+        rename_no_replace(from, to).map_err(neutral)
+    }
+
+    fn flush_dir(&self, dir: &Path) -> Result<(), FsError> {
+        flush_dir(dir).map_err(neutral)
+    }
+
+    fn remove_file(&self, path: &Path) -> Result<(), FsError> {
+        fs::remove_file(path).map_err(|error| neutral(error.into()))
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        path.exists()
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+
+    fn list_dir(&self, dir: &Path) -> Result<Vec<OsString>, FsError> {
+        let mut names = Vec::new();
+        for entry in fs::read_dir(dir).map_err(|error| neutral(error.into()))? {
+            names.push(entry.map_err(|error| neutral(error.into()))?.file_name());
+        }
+        Ok(names)
+    }
 }
 
 #[cfg(test)]

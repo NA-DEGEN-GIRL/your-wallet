@@ -1,60 +1,30 @@
-//! `VaultStorage` over yw-win file functions (spec/02 §6.2) and the `LockedSlot` adapter over
-//! `yw_win::mem::LockedBox<320>` (spec/02 §7.3, D10); together with the reset moves they are the
-//! key worker's Windows platform [`WinKeyPlatform`] (2026-11-17).
+//! `VaultStorage` of the wallet data folder on Windows (spec/02 §6.2) and the `LockedSlot`
+//! adapter over `yw_win::mem::LockedBox<320>` (spec/02 §7.3, D10); together with the reset moves
+//! they are the key worker's Windows platform [`WinKeyPlatform`] (2026-11-17).
 //!
-//! Commit sequence (spec/02 §6.2, pattern from
-//! `archive/spec-v2.4:demo/sepolia-wallet/src/backend.rs:6148-6403`): (1) read and CAS-check the
-//! main file, (2) previous bytes → `<name>.prev.tmp` → flush → `MoveFileExW` to `<name>.prev`,
-//! (3) new bytes → `<name>.tmp` (`CREATE_NEW`) → flush → close, (4) `MoveFileExW` over the main
-//! file, (5) flush the folder, (6) read back and compare. Orphan `*.tmp` files are removed when the
-//! storage is opened.
-//!
-//! Links (review L8): `vault.ywv`, `meta.ywm`, `journal.ywj` and their `.prev` are never followed.
-//! Reads open the file itself (`read_limited_no_reparse`) and refuse a reparse point; a commit
-//! refuses before writing anything when the folder, the main file or `.prev` is one. Folder
-//! flush failures are errors (step 5 and `restore_prev`), and the folder is flushed once before
-//! anything is written too, so a folder that cannot be flushed fails the commit up front.
-//!
-//! A failure reported after step 4 (the read-back of step 6) does not mean nothing was written:
-//! the replace already happened. `Vault` re-reads the main file after every failed commit and
-//! treats bytes identical to the ones it wrote as success (spec/02 §6.2), so its in-memory
-//! generation never falls behind the disk.
+//! 2026-11-25 (spec/15 §17 A2-4a): the storage logic (the commit sequence of spec/02 §6.2, the
+//! `.prev` rotation, quarantine, the set-aside copies, the link refusal of review L8) moved
+//! unchanged into yw-engine's `file_storage::FileStorage`, which makes its file calls through the
+//! yw-platform `Files` seam; on Windows that is `yw_win::file::WinFiles`, the same `yw_win::file`
+//! functions and std calls in the same order as before. [`FileStorage`] here is that storage over
+//! `WinFiles` plus the V-FS fault point of the tests below (`commit_until`, spec/09 §4.1), which
+//! stays `#[cfg(test)]` in this crate. Before, this file held the logic itself.
 
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use yw_core::error::{StorageError, VaultError};
 use yw_core::lang::Lang;
-use yw_core::vault::{FileKind, LockedSlot, SLOT_LEN, VaultStorage, peek_generation};
+use yw_core::vault::{FileKind, LockedSlot, SLOT_LEN, VaultStorage};
 use yw_platform::Clock;
 use yw_win::WinError;
-use yw_win::file::{
-    FileError, ensure_dir, flush_dir, read_limited_no_reparse, reject_reparse_point,
-    rename_no_replace, replace_file, write_new_synced,
-};
+use yw_win::file::WinFiles;
 use yw_win::mem::LockedBox;
 
 pub use yw_engine::wallet_files::file_name;
-use yw_engine::wallet_files::{ResetError, ResetReport, is_set_aside, with_suffix};
+use yw_engine::wallet_files::{ResetError, ResetReport, with_suffix};
 use yw_engine::workers::key::platform::{KeyDeps, KeyPlatform, WalletStore};
 use yw_engine::yubikey::CardSource;
-
-const VAULT_MAX: u64 = 65_536;
-const META_MAX: u64 = 8 * 1_048_576 + 80;
-const JOURNAL_MAX: u64 = 16 * 1_048_576 + 80;
-
-const fn max_size(kind: FileKind) -> u64 {
-    match kind {
-        FileKind::Vault => VAULT_MAX,
-        FileKind::Meta => META_MAX,
-        FileKind::Journal => JOURNAL_MAX,
-    }
-}
-
-/// Temporary file of [`VaultStorage::replace_copy`] (removed as an orphan on open).
-const COPY_TMP: &str = ".copy.tmp";
 
 /// Whether `<name>.prev` exists in `dir` (a metadata check only, no read; the UI uses it to offer
 /// `.prev` recovery, spec/04 §2.5 S07/S09).
@@ -63,32 +33,10 @@ pub fn prev_exists(dir: &Path, kind: FileKind) -> bool {
     with_suffix(dir, kind, ".prev").is_file()
 }
 
-fn storage_error(error: FileError) -> StorageError {
-    match error {
-        FileError::NotFound => StorageError::NotFound,
-        FileError::TooLarge => StorageError::TooLarge,
-        FileError::ReparsePoint => StorageError::Io(0x0000_1126),
-        FileError::Os(WinError { code, .. }) => StorageError::Io(code),
-        FileError::Io(kind) => StorageError::Io(match kind {
-            io::ErrorKind::AlreadyExists => 183,
-            io::ErrorKind::PermissionDenied => 5,
-            _ => 0xFFFF_FFFF,
-        }),
-    }
-}
-
-fn remove_if_present(path: &Path) -> Result<(), StorageError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(storage_error(error.into())),
-    }
-}
-
-/// The wallet data folder storage.
+/// The wallet data folder storage: yw-engine's `FileStorage` over [`WinFiles`].
 #[derive(Debug)]
 pub struct FileStorage {
-    dir: PathBuf,
+    inner: yw_engine::file_storage::FileStorage<WinFiles>,
     #[cfg(test)]
     stop_after: Option<u8>,
 }
@@ -100,14 +48,8 @@ impl FileStorage {
     ///
     /// [`StorageError`] if the folder cannot be created or a temporary file cannot be removed.
     pub fn open(dir: &Path) -> Result<Self, StorageError> {
-        ensure_dir(dir).map_err(storage_error)?;
-        for kind in [FileKind::Vault, FileKind::Meta, FileKind::Journal] {
-            remove_if_present(&with_suffix(dir, kind, ".tmp"))?;
-            remove_if_present(&with_suffix(dir, kind, ".prev.tmp"))?;
-            remove_if_present(&with_suffix(dir, kind, COPY_TMP))?;
-        }
         Ok(Self {
-            dir: dir.to_path_buf(),
+            inner: yw_engine::file_storage::FileStorage::open(WinFiles, dir)?,
             #[cfg(test)]
             stop_after: None,
         })
@@ -116,21 +58,13 @@ impl FileStorage {
     /// Path of the main file.
     #[must_use]
     pub fn path(&self, kind: FileKind) -> PathBuf {
-        with_suffix(&self.dir, kind, "")
+        self.inner.path(kind)
     }
 
     /// Whether `<name>` or `<name>.prev` exists (leftover sidecar detection, spec/04 §2.2).
     #[must_use]
     pub fn any_present(&self, kind: FileKind) -> bool {
-        self.path(kind).exists() || with_suffix(&self.dir, kind, ".prev").exists()
-    }
-
-    fn read(path: &Path, kind: FileKind) -> Result<Option<Vec<u8>>, StorageError> {
-        match read_limited_no_reparse(path, max_size(kind)) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(FileError::NotFound) => Ok(None),
-            Err(error) => Err(storage_error(error)),
-        }
+        self.inner.any_present(kind)
     }
 
     /// Replaces `<name>` with the bytes of `<name>.prev` after quarantining the main file
@@ -145,15 +79,7 @@ impl FileStorage {
         kind: FileKind,
         now_unix: u64,
     ) -> Result<Option<String>, StorageError> {
-        let prev = Self::read(&with_suffix(&self.dir, kind, ".prev"), kind)?
-            .ok_or(StorageError::NotFound)?;
-        let quarantined = self.quarantine_main(kind, now_unix)?;
-        let tmp = with_suffix(&self.dir, kind, ".tmp");
-        remove_if_present(&tmp)?;
-        write_new_synced(&tmp, &prev).map_err(storage_error)?;
-        replace_file(&tmp, &self.path(kind)).map_err(storage_error)?;
-        flush_dir(&self.dir).map_err(storage_error)?;
-        Ok(quarantined)
+        self.inner.restore_prev(kind, now_unix)
     }
 
     /// Moves the main file, when there is one, aside as `<name>.corrupt-<now_unix>` (never
@@ -167,12 +93,7 @@ impl FileStorage {
         kind: FileKind,
         now_unix: u64,
     ) -> Result<Option<String>, StorageError> {
-        if !self.path(kind).exists() {
-            return Ok(None);
-        }
-        self.quarantine(kind, now_unix)?;
-        flush_dir(&self.dir).map_err(storage_error)?;
-        Ok(Some(format!("{}.corrupt-{now_unix}", file_name(kind))))
+        self.inner.quarantine_main(kind, now_unix)
     }
 
     /// `격리하고 새로 시작` of a sidecar: moves `<name>.prev`, when there is one, aside as
@@ -187,23 +108,7 @@ impl FileStorage {
         kind: FileKind,
         now_unix: u64,
     ) -> Result<Option<String>, StorageError> {
-        let prev = with_suffix(&self.dir, kind, ".prev");
-        if !prev.exists() {
-            return Ok(None);
-        }
-        let name = format!("{}.prev.corrupt-{now_unix}", file_name(kind));
-        rename_no_replace(&prev, &self.dir.join(&name)).map_err(storage_error)?;
-        flush_dir(&self.dir).map_err(storage_error)?;
-        Ok(Some(name))
-    }
-
-    /// Refuses (before anything is written) a folder, main file or `.prev` that is a reparse
-    /// point, and a folder that cannot be flushed (review L8).
-    fn precheck(&self, kind: FileKind) -> Result<(), StorageError> {
-        reject_reparse_point(&self.dir).map_err(storage_error)?;
-        reject_reparse_point(&self.path(kind)).map_err(storage_error)?;
-        reject_reparse_point(&with_suffix(&self.dir, kind, ".prev")).map_err(storage_error)?;
-        flush_dir(&self.dir).map_err(storage_error)
+        self.inner.set_prev_aside(kind, now_unix)
     }
 
     /// Stops `commit` with `Io(0)` right after step `step` (1–6) — V-FS fault injection.
@@ -212,32 +117,32 @@ impl FileStorage {
         self.stop_after = Some(step);
     }
 
+    /// The step hook of `commit`: the V-FS fault point in test builds, nothing otherwise.
     #[cfg(test)]
-    fn stop(&self, step: u8) -> Result<(), StorageError> {
-        if self.stop_after == Some(step) {
-            return Err(StorageError::Io(0));
+    fn stop_hook(&self) -> impl FnMut(u8) -> Result<(), StorageError> + use<> {
+        let stop_after = self.stop_after;
+        move |step| {
+            if stop_after == Some(step) {
+                return Err(StorageError::Io(0));
+            }
+            Ok(())
         }
-        Ok(())
     }
 
     #[cfg(not(test))]
-    #[expect(
-        clippy::unused_self,
-        clippy::unnecessary_wraps,
-        reason = "test-only fault hook"
-    )]
-    const fn stop(&self, _step: u8) -> Result<(), StorageError> {
-        Ok(())
+    #[expect(clippy::unused_self, reason = "test-only fault hook")]
+    fn stop_hook(&self) -> impl FnMut(u8) -> Result<(), StorageError> + use<> {
+        |_| Ok(())
     }
 }
 
 impl VaultStorage for FileStorage {
     fn load(&self, kind: FileKind) -> Result<Option<Vec<u8>>, StorageError> {
-        Self::read(&self.path(kind), kind)
+        self.inner.load(kind)
     }
 
     fn load_prev(&self, kind: FileKind) -> Result<Option<Vec<u8>>, StorageError> {
-        Self::read(&with_suffix(&self.dir, kind, ".prev"), kind)
+        self.inner.load_prev(kind)
     }
 
     fn commit(
@@ -246,87 +151,21 @@ impl VaultStorage for FileStorage {
         expected_generation: Option<u64>,
         bytes: &[u8],
     ) -> Result<(), StorageError> {
-        if u64::try_from(bytes.len()).map_or(true, |len| len > max_size(kind)) {
-            return Err(StorageError::TooLarge);
-        }
-        // 1. Read the main file and check the precondition; nothing is written on failure.
-        self.precheck(kind)?;
-        let current = self.load(kind)?;
-        match (expected_generation, &current) {
-            (None, None) => {}
-            (None, Some(_)) => return Err(StorageError::AlreadyExists),
-            (Some(_), None) => return Err(StorageError::GenerationConflict),
-            (Some(expected), Some(existing)) => match peek_generation(kind, existing) {
-                None => return Err(StorageError::Corrupt),
-                Some(found) if found != expected => return Err(StorageError::GenerationConflict),
-                Some(_) => {}
-            },
-        }
-        self.stop(1)?;
-        // 2. The previous bytes become `<name>.prev`.
-        if let Some(existing) = &current {
-            let prev_tmp = with_suffix(&self.dir, kind, ".prev.tmp");
-            remove_if_present(&prev_tmp)?;
-            write_new_synced(&prev_tmp, existing).map_err(storage_error)?;
-            replace_file(&prev_tmp, &with_suffix(&self.dir, kind, ".prev"))
-                .map_err(storage_error)?;
-        }
-        self.stop(2)?;
-        // 3. The new bytes go to `<name>.tmp` (CREATE_NEW).
-        let tmp = with_suffix(&self.dir, kind, ".tmp");
-        remove_if_present(&tmp)?;
-        write_new_synced(&tmp, bytes).map_err(storage_error)?;
-        self.stop(3)?;
-        // 4. Atomic replace.
-        if let Err(error) = replace_file(&tmp, &self.path(kind)) {
-            let _ = fs::remove_file(&tmp);
-            return Err(storage_error(error));
-        }
-        self.stop(4)?;
-        // 5. Folder flush. A failure is an error (review L8); the replace already happened, so
-        //    `Vault`'s re-read (commit_landed) still follows the disk.
-        flush_dir(&self.dir).map_err(storage_error)?;
-        self.stop(5)?;
-        // 6. Read back.
-        if self.load(kind)?.as_deref() != Some(bytes) {
-            return Err(StorageError::Io(0xFFFF_FFFE));
-        }
-        self.stop(6)?;
-        Ok(())
+        let stop = self.stop_hook();
+        self.inner
+            .commit_with_steps(kind, expected_generation, bytes, stop)
     }
 
     fn quarantine(&mut self, kind: FileKind, now_unix: u64) -> Result<(), StorageError> {
-        let target = with_suffix(&self.dir, kind, &format!(".corrupt-{now_unix}"));
-        rename_no_replace(&self.path(kind), &target).map_err(storage_error)
+        self.inner.quarantine(kind, now_unix)
     }
 
-    /// The set-aside `<name>.corrupt-<t>` / `<name>.prev.corrupt-<t>` files of a sidecar, and
-    /// `<name>.prev` when there is no main file (2026-11-13, spec/02 §4.4 step 3). Links and
-    /// other reparse points are left out (never followed, review L8).
     fn copies(&self, kind: FileKind) -> Result<Vec<String>, StorageError> {
-        if kind == FileKind::Vault {
-            return Ok(Vec::new());
-        }
-        let mut names = Vec::new();
-        for entry in fs::read_dir(&self.dir).map_err(|error| storage_error(error.into()))? {
-            let entry = entry.map_err(|error| storage_error(error.into()))?;
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            if is_set_aside(kind, &name) && reject_reparse_point(&entry.path()).is_ok() {
-                names.push(name);
-            }
-        }
-        names.sort();
-        let prev = with_suffix(&self.dir, kind, ".prev");
-        if !self.path(kind).exists() && prev.is_file() && reject_reparse_point(&prev).is_ok() {
-            names.push(format!("{}.prev", file_name(kind)));
-        }
-        Ok(names)
+        self.inner.copies(kind)
     }
 
     fn load_copy(&self, kind: FileKind, name: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        Self::read(&self.copy_path(kind, name)?, kind)
+        self.inner.load_copy(kind, name)
     }
 
     fn replace_copy(
@@ -335,37 +174,9 @@ impl VaultStorage for FileStorage {
         name: &str,
         bytes: &[u8],
     ) -> Result<(), StorageError> {
-        if u64::try_from(bytes.len()).map_or(true, |len| len > max_size(kind)) {
-            return Err(StorageError::TooLarge);
-        }
-        let target = self.copy_path(kind, name)?;
-        reject_reparse_point(&self.dir).map_err(storage_error)?;
-        reject_reparse_point(&target).map_err(storage_error)?;
-        if !target.is_file() {
-            return Err(StorageError::NotFound);
-        }
-        let tmp = with_suffix(&self.dir, kind, COPY_TMP);
-        remove_if_present(&tmp)?;
-        write_new_synced(&tmp, bytes).map_err(storage_error)?;
-        if let Err(error) = replace_file(&tmp, &target) {
-            let _ = fs::remove_file(&tmp);
-            return Err(storage_error(error));
-        }
-        flush_dir(&self.dir).map_err(storage_error)
+        self.inner.replace_copy(kind, name, bytes)
     }
 }
-
-impl FileStorage {
-    /// The path of a copy named by [`VaultStorage::copies`]; any other name is refused.
-    fn copy_path(&self, kind: FileKind, name: &str) -> Result<PathBuf, StorageError> {
-        let lone_prev = format!("{}.prev", file_name(kind));
-        if kind == FileKind::Vault || !(is_set_aside(kind, name) || name == lone_prev) {
-            return Err(StorageError::NotFound);
-        }
-        Ok(self.dir.join(name))
-    }
-}
-
 /// The resident slot on a `VirtualLock` page (spec/01 §5.3: `LockedBox<320>`).
 #[derive(Debug)]
 pub struct LockedSlotBox(LockedBox<SLOT_LEN>);
