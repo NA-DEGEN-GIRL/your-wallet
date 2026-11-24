@@ -51,9 +51,9 @@ EIP-6963, Wallet Standard) and forwards requests; it holds no secrets.
 | `crates/yw-core` | Wallet core: keys, vault, chain logic, risk rules, approvals. No network, files, threads or GUI | forbidden |
 | `crates/yw-json` | Own strict JSON parser/writer and framing. Zero dependencies | forbidden |
 | `crates/yw-platform` | Platform-neutral types and traits: HTTP URL/error/response types, the HTTP `Transport` and WebSocket `WsLink` traits, the `Clock` trait. Zero dependencies, no OS calls | forbidden |
-| `crates/yw-engine` | App logic shared by the platform shells (error codes, text rules, log format, `YubiKey` card operations, approval queue and interaction rules, secret input buffers; since 2026-11-17 S2 E2 also settings, the API-key file format, explorer links, token views, wallet metadata, HyperCore, the LLM explanation, the RPC pipelines (`rpc`, `flow`, `sol`, `btc`, `zec`, `received`) and the WalletConnect engine; since S2 E3 also the dApp dispatcher (`browser`, without the named-pipe server), the WalletConnect relay worker, the worker events, the key/RPC/journal workers and the approval content model `approval::view`). Depends only on yw-core, yw-json and yw-platform; no file, socket or environment access | forbidden |
+| `crates/yw-engine` | App logic shared by the platform shells (error codes, text rules, log format, `YubiKey` card operations, approval queue and interaction rules, secret input buffers; since 2026-11-17 S2 E2 also settings, the API-key file format, explorer links, token views, wallet metadata, HyperCore, the LLM explanation, the RPC pipelines (`rpc`, `flow`, `sol`, `btc`, `zec`, `received`) and the WalletConnect engine; since S2 E3 also the dApp dispatcher (`browser`, without the named-pipe server), the WalletConnect relay worker, the worker events, the key/RPC/journal workers and the approval content model `approval::view`; since 2026-11-23 (S4) also the wallet state, its handlers and the approval flow, `wallet`; since 2026-11-24 (S5) also the screen model and the screen builders, `screen`, and the secret windows' input state machine, `secret::form`). Depends only on yw-core, yw-json and yw-platform (and, since 2026-11-24, `qrcodegen` for the screen model's QR); no file, socket or environment access | forbidden |
 | `crates/yw-win` | The only crate allowed `unsafe`: Windows API wrappers (WinHTTP, DPAPI, pipe, UI, …); its WinHTTP client and WebSocket implement the yw-platform traits | allowed, each block has a `// SAFETY:` comment |
-| `crates/yw-app` | The wallet binary: the Win32 shell (windows, screens, the approval window), the named-pipe server, Windows storage, clock, PC/SC and WinHTTP glue | forbidden |
+| `crates/yw-app` | The wallet binary: the Win32 shell (windows, screens — since 2026-11-24 it draws the screen model yw-engine builds —, the approval window), the named-pipe server, Windows storage, clock, PC/SC and WinHTTP glue | forbidden |
 | `crates/yw-host` | Native-messaging relay | forbidden |
 
 Check the `unsafe` claim:
@@ -87,7 +87,10 @@ Expected:
 - `WinHttpOpen(` only in `crates/yw-win/src/http.rs` (HTTP) and `crates/yw-win/src/ws.rs` (WebSocket, for WalletConnect).
 - The TLS 1.2 | 1.3 protocol flags in both files.
 - `std::net` only in tests, in `crates/yw-app/src/ui/tour.rs` (the developer screenshot tour's loopback server, bound
-  to `127.0.0.1:0`; compiled only under `#[cfg(test)] #[cfg(debug_assertions)]`, `crates/yw-app/src/ui/mod.rs`), and in
+  to `127.0.0.1:0`; compiled only under `#[cfg(test)] #[cfg(debug_assertions)]`, `crates/yw-app/src/ui/mod.rs`), in
+  the unit test `crates/yw-app/src/app/tests.rs` (since 2026-11-24: a loopback listener on `127.0.0.1:0` that counts
+  connections, spec/06 §10 E1), in the integration tests `crates/yw-app/tests/llm_mock.rs` and
+  `crates/yw-win/tests/http.rs` (loopback mock servers on `127.0.0.1:0`), and in
   `crates/yw-core/clippy.toml`, `crates/yw-platform/clippy.toml` and `crates/yw-engine/clippy.toml`, which list
   these types as **banned** in those crates.
 
@@ -128,12 +131,16 @@ Expected:
 
 - First command: no output (whole words only; without `-w`, `ClassEntry` in `crates/yw-win/src/ui/window.rs` matches
   "sentry").
-- Second command: lines about the app **excluding itself** from Windows Error Reporting at start-up: a doc comment
-  in `crates/yw-engine/src/wallet/mod.rs`, the banner text shown if that fails, in `crates/yw-engine/src/wallet/text.rs`,
-  and a reason string in a source-check test, `crates/yw-app/src/app/tests/s4_results.rs` (since 2026-11-23, when the
-  wallet state moved to yw-engine; before, `crates/yw-app/src/app.rs` and `crates/yw-app/src/ui/screens.rs`).
-- Third command: the actual call in `crates/yw-win/src/process.rs`, plus comments in `crates/yw-app/src/app.rs` and
-  `crates/yw-engine/src/wallet/mod.rs`.
+- Second command: lines about the app **excluding itself** from Windows Error Reporting at start-up: doc comments
+  in `crates/yw-engine/src/wallet/mod.rs` and `crates/yw-engine/src/cmd/shell.rs`, the banner text shown if that fails,
+  in `crates/yw-engine/src/wallet/text.rs`, a comment in `crates/yw-app/src/app.rs` and a reason string in a
+  source-check test, `crates/yw-app/src/app/tests/s4_results.rs` (since 2026-11-24 S5-9, when the shell started to
+  report the failure to the wallet as `Cmd::Platform(PlatformNote::WerUnprotected)`; since 2026-11-23, when the wallet
+  state moved to yw-engine, without the `cmd/shell.rs` and `app.rs` lines; before, `crates/yw-app/src/app.rs` and
+  `crates/yw-app/src/ui/screens.rs`).
+- Third command: the actual call in `crates/yw-win/src/process.rs`, plus comments in
+  `crates/yw-engine/src/cmd/shell.rs` and `crates/yw-engine/src/wallet/mod.rs` (2026-11-24 S5-9: before, in
+  `crates/yw-app/src/app.rs` and `crates/yw-engine/src/wallet/mod.rs`).
 
 ### 1.4 The extension makes no network requests
 
