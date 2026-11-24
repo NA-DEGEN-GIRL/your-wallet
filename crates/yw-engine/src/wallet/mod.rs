@@ -95,6 +95,7 @@ use crate::form::{CredField, EditField, FormState, PressInput};
 // `crate::app::SettingsSection` and `crate::app_scroll::ScrollPlace`; 2026-11-21 (S4b final
 // review, AGENTS.md §4 "no new re-exports"): the callers name `yw_engine::screen` directly.
 use crate::screen::{EnteredAt, ScrollPlace, SettingsSection, Tone};
+use crate::secret::form::SecretForm;
 use crate::secret::{
     DisplayHost, DisplayMade, DisplaySecret, SecretEffect, SecretFormOp, SecretKind, SecretStep,
 };
@@ -2563,9 +2564,11 @@ impl Wallet {
     /// or second open makes no window and is `Refused(E-SEC-001)`). The shell's `host` makes the
     /// window and reads its capture exclusion back ([`DisplayHost::make`]); only a
     /// [`DisplayMade::Verified`] window gets the secret, moved out of the session once
-    /// ([`Self::take_display_secret`]) and into the host's [`DisplayHost::fill_and_show`] by value,
-    /// with the wallet's clock read right before; the answer is then `Shown { capture_excluded:
-    /// true }`. On [`DisplayMade::Unverified`] the session's secret is dropped (wiped,
+    /// ([`Self::take_display_secret`]) into the window's form, built here with the wallet's clock
+    /// read right before and the host's platform flags ([`DisplayHost::flags`]), and the form into
+    /// the host's [`DisplayHost::fill_and_show`] by value (2026-11-24, S5-8, S5 plan critic C1:
+    /// before, the host got the secret itself and built the form); the answer is then
+    /// `Shown { capture_excluded: true }`. On [`DisplayMade::Unverified`] the session's secret is dropped (wiped,
     /// [`Self::drop_display_secret`]) first, then the made window, if any, is dropped (the shell
     /// destroys it), and the host's outcome is the answer. A verified window whose session holds
     /// no secret is dropped and refused. Nothing here returns the secret.
@@ -2598,16 +2601,10 @@ impl Wallet {
                     return OpenOutcome::Refused(ErrorCode::Sec001);
                 };
                 let now_ms = self.clock.now_ms();
-                host.fill_and_show(
-                    serial,
-                    window,
-                    kind,
-                    secret,
-                    step,
-                    timeout_note,
-                    lang,
-                    now_ms,
-                );
+                let mut form = SecretForm::display(kind, lang, now_ms, secret, host.flags());
+                form.set_step(step);
+                form.set_timeout_note(timeout_note);
+                host.fill_and_show(serial, window, form);
                 OpenOutcome::Shown {
                     capture_excluded: true,
                 }

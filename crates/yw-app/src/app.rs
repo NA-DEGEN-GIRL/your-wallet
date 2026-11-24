@@ -27,8 +27,8 @@ use crate::shell_msg::{
 use crate::system_clock::SystemClock;
 use crate::ui::main_window::{ControlSet, Placed, layout, paint};
 use crate::ui::secret::{
-    CaptureDecision, FormAction, PASTE_MAX_UTF16_UNITS, SECRET_TIMER_ID, SECRET_TIMER_MS,
-    SecretForm, capture_decision, window_size,
+    CaptureDecision, PASTE_MAX_UTF16_UNITS, SECRET_TIMER_ID, SECRET_TIMER_MS, capture_decision,
+    paint_form, window_size,
 };
 use crate::ui::secret_input::{HitLayout, ime_key, map_secret_char, map_secret_key};
 use yw_engine::apikeys::ApiKeys;
@@ -54,9 +54,13 @@ use yw_engine::form::{CredField, EditField};
 // to `yw_engine::screen` (the scroll effects carry them). P10a re-exported them as
 // `crate::app::SettingsSection` and `crate::app_scroll::ScrollPlace`; 2026-11-21 (S4b final
 // review, AGENTS.md §4 "no new re-exports"): the callers name `yw_engine::screen` directly.
+use yw_engine::screen::facts::PlatformFlags;
 use yw_engine::screen::{SettingsSection, Tone};
+// 2026-11-24 (spec/15 §11.4 S5-8): the secret windows' form is the engine's; the shell owns the
+// instance (`App::secret`) and paints it (`ui::secret::paint_form`).
+use yw_engine::secret::form::{FormAction, SecretForm};
 use yw_engine::secret::{
-    DisplayHost, DisplayMade, DisplaySecret, SecretEffect, SecretFormOp, SecretKind, SecretStep,
+    DisplayHost, DisplayMade, SecretEffect, SecretFormOp, SecretKind, SecretStep,
 };
 use yw_engine::services::Services;
 
@@ -1900,7 +1904,13 @@ impl App {
                 Self::log_capture(kind, excluded);
                 match capture_decision(kind, Ok(excluded)) {
                     CaptureDecision::Show { warning } => {
-                        let mut form = SecretForm::new(kind, lang, self.clock.now_ms(), !warning);
+                        let mut form = SecretForm::new(
+                            kind,
+                            lang,
+                            self.clock.now_ms(),
+                            !warning,
+                            PlatformFlags::WINDOWS,
+                        );
                         form.set_step(step);
                         self.show_secret(serial, window, form);
                         OpenOutcome::Shown {
@@ -2131,23 +2141,17 @@ impl DisplayHost for WinDisplayHost<'_> {
         }
     }
 
-    /// The shell fills a verified display window's form with the secret the wallet moved in, and
-    /// shows the window (2026-11-21, S4 W2: the verified arm of `open_display_window` before;
-    /// 2026-11-24, S5-1: `App::show_display` before, which read the wallet's clock itself).
-    fn fill_and_show(
-        &mut self,
-        serial: u64,
-        window: Window,
-        kind: SecretKind,
-        display: DisplaySecret,
-        step: Option<SecretStep>,
-        timeout_note: Option<&'static str>,
-        lang: Lang,
-        now_ms: u64,
-    ) {
-        let mut form = SecretForm::display(kind, lang, now_ms, display);
-        form.set_step(step);
-        form.set_timeout_note(timeout_note);
+    /// Windows offers every platform feature but `seen_all` (2026-11-24, S5-8).
+    fn flags(&self) -> PlatformFlags {
+        PlatformFlags::WINDOWS
+    }
+
+    /// The shell shows a verified display window with the form the wallet built around the
+    /// secret (2026-11-21, S4 W2: the verified arm of `open_display_window` before; 2026-11-24,
+    /// S5-1: `App::show_display` before, which read the wallet's clock itself; 2026-11-24, S5-8,
+    /// S5 plan critic C1: before, this got the secret, the step, the note, the language and the
+    /// clock and built the form itself — now the shell never names the secret).
+    fn fill_and_show(&mut self, serial: u64, window: Window, form: SecretForm) {
         show_secret_window(self.main, self.secret, serial, window, form);
     }
 }
@@ -2168,7 +2172,7 @@ impl App {
             #[cfg(test)]
             secret_seam::log(secret_seam::Op::Close {
                 kind: secret.form.kind().id(),
-                left: secret.form.test_held_units(),
+                left: secret_seam::held_units(&secret.form),
             });
             secret.window.kill_timer(SECRET_TIMER_ID);
             if let Some(main) = self.main.as_ref() {
@@ -2221,7 +2225,8 @@ impl App {
                 if let Some(fonts) = fonts.for_dpi(dpi, form.lang())
                     && let Ok(mut dc) = window.begin_paint()
                 {
-                    *hits = form.paint(&mut dc, window.client_rect(), fonts, dpi, now);
+                    *hits =
+                        paint_form(&form.view(), &mut dc, window.client_rect(), fonts, dpi, now);
                 }
                 return Reply::Handled(0);
             }
@@ -2756,7 +2761,7 @@ impl App {
         &mut self,
         kind: SecretKind,
         purpose: Purpose,
-        display: DisplaySecret,
+        display: yw_engine::secret::DisplaySecret,
     ) {
         test_steps::open_display(&mut self.wallet, kind, purpose, display);
     }

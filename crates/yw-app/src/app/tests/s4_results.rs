@@ -66,7 +66,7 @@ use yw_engine::testkit::WalletTestExt;
 
 /// Test code among yw-app's `src` files (each is a `#[cfg(test)]` module, or a file of one):
 /// not scanned. Other files are scanned with their `#[cfg(test)]` items blanked.
-const TEST_FILES: [&str; 9] = [
+const TEST_FILES: [&str; 8] = [
     "app/secret_seam.rs",
     "app/tests.rs",
     "app_approval_flow_support.rs",
@@ -74,13 +74,21 @@ const TEST_FILES: [&str; 9] = [
     "app_approval_smoke.rs",
     "store/tests.rs",
     "ui/secret/tests.rs",
-    // 2026-11-24 (S5-7): the differential test of the neutral secret keys.
-    "ui/secret/tests/differential.rs",
+    // 2026-11-24 (S5-7): the differential test of the neutral secret keys was
+    // `ui/secret/tests/differential.rs`; 2026-11-24 (S5-8) it moved to yw-engine with the form.
     "ui/tour.rs",
 ];
 
 /// The same for yw-engine's `src` (its `#[cfg(test)]` module files and `testkit`).
-const ENGINE_TEST_FILES: [&str; 3] = ["explain/tests.rs", "testkit.rs", "walletconnect/tests.rs"];
+/// 2026-11-24 (S5-8): also the secret form's state tests and the differential test, which moved
+/// from yw-app with the form.
+const ENGINE_TEST_FILES: [&str; 5] = [
+    "explain/tests.rs",
+    "secret/form/tests.rs",
+    "secret/form/tests/differential.rs",
+    "testkit.rs",
+    "walletconnect/tests.rs",
+];
 
 /// Whether `rel` (a `/` path under a crate's `src`) is test code. 2026-11-23 (spec/15 §11.4 S5-0,
 /// §18 31 (다)): by crate; a crate other than yw-app and yw-engine (a new shell crate, scanned
@@ -609,8 +617,9 @@ fn calls(src: usize, file: &Src, names: &BTreeSet<String>) -> Vec<Site> {
 }
 
 /// Method calls named like an emitter that are another type's method, not `App`'s: `(file,
-/// name, receiver)`. `SecretField::copy` (a secret field's own copy, no effect).
-const NOT_APP: [(&str, &str, &str); 1] = [("yw-app/src/ui/secret.rs", "copy", "field")];
+/// name, receiver)`. `SecretField::copy` (a secret field's own copy, no effect; 2026-11-24, S5-8:
+/// in the engine's secret form, was yw-app `ui/secret.rs`).
+const NOT_APP: [(&str, &str, &str); 1] = [("yw-engine/src/secret/form.rs", "copy", "field")];
 
 /// The uses of one of `names` that [`calls`] does not count: `.<name>(` on another receiver
 /// (unless [`NOT_APP`]), `Self::<name>` or `App::<name>` without a call (a fn pointer).
@@ -1166,8 +1175,9 @@ const KINDS: [Kind; 4] = [
             "generate",
             "generate_and_report",
             // 2026-11-24 (S5-4): the screen marks the copy in `screen_model` (was `items`,
-            // which now only lowers the model, `ui::lower`).
-            "layout_and_paint",
+            // which now only lowers the model, `ui::lower`). 2026-11-24 (S5-8): the secret
+            // form's paint `layout_and_paint` (it read the form's own `self.info`) is gone: the
+            // Windows paint `ui::secret::paint_form` reads the form's view.
             // 2026-11-22 (S4c W15): `on_command`'s `self.copied = None` is the wallet's
             // `forget_copy_mark` (below), and `tick`'s `copied_tick` call `timer_part`'s.
             "on_core",
@@ -1229,7 +1239,8 @@ const KINDS: [Kind; 4] = [
             "finish_rpc_import",
             "generate",
             "generate_and_report",
-            "layout_and_paint",
+            // 2026-11-24 (S5-8): `layout_and_paint` (the secret form's paint, its own
+            // `self.info`) is gone: `ui::secret::paint_form` reads the form's view.
             "on_folder_missing",
             "on_key_imported",
             "key_result",
@@ -3366,8 +3377,10 @@ fn screen_scan_on_made_up_code() {
 /// to the form and the form only to `show_secret_window`; (7) every item of yw-engine `src`
 /// (testkit and test modules included) whose signature, alias, field or head names
 /// `DisplaySecret` is one of [`DISPLAY_SECRET_ITEMS`]: no `pub` fn or trait method returns it, no
-/// alias names it, no signature takes it as `&mut`, and the one trait method a shell implements
-/// that is given it by value is `fill_and_show`. Before S5-1 the composition
+/// alias names it, no signature takes it as `&mut`, and (2026-11-24, S5-8) no trait method a
+/// shell implements is given it (before, `fill_and_show` took it by value; now it takes the form
+/// the wallet built, crate-private `SecretForm::display`, called only by `open_display_window`),
+/// and no shell crate's production code names it. Before S5-1 the composition
 /// `display_window_handoff` called the engine's `pub` hand-off `hand_display_secret(serial,
 /// DisplayCheck::Verified)`, which returned the secret, and testkit's
 /// `WalletTestExt::take_display_secret` was a second `pub` way to it.
@@ -3440,8 +3453,11 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
         );
     }
     // (2) The wallet's order: the guard, the host's `make`, the take for a verified window only,
-    // the clock, the host's `fill_and_show` with the secret by value; on an unverified window the
-    // wipe, then the window's drop. No other host call.
+    // the clock, the window's form built around the secret with the host's platform flags, the
+    // host's `fill_and_show` with that form by value; on an unverified window the wipe, then the
+    // window's drop. No other host call. 2026-11-24 (S5-8, S5 plan critic C1): the form is built
+    // here (`SecretForm::display` is crate-private) and the host gets the form, never the secret;
+    // before, `host.fill_and_show(serial, window, kind, secret, step, timeout_note, lang, now_ms)`.
     let wallet = src_of(&all, "yw-engine/src/wallet/mod.rs");
     let open = fn_bodies(wallet, "open_display_window");
     assert_eq!(open.len(), 1, "one open_display_window");
@@ -3451,8 +3467,10 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
         "if!self.secret_unshown(serial){returnOpenOutcome::Refused(ErrorCode::Sec001);}",
         "matchhost.make(serial,kind,lang){DisplayMade::Verified(window)=>{letSome(secret)=\
          self.take_display_secret(serial)else{drop(window);returnOpenOutcome::Refused(\
-         ErrorCode::Sec001);};letnow_ms=self.clock.now_ms();host.fill_and_show(serial,window,\
-         kind,secret,step,timeout_note,lang,now_ms,);OpenOutcome::Shown{capture_excluded:true,}}",
+         ErrorCode::Sec001);};letnow_ms=self.clock.now_ms();letmutform=SecretForm::display(\
+         kind,lang,now_ms,secret,host.flags());form.set_step(step);form.set_timeout_note(\
+         timeout_note);host.fill_and_show(serial,window,form);OpenOutcome::Shown{\
+         capture_excluded:true,}}",
         "DisplayMade::Unverified{outcome,window}=>{self.drop_display_secret(serial);drop(window);\
          outcome}",
     ] {
@@ -3465,13 +3483,40 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
     }
     assert_eq!(
         open.matches("host.").count(),
-        2,
-        "make and fill_and_show only"
+        3,
+        "make, flags and fill_and_show only"
     );
     assert_eq!(
         open.matches("secret,").count(),
         1,
-        "the secret goes to the host once"
+        "the secret goes into the form once"
+    );
+    assert_eq!(
+        open.matches("form)").count(),
+        1,
+        "the form goes to the host once"
+    );
+    // 2026-11-24 (S5-8, S5 plan critic C1): the form of a display window is built only here, and
+    // no production code of a shell crate names the secret's type at all.
+    assert_eq!(
+        all.iter()
+            .flat_map(|src| {
+                normalized(&src.code)
+                    .match_indices("SecretForm::display(")
+                    .map(|_| src.file.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>(),
+        ["yw-engine/src/wallet/mod.rs"],
+        "SecretForm::display is called by open_display_window only"
+    );
+    let shell_names: Vec<String> = sites_of("DisplaySecret")
+        .into_iter()
+        .filter(|site| !site.starts_with("yw-engine/"))
+        .collect();
+    assert!(
+        shell_names.is_empty(),
+        "a shell crate's production code names DisplaySecret: {shell_names:?}"
     );
     // (3)–(5) The trait, its answer, the open and the Windows host, by name: every occurrence in
     // production code (every scanned crate) and in testkit stands at a listed site, and none is
@@ -3543,7 +3588,9 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
         "one verified arm: {}",
         make[0]
     );
-    // (6) The secret goes only into the form, and the form only into the window record.
+    // (6) The form goes only into the window record. 2026-11-24 (S5-8, S5 plan critic C1): the
+    // host gets the wallet's form; before, it built the form from the secret it was given
+    // (`SecretForm::display(kind, lang, now_ms, display)`, then the step and the note).
     let fill = fn_blocks(app)
         .into_iter()
         .filter(|(name, _)| name == "fill_and_show")
@@ -3551,11 +3598,7 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
         .collect::<Vec<_>>();
     assert_eq!(
         fill,
-        [
-            "{letmutform=SecretForm::display(kind,lang,now_ms,display);form.set_step(step);\
-          form.set_timeout_note(timeout_note);show_secret_window(self.main,self.secret,serial,\
-          window,form);}"
-        ],
+        ["{show_secret_window(self.main,self.secret,serial,window,form);}"],
         "WinDisplayHost::fill_and_show"
     );
     // (7) Every item of yw-engine (every `src` file, testkit and test modules included) that names
@@ -3641,12 +3684,12 @@ const DISPLAY_WORDS: [&str; 4] = [
 /// wallet; the trait and its answer; the wallet's open; the Windows host's struct, impl header and
 /// `make` (its signature and its four arms); the composition's one open, with that host.
 const DISPLAY_SITES: [&str; 21] = [
-    "DisplayHost @ yw-app/src/app.rs: use yw_engine::secret::{DisplayHost,DisplayMade,DisplaySecret,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
+    "DisplayHost @ yw-app/src/app.rs: use yw_engine::secret::{DisplayHost,DisplayMade,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
     "DisplayHost @ yw-app/src/app.rs: item implDisplayHostforWinDisplayHost<'_>{",
     "DisplayHost @ yw-engine/src/secret/mod.rs: item pubtraitDisplayHost{",
     "DisplayHost @ yw-engine/src/wallet/mod.rs: use crate::secret::{DisplayHost,DisplayMade,DisplaySecret,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
     "DisplayHost @ yw-engine/src/wallet/mod.rs: fn open_display_window",
-    "DisplayMade @ yw-app/src/app.rs: use yw_engine::secret::{DisplayHost,DisplayMade,DisplaySecret,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
+    "DisplayMade @ yw-app/src/app.rs: use yw_engine::secret::{DisplayHost,DisplayMade,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
     "DisplayMade @ yw-app/src/app.rs: fn make",
     "DisplayMade @ yw-app/src/app.rs: fn make",
     "DisplayMade @ yw-app/src/app.rs: fn make",
@@ -3668,9 +3711,9 @@ const DISPLAY_SITES: [&str; 21] = [
 /// `testkit_is_named_only_by_tests`): its `use` line, `RecordingShell::apply`'s one open with
 /// itself as the host, and its `DisplayHost` impl (2026-11-24, S5-1 review).
 const TESTKIT_DISPLAY_SITES: [&str; 6] = [
-    "DisplayHost @ use crate::secret::{DisplayHost,DisplayMade,SecretEffect,SecretStep}",
+    "DisplayHost @ use crate::secret::{DisplayHost,DisplayMade,SecretEffect}",
     "DisplayHost @ item implDisplayHostforRecordingShell{",
-    "DisplayMade @ use crate::secret::{DisplayHost,DisplayMade,SecretEffect,SecretStep}",
+    "DisplayMade @ use crate::secret::{DisplayHost,DisplayMade,SecretEffect}",
     "DisplayMade @ fn make",
     "DisplayMade @ fn make",
     "open_display_window @ fn apply",
@@ -3679,15 +3722,18 @@ const TESTKIT_DISPLAY_SITES: [&str; 6] = [
 /// Every item of yw-engine `src` that names `DisplaySecret` outside a fn body and a `use`, as
 /// `file: site` ([`display_secret_items`]; 2026-11-24, S5-1 review): the type and its `Debug`;
 /// the secret session's private field; the crate-private take and hold of the session and the
-/// wallet; the wallet's crate-private opens, which take a secret in; the trait method
-/// `DisplayHost::fill_and_show`, which a shell implements and the wallet gives the secret to by
-/// value (and testkit's `RecordingShell`'s impl of it); testkit's test steps that give a test's
-/// own secret to the wallet (`WalletTestExt::hold_display_secret`, `open_display`).
+/// wallet; the wallet's crate-private opens, which take a secret in; the secret form's private
+/// field and its crate-private display constructor, which only `Wallet::open_display_window`
+/// calls; testkit's test steps that give a test's own secret to the wallet
+/// (`WalletTestExt::hold_display_secret`, `open_display`). 2026-11-24 (S5-8, S5 plan critic C1):
+/// no trait method a shell implements is given the secret any more (`DisplayHost::fill_and_show`
+/// takes the form the wallet built, and testkit's `RecordingShell` with it); before, its
+/// `secret: DisplaySecret` parameter and testkit's impl of it were the last two items.
 const DISPLAY_SECRET_ITEMS: [&str; 15] = [
-    "secret/mod.rs: fn fill_and_show takes secret:DisplaySecret",
+    "secret/form.rs: item display:Option<DisplaySecret>,",
+    "secret/form.rs: pub(crate) fn display takes secret:DisplaySecret",
     "secret/mod.rs: item implcore::fmt::DebugforDisplaySecret{",
     "secret/mod.rs: item pubstructDisplaySecret{",
-    "testkit.rs: fn fill_and_show takes secret:DisplaySecret",
     "testkit.rs: fn hold_display_secret takes display:DisplaySecret",
     "testkit.rs: fn hold_display_secret takes display:DisplaySecret",
     "testkit.rs: fn open_display takes display:DisplaySecret",
@@ -9443,7 +9489,12 @@ fn a_dropped_edit_change_is_read_again() {
 }
 
 /// The form's file, the Windows map and the engine's event types (spec/15 §11.4 S5-7).
-const SECRET_FORM_FILE: &str = "yw-app/src/ui/secret.rs";
+/// 2026-11-24 (S5-8): the form is the engine's (was yw-app `ui/secret.rs`, which keeps the
+/// paint, [`SECRET_PAINT_FILE`]).
+const SECRET_FORM_FILE: &str = "yw-engine/src/secret/form.rs";
+/// The Windows paint of the secret windows (2026-11-24, S5-8): it names no key or pointer entry
+/// either.
+const SECRET_PAINT_FILE: &str = "yw-app/src/ui/secret.rs";
 const SECRET_MAP_FILE: &str = "yw-app/src/ui/secret_input.rs";
 const SECRET_EVENTS_FILE: &str = "yw-engine/src/secret/input.rs";
 
@@ -9473,7 +9524,8 @@ fn msg_arm_before(code: &str, at: usize) -> &str {
 /// 2026-11-24 (S5-7 review): the hit layout the pointer arms of `App::on_secret` read is the
 /// one the window's paint returned: `on_secret` paints the form once, in its `Msg::Paint` arm,
 /// and stores the result in `*hits`. Before, nothing checked it, and a dropped paint result (no
-/// press ever hit a field or button) passed every test.
+/// press ever hit a field or button) passed every test. 2026-11-24 (S5-8): the paint is
+/// `paint_form(&form.view(), …)` (was `form.paint(…)`).
 fn secret_paint_findings(src: &Src, findings: &mut Vec<String>) {
     let name = src.file.as_str();
     let code = src.code.as_str();
@@ -9481,7 +9533,7 @@ fn secret_paint_findings(src: &Src, findings: &mut Vec<String>) {
         return;
     }
     let paints: Vec<usize> = code
-        .match_indices("form.paint(")
+        .match_indices("paint_form(&form.view(),")
         .map(|(at, _)| at)
         .filter(|&at| fn_at(code, &src.blocks, at).as_deref() == Some("on_secret"))
         .collect();
@@ -9499,7 +9551,7 @@ fn secret_paint_findings(src: &Src, findings: &mut Vec<String>) {
         let arm = msg_arm_before(code, at);
         if !stored || arm != "Paint" {
             findings.push(format!(
-                "{name}: fn on_secret's `form.paint(` in the `Msg::{arm}` arm is not stored in \
+                "{name}: fn on_secret's `paint_form(` in the `Msg::{arm}` arm is not stored in \
                  `*hits`"
             ));
         }
@@ -9514,8 +9566,9 @@ fn secret_key_findings(files: &[Src]) -> (Vec<String>, usize) {
     for src in files {
         let name = src.file.as_str();
         let code = src.code.as_str();
-        if name == SECRET_FORM_FILE {
-            // The form names no virtual-key code, modifier, Win32 message or pixel entry.
+        if name == SECRET_FORM_FILE || name == SECRET_PAINT_FILE {
+            // The form names no virtual-key code, modifier, Win32 message or pixel entry, and
+            // neither does its Windows paint (2026-11-24, S5-8).
             for word in [
                 "vk",
                 "ctrl",
@@ -9543,6 +9596,9 @@ fn secret_key_findings(files: &[Src]) -> (Vec<String>, usize) {
             }
             if code.contains("u16::from(b") {
                 findings.push(format!("{name}: the form names a key by its letter"));
+            }
+            if name == SECRET_PAINT_FILE {
+                continue;
             }
             let flat: String = code.split_whitespace().collect();
             for head in [
@@ -9623,15 +9679,21 @@ fn secret_key_findings(files: &[Src]) -> (Vec<String>, usize) {
 /// takes a map result (`map_secret_char`, `map_secret_key`, `ime_key()`, or the hit layout's
 /// `down`/`up`/`moved`) in its own message's arm (`Char`, `KeyDown`, `ImeAttempt`, `MouseDown`,
 /// `MouseUp`, `MouseMove`; 2026-11-24, S5-7 review), the hit layout they read is the one the
-/// `Msg::Paint` arm's one `form.paint(` stored in `*hits`, and the map's key fns are called
-/// nowhere else. Before S5-7 the form
+/// `Msg::Paint` arm's one `paint_form(&form.view(), …)` stored in `*hits`, and the map's key fns
+/// are called nowhere else. 2026-11-24 (S5-8): the form is yw-engine's
+/// `secret/form.rs`; the Windows paint (`ui/secret.rs`) names no key or pointer entry either. Before S5-7 the form
 /// compared the virtual-key codes itself (`on_key(vk, ctrl, shift, alt)`) and kept its own hit
 /// rects. The test-only callers (the tour hooks, the headless secret host, the SW tests and the
 /// differential test) are not production code.
 #[test]
 fn secret_keys_are_mapped_only_by_the_mapper() {
     let files = production_code();
-    for file in [SECRET_FORM_FILE, SECRET_MAP_FILE, SECRET_EVENTS_FILE] {
+    for file in [
+        SECRET_FORM_FILE,
+        SECRET_PAINT_FILE,
+        SECRET_MAP_FILE,
+        SECRET_EVENTS_FILE,
+    ] {
         let _ = src_of(&files, file);
     }
     let (findings, mapped) = secret_key_findings(&files);
@@ -9658,8 +9720,8 @@ fn secret_key_findings_on_made_up_code() {
         src(
             "yw-app/src/app.rs",
             "use crate::ui::secret_input::{ime_key, map_secret_char, map_secret_key}; impl App { \
-             fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = form.paint(&mut dc); } \
-             Msg::Char(unit) => form.on_key(map_secret_char(*unit), now), Msg::KeyDown { vk, .. } \
+             fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = \
+             paint_form(&form.view(), &mut dc); } Msg::Char(unit) => form.on_key(map_secret_char(*unit), now), Msg::KeyDown { vk, .. } \
              => form.on_key(map_secret_key(*vk, c, s, a), now), Msg::ImeAttempt => \
              form.on_key(ime_key(), now), Msg::MouseDown { x, y } => \
              form.on_pointer(hits.down(*x, *y), now), } } }",
@@ -9710,28 +9772,28 @@ fn secret_key_findings_on_made_up_code() {
         (
             "yw-app/src/app.rs",
             "impl App { fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = \
-             form.paint(&mut dc); } Msg::MouseUp { x, y } => form.on_pointer(hits.moved(*x, *y), \
+             paint_form(&form.view(), &mut dc); } Msg::MouseUp { x, y } => form.on_pointer(hits.moved(*x, *y), \
              now).0, } } }",
             "`.on_pointer(` in the `Msg::MouseUp` arm of fn on_secret takes `hits.moved(",
         ),
         (
             "yw-app/src/app.rs",
             "impl App { fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = \
-             form.paint(&mut dc); } Msg::KeyDown { vk, .. } => form.on_key(map_secret_char(*vk), \
+             paint_form(&form.view(), &mut dc); } Msg::KeyDown { vk, .. } => form.on_key(map_secret_char(*vk), \
              now), } } }",
             "`.on_key(` in the `Msg::KeyDown` arm of fn on_secret takes `map_secret_char(",
         ),
         (
             "yw-app/src/app.rs",
             "impl App { fn on_secret(&mut self) { match msg { Msg::Paint => { let _ = \
-             form.paint(&mut dc); } } } }",
-            "`form.paint(` in the `Msg::Paint` arm is not stored",
+             paint_form(&form.view(), &mut dc); } } } }",
+            "`paint_form(` in the `Msg::Paint` arm is not stored",
         ),
         (
             "yw-app/src/app.rs",
             "impl App { fn on_secret(&mut self) { match msg { Msg::Size => { *hits = \
-             form.paint(&mut dc); } } } }",
-            "`form.paint(` in the `Msg::Size` arm is not stored",
+             paint_form(&form.view(), &mut dc); } } } }",
+            "`paint_form(` in the `Msg::Size` arm is not stored",
         ),
         (
             "yw-app/src/app.rs",
@@ -9746,3 +9808,95 @@ fn secret_key_findings_on_made_up_code() {
         );
     }
 }
+
+/// Every `.view()` call of production code (every scanned crate), as `file: fn <fn>: <receiver>`
+/// with the `Msg::` arm it stands in when it is in `App::on_secret` (2026-11-24, S5-8).
+fn view_calls(files: &[Src]) -> Vec<String> {
+    let mut calls = Vec::new();
+    for src in files {
+        let code = src.code.as_str();
+        let bytes = code.as_bytes();
+        for (at, _) in code.match_indices(".view()") {
+            let receiver: String = code[..at]
+                .bytes()
+                .rev()
+                .take_while(|&b| is_ident(b))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .map(char::from)
+                .collect();
+            if at > 0 && !is_ident(bytes[at - 1]) {
+                calls.push(format!("{}: a call on an expression", src.file));
+                continue;
+            }
+            let func = fn_at(code, &src.blocks, at).unwrap_or_default();
+            let arm = if func == "on_secret" {
+                format!(" in Msg::{}", msg_arm_before(code, at))
+            } else {
+                String::new()
+            };
+            calls.push(format!("{}: fn {func}: {receiver}{arm}", src.file));
+        }
+    }
+    calls
+}
+
+/// spec/15 §11.4 S5-8 (2026-11-24; S5 plan critic C10; spec/04 §4.2, §4.8): the secret form's
+/// contents leave it, in a shell, only for drawing and for the one Windows copy. Its read-only
+/// paint view `SecretView` (and its `FieldView`) is named by no shell code but the Windows paint
+/// (`ui/secret.rs`), and the form's view is made only in `App::on_secret`'s `Msg::Paint` arm (the
+/// only other `.view()` of production code is the approval flow's, [`VIEW_CALLS`]); the display
+/// secret's copy `SecretForm::copy_units` is called only by the Windows shell's copy arm
+/// `App::copy_secret` (which first checks `allowSecretCopy`, spec/04 §4.8). The view's and the
+/// field view's `Debug` are redacted (`yw_engine::secret::form::tests::the_view_reads_what_the_form_holds`).
+#[test]
+fn the_secret_form_is_read_only_by_its_paint_and_copy() {
+    let files = production_code();
+    let sites = |word: &str| -> Vec<String> {
+        files
+            .iter()
+            .flat_map(|src| {
+                word_sites(&src.code, word)
+                    .into_iter()
+                    .map(move |site| format!("{}: {site}", src.file))
+            })
+            .collect()
+    };
+    assert_eq!(
+        sites("copy_units"),
+        [
+            "yw-app/src/app.rs: fn copy_secret",
+            "yw-engine/src/secret/form.rs: fn copy_units",
+        ],
+        "the display secret's copy: the form's own fn and the shell's copy arm"
+    );
+    for word in ["SecretView", "FieldView"] {
+        let found = sites(word);
+        assert!(!found.is_empty(), "{word} found");
+        let outside: Vec<&String> = found
+            .iter()
+            .filter(|site| {
+                !site.starts_with(&format!("{SECRET_FORM_FILE}: "))
+                    && !site.starts_with(&format!("{SECRET_PAINT_FILE}: "))
+            })
+            .collect();
+        assert!(
+            outside.is_empty(),
+            "{word} named outside the form and its paint: {outside:?}"
+        );
+    }
+    assert_eq!(
+        view_calls(&files),
+        VIEW_CALLS,
+        "the production `.view()` calls"
+    );
+}
+
+/// The production `.view()` calls (2026-11-24, S5-8): the secret form's, in the secret window's
+/// paint arm, and the approval flow's (its read model, `ApprovalFlow::view`).
+const VIEW_CALLS: [&str; 3] = [
+    "yw-app/src/app.rs: fn on_secret: form in Msg::Paint",
+    "yw-app/src/app_approval.rs: fn run_step: flow",
+    "yw-engine/src/wallet/app_approval.rs: fn rebuild_view_with: flow",
+];

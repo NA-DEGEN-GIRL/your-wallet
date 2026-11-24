@@ -163,6 +163,7 @@ use crate::flow::evm::prepare::Prepared;
 use crate::flow::evm::track::BroadcastOutcome;
 use crate::form::{CredField, EditField, PressInput};
 use crate::network::NetworkId;
+use crate::secret::form::SecretForm;
 use crate::secret::{CardSecretKind, DisplaySecret, SecretFormOp, SecretKind, Submission};
 use crate::services::Services;
 use crate::sol::flow::{DappPreview, PreSignError, TrackResult};
@@ -1222,6 +1223,29 @@ impl CardStepTestExt for CardStep {
     }
 }
 
+/// A secret window's form as the yw-app tests' secret seam reads it: counts and flags only, never
+/// a unit of a field or of the displayed secret (2026-11-24, spec/15 §11.4 S5-8: the form moved
+/// here from yw-app `ui::secret`, where these were `#[cfg(test)] pub(crate)` methods; yw-app's
+/// test builds compile this crate without `cfg(test)`, so they are crate-private there and
+/// reached here).
+pub trait SecretFormTestExt {
+    /// The units the form's fields hold (after a wipe: 0).
+    fn test_held_units(&self) -> usize;
+    /// Flags and counts: busy, an error, an information or transient line, the detail lines,
+    /// the card name, the held units, a displayed secret, capture exclusion, the input pause.
+    fn test_facts(&self) -> String;
+}
+
+impl SecretFormTestExt for SecretForm {
+    fn test_held_units(&self) -> usize {
+        Self::test_held_units(self)
+    }
+
+    fn test_facts(&self) -> String {
+        Self::test_facts(self)
+    }
+}
+
 impl FlowTestExt for ApprovalFlow {
     fn session(&self) -> &ApprovalSession {
         Self::session(self)
@@ -1381,7 +1405,8 @@ impl StoreProbe<'_> {
 use crate::approval::flow::ApprovalEffect;
 use crate::cmd::Cmd;
 use crate::effect::Folder;
-use crate::secret::{DisplayHost, DisplayMade, SecretEffect, SecretStep};
+use crate::screen::facts::PlatformFlags;
+use crate::secret::{DisplayHost, DisplayMade, SecretEffect};
 
 /// When a shell applies the effects one entry queued, and when their answers go back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1663,19 +1688,15 @@ impl DisplayHost for RecordingShell {
         DisplayMade::Verified(())
     }
 
-    fn fill_and_show(
-        &mut self,
-        serial: u64,
-        (): (),
-        _kind: SecretKind,
-        secret: DisplaySecret,
-        _step: Option<SecretStep>,
-        _timeout_note: Option<&'static str>,
-        _lang: Lang,
-        _now_ms: u64,
-    ) {
-        // The model's window: the secret is wiped here, never kept.
-        drop(secret);
+    fn flags(&self) -> PlatformFlags {
+        PlatformFlags::WINDOWS
+    }
+
+    fn fill_and_show(&mut self, serial: u64, (): (), mut form: SecretForm) {
+        // The model's window: the form and its secret are wiped here, never kept (2026-11-24,
+        // S5-8: the form the wallet built; before, the secret itself).
+        form.wipe();
+        drop(form);
         self.log.push(format!("display-handed#{serial}"));
     }
 }

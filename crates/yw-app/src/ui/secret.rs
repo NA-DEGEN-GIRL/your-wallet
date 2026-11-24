@@ -1,14 +1,10 @@
-//! Secret input and display windows W01–W10 (spec/04 §4, D11).
+//! Secret input and display windows W01–W10 (spec/04 §4, D11): the Windows half — the window
+//! size, the capture decision, the window timer and paste bound, and the paint.
 //!
 //! The windows are custom-drawn (no OS EDIT control holds a secret); input arrives only as
-//! `WM_CHAR` units into [`SecretField`] buffers; painting uses short-lived zeroizing UTF-16
-//! copies. Ported from `archive/spec-v2.4:crates/secret-input-ui/src/recovery_native.rs`
-//! (`HoldGate` 78-107, confirmation state 180-249, painting 342-470, field activation
-//! 1559-1571, focus-loss handling 1572-1583) as an app-loop window instead of a one-shot helper:
-//! focus loss masks the content (spec/04 §4.9) instead of cancelling.
-//!
-//! [`SecretForm`] is window-independent: `app` forwards decoded messages and acts on the returned
-//! [`FormAction`].
+//! `WM_CHAR` units into the form's `SecretField` buffers; painting uses short-lived zeroizing
+//! UTF-16 copies. Ported from `archive/spec-v2.4:crates/secret-input-ui/src/recovery_native.rs`
+//! (painting 342-470).
 //!
 //! 2026-11-20 (spec/15 §11.4 S4 P7a1): the window kinds (`SecretKind`, `CardSecretKind`), the
 //! flow step (`SecretStep`) and the fixed texts (`text`, was `ui::secret_text`) moved to
@@ -24,78 +20,40 @@
 //! `on_submit` takes it).
 //!
 //! 2026-11-24 (spec/15 §11.4 S5-7; spec/04 §4.3): the form takes neutral events,
-//! [`SecretForm::on_key`] a `yw_engine::secret::input::SecretKey` and [`SecretForm::on_pointer`] a
+//! `SecretForm::on_key` a `yw_engine::secret::input::SecretKey` and `SecretForm::on_pointer` a
 //! `SecretPointer`, which the shell builds with `ui::secret_input` (the only place that names a
 //! virtual-key code or hit-tests pixels; source check `secret_keys_are_mapped_only_by_the_mapper`).
 //! Before, `on_char(unit)`, `on_key(vk, ctrl, shift, alt)` and `on_mouse_down`/`on_mouse_move`/
 //! `on_mouse_up(x, y)` took the Windows values and the form kept the hit rects of its last paint
-//! (`Layout`); now [`SecretForm::paint`] returns them as `ui::secret_input::HitLayout`, which the
-//! shell keeps in its window record. The buttons are `SecretButton` (was the private `Button`).
-//! Same decisions in the same order (the differential test `tests::differential`).
+//! (`Layout`); now the paint returns them as `ui::secret_input::HitLayout`, which the shell keeps
+//! in its window record. The buttons are `SecretButton` (was the private `Button`).
+//!
+//! 2026-11-24 (spec/15 §11.4 S5-8; spec/04 §4.2, §4.7, §4.8): the form — its state, its events,
+//! `FormAction`, `WordMark` and the window texts it builds — moved to
+//! `yw_engine::secret::form::SecretForm` with its state tests; the shell still owns the instance
+//! (`App::secret`). What stayed here is Windows: [`window_size`], [`capture_decision`], the timer
+//! and the paste bound, and the paint, now [`paint_form`] over the form's read-only view
+//! `SecretView` (before, `SecretForm::paint` and the form's private paint methods, the same
+//! drawing in the same order). The shell never names the displayed secret: a display window's form
+//! is built by `Wallet::open_display_window` and handed to the shell's `DisplayHost`.
 
-use yw_core::bip39::{is_word, is_word_prefix};
-use yw_core::keyimport::ImportChain;
 use yw_core::lang::Lang;
-use yw_core::password::VaultPassword;
 use yw_core::secret::Zeroizing;
-use yw_engine::secret::input::{SecretButton, SecretKey, SecretPointer, SecretTarget};
-use yw_engine::secret::{
-    BACKUP_ACK_HOLD_MS, CardSecretKind, DisplaySecret, HoldGate, SecretKind, SecretStep,
-    Submission, text,
-};
+use yw_engine::secret::form::{SecretView, WordMark};
+use yw_engine::secret::input::SecretButton;
+use yw_engine::secret::{BACKUP_ACK_HOLD_MS, CardSecretKind, SecretKind, SecretStep, text};
 use yw_win::ui::{DrawFlags, PaintDc, Rect, scale};
 
 use crate::ui::secret_input::HitLayout;
 use crate::ui::theme::{self, Fonts, wide};
 use yw_engine::errors::ErrorCode;
-use yw_engine::secure_field::{
-    Charset, PushResult, RejectReason, SecretField, finalize_private_key, has_edge_space,
-    mnemonic_words, normalize_paste,
-};
-use yw_engine::yubikey::PinTarget;
 
-/// Inactivity (input windows) or display (W08/W09) lifetime.
-pub const SECRET_WINDOW_TIMEOUT_MS: u64 = 300_000;
-/// E-INP-008 visibility.
-pub const INPUT_ERROR_MS: u64 = 3_000;
-/// Input disabled after a wrong password (spec/02 §7.4).
-pub const UNLOCK_FAIL_DISABLE_MS: u64 = 1_000;
 /// Clipboard read bound.
 pub const PASTE_MAX_UTF16_UNITS: usize = 4_096;
 /// Window timer id and period.
 pub const SECRET_TIMER_ID: usize = 1;
 /// Timer period (hold progress, timeouts).
 pub const SECRET_TIMER_MS: u32 = 50;
-/// Mnemonic entry buffer (24 × 8 + 23 + 1).
-pub const MNEMONIC_TEXT_MAX: usize = 216;
-/// W11's steps (2026-11-10): which card to connect, the PIN, the touch — and the bounds.
-/// The card step after approval follows them ([`text::CARD_PIN`], spec/10 §9.2). `card` is the
-/// card as shown everywhere (`name (#serial)` or `#serial`, 2026-11-15; `None` when unknown).
-#[must_use]
-pub fn card_pin_steps(lang: Lang, card: Option<&str>) -> String {
-    let card = card.map_or_else(|| "YubiKey".to_owned(), |card| format!("YubiKey {card}"));
-    text::CARD_PIN_STEPS.fill(lang, [&card])
-}
-
-/// A PIN target's name in labels and sentences (`PinTarget::name` in `lang`).
-const fn target_name(target: PinTarget, lang: Lang) -> &'static str {
-    match target {
-        PinTarget::OpenPgpUser => "OpenPGP PIN",
-        PinTarget::OpenPgpAdmin => text::NAME_OPENPGP_ADMIN.get(lang),
-        PinTarget::PivPin => "PIV PIN",
-        PinTarget::PivPuk => "PIV PUK",
-    }
-}
-
-/// A PIN target's length rule and factory value (`PinTarget::rule` in `lang`).
-fn target_rule(target: PinTarget, lang: Lang) -> String {
-    let (min, max) = target.bounds();
-    let factory = match target {
-        PinTarget::OpenPgpUser | PinTarget::PivPin => "123456",
-        PinTarget::OpenPgpAdmin | PinTarget::PivPuk => "12345678",
-    };
-    text::PIN_RULE.fill(lang, [&min.to_string(), &max.to_string(), factory])
-}
 
 /// A secret window's client size in DIP (spec/04 §1.7: 640×480, W08/W09 820×680). 2026-11-20
 /// (S4 P7a1): was `SecretKind::size`; the kind moved to `yw_engine::secret`, its pixels stay here.
@@ -138,457 +96,10 @@ pub const fn capture_decision(kind: SecretKind, created: Result<bool, ()>) -> Ca
     }
 }
 
-/// What the app must do after an event.
-#[derive(Debug)]
-pub enum FormAction {
-    /// Nothing visible changed.
-    None,
-    /// Repaint.
-    Redraw,
-    /// Primary button or Enter on the last field with valid input.
-    Submit(Submission),
-    /// Cancel / Esc / 나중에 (buffers already wiped).
-    Cancel,
-    /// Ctrl+V / Shift+Insert: read the clipboard and call [`SecretForm::apply_paste`].
-    Paste,
-    /// Ctrl+C or `복사` in W08/W09.
-    Copy,
-    /// W08 acknowledgement completed.
-    HoldComplete,
-    /// Close a display window (`닫기`).
-    Close,
-    /// Timed out (buffers wiped).
-    TimedOut,
-}
-
-struct Slot {
-    label: String,
-    field: SecretField,
-    min: usize,
-    masked: bool,
-}
-
-/// One group of the button row: each button with its label.
-type ButtonLabels = Vec<(SecretButton, String)>;
-
-/// The state of one secret window.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent flags of one window"
-)]
-pub struct SecretForm {
-    kind: SecretKind,
-    /// The app language the window's texts are drawn in (`Settings::language`).
-    lang: Lang,
-    slots: Vec<Slot>,
-    active: usize,
-    checkbox: Option<(&'static str, bool)>,
-    display: Option<DisplaySecret>,
-    error: Option<String>,
-    transient: Option<(String, u64)>,
-    info: Option<String>,
-    disabled_until: u64,
-    busy: bool,
-    revealing: Option<usize>,
-    masked: bool,
-    capture_excluded: bool,
-    started_ms: u64,
-    last_activity_ms: u64,
-    hold: HoldGate,
-    pressed: Option<SecretButton>,
-    note: Option<String>,
-    step: Option<SecretStep>,
-    /// Extra non-secret lines under the intro (W11: the cards holding the key, the PIN tries).
-    details: Vec<String>,
-    /// W11: the card to connect as shown everywhere (`name (#serial)`, 2026-11-15); `None`
-    /// names it by the kind's serial.
-    card: Option<String>,
-    /// W08 `create`: what the countdown line adds (where the words are seen again, or that
-    /// they are wiped).
-    timeout_note: Option<&'static str>,
-    /// W08 `create`: the countdown seconds last drawn (a tick repaints when they change).
-    countdown_secs: u64,
-    /// W10: `확인`/Enter was pressed with a word not in the list — every field counts as left
-    /// (red) until the next edit.
-    backup_left: bool,
-}
-
-// 2026-11-18 (S4 A7, spec/15 §11.4 S4): what the secret-window seam (`app::secret_seam`) and the
-// windowed secret characterization (`ui::tour_secrets`) read of a form: counts and flags only,
-// never a unit of a field or of the displayed secret.
-#[cfg(test)]
-impl SecretForm {
-    /// The units its fields hold (after a wipe: 0).
-    pub(crate) fn test_held_units(&self) -> usize {
-        self.slots.iter().map(|slot| slot.field.len()).sum()
-    }
-
-    /// Flags and counts: busy, an error, an information or transient line, the detail lines,
-    /// the card name, the held units, a displayed secret, capture exclusion, the input pause.
-    #[cfg(debug_assertions)]
-    pub(crate) fn test_facts(&self) -> String {
-        format!(
-            "busy={} error={} transient={} info={} details={} card={} units={} display={} excluded={} paused={}",
-            self.busy,
-            self.error.is_some(),
-            self.transient.is_some(),
-            self.info.is_some(),
-            self.details.len(),
-            self.card.is_some(),
-            self.test_held_units(),
-            self.display.is_some(),
-            self.capture_excluded,
-            self.disabled_until != 0
-        )
-    }
-}
-
-/// W10's verdict on one typed word (2026-11-10, the public BIP39 list as W05 uses it): nothing,
-/// a list word (grey), or a word that is not in the list (red; the field was left or no list word
-/// starts with it). It says nothing about the paper: only the vault compares the four words.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WordMark {
-    /// Empty, or still a beginning of some list word while typed.
-    None,
-    /// `목록에 있음`.
-    Listed,
-    /// `목록에 없는 단어`.
-    Unlisted,
-}
-
-impl core::fmt::Debug for SecretForm {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(formatter, "SecretForm({}, [REDACTED])", self.kind.id())
-    }
-}
-
-fn slot(label: &str, charset: Charset, min: usize, max: usize, masked: bool) -> Option<Slot> {
-    Some(Slot {
-        label: label.to_owned(),
-        field: SecretField::new(charset, max).ok()?,
-        min,
-        masked,
-    })
-}
-
-#[expect(clippy::too_many_lines, reason = "one arm per window kind")]
-fn slots_for(kind: SecretKind, lang: Lang) -> Vec<Slot> {
-    let slots = match kind {
-        SecretKind::SetPassword => vec![
-            slot(
-                text::LABEL_PASSWORD.get(lang),
-                Charset::Printable,
-                12,
-                128,
-                true,
-            ),
-            slot(
-                text::LABEL_PASSWORD_AGAIN.get(lang),
-                Charset::Printable,
-                12,
-                128,
-                true,
-            ),
-        ],
-        SecretKind::Unlock | SecretKind::ConfirmPassword => {
-            vec![slot(
-                text::LABEL_PASSWORD.get(lang),
-                Charset::Printable,
-                1,
-                128,
-                true,
-            )]
-        }
-        SecretKind::ChangePassword => vec![
-            slot(
-                text::LABEL_CURRENT_PASSWORD.get(lang),
-                Charset::Printable,
-                1,
-                128,
-                true,
-            ),
-            slot(
-                text::LABEL_NEW_PASSWORD.get(lang),
-                Charset::Printable,
-                12,
-                128,
-                true,
-            ),
-            slot(
-                text::LABEL_NEW_PASSWORD_AGAIN.get(lang),
-                Charset::Printable,
-                12,
-                128,
-                true,
-            ),
-        ],
-        SecretKind::Mnemonic => vec![slot(
-            text::LABEL_WORDS.get(lang),
-            Charset::MnemonicText,
-            1,
-            MNEMONIC_TEXT_MAX,
-            false,
-        )],
-        SecretKind::Passphrase { confirm: true } => vec![
-            slot("passphrase", Charset::Printable, 1, 256, true),
-            slot(
-                text::LABEL_PASSPHRASE_AGAIN.get(lang),
-                Charset::Printable,
-                1,
-                256,
-                true,
-            ),
-        ],
-        SecretKind::Passphrase { confirm: false } => {
-            vec![slot("passphrase", Charset::Printable, 1, 256, true)]
-        }
-        SecretKind::PrivateKey {
-            chain: ImportChain::Evm,
-            ..
-        } => vec![slot(
-            text::LABEL_EVM_KEY.get(lang),
-            Charset::PrivateKeyHex,
-            64,
-            66,
-            false,
-        )],
-        SecretKind::PrivateKey {
-            chain: ImportChain::Sol,
-            ..
-        } => vec![slot(
-            text::LABEL_SOL_KEY.get(lang),
-            Charset::KeyText,
-            1,
-            yw_core::keyimport::SOL_KEY_TEXT_MAX,
-            false,
-        )],
-        SecretKind::PrivateKey {
-            chain: ImportChain::Btc,
-            ..
-        } => vec![slot(
-            text::LABEL_BTC_KEY.get(lang),
-            Charset::Base58,
-            51,
-            52,
-            false,
-        )],
-        SecretKind::PrivateKey {
-            chain: ImportChain::Zec,
-            ..
-        } => vec![slot(
-            text::LABEL_ZEC_KEY.get(lang),
-            Charset::KeyText,
-            52,
-            66,
-            false,
-        )],
-        SecretKind::CardPin { min, max, .. } => vec![slot(
-            "YubiKey PIN",
-            Charset::Printable,
-            usize::from(min),
-            usize::from(max),
-            true,
-        )],
-        SecretKind::CardSecret(CardSecretKind::AdminPin) => {
-            vec![slot(
-                text::NAME_OPENPGP_ADMIN.get(lang),
-                Charset::Printable,
-                8,
-                127,
-                true,
-            )]
-        }
-        SecretKind::CardSecret(CardSecretKind::ManagementKey) => vec![slot(
-            text::LABEL_MANAGEMENT_KEY.get(lang),
-            Charset::PrivateKeyHex,
-            48,
-            48,
-            true,
-        )],
-        SecretKind::CardSecret(CardSecretKind::ChangePin(target)) => {
-            let (min, max) = target.bounds();
-            let (min, max) = (usize::from(min), usize::from(max));
-            let name = target_name(target, lang);
-            vec![
-                slot(
-                    &text::LABEL_CURRENT.fill(lang, [name]),
-                    Charset::Printable,
-                    min,
-                    max,
-                    true,
-                ),
-                slot(
-                    &text::LABEL_NEW.fill(lang, [name]),
-                    Charset::Printable,
-                    min,
-                    max,
-                    true,
-                ),
-                slot(
-                    &text::LABEL_NEW_AGAIN.fill(lang, [name]),
-                    Charset::Printable,
-                    min,
-                    max,
-                    true,
-                ),
-            ]
-        }
-        SecretKind::CardSecret(CardSecretKind::PivPin | CardSecretKind::UserPin { piv: true }) => {
-            vec![slot("PIV PIN", Charset::Printable, 6, 8, true)]
-        }
-        SecretKind::CardSecret(CardSecretKind::UserPin { piv: false }) => {
-            vec![slot("OpenPGP PIN", Charset::Printable, 6, 127, true)]
-        }
-        SecretKind::CardSecret(CardSecretKind::SetPins) => vec![
-            slot(
-                text::LABEL_SET_PINS_CURRENT.get(lang),
-                Charset::Printable,
-                0,
-                8,
-                true,
-            ),
-            slot(
-                text::LABEL_SET_PINS_NEW.get(lang),
-                Charset::Printable,
-                8,
-                8,
-                true,
-            ),
-            slot(
-                text::LABEL_SET_PINS_AGAIN.get(lang),
-                Charset::Printable,
-                8,
-                8,
-                true,
-            ),
-        ],
-        SecretKind::Backup { positions } => positions
-            .iter()
-            .map(|position| {
-                slot(
-                    &text::LABEL_WORD.fill(lang, [&position.to_string()]),
-                    Charset::BackupWord,
-                    1,
-                    8,
-                    false,
-                )
-            })
-            .collect(),
-        SecretKind::ShowMnemonic { .. } | SecretKind::ShowKey => Vec::new(),
-    };
-    slots.into_iter().flatten().collect()
-}
-
-fn intro(
-    kind: SecretKind,
-    lang: Lang,
-    (words, address): (usize, bool),
-    card: Option<&str>,
-) -> Vec<String> {
-    let rule = text::PASSWORD_RULE.get(lang);
-    match kind {
-        SecretKind::SetPassword => vec![rule.to_owned()],
-        // Review L1 (2026-11-13: the DEK rotates, spec/02 §4.4): later contents are out of reach
-        // of older copies, but those copies keep the old password and what they held (and a
-        // weak old password can be cracked offline later).
-        SecretKind::ChangePassword => vec![
-            rule.to_owned(),
-            text::CHANGE_PASSWORD_NOTE.get(lang).to_owned(),
-        ],
-        SecretKind::Unlock => vec![text::UNLOCK_INTRO.get(lang).to_owned()],
-        SecretKind::ConfirmPassword => vec![text::CONFIRM_INTRO.get(lang).to_owned()],
-        SecretKind::Mnemonic => vec![text::MNEMONIC_INTRO.get(lang).to_owned()],
-        SecretKind::Passphrase { confirm: true } => {
-            vec![text::PASSPHRASE_CONFIRM_INTRO.get(lang).to_owned()]
-        }
-        SecretKind::Passphrase { confirm: false } => {
-            vec![text::PASSPHRASE_INTRO.get(lang).to_owned()]
-        }
-        SecretKind::PrivateKey { chain, no_words } => vec![
-            match chain {
-                ImportChain::Evm => text::EVM_KEY_INPUT,
-                ImportChain::Sol => text::SOL_KEY_INPUT,
-                ImportChain::Btc => text::BTC_KEY_INPUT,
-                ImportChain::Zec => text::ZEC_KEY_INPUT,
-            }
-            .get(lang)
-            .to_owned(),
-            if no_words {
-                text::KEY_ONLY_BACKUP
-            } else {
-                text::IMPORTED_KEY_BACKUP
-            }
-            .get(lang)
-            .to_owned(),
-        ],
-        // Without a known first address (an added phrase whose meta has none) only the words.
-        SecretKind::ShowMnemonic { .. } => vec![text::SHOW_WORDS.fill(
-            lang,
-            [
-                &words.to_string(),
-                if address {
-                    text::WITH_ADDRESS.get(lang)
-                } else {
-                    ""
-                },
-            ],
-        )],
-        SecretKind::ShowKey => vec![text::SHOW_KEY_INTRO.get(lang).to_owned()],
-        SecretKind::Backup { positions } => {
-            let [first, second, third, fourth] = positions.map(|position| position.to_string());
-            vec![text::BACKUP_INTRO.fill(lang, [&first, &second, &third, &fourth])]
-        }
-        SecretKind::CardSecret(CardSecretKind::AdminPin) => {
-            vec![text::CARD_ADMIN_PIN.get(lang).to_owned()]
-        }
-        SecretKind::CardSecret(CardSecretKind::ManagementKey) => {
-            vec![text::CARD_MANAGEMENT_KEY.get(lang).to_owned()]
-        }
-        SecretKind::CardSecret(CardSecretKind::ChangePin(target)) => {
-            vec![text::CHANGE_PIN_INTRO.fill(
-                lang,
-                [target_name(target, lang), &target_rule(target, lang)],
-            )]
-        }
-        SecretKind::CardSecret(CardSecretKind::PivPin) => {
-            vec![text::CARD_PIV_PIN.get(lang).to_owned()]
-        }
-        SecretKind::CardSecret(CardSecretKind::SetPins) => vec![
-            text::CARD_SET_PINS.get(lang).to_owned(),
-            text::CARD_SET_PINS_SAME.get(lang).to_owned(),
-        ],
-        SecretKind::CardSecret(CardSecretKind::UserPin { .. }) => {
-            vec![text::CARD_USER_PIN.get(lang).to_owned()]
-        }
-        SecretKind::CardPin {
-            touches,
-            per_tx,
-            serial,
-            ..
-        } => {
-            let serial_card = (serial != 0).then(|| format!("#{serial}"));
-            let mut lines = vec![format!(
-                "{}. {}",
-                card_pin_steps(lang, card.or(serial_card.as_deref())),
-                text::CARD_PIN.get(lang)
-            )];
-            if touches > 1 {
-                let line = if per_tx {
-                    text::CARD_TOUCHES_PER_TX
-                } else {
-                    text::CARD_TOUCHES_PER_INPUT
-                };
-                lines.push(line.fill(lang, [&touches.to_string()]));
-            }
-            lines
-        }
-    }
-}
-
-/// The two parts of W01/W04's status line for [`SecretForm::password_checks`]. A failed
-/// condition names what is wrong, not the rule with a ✗ before it ("✗ 두 칸이 같음" read as
-/// "being the same is wrong", 2026-11-12). The fields take only 0x20–0x7E and at most 128
-/// characters, so the rule fails only by being short.
+/// The two parts of W01/W04's status line for the form's password checks
+/// (`SecretView::password_checks`). A failed condition names what is wrong, not the rule with a ✗
+/// before it ("✗ 두 칸이 같음" read as "being the same is wrong", 2026-11-12). The fields take only
+/// 0x20–0x7E and at most 128 characters, so the rule fails only by being short.
 const fn password_status(
     lang: Lang,
     rule: Option<bool>,
@@ -606,12 +117,6 @@ const fn password_status(
             None => (text::PW_AGAIN.get(lang), theme::MUTED),
         },
     ]
-}
-
-/// `true` when `count` is a valid BIP39 length.
-#[must_use]
-pub const fn valid_word_count(count: usize) -> bool {
-    matches!(count, 12 | 15 | 18 | 21 | 24)
 }
 
 /// Draws the flow name, `n/{steps}단계` and the step dots of a secret window; returns the new y.
@@ -697,1567 +202,665 @@ fn paint_steps(
     top.saturating_add(dot).saturating_add(px(14))
 }
 
-impl SecretForm {
-    /// The language the window's texts are drawn in (its fonts follow it, `theme::FontCache`).
-    #[must_use]
-    pub const fn lang(&self) -> Lang {
-        self.lang
-    }
-
-    /// An input window (W01–W07, W10) whose texts are in `lang`.
-    #[must_use]
-    pub fn new(kind: SecretKind, lang: Lang, now_ms: u64, capture_excluded: bool) -> Self {
-        Self {
-            kind,
-            lang,
-            slots: slots_for(kind, lang),
-            active: 0,
-            checkbox: matches!(kind, SecretKind::Mnemonic)
-                .then_some((text::PASSPHRASE_CHECKBOX.get(lang), false)),
-            display: None,
-            error: None,
-            transient: None,
-            info: None,
-            disabled_until: 0,
-            busy: false,
-            revealing: None,
-            masked: false,
-            capture_excluded,
-            started_ms: now_ms,
-            last_activity_ms: now_ms,
-            hold: HoldGate::default(),
-            pressed: None,
-            step: None,
-            details: Vec::new(),
-            card: None,
-            timeout_note: None,
-            countdown_secs: 0,
-            backup_left: false,
-            note: matches!(kind, SecretKind::Mnemonic)
-                .then(|| text::PASSPHRASE_NOTE.get(lang).to_owned()),
-        }
-    }
-
-    /// A display window (W08/W09). Capture exclusion is required, so it is always excluded.
-    #[must_use]
-    pub fn display(kind: SecretKind, lang: Lang, now_ms: u64, secret: DisplaySecret) -> Self {
-        let mut form = Self::new(kind, lang, now_ms, true);
-        form.display = Some(secret);
-        form
-    }
-
-    /// Shows the flow's step indicator above the title.
-    pub const fn set_step(&mut self, step: Option<SecretStep>) {
-        self.step = step;
-    }
-
-    /// W08 `create`: the note after the countdown (where the words can be seen again, or that
-    /// they are wiped when the window closes).
-    pub const fn set_timeout_note(&mut self, note: Option<&'static str>) {
-        self.timeout_note = note;
-    }
-
-    /// W10: the list verdict of field `index` ([`WordMark`]).
-    #[must_use]
-    pub fn word_mark(&self, index: usize) -> WordMark {
-        let Some(slot) = self.slots.get(index) else {
-            return WordMark::None;
-        };
-        let Ok(word) = core::str::from_utf8(slot.field.as_bytes()) else {
-            return WordMark::Unlisted;
-        };
-        if word.is_empty() {
-            return WordMark::None;
-        }
-        if is_word(word) {
-            return WordMark::Listed;
-        }
-        let left = self.backup_left || index != self.active;
-        if left || !is_word_prefix(word) {
-            WordMark::Unlisted
-        } else {
-            WordMark::None
-        }
-    }
-
-    /// W10: the first field whose word is not in the list (its 1-based word position).
-    fn unlisted_position(&self) -> Option<u8> {
-        let SecretKind::Backup { positions } = self.kind else {
-            return None;
-        };
-        (0..self.slots.len())
-            .find(|index| self.word_mark(*index) == WordMark::Unlisted)
-            .and_then(|index| positions.get(index).copied())
-    }
-
-    /// W01/W04 (2026-11-10): whether the new password meets the rule (`VaultPassword::new`, the
-    /// same check as the vault's) and whether the two new fields are equal — each `None` (grey)
-    /// while its field is empty. Never the value or its characters.
-    fn password_checks(&self) -> Option<(Option<bool>, Option<bool>)> {
-        let (new, again) = match self.kind {
-            SecretKind::SetPassword => (0, 1),
-            SecretKind::ChangePassword => (1, 2),
-            _ => return None,
-        };
-        let first = self.slots.get(new)?;
-        let second = self.slots.get(again)?;
-        let rule =
-            (!first.field.is_empty()).then(|| VaultPassword::new(&first.field.copy()).is_ok());
-        let same =
-            (!second.field.is_empty()).then(|| first.field.as_bytes() == second.field.as_bytes());
-        Some((rule, same))
-    }
-
-    /// The lines between the content and the messages (2026-11-10): W01/W04's two password
-    /// conditions, W10's word that is not in the list, W08's countdown on a first display.
-    /// Returns the new y.
-    #[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
-    fn paint_status(
-        &self,
-        dc: &mut PaintDc<'_>,
-        fonts: &Fonts,
-        margin: i32,
-        mut y: i32,
-        width: i32,
-        px: impl Fn(i32) -> i32,
-        now_ms: u64,
-    ) -> i32 {
-        dc.select_font(&fonts.body);
-        if let Some((rule, same)) = self.password_checks() {
-            let [(rule, rule_color), (same, same_color)] = password_status(self.lang, rule, same);
-            let mut x = margin;
-            for (text, color) in [
-                (rule, rule_color),
-                (" · ", theme::MUTED),
-                (same, same_color),
-            ] {
-                let units = wide(text);
-                let (_, text_w) = dc.measure(&units, i32::MAX);
-                dc.set_text_color(color);
-                dc.draw_text(
-                    &units,
-                    Rect::new(x, y, text_w.saturating_add(px(2)), px(22)),
-                    DrawFlags::LINE,
-                );
-                x = x.saturating_add(text_w);
-            }
-            y = y.saturating_add(px(26));
-        }
-        let mut lines: Vec<(String, yw_win::ui::Color)> = Vec::new();
-        if let Some(position) = self.unlisted_position() {
-            lines.push((
-                text::UNLISTED_WORD.fill(self.lang, [&position.to_string()]),
-                theme::DANGER_TEXT,
-            ));
-        }
-        if self.kind.needs_hold() && self.display.is_some() {
-            let left = SECRET_WINDOW_TIMEOUT_MS
-                .saturating_sub(now_ms.saturating_sub(self.started_ms))
-                .div_ceil(1_000);
-            let mut line = text::COUNTDOWN.fill(
-                self.lang,
-                [&(left / 60).to_string(), &format!("{:02}", left % 60)],
-            );
-            if let Some(note) = self.timeout_note {
-                line.push(' ');
-                line.push_str(note);
-            }
-            lines.push((line, theme::MUTED));
-        }
-        for (line, color) in lines {
-            let units = wide(&line);
+/// The lines between the content and the messages (2026-11-10): W01/W04's two password
+/// conditions, W10's word that is not in the list, W08's countdown on a first display.
+/// Returns the new y.
+#[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
+fn paint_status(
+    view: &SecretView<'_>,
+    dc: &mut PaintDc<'_>,
+    fonts: &Fonts,
+    margin: i32,
+    mut y: i32,
+    width: i32,
+    px: impl Fn(i32) -> i32,
+    now_ms: u64,
+) -> i32 {
+    dc.select_font(&fonts.body);
+    if let Some((rule, same)) = view.password_checks() {
+        let [(rule, rule_color), (same, same_color)] = password_status(view.lang(), rule, same);
+        let mut x = margin;
+        for (text, color) in [
+            (rule, rule_color),
+            (" · ", theme::MUTED),
+            (same, same_color),
+        ] {
+            let units = wide(text);
+            let (_, text_w) = dc.measure(&units, i32::MAX);
             dc.set_text_color(color);
-            let height = dc.measure_wrapped(&units, width, DrawFlags::WRAP);
-            dc.draw_text(&units, Rect::new(margin, y, width, height), DrawFlags::WRAP);
+            dc.draw_text(
+                &units,
+                Rect::new(x, y, text_w.saturating_add(px(2)), px(22)),
+                DrawFlags::LINE,
+            );
+            x = x.saturating_add(text_w);
+        }
+        y = y.saturating_add(px(26));
+    }
+    let mut lines: Vec<(String, yw_win::ui::Color)> = Vec::new();
+    if let Some(position) = view.unlisted_position() {
+        lines.push((
+            text::UNLISTED_WORD.fill(view.lang(), [&position.to_string()]),
+            theme::DANGER_TEXT,
+        ));
+    }
+    if let Some(line) = view.countdown_line(now_ms) {
+        lines.push((line, theme::MUTED));
+    }
+    for (line, color) in lines {
+        let units = wide(&line);
+        dc.set_text_color(color);
+        let height = dc.measure_wrapped(&units, width, DrawFlags::WRAP);
+        dc.draw_text(&units, Rect::new(margin, y, width, height), DrawFlags::WRAP);
+        y = y.saturating_add(height).saturating_add(px(4));
+    }
+    y
+}
+
+/// Paints the window from the form's read-only view and returns what it drew where, for the
+/// shell's hit-testing (2026-11-24, S5-7: before, the form kept it). 2026-11-24 (S5-8): a free fn
+/// over `SecretView`, the only reader of it (source check
+/// `the_secret_form_is_read_only_by_its_paint_and_copy`); before, `SecretForm::paint` and its
+/// `layout_and_paint`, the same drawing.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear paint pass for every window kind"
+)]
+#[must_use]
+pub fn paint_form(
+    view: &SecretView<'_>,
+    dc: &mut PaintDc<'_>,
+    client: Rect,
+    fonts: &Fonts,
+    dpi: u32,
+    now_ms: u64,
+) -> HitLayout {
+    let px = |dip: i32| scale(dip, dpi);
+    let margin = px(theme::SPACE_XL);
+    let width = client
+        .w
+        .saturating_sub(margin.saturating_mul(2))
+        .max(px(100));
+    let mut y = px(theme::SPACE_L);
+    let mut layout = HitLayout::default();
+    let lang = view.lang();
+    dc.fill_rect(client, theme::BG);
+
+    if !view.capture_excluded() {
+        let warning = wide(text::CAPTURE_WARN.get(lang));
+        dc.select_font(&fonts.body_bold);
+        let height = dc.measure_wrapped(&warning, width.saturating_sub(px(20)), DrawFlags::WRAP);
+        let banner = Rect::new(margin, y, width, height.saturating_add(px(20)));
+        dc.round_rect(
+            banner,
+            px(theme::RADIUS_CONTROL),
+            theme::DANGER_BG,
+            theme::DANGER_ACCENT,
+        );
+        dc.set_text_color(theme::DANGER_TEXT);
+        dc.draw_text(&warning, banner.inset(px(10)), DrawFlags::WRAP);
+        y = banner.bottom().saturating_add(px(12));
+    }
+
+    if let Some(step) = view.step() {
+        y = paint_steps(dc, fonts, lang, step, margin, y, width, &px);
+    }
+
+    dc.select_font(&fonts.title);
+    dc.set_text_color(theme::TEXT);
+    let title = wide(view.kind().title(lang));
+    let title_h = dc.measure_wrapped(&title, width, DrawFlags::WRAP);
+    dc.draw_text(
+        &title,
+        Rect::new(margin, y, width, title_h),
+        DrawFlags::WRAP,
+    );
+    y = y.saturating_add(title_h).saturating_add(px(6));
+
+    dc.select_font(&fonts.body);
+    dc.set_text_color(theme::MUTED);
+    for paragraph in view.intro().iter().chain(view.details()) {
+        let units = wide(paragraph);
+        let height = dc.measure_wrapped(&units, width, DrawFlags::WRAP);
+        dc.draw_text(&units, Rect::new(margin, y, width, height), DrawFlags::WRAP);
+        y = y.saturating_add(height).saturating_add(px(8));
+    }
+
+    let buttons_h = px(36);
+    let buttons_y = client
+        .h
+        .saturating_sub(px(theme::SPACE_L))
+        .saturating_sub(buttons_h);
+    // The content card between the header and the buttons.
+    let card = Rect::new(
+        margin,
+        y.saturating_add(px(4)),
+        width,
+        buttons_y
+            .saturating_sub(px(theme::SPACE_M))
+            .saturating_sub(y.saturating_add(px(4)))
+            .max(px(40)),
+    );
+    dc.round_rect(
+        card,
+        px(theme::RADIUS_CARD),
+        theme::CARD,
+        theme::CARD_BORDER,
+    );
+    let content_top = card.y;
+    let inner_x = card.x.saturating_add(px(theme::SPACE_L));
+    let inner_w = card.w.saturating_sub(px(theme::SPACE_L).saturating_mul(2));
+    y = card.y.saturating_add(px(theme::SPACE_L));
+
+    if let Some(shown) = view.shown_text() {
+        y = paint_display(view, dc, shown, fonts, inner_x, y, inner_w, px);
+    } else if view.kind() == SecretKind::Mnemonic {
+        y = paint_mnemonic_grid(view, dc, fonts, inner_x, y, inner_w, px, &mut layout);
+    } else {
+        y = paint_fields(
+            view,
+            dc,
+            fonts,
+            inner_x,
+            y,
+            inner_w,
+            px,
+            &mut layout,
+            now_ms,
+        );
+    }
+
+    if let Some((label, checked)) = view.checkbox() {
+        let box_rect = Rect::new(inner_x, y, px(18), px(18));
+        dc.round_rect(
+            box_rect,
+            px(3),
+            if checked { theme::FOCUS } else { theme::CARD },
+            if checked { theme::FOCUS } else { theme::BORDER },
+        );
+        if checked {
+            dc.select_font(&fonts.body_bold);
+            dc.set_text_color(theme::PRIMARY_TEXT);
+            dc.draw_text(&wide("✓"), box_rect, DrawFlags::CENTER);
+        }
+        dc.select_font(&fonts.body);
+        dc.set_text_color(theme::TEXT);
+        let label_rect = Rect::new(
+            inner_x.saturating_add(px(26)),
+            y.saturating_sub(px(2)),
+            inner_w,
+            px(22),
+        );
+        dc.draw_text(&wide(label), label_rect, DrawFlags::LINE);
+        layout.buttons.push((
+            SecretButton::Checkbox,
+            Rect::new(inner_x, y, inner_w / 2, px(20)),
+        ));
+        y = y.saturating_add(px(26));
+        if checked && let Some(note) = view.note() {
+            dc.set_text_color(theme::MUTED);
+            dc.select_font(&fonts.caption);
+            let units = wide(note);
+            let height = dc.measure_wrapped(&units, inner_w, DrawFlags::WRAP);
+            dc.draw_text(
+                &units,
+                Rect::new(inner_x, y, inner_w, height),
+                DrawFlags::WRAP,
+            );
+            y = y.saturating_add(height).saturating_add(px(6));
+        }
+    }
+
+    y = paint_status(view, dc, fonts, inner_x, y, inner_w, px, now_ms);
+    dc.select_font(&fonts.body);
+    for (message, color) in [
+        (view.error(), theme::DANGER_TEXT),
+        (view.transient(), theme::DANGER_TEXT),
+        (view.info(), theme::MUTED),
+        (
+            view.busy().then_some(text::CHECKING.get(lang)),
+            theme::MUTED,
+        ),
+    ] {
+        if let Some(message) = message {
+            let units = wide(message);
+            dc.set_text_color(color);
+            let height = dc.measure_wrapped(&units, inner_w, DrawFlags::WRAP);
+            dc.draw_text(
+                &units,
+                Rect::new(inner_x, y, inner_w, height),
+                DrawFlags::WRAP,
+            );
             y = y.saturating_add(height).saturating_add(px(4));
         }
-        y
     }
 
-    /// The kind.
-    #[must_use]
-    pub const fn kind(&self) -> SecretKind {
-        self.kind
-    }
+    paint_buttons(
+        view,
+        dc,
+        fonts,
+        client,
+        margin,
+        buttons_y,
+        buttons_h,
+        px,
+        &mut layout,
+        now_ms,
+    );
 
-    /// Whether capture exclusion is in effect (`false` shows T-CAPTURE-WARN and disables `보기`).
-    #[must_use]
-    pub const fn capture_excluded(&self) -> bool {
-        self.capture_excluded
-    }
-
-    /// Wipes every buffer and the displayed secret.
-    pub fn wipe(&mut self) {
-        for slot in &mut self.slots {
-            slot.field.clear();
-        }
-        self.display = None;
-        self.revealing = None;
-        self.hold.cancel();
-    }
-
-    /// Shows an error line (fixed text).
-    pub fn set_error(&mut self, message: Option<String>) {
-        self.error = message;
-    }
-
-    /// Extra non-secret lines under the intro (W11 card serials and PIN tries).
-    pub fn set_details(&mut self, lines: Vec<String>) {
-        self.details = lines;
-    }
-
-    /// W11: the card its first step names (`Wallet::card_name`, a label — not a secret).
-    pub fn set_card(&mut self, card: Option<String>) {
-        self.card = card;
-    }
-
-    /// Shows an information line (T-PASTE-CLEARED, T-COPIED…).
-    pub fn set_info(&mut self, message: Option<String>) {
-        self.info = message;
-    }
-
-    /// Worker in progress: input and buttons disabled, status `확인 중…`.
-    pub const fn set_busy(&mut self, busy: bool) {
-        self.busy = busy;
-    }
-
-    /// Whether a worker result is awaited.
-    #[must_use]
-    pub const fn busy(&self) -> bool {
-        self.busy
-    }
-
-    /// Wrong password (E-VLT-001): clear the fields and disable input for 1 s.
-    pub fn fail_password(&mut self, now_ms: u64) {
-        for slot in &mut self.slots {
-            slot.field.clear();
-        }
-        self.active = 0;
-        self.busy = false;
-        self.disabled_until = now_ms.saturating_add(UNLOCK_FAIL_DISABLE_MS);
-        self.error = Some(ErrorCode::Vlt001.text_in(self.lang));
-    }
-
-    /// A new backup challenge (T-BACKUP-FAIL): new positions, empty fields.
-    pub fn reset_backup(&mut self, positions: [u8; 4], message: Option<String>) {
-        self.kind = SecretKind::Backup { positions };
-        self.slots = slots_for(self.kind, self.lang);
-        self.active = 0;
-        self.busy = false;
-        self.backup_left = false;
-        self.error = message;
-    }
-
-    fn input_enabled(&self, now_ms: u64) -> bool {
-        !self.busy && now_ms >= self.disabled_until && self.display.is_none()
-    }
-
-    fn mnemonic_status(&self) -> (usize, Option<usize>, bool) {
-        let Some(slot) = self.slots.first() else {
-            return (0, None, false);
-        };
-        let words = mnemonic_words(&slot.field);
-        let trailing_space = slot.field.as_bytes().last() == Some(&b' ');
-        let completed = if trailing_space {
-            words.len()
-        } else {
-            words.len().saturating_sub(1)
-        };
-        let first_unknown = words
-            .iter()
-            .take(completed)
-            .position(|word| !core::str::from_utf8(word).is_ok_and(is_word));
-        let all_known = words
-            .iter()
-            .all(|word| core::str::from_utf8(word).is_ok_and(is_word));
-        (words.len(), first_unknown, all_known)
-    }
-
-    /// Whether the primary button is enabled.
-    #[must_use]
-    pub fn can_submit(&self, now_ms: u64) -> bool {
-        if self.display.is_some() {
-            return true;
-        }
-        if !self.input_enabled(now_ms) {
-            return false;
-        }
-        if self.kind == SecretKind::Mnemonic {
-            let (count, _, all_known) = self.mnemonic_status();
-            return valid_word_count(count) && all_known && count <= 24;
-        }
-        // W01/W04: both conditions shown above the buttons (2026-11-10).
-        if let Some((rule, same)) = self.password_checks()
-            && !(rule == Some(true) && same == Some(true))
-        {
-            return false;
-        }
-        // W10: a word not in the list is a typo (or a misspelt paper), never sent (2026-11-10).
-        if self.unlisted_position().is_some() {
-            return false;
-        }
-        self.slots
-            .iter()
-            .all(|slot| slot.field.len() >= slot.min.min(1))
-    }
-
-    #[expect(clippy::too_many_lines, reason = "one arm per window kind")]
-    fn validate(&self) -> Result<(), String> {
-        let equal = |a: usize, b: usize| {
-            self.slots.get(a).map(|slot| slot.field.as_bytes())
-                == self.slots.get(b).map(|slot| slot.field.as_bytes())
-        };
-        // A new card secret that is a published factory value (spec/10 §9.3).
-        let factory = |index: usize| {
-            self.slots
-                .get(index)
-                .is_some_and(|slot| yw_core::yubikey::is_factory_secret(slot.field.as_bytes()))
-        };
-        let password_ok = |index: usize| {
-            self.slots
-                .get(index)
-                .is_some_and(|slot| VaultPassword::new(&slot.field.copy()).is_ok())
-        };
-        match self.kind {
-            SecretKind::SetPassword => {
-                if !password_ok(0) {
-                    return Err(ErrorCode::Inp001.text_in(self.lang));
-                }
-                if !equal(0, 1) {
-                    return Err(ErrorCode::Inp002.text_in(self.lang));
-                }
-            }
-            SecretKind::ChangePassword => {
-                if !password_ok(1) {
-                    return Err(ErrorCode::Inp001.text_in(self.lang));
-                }
-                if !equal(1, 2) {
-                    return Err(ErrorCode::Inp002.text_in(self.lang));
-                }
-            }
-            SecretKind::Passphrase { confirm: true } if !equal(0, 1) => {
-                return Err(ErrorCode::Inp002.text_in(self.lang));
-            }
-            SecretKind::PrivateKey {
-                chain: ImportChain::Evm,
-                ..
-            } => {
-                if let Some(slot) = self.slots.first() {
-                    finalize_private_key(&slot.field).map_err(|code| code.text_in(self.lang))?;
-                }
-            }
-            SecretKind::PrivateKey {
-                chain: ImportChain::Btc,
-                ..
-            } if self.slots.iter().any(|slot| slot.field.len() < slot.min) => {
-                return Err(ErrorCode::Inp023.text_in(self.lang));
-            }
-            SecretKind::Backup { .. }
-                if self.slots.iter().any(|slot| slot.field.len() < slot.min) =>
-            {
-                return Err(ErrorCode::Inp013.text_in(self.lang));
-            }
-            SecretKind::CardPin { min, max, .. }
-                if self.slots.iter().any(|slot| {
-                    !(usize::from(min)..=usize::from(max)).contains(&slot.field.len())
-                }) =>
-            {
-                return Err(
-                    text::ERR_CARD_PIN.fill(self.lang, [&min.to_string(), &max.to_string()])
-                );
-            }
-            SecretKind::CardSecret(CardSecretKind::AdminPin)
-                if self
-                    .slots
-                    .iter()
-                    .any(|slot| !(8..=127).contains(&slot.field.len())) =>
-            {
-                return Err(text::ERR_ADMIN_PIN.get(self.lang).to_owned());
-            }
-            SecretKind::CardSecret(CardSecretKind::ManagementKey)
-                if self.slots.iter().any(|slot| {
-                    slot.field.len() != 48
-                        || !slot.field.as_bytes().iter().all(u8::is_ascii_hexdigit)
-                }) =>
-            {
-                return Err(text::ERR_MANAGEMENT_KEY.get(self.lang).to_owned());
-            }
-            SecretKind::CardSecret(
-                CardSecretKind::PivPin | CardSecretKind::UserPin { piv: true },
-            ) if self
-                .slots
-                .iter()
-                .any(|slot| !(6..=8).contains(&slot.field.len())) =>
-            {
-                return Err(text::ERR_PIV_PIN.get(self.lang).to_owned());
-            }
-            SecretKind::CardSecret(CardSecretKind::UserPin { piv: false })
-                if self
-                    .slots
-                    .iter()
-                    .any(|slot| !(6..=127).contains(&slot.field.len())) =>
-            {
-                return Err(text::ERR_OPENPGP_PIN.get(self.lang).to_owned());
-            }
-            SecretKind::CardSecret(CardSecretKind::SetPins) => {
-                let current = self.slots.first().map_or(0, |slot| slot.field.len());
-                if current != 0 && current != 8 {
-                    return Err(text::ERR_SET_PINS_CURRENT.get(self.lang).to_owned());
-                }
-                if self.slots.iter().skip(1).any(|slot| slot.field.len() != 8) {
-                    return Err(text::ERR_SET_PINS_NEW.get(self.lang).to_owned());
-                }
-                if !equal(1, 2) {
-                    return Err(text::ERR_SET_PINS_DIFFER.get(self.lang).to_owned());
-                }
-                if equal(0, 1) {
-                    return Err(text::ERR_SET_PINS_SAME.get(self.lang).to_owned());
-                }
-                if factory(1) {
-                    return Err(text::CARD_NEW_FACTORY.get(self.lang).to_owned());
-                }
-            }
-            SecretKind::CardSecret(CardSecretKind::ChangePin(target)) => {
-                let (min, max) = target.bounds();
-                let range = usize::from(min)..=usize::from(max);
-                if self
-                    .slots
-                    .iter()
-                    .any(|slot| !range.contains(&slot.field.len()))
-                {
-                    return Err(format!(
-                        "{}: {}",
-                        target_name(target, self.lang),
-                        target_rule(target, self.lang)
-                    ));
-                }
-                if !equal(1, 2) {
-                    return Err(
-                        text::ERR_NEW_DIFFER.fill(self.lang, [target_name(target, self.lang)])
-                    );
-                }
-                if equal(0, 1) {
-                    return Err(
-                        text::ERR_NEW_SAME.fill(self.lang, [target_name(target, self.lang)])
-                    );
-                }
-                if factory(1) {
-                    return Err(text::CARD_NEW_FACTORY.get(self.lang).to_owned());
-                }
-            }
-            _ => {}
-        }
-        if self
-            .slots
-            .iter()
-            .any(|slot| slot.field.len() < slot.min.min(1))
-        {
-            return Err(match self.kind {
-                SecretKind::Passphrase { .. } => ErrorCode::Inp019.text_in(self.lang),
-                _ => ErrorCode::Inp001.text_in(self.lang),
-            });
-        }
-        Ok(())
-    }
-
-    fn submit(&mut self, now_ms: u64) -> FormAction {
-        if self.display.is_some() {
-            return if self.kind.needs_hold() {
-                FormAction::None
-            } else {
-                FormAction::Close
-            };
-        }
-        if !self.can_submit(now_ms) {
-            if self.kind == SecretKind::Mnemonic {
-                let (count, unknown, _) = self.mnemonic_status();
-                self.error = Some(match unknown {
-                    Some(position) => ErrorCode::Inp004
-                        .render_in(self.lang, &position.saturating_add(1).to_string()),
-                    None if !valid_word_count(count) => ErrorCode::Inp003.text_in(self.lang),
-                    None => ErrorCode::Inp005.text_in(self.lang),
-                });
-                return FormAction::Redraw;
-            }
-            if !self.input_enabled(now_ms) {
-                return FormAction::None;
-            }
-            if matches!(
-                self.kind,
-                SecretKind::SetPassword | SecretKind::ChangePassword
-            ) && let Err(message) = self.validate()
-            {
-                // Enter with a rule not met: the reason (E-INP-001/002), as before.
-                self.error = Some(message);
-                return FormAction::Redraw;
-            }
-            if matches!(self.kind, SecretKind::Backup { .. })
-                && self.slots.iter().any(|slot| {
-                    !slot.field.is_empty()
-                        && !core::str::from_utf8(slot.field.as_bytes()).is_ok_and(is_word)
-                })
-            {
-                // Every field counts as left: the status line names the word.
-                self.backup_left = true;
-                return FormAction::Redraw;
-            }
-            return FormAction::None;
-        }
-        if let Err(message) = self.validate() {
-            self.error = Some(message);
-            return FormAction::Redraw;
-        }
-        let mut values = Vec::with_capacity(self.slots.len());
-        for slot in &mut self.slots {
-            let mut value = slot.field.copy();
-            if self.kind == SecretKind::Mnemonic && value.last() == Some(&b' ') {
-                value.pop();
-            }
-            if matches!(
-                self.kind,
-                SecretKind::PrivateKey {
-                    chain: ImportChain::Evm,
-                    ..
-                }
-            ) {
-                value = finalize_private_key(&slot.field).unwrap_or_default();
-            }
-            if matches!(
-                self.kind,
-                SecretKind::PrivateKey {
-                    chain: ImportChain::Sol,
-                    ..
-                }
-            ) && value.last() == Some(&b' ')
-            {
-                value.pop();
-            }
-            values.push(value);
-            slot.field.clear();
-        }
-        self.error = None;
-        FormAction::Submit(Submission {
-            values,
-            checkbox: self.checkbox.is_some_and(|(_, checked)| checked),
-        })
-    }
-
-    fn cancel(&mut self) -> FormAction {
-        self.wipe();
-        FormAction::Cancel
-    }
-
-    fn touch(&mut self, now_ms: u64) {
-        self.last_activity_ms = now_ms;
-    }
-
-    fn non_ascii(&mut self, now_ms: u64) -> FormAction {
-        self.transient = Some((
-            ErrorCode::Inp008.text_in(self.lang),
-            now_ms.saturating_add(INPUT_ERROR_MS),
-        ));
-        FormAction::Redraw
-    }
-
-    /// One typed unit ([`SecretKey::Char`]; was the `pub` `WM_CHAR` entry `on_char` before
-    /// 2026-11-24, S5-7).
-    fn on_char(&mut self, unit: u16, now_ms: u64) -> FormAction {
-        self.touch(now_ms);
-        if unit >= 0x80 {
-            return self.non_ascii(now_ms);
-        }
-        if !self.input_enabled(now_ms) {
-            return FormAction::None;
-        }
-        match unit {
-            0x08 => {
-                if let Some(slot) = self.slots.get_mut(self.active)
-                    && slot.field.backspace()
-                {
-                    self.error = None;
-                    self.backup_left = false;
-                    return FormAction::Redraw;
-                }
-                FormAction::None
-            }
-            0x0D => {
-                if self.active.saturating_add(1) < self.slots.len() {
-                    self.active = self.active.saturating_add(1);
-                    FormAction::Redraw
-                } else {
-                    self.submit(now_ms)
-                }
-            }
-            0x20..=0x7E => {
-                let Some(slot) = self.slots.get_mut(self.active) else {
-                    return FormAction::None;
-                };
-                match slot.field.push_unit(unit) {
-                    PushResult::Accepted => {
-                        self.error = None;
-                        self.backup_left = false;
-                        FormAction::Redraw
-                    }
-                    PushResult::Rejected(RejectReason::NonAscii) => self.non_ascii(now_ms),
-                    PushResult::Full | PushResult::Rejected(_) => FormAction::None,
-                }
-            }
-            _ => FormAction::None,
-        }
-    }
-
-    /// A key of the window ([`SecretKey`], mapped by the shell: Windows `ui::secret_input`). Every
-    /// key touches the inactivity clock first; a [`FormAction::None`] lets the shell's platform
-    /// handle the key (Windows: `Reply::Default`). 2026-11-24 (S5-7): before, `on_key(vk, ctrl,
-    /// shift, alt)` compared the Windows virtual-key codes itself in the precedence the map now
-    /// applies, and `on_char(unit)` was the `WM_CHAR` entry ([`SecretKey::Char`]).
-    pub fn on_key(&mut self, key: SecretKey, now_ms: u64) -> FormAction {
-        self.touch(now_ms);
-        match key {
-            SecretKey::Char(unit) => self.on_char(unit, now_ms),
-            SecretKey::Composition => self.non_ascii(now_ms),
-            SecretKey::Escape => {
-                // A submitted value's job (reveal, removal, `.prev` recovery, unlock) is running
-                // and cannot be called back: Esc would only look like a cancel. The window closes
-                // with the result (1–2 s).
-                if self.busy {
-                    FormAction::None
-                } else {
-                    self.cancel()
-                }
-            }
-            SecretKey::Paste => {
-                if self.kind.paste_allowed() && self.input_enabled(now_ms) {
-                    FormAction::Paste
-                } else {
-                    FormAction::None
-                }
-            }
-            SecretKey::Copy => {
-                if self.kind.is_display() {
-                    FormAction::Copy
-                } else {
-                    FormAction::None
-                }
-            }
-            SecretKey::Tab { back } => {
-                if self.kind == SecretKind::Mnemonic {
-                    return self.on_char(0x20, now_ms);
-                }
-                let count = self.slots.len();
-                if count == 0 {
-                    return FormAction::None;
-                }
-                self.active = if back {
-                    self.active
-                        .checked_sub(1)
-                        .unwrap_or(count.saturating_sub(1))
-                } else {
-                    self.active.saturating_add(1) % count
-                };
-                FormAction::Redraw
-            }
-            SecretKey::Other => FormAction::None,
-        }
-    }
-
-    fn button_enabled(&self, button: SecretButton, now_ms: u64) -> bool {
-        match button {
-            SecretButton::Primary => self.can_submit(now_ms) || self.display.is_some(),
-            SecretButton::Copy => self
-                .display
-                .as_ref()
-                .is_some_and(|display| display.copy_allowed),
-            SecretButton::Reveal(_) => self.capture_excluded && self.input_enabled(now_ms),
-            SecretButton::ClearAll | SecretButton::Checkbox => self.input_enabled(now_ms),
-            // Not while a submitted job runs (see `on_key`'s Esc).
-            SecretButton::Cancel => !self.busy,
-        }
-    }
-
-    /// A pointer event of the window ([`SecretPointer`], hit-tested by the shell against the
-    /// layout [`Self::paint`] returned); returns the action and, for a press, whether to capture
-    /// the pointer (a move or a release never asks). 2026-11-24 (S5-7): was `on_mouse_down`,
-    /// `on_mouse_move` and `on_mouse_up(x, y)` over the rects the form kept from its paint.
-    pub fn on_pointer(&mut self, pointer: SecretPointer, now_ms: u64) -> (FormAction, bool) {
-        match pointer {
-            SecretPointer::Down(target) => self.pointer_down(target, now_ms),
-            SecretPointer::Move(over) => (self.pointer_move(&over), false),
-            SecretPointer::Up(button) => (self.pointer_up(button, now_ms), false),
-        }
-    }
-
-    /// `WM_LBUTTONDOWN` on `target`.
-    fn pointer_down(&mut self, target: Option<SecretTarget>, now_ms: u64) -> (FormAction, bool) {
-        self.touch(now_ms);
-        self.masked = false;
-        let button = match target {
-            Some(SecretTarget::Field(index)) => {
-                self.active = index;
-                return (FormAction::Redraw, false);
-            }
-            Some(SecretTarget::Button(button)) => button,
-            None => return (FormAction::Redraw, false),
-        };
-        if !self.button_enabled(button, now_ms) {
-            return (FormAction::None, false);
-        }
-        self.pressed = Some(button);
-        match button {
-            SecretButton::Primary if self.kind.needs_hold() => {
-                self.hold.begin(now_ms);
-                (FormAction::Redraw, true)
-            }
-            SecretButton::Reveal(index) => {
-                self.revealing = Some(index);
-                (FormAction::Redraw, true)
-            }
-            _ => (FormAction::Redraw, true),
-        }
-    }
-
-    /// `WM_MOUSEMOVE` while captured, over the buttons `over`.
-    fn pointer_move(&mut self, over: &[SecretButton]) -> FormAction {
-        let Some(pressed) = self.pressed else {
-            return FormAction::None;
-        };
-        let inside = over.contains(&pressed);
-        if !inside && (self.hold.active() || self.revealing.is_some()) {
-            self.hold.cancel();
-            self.revealing = None;
-            return FormAction::Redraw;
-        }
-        FormAction::None
-    }
-
-    /// `WM_LBUTTONUP` over `button`.
-    fn pointer_up(&mut self, button: Option<SecretButton>, now_ms: u64) -> FormAction {
-        self.touch(now_ms);
-        let pressed = self.pressed.take();
-        self.revealing = None;
-        if self.hold.active() {
-            self.hold.cancel();
-            return FormAction::Redraw;
-        }
-        let Some(pressed) = pressed else {
-            return FormAction::None;
-        };
-        if button != Some(pressed) || !self.button_enabled(pressed, now_ms) {
-            return FormAction::Redraw;
-        }
-        match pressed {
-            SecretButton::Primary => self.submit(now_ms),
-            SecretButton::Cancel => {
-                if self.display.is_some() && !self.kind.needs_hold() {
-                    self.wipe();
-                    FormAction::Close
-                } else {
-                    self.cancel()
-                }
-            }
-            SecretButton::ClearAll => {
-                for slot in &mut self.slots {
-                    slot.field.clear();
-                }
-                self.active = 0;
-                self.error = None;
-                FormAction::Redraw
-            }
-            SecretButton::Copy => FormAction::Copy,
-            SecretButton::Checkbox => {
-                if let Some((_, checked)) = self.checkbox.as_mut() {
-                    *checked = !*checked;
-                }
-                FormAction::Redraw
-            }
-            SecretButton::Reveal(_) => FormAction::Redraw,
-        }
-    }
-    /// Capture lost / cancel mode / focus lost: cancel holds and reveals.
-    pub fn on_capture_lost(&mut self) -> FormAction {
-        self.pressed = None;
-        if self.hold.active() || self.revealing.is_some() {
-            self.hold.cancel();
-            self.revealing = None;
-            return FormAction::Redraw;
-        }
-        FormAction::None
-    }
-
-    /// `WM_ACTIVATEAPP(0)` or focus to another window: mask plaintext windows, stop reveals.
-    pub fn on_deactivate(&mut self) -> FormAction {
-        self.hold.cancel();
-        self.revealing = None;
-        self.pressed = None;
-        if self.kind.plaintext() {
-            self.masked = true;
-        }
-        FormAction::Redraw
-    }
-
-    /// Re-activated: show the content again.
-    pub const fn on_activate(&mut self) {
-        self.masked = false;
-    }
-
-    /// Whether `보기` may reveal masked fields (never without capture exclusion).
-    #[must_use]
-    pub fn reveal_enabled(&self, now_ms: u64) -> bool {
-        self.button_enabled(SecretButton::Reveal(0), now_ms)
-    }
-
-    /// Whether the content is masked (T-MASKED).
-    #[must_use]
-    pub const fn masked(&self) -> bool {
-        self.masked
-    }
-
-    /// Timer: hold completion, transient error expiry, window timeout.
-    pub fn on_tick(&mut self, now_ms: u64) -> FormAction {
-        if self.hold.complete(now_ms) {
-            self.hold.cancel();
-            self.pressed = None;
-            return FormAction::HoldComplete;
-        }
-        let reference = if self.display.is_some() {
-            self.started_ms
-        } else {
-            self.last_activity_ms
-        };
-        if now_ms.saturating_sub(reference) >= SECRET_WINDOW_TIMEOUT_MS {
-            self.wipe();
-            return FormAction::TimedOut;
-        }
-        let mut redraw = self.hold.active();
-        // W08 `create`: its countdown changes every second.
-        if self.kind.needs_hold() && self.display.is_some() {
-            let secs = SECRET_WINDOW_TIMEOUT_MS
-                .saturating_sub(now_ms.saturating_sub(self.started_ms))
-                .div_ceil(1_000);
-            if secs != self.countdown_secs {
-                self.countdown_secs = secs;
-                redraw = true;
-            }
-        }
-        if self
-            .transient
-            .as_ref()
-            .is_some_and(|(_, until)| now_ms >= *until)
-        {
-            self.transient = None;
-            redraw = true;
-        }
-        if self.disabled_until != 0 && now_ms >= self.disabled_until {
-            self.disabled_until = 0;
-            redraw = true;
-        }
-        if redraw {
-            FormAction::Redraw
-        } else {
-            FormAction::None
-        }
-    }
-
-    /// Applies normalized clipboard text to the active field (all-or-nothing, E-INP-018).
-    /// Returns `true` when a password/passphrase value (`Printable`, pasted exactly) starts or
-    /// ends with a space, so the caller shows T-PASTE-EDGE-SPACE (spec/04 §4.7-3).
-    ///
-    /// # Errors
-    ///
-    /// [`ErrorCode::Inp018`].
-    pub fn apply_paste(&mut self, units: &[u16]) -> Result<bool, ErrorCode> {
-        let slot = self.slots.get_mut(self.active).ok_or(ErrorCode::Inp018)?;
-        let charset = slot.field.charset();
-        let normalized = normalize_paste(units, charset, slot.field.limit())?;
-        if !slot.field.replace_with(&normalized) {
-            return Err(ErrorCode::Inp018);
-        }
-        self.error = None;
-        Ok(charset == Charset::Printable && has_edge_space(&normalized))
-    }
-
-    /// The text to copy (W08: words joined by one space; W09: 64 hex) as UTF-16.
-    #[must_use]
-    pub fn copy_units(&self) -> Option<Zeroizing<Vec<u16>>> {
-        let display = self.display.as_ref()?;
-        let mut units = Zeroizing::new(Vec::with_capacity(display.text.expose().len()));
-        units.extend(display.text.expose().encode_utf16());
-        Some(units)
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one linear paint pass for every window kind"
-    )]
-    fn layout_and_paint(
-        &self,
-        dc: &mut PaintDc<'_>,
-        client: Rect,
-        fonts: &Fonts,
-        dpi: u32,
-        now_ms: u64,
-    ) -> HitLayout {
-        let px = |dip: i32| scale(dip, dpi);
-        let margin = px(theme::SPACE_XL);
-        let width = client
-            .w
-            .saturating_sub(margin.saturating_mul(2))
-            .max(px(100));
-        let mut y = px(theme::SPACE_L);
-        let mut layout = HitLayout::default();
-        dc.fill_rect(client, theme::BG);
-
-        if !self.capture_excluded {
-            let warning = wide(text::CAPTURE_WARN.get(self.lang));
-            dc.select_font(&fonts.body_bold);
-            let height =
-                dc.measure_wrapped(&warning, width.saturating_sub(px(20)), DrawFlags::WRAP);
-            let banner = Rect::new(margin, y, width, height.saturating_add(px(20)));
-            dc.round_rect(
-                banner,
-                px(theme::RADIUS_CONTROL),
-                theme::DANGER_BG,
-                theme::DANGER_ACCENT,
-            );
-            dc.set_text_color(theme::DANGER_TEXT);
-            dc.draw_text(&warning, banner.inset(px(10)), DrawFlags::WRAP);
-            y = banner.bottom().saturating_add(px(12));
-        }
-
-        if let Some(step) = self.step {
-            y = paint_steps(dc, fonts, self.lang, step, margin, y, width, &px);
-        }
-
-        dc.select_font(&fonts.title);
-        dc.set_text_color(theme::TEXT);
-        let title = wide(self.kind.title(self.lang));
-        let title_h = dc.measure_wrapped(&title, width, DrawFlags::WRAP);
-        dc.draw_text(
-            &title,
-            Rect::new(margin, y, width, title_h),
-            DrawFlags::WRAP,
-        );
-        y = y.saturating_add(title_h).saturating_add(px(6));
-
-        let words = self
-            .display
-            .as_ref()
-            .map_or(24, |display| display.text.expose().split(' ').count());
-        dc.select_font(&fonts.body);
-        dc.set_text_color(theme::MUTED);
-        let address = self
-            .display
-            .as_ref()
-            .is_some_and(|display| display.address.is_some());
-        for paragraph in intro(self.kind, self.lang, (words, address), self.card.as_deref())
-            .iter()
-            .chain(&self.details)
-        {
-            let units = wide(paragraph);
-            let height = dc.measure_wrapped(&units, width, DrawFlags::WRAP);
-            dc.draw_text(&units, Rect::new(margin, y, width, height), DrawFlags::WRAP);
-            y = y.saturating_add(height).saturating_add(px(8));
-        }
-
-        let buttons_h = px(36);
-        let buttons_y = client
-            .h
-            .saturating_sub(px(theme::SPACE_L))
-            .saturating_sub(buttons_h);
-        // The content card between the header and the buttons.
-        let card = Rect::new(
-            margin,
-            y.saturating_add(px(4)),
-            width,
-            buttons_y
-                .saturating_sub(px(theme::SPACE_M))
-                .saturating_sub(y.saturating_add(px(4)))
-                .max(px(40)),
-        );
+    if view.masked() {
         dc.round_rect(
             card,
             px(theme::RADIUS_CARD),
             theme::CARD,
             theme::CARD_BORDER,
         );
-        let content_top = card.y;
-        let inner_x = card.x.saturating_add(px(theme::SPACE_L));
-        let inner_w = card.w.saturating_sub(px(theme::SPACE_L).saturating_mul(2));
-        y = card.y.saturating_add(px(theme::SPACE_L));
-
-        if let Some(display) = &self.display {
-            y = self.paint_display(dc, display, fonts, inner_x, y, inner_w, px);
-        } else if self.kind == SecretKind::Mnemonic {
-            y = self.paint_mnemonic_grid(dc, fonts, inner_x, y, inner_w, px, &mut layout);
-        } else {
-            y = self.paint_fields(dc, fonts, inner_x, y, inner_w, px, &mut layout, now_ms);
-        }
-
-        if let Some((label, checked)) = self.checkbox {
-            let box_rect = Rect::new(inner_x, y, px(18), px(18));
-            dc.round_rect(
-                box_rect,
-                px(3),
-                if checked { theme::FOCUS } else { theme::CARD },
-                if checked { theme::FOCUS } else { theme::BORDER },
-            );
-            if checked {
-                dc.select_font(&fonts.body_bold);
-                dc.set_text_color(theme::PRIMARY_TEXT);
-                dc.draw_text(&wide("✓"), box_rect, DrawFlags::CENTER);
-            }
-            dc.select_font(&fonts.body);
-            dc.set_text_color(theme::TEXT);
-            let label_rect = Rect::new(
-                inner_x.saturating_add(px(26)),
-                y.saturating_sub(px(2)),
-                inner_w,
-                px(22),
-            );
-            dc.draw_text(&wide(label), label_rect, DrawFlags::LINE);
-            layout.buttons.push((
-                SecretButton::Checkbox,
-                Rect::new(inner_x, y, inner_w / 2, px(20)),
-            ));
-            y = y.saturating_add(px(26));
-            if checked && let Some(note) = &self.note {
-                dc.set_text_color(theme::MUTED);
-                dc.select_font(&fonts.caption);
-                let units = wide(note);
-                let height = dc.measure_wrapped(&units, inner_w, DrawFlags::WRAP);
-                dc.draw_text(
-                    &units,
-                    Rect::new(inner_x, y, inner_w, height),
-                    DrawFlags::WRAP,
-                );
-                y = y.saturating_add(height).saturating_add(px(6));
-            }
-        }
-
-        y = self.paint_status(dc, fonts, inner_x, y, inner_w, px, now_ms);
-        dc.select_font(&fonts.body);
-        for (message, color) in [
-            (self.error.as_deref(), theme::DANGER_TEXT),
-            (
-                self.transient.as_ref().map(|(text, _)| text.as_str()),
-                theme::DANGER_TEXT,
-            ),
-            (self.info.as_deref(), theme::MUTED),
-            (
-                self.busy.then_some(text::CHECKING.get(self.lang)),
-                theme::MUTED,
-            ),
-        ] {
-            if let Some(message) = message {
-                let units = wide(message);
-                dc.set_text_color(color);
-                let height = dc.measure_wrapped(&units, inner_w, DrawFlags::WRAP);
-                dc.draw_text(
-                    &units,
-                    Rect::new(inner_x, y, inner_w, height),
-                    DrawFlags::WRAP,
-                );
-                y = y.saturating_add(height).saturating_add(px(4));
-            }
-        }
-
-        self.paint_buttons(
-            dc,
-            fonts,
-            client,
-            margin,
-            buttons_y,
-            buttons_h,
-            px,
-            &mut layout,
-            now_ms,
-        );
-
-        if self.masked {
-            dc.round_rect(
-                card,
-                px(theme::RADIUS_CARD),
-                theme::CARD,
-                theme::CARD_BORDER,
-            );
-            dc.set_text_color(theme::MUTED);
-            dc.select_font(&fonts.body);
-            dc.draw_text(
-                &wide(text::MASKED.get(self.lang)),
-                card.inset(margin),
-                DrawFlags::WRAP_CENTER,
-            );
-            layout.fields.clear();
-            let _ = content_top;
-        }
-        layout
-    }
-
-    #[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
-    fn paint_display(
-        &self,
-        dc: &mut PaintDc<'_>,
-        display: &DisplaySecret,
-        fonts: &Fonts,
-        margin: i32,
-        mut y: i32,
-        width: i32,
-        px: impl Fn(i32) -> i32,
-    ) -> i32 {
-        dc.set_text_color(theme::TEXT);
-        if matches!(self.kind, SecretKind::ShowKey) {
-            dc.select_font(&fonts.mono_large);
-            let text = display.text.expose();
-            // A Solana keypair (up to 88 characters, no spaces) does not fit one line: paint it
-            // in lines of 44 (the copied text is unchanged).
-            let mut units = Zeroizing::new(Vec::with_capacity(text.len().saturating_add(2)));
-            for (index, unit) in text.encode_utf16().enumerate() {
-                if text.len() > 64 && index > 0 && index % 44 == 0 {
-                    units.push(0x000A);
-                }
-                units.push(unit);
-            }
-            let box_rect = Rect::new(margin, y, width, px(80));
-            dc.round_rect(box_rect, px(6), theme::BG, theme::CARD_BORDER);
-            dc.draw_text(&units, box_rect.inset(px(12)), DrawFlags::WRAP);
-            return box_rect.bottom().saturating_add(px(12));
-        }
-        let words: Vec<&str> = display.text.expose().split(' ').collect();
-        let rows = words.len().div_ceil(3).max(1);
-        let cell_h = px(32);
-        let col_w = width / 3;
-        let grid_h = cell_h.saturating_mul(i32::try_from(rows).unwrap_or(8));
-        dc.round_rect(
-            Rect::new(margin, y, width, grid_h.saturating_add(px(12))),
-            px(6),
-            theme::BG,
-            theme::CARD_BORDER,
-        );
-        for (index, word) in words.iter().enumerate() {
-            let column = index / rows;
-            let row = index % rows;
-            let cell = Rect::new(
-                margin
-                    .saturating_add(px(14))
-                    .saturating_add(col_w.saturating_mul(i32::try_from(column).unwrap_or(0))),
-                y.saturating_add(px(6))
-                    .saturating_add(cell_h.saturating_mul(i32::try_from(row).unwrap_or(0))),
-                col_w.saturating_sub(px(14)),
-                cell_h,
-            );
-            dc.select_font(&fonts.mono);
-            dc.set_text_color(theme::MUTED);
-            let number = wide(&format!("{:>2}.", index.saturating_add(1)));
-            dc.draw_text(
-                &number,
-                Rect::new(cell.x, cell.y, px(34), cell.h),
-                DrawFlags::LINE,
-            );
-            dc.select_font(&fonts.mono_large);
-            dc.set_text_color(theme::TEXT);
-            let mut units = Zeroizing::new(Vec::with_capacity(16));
-            units.extend(word.encode_utf16());
-            dc.draw_text(
-                &units,
-                Rect::new(
-                    cell.x.saturating_add(px(36)),
-                    cell.y,
-                    cell.w.saturating_sub(px(36)),
-                    cell.h,
-                ),
-                DrawFlags::LINE,
-            );
-        }
-        y = y.saturating_add(grid_h).saturating_add(px(24));
-        if let Some(address) = &display.address {
-            dc.select_font(&fonts.body_bold);
-            dc.set_text_color(theme::TEXT);
-            dc.draw_text(
-                &wide(text::FIRST_ADDRESS.get(self.lang)),
-                Rect::new(margin, y, width, px(22)),
-                DrawFlags::LINE,
-            );
-            y = y.saturating_add(px(26));
-            // Whole, its ends emphasized like every address (2026-11-12, spec/04 §3.3).
-            let shown = yw_core::evm::address::parse_address(address)
-                .map_or_else(|_| address.clone(), yw_core::evm::Address::to_checksum);
-            let rect = Rect::new(margin, y, width, px(26));
-            let spans = yw_engine::screen::address::own_address_spans(
-                &shown,
-                yw_engine::screen::address::AddressKind::Evm,
-                false,
-            );
-            if !crate::ui::theme::paint_spans(dc, fonts, &spans, rect, theme::TEXT, theme::FOCUS) {
-                dc.select_font(&fonts.mono_large);
-                dc.draw_text(&wide(&shown), rect, DrawFlags::LINE);
-            }
-            y = y.saturating_add(px(34));
-        }
-        if display.passphrase_note {
-            dc.select_font(&fonts.body);
-            dc.set_text_color(theme::WARN_TEXT);
-            let note = wide(text::PASSPHRASE_REVEAL_NOTE.get(self.lang));
-            let height = dc.measure_wrapped(&note, width, DrawFlags::WRAP);
-            dc.draw_text(&note, Rect::new(margin, y, width, height), DrawFlags::WRAP);
-            y = y.saturating_add(height).saturating_add(px(6));
-        }
-        y
-    }
-
-    #[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
-    fn paint_mnemonic_grid(
-        &self,
-        dc: &mut PaintDc<'_>,
-        fonts: &Fonts,
-        margin: i32,
-        y: i32,
-        width: i32,
-        px: impl Fn(i32) -> i32,
-        layout: &mut HitLayout,
-    ) -> i32 {
-        let Some(slot) = self.slots.first() else {
-            return y;
-        };
-        let words = mnemonic_words(&slot.field);
-        let trailing_space = slot.field.as_bytes().last() == Some(&b' ');
-        let typing = if trailing_space || words.is_empty() {
-            words.len()
-        } else {
-            words.len().saturating_sub(1)
-        };
-        let rows = 8_usize;
-        let cell_h = px(30);
-        let col_w = width / 3;
-        let grid = Rect::new(
-            margin,
-            y,
-            width,
-            cell_h.saturating_mul(8).saturating_add(px(12)),
-        );
-        dc.round_rect(grid, px(6), theme::CARD, theme::FOCUS);
-        layout.fields.push(grid);
-        dc.select_font(&fonts.mono);
-        for index in 0..24_usize {
-            let column = index / rows;
-            let row = index % rows;
-            let cell = Rect::new(
-                margin
-                    .saturating_add(px(10))
-                    .saturating_add(col_w.saturating_mul(i32::try_from(column).unwrap_or(0))),
-                y.saturating_add(px(6))
-                    .saturating_add(cell_h.saturating_mul(i32::try_from(row).unwrap_or(0))),
-                col_w.saturating_sub(px(16)),
-                cell_h.saturating_sub(px(4)),
-            );
-            if index == typing && index < 24 {
-                dc.round_rect(cell, px(4), theme::INFO_BG, theme::FOCUS);
-            }
-            let word = words.get(index).copied().unwrap_or(&[]);
-            let unknown = index < typing && !core::str::from_utf8(word).is_ok_and(is_word);
-            dc.set_text_color(if unknown {
-                theme::DANGER_TEXT
-            } else {
-                theme::TEXT
-            });
-            let mut units = Zeroizing::new(Vec::with_capacity(16));
-            units.extend(format!("{:>2}. ", index.saturating_add(1)).encode_utf16());
-            units.extend(word.iter().map(|byte| u16::from(*byte)));
-            dc.draw_text(&units, cell.inset(px(2)), DrawFlags::LINE);
-        }
-        let mut y = grid.bottom().saturating_add(px(6));
-        dc.select_font(&fonts.body);
         dc.set_text_color(theme::MUTED);
-        let (count, _, _) = self.mnemonic_status();
+        dc.select_font(&fonts.body);
         dc.draw_text(
-            &wide(&text::WORDS_TYPED.fill(
-                self.lang,
-                [
-                    &count.to_string(),
-                    &slot.field.len().to_string(),
-                    &slot.field.limit().to_string(),
-                ],
-            )),
-            Rect::new(margin, y, width, px(20)),
+            &wide(text::MASKED.get(lang)),
+            card.inset(margin),
+            DrawFlags::WRAP_CENTER,
+        );
+        layout.fields.clear();
+        let _ = content_top;
+    }
+    layout
+}
+
+/// W08/W09: the displayed secret `shown` (borrowed from the view, drawn through short-lived
+/// zeroizing copies), W08's first address and passphrase note.
+#[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
+fn paint_display(
+    view: &SecretView<'_>,
+    dc: &mut PaintDc<'_>,
+    shown: &str,
+    fonts: &Fonts,
+    margin: i32,
+    mut y: i32,
+    width: i32,
+    px: impl Fn(i32) -> i32,
+) -> i32 {
+    dc.set_text_color(theme::TEXT);
+    if matches!(view.kind(), SecretKind::ShowKey) {
+        dc.select_font(&fonts.mono_large);
+        let text = shown;
+        // A Solana keypair (up to 88 characters, no spaces) does not fit one line: paint it
+        // in lines of 44 (the copied text is unchanged).
+        let mut units = Zeroizing::new(Vec::with_capacity(text.len().saturating_add(2)));
+        for (index, unit) in text.encode_utf16().enumerate() {
+            if text.len() > 64 && index > 0 && index % 44 == 0 {
+                units.push(0x000A);
+            }
+            units.push(unit);
+        }
+        let box_rect = Rect::new(margin, y, width, px(80));
+        dc.round_rect(box_rect, px(6), theme::BG, theme::CARD_BORDER);
+        dc.draw_text(&units, box_rect.inset(px(12)), DrawFlags::WRAP);
+        return box_rect.bottom().saturating_add(px(12));
+    }
+    let words: Vec<&str> = shown.split(' ').collect();
+    let rows = words.len().div_ceil(3).max(1);
+    let cell_h = px(32);
+    let col_w = width / 3;
+    let grid_h = cell_h.saturating_mul(i32::try_from(rows).unwrap_or(8));
+    dc.round_rect(
+        Rect::new(margin, y, width, grid_h.saturating_add(px(12))),
+        px(6),
+        theme::BG,
+        theme::CARD_BORDER,
+    );
+    for (index, word) in words.iter().enumerate() {
+        let column = index / rows;
+        let row = index % rows;
+        let cell = Rect::new(
+            margin
+                .saturating_add(px(14))
+                .saturating_add(col_w.saturating_mul(i32::try_from(column).unwrap_or(0))),
+            y.saturating_add(px(6))
+                .saturating_add(cell_h.saturating_mul(i32::try_from(row).unwrap_or(0))),
+            col_w.saturating_sub(px(14)),
+            cell_h,
+        );
+        dc.select_font(&fonts.mono);
+        dc.set_text_color(theme::MUTED);
+        let number = wide(&format!("{:>2}.", index.saturating_add(1)));
+        dc.draw_text(
+            &number,
+            Rect::new(cell.x, cell.y, px(34), cell.h),
+            DrawFlags::LINE,
+        );
+        dc.select_font(&fonts.mono_large);
+        dc.set_text_color(theme::TEXT);
+        let mut units = Zeroizing::new(Vec::with_capacity(16));
+        units.extend(word.encode_utf16());
+        dc.draw_text(
+            &units,
+            Rect::new(
+                cell.x.saturating_add(px(36)),
+                cell.y,
+                cell.w.saturating_sub(px(36)),
+                cell.h,
+            ),
+            DrawFlags::LINE,
+        );
+    }
+    y = y.saturating_add(grid_h).saturating_add(px(24));
+    if let Some(address) = view.shown_address() {
+        dc.select_font(&fonts.body_bold);
+        dc.set_text_color(theme::TEXT);
+        dc.draw_text(
+            &wide(text::FIRST_ADDRESS.get(view.lang())),
+            Rect::new(margin, y, width, px(22)),
             DrawFlags::LINE,
         );
         y = y.saturating_add(px(26));
-        y
+        // Whole, its ends emphasized like every address (2026-11-12, spec/04 §3.3).
+        let shown = yw_core::evm::address::parse_address(address)
+            .map_or_else(|_| address.to_owned(), yw_core::evm::Address::to_checksum);
+        let rect = Rect::new(margin, y, width, px(26));
+        let spans = yw_engine::screen::address::own_address_spans(
+            &shown,
+            yw_engine::screen::address::AddressKind::Evm,
+            false,
+        );
+        if !crate::ui::theme::paint_spans(dc, fonts, &spans, rect, theme::TEXT, theme::FOCUS) {
+            dc.select_font(&fonts.mono_large);
+            dc.draw_text(&wide(&shown), rect, DrawFlags::LINE);
+        }
+        y = y.saturating_add(px(34));
     }
+    if view.shown_passphrase_note() {
+        dc.select_font(&fonts.body);
+        dc.set_text_color(theme::WARN_TEXT);
+        let note = wide(text::PASSPHRASE_REVEAL_NOTE.get(view.lang()));
+        let height = dc.measure_wrapped(&note, width, DrawFlags::WRAP);
+        dc.draw_text(&note, Rect::new(margin, y, width, height), DrawFlags::WRAP);
+        y = y.saturating_add(height).saturating_add(px(6));
+    }
+    y
+}
 
-    #[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
-    fn paint_fields(
-        &self,
-        dc: &mut PaintDc<'_>,
-        fonts: &Fonts,
-        margin: i32,
-        mut y: i32,
-        width: i32,
-        px: impl Fn(i32) -> i32,
-        layout: &mut HitLayout,
-        now_ms: u64,
-    ) -> i32 {
-        let enabled = self.input_enabled(now_ms);
-        for (index, slot) in self.slots.iter().enumerate() {
-            dc.select_font(&fonts.body_bold);
-            dc.set_text_color(theme::TEXT);
-            dc.draw_text(
-                &wide(&slot.label),
-                Rect::new(margin, y, width, px(22)),
-                DrawFlags::LINE,
-            );
-            dc.select_font(&fonts.caption);
-            // W10: the list verdict instead of the length (2026-11-10); other fields their length.
-            let (right, color) = if matches!(self.kind, SecretKind::Backup { .. }) {
-                match self.word_mark(index) {
-                    WordMark::None => (String::new(), theme::MUTED),
-                    WordMark::Listed => (text::WORD_LISTED.get(self.lang).to_owned(), theme::MUTED),
-                    WordMark::Unlisted => (
-                        text::WORD_UNLISTED.get(self.lang).to_owned(),
-                        theme::DANGER_TEXT,
-                    ),
+#[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
+fn paint_mnemonic_grid(
+    view: &SecretView<'_>,
+    dc: &mut PaintDc<'_>,
+    fonts: &Fonts,
+    margin: i32,
+    y: i32,
+    width: i32,
+    px: impl Fn(i32) -> i32,
+    layout: &mut HitLayout,
+) -> i32 {
+    let Some(slot) = view.first_field() else {
+        return y;
+    };
+    let words = slot.words();
+    let trailing_space = slot.ends_with_space();
+    let typing = if trailing_space || words.is_empty() {
+        words.len()
+    } else {
+        words.len().saturating_sub(1)
+    };
+    let rows = 8_usize;
+    let cell_h = px(30);
+    let col_w = width / 3;
+    let grid = Rect::new(
+        margin,
+        y,
+        width,
+        cell_h.saturating_mul(8).saturating_add(px(12)),
+    );
+    dc.round_rect(grid, px(6), theme::CARD, theme::FOCUS);
+    layout.fields.push(grid);
+    dc.select_font(&fonts.mono);
+    for index in 0..24_usize {
+        let column = index / rows;
+        let row = index % rows;
+        let cell = Rect::new(
+            margin
+                .saturating_add(px(10))
+                .saturating_add(col_w.saturating_mul(i32::try_from(column).unwrap_or(0))),
+            y.saturating_add(px(6))
+                .saturating_add(cell_h.saturating_mul(i32::try_from(row).unwrap_or(0))),
+            col_w.saturating_sub(px(16)),
+            cell_h.saturating_sub(px(4)),
+        );
+        if index == typing && index < 24 {
+            dc.round_rect(cell, px(4), theme::INFO_BG, theme::FOCUS);
+        }
+        let word = words.get(index).copied().unwrap_or(&[]);
+        let unknown =
+            index < typing && !core::str::from_utf8(word).is_ok_and(yw_core::bip39::is_word);
+        dc.set_text_color(if unknown {
+            theme::DANGER_TEXT
+        } else {
+            theme::TEXT
+        });
+        let mut units = Zeroizing::new(Vec::with_capacity(16));
+        units.extend(format!("{:>2}. ", index.saturating_add(1)).encode_utf16());
+        units.extend(word.iter().map(|byte| u16::from(*byte)));
+        dc.draw_text(&units, cell.inset(px(2)), DrawFlags::LINE);
+    }
+    let mut y = grid.bottom().saturating_add(px(6));
+    dc.select_font(&fonts.body);
+    dc.set_text_color(theme::MUTED);
+    let count = view.word_count();
+    dc.draw_text(
+        &wide(&text::WORDS_TYPED.fill(
+            view.lang(),
+            [
+                &count.to_string(),
+                &slot.len().to_string(),
+                &slot.limit().to_string(),
+            ],
+        )),
+        Rect::new(margin, y, width, px(20)),
+        DrawFlags::LINE,
+    );
+    y = y.saturating_add(px(26));
+    y
+}
+
+#[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
+fn paint_fields(
+    view: &SecretView<'_>,
+    dc: &mut PaintDc<'_>,
+    fonts: &Fonts,
+    margin: i32,
+    mut y: i32,
+    width: i32,
+    px: impl Fn(i32) -> i32,
+    layout: &mut HitLayout,
+    now_ms: u64,
+) -> i32 {
+    let lang = view.lang();
+    let enabled = view.input_enabled(now_ms);
+    for (index, slot) in view.fields().enumerate() {
+        dc.select_font(&fonts.body_bold);
+        dc.set_text_color(theme::TEXT);
+        dc.draw_text(
+            &wide(slot.label()),
+            Rect::new(margin, y, width, px(22)),
+            DrawFlags::LINE,
+        );
+        dc.select_font(&fonts.caption);
+        // W10: the list verdict instead of the length (2026-11-10); other fields their length.
+        let (right, color) = if matches!(view.kind(), SecretKind::Backup { .. }) {
+            match view.word_mark(index) {
+                WordMark::None => (String::new(), theme::MUTED),
+                WordMark::Listed => (text::WORD_LISTED.get(lang).to_owned(), theme::MUTED),
+                WordMark::Unlisted => {
+                    (text::WORD_UNLISTED.get(lang).to_owned(), theme::DANGER_TEXT)
                 }
+            }
+        } else {
+            (format!("{}/{}", slot.len(), slot.limit()), theme::MUTED)
+        };
+        dc.set_text_color(color);
+        dc.draw_text(
+            &wide(&right),
+            Rect::new(margin, y, width, px(22)),
+            DrawFlags::RIGHT,
+        );
+        y = y.saturating_add(px(24));
+        let reveal_w = if slot.masked() { px(64) } else { 0 };
+        let box_w = width
+            .saturating_sub(reveal_w)
+            .saturating_sub(if slot.masked() { px(8) } else { 0 });
+        let box_rect = Rect::new(margin, y, box_w, px(36));
+        let focused = index == view.active();
+        dc.round_rect(
+            box_rect,
+            px(4),
+            if enabled {
+                theme::CARD
             } else {
-                (
-                    format!("{}/{}", slot.field.len(), slot.field.limit()),
-                    theme::MUTED,
-                )
-            };
-            dc.set_text_color(color);
-            dc.draw_text(
-                &wide(&right),
-                Rect::new(margin, y, width, px(22)),
-                DrawFlags::RIGHT,
-            );
-            y = y.saturating_add(px(24));
-            let reveal_w = if slot.masked { px(64) } else { 0 };
-            let box_w = width
-                .saturating_sub(reveal_w)
-                .saturating_sub(if slot.masked { px(8) } else { 0 });
-            let box_rect = Rect::new(margin, y, box_w, px(36));
-            let focused = index == self.active;
+                theme::DISABLED_BG
+            },
+            if focused { theme::FOCUS } else { theme::BORDER },
+        );
+        if focused {
+            dc.round_rect(box_rect.inset(1), px(3), theme::CARD, theme::FOCUS);
+        }
+        let show_plain = !slot.masked() || view.revealing() == Some(index);
+        let units = slot.render_utf16(!show_plain);
+        dc.select_font(if slot.masked() && !show_plain {
+            &fonts.body
+        } else {
+            &fonts.mono
+        });
+        dc.set_text_color(theme::TEXT);
+        dc.draw_text(&units, box_rect.inset(px(9)), DrawFlags::LINE);
+        layout.fields.push(box_rect);
+        if slot.masked() {
+            let reveal = Rect::new(box_rect.right().saturating_add(px(8)), y, reveal_w, px(36));
+            let reveal_enabled = view.capture_excluded() && enabled;
             dc.round_rect(
-                box_rect,
-                px(4),
-                if enabled {
+                reveal,
+                px(theme::RADIUS_CONTROL),
+                if reveal_enabled {
                     theme::CARD
                 } else {
                     theme::DISABLED_BG
                 },
-                if focused { theme::FOCUS } else { theme::BORDER },
+                if reveal_enabled {
+                    theme::BORDER
+                } else {
+                    theme::CARD_BORDER
+                },
             );
-            if focused {
-                dc.round_rect(box_rect.inset(1), px(3), theme::CARD, theme::FOCUS);
-            }
-            let show_plain = !slot.masked || self.revealing == Some(index);
-            let units = slot.field.render_utf16(!show_plain);
-            dc.select_font(if slot.masked && !show_plain {
-                &fonts.body
+            dc.select_font(&fonts.body);
+            dc.set_text_color(if reveal_enabled {
+                theme::TEXT
             } else {
-                &fonts.mono
+                theme::DISABLED_TEXT
             });
-            dc.set_text_color(theme::TEXT);
-            dc.draw_text(&units, box_rect.inset(px(9)), DrawFlags::LINE);
-            layout.fields.push(box_rect);
-            if slot.masked {
-                let reveal = Rect::new(box_rect.right().saturating_add(px(8)), y, reveal_w, px(36));
-                let reveal_enabled = self.capture_excluded && enabled;
-                dc.round_rect(
-                    reveal,
-                    px(theme::RADIUS_CONTROL),
-                    if reveal_enabled {
-                        theme::CARD
-                    } else {
-                        theme::DISABLED_BG
-                    },
-                    if reveal_enabled {
-                        theme::BORDER
-                    } else {
-                        theme::CARD_BORDER
-                    },
-                );
-                dc.select_font(&fonts.body);
-                dc.set_text_color(if reveal_enabled {
-                    theme::TEXT
-                } else {
-                    theme::DISABLED_TEXT
-                });
-                dc.draw_text(
-                    &wide(text::REVEAL.get(self.lang)),
-                    reveal,
-                    DrawFlags::CENTER,
-                );
-                layout.buttons.push((SecretButton::Reveal(index), reveal));
-            }
-            y = y.saturating_add(px(48));
+            dc.draw_text(&wide(text::REVEAL.get(lang)), reveal, DrawFlags::CENTER);
+            layout.buttons.push((SecretButton::Reveal(index), reveal));
         }
-        y
+        y = y.saturating_add(px(48));
     }
+    y
+}
 
-    /// The button row in `lang`: the right group (cancel, primary) and the left group (clear all
-    /// or copy).
-    fn button_labels(&self, now_ms: u64) -> (ButtonLabels, ButtonLabels) {
-        let lang = self.lang;
-        let primary_label = match self.kind {
-            SecretKind::ShowMnemonic { create: true } => {
-                if self.hold.active() {
-                    let seconds = format!(
-                        "{:.1}",
-                        f64::from(u32::try_from(self.hold.remaining_ms(now_ms)).unwrap_or(0))
-                            / 1_000.0
-                    );
-                    text::HOLD_PROGRESS.fill(lang, [&seconds])
-                } else {
-                    text::HOLD.get(lang).to_owned()
-                }
-            }
-            SecretKind::ShowMnemonic { create: false } | SecretKind::ShowKey => {
-                text::CLOSE.get(lang).to_owned()
-            }
-            SecretKind::Unlock => text::UNLOCK.get(lang).to_owned(),
-            SecretKind::ChangePassword => text::CHANGE.get(lang).to_owned(),
-            SecretKind::Mnemonic | SecretKind::SetPassword => text::NEXT.get(lang).to_owned(),
-            SecretKind::PrivateKey { .. } => text::IMPORT.get(lang).to_owned(),
-            _ => text::OK.get(lang).to_owned(),
-        };
-        let mut right: Vec<(SecretButton, String)> = vec![(SecretButton::Primary, primary_label)];
-        if self.display.is_none() {
-            right.insert(
-                0,
-                (
-                    SecretButton::Cancel,
-                    if self.kind == SecretKind::Unlock {
-                        text::LATER
-                    } else {
-                        text::CANCEL
-                    }
-                    .get(lang)
-                    .to_owned(),
-                ),
-            );
-        }
-        let mut left: Vec<(SecretButton, String)> = Vec::new();
-        if self.display.is_none() {
-            left.push((SecretButton::ClearAll, text::CLEAR_ALL.get(lang).to_owned()));
-        } else if self
-            .display
-            .as_ref()
-            .is_some_and(|display| display.copy_allowed)
-        {
-            left.push((SecretButton::Copy, text::COPY.get(lang).to_owned()));
-        }
-        (right, left)
+#[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
+fn paint_buttons(
+    view: &SecretView<'_>,
+    dc: &mut PaintDc<'_>,
+    fonts: &Fonts,
+    client: Rect,
+    margin: i32,
+    y: i32,
+    height: i32,
+    px: impl Fn(i32) -> i32,
+    layout: &mut HitLayout,
+    now_ms: u64,
+) {
+    let (right, left) = view.button_labels(now_ms);
+    dc.select_font(&fonts.body);
+    let mut x = client.w.saturating_sub(margin);
+    for (button, label) in right.iter().rev() {
+        let text = wide(label);
+        let (_, text_w) = dc.measure(&text, i32::MAX);
+        let w = text_w.saturating_add(px(36)).max(px(96));
+        x = x.saturating_sub(w);
+        let rect = Rect::new(x, y, w, height);
+        paint_button(
+            view,
+            dc,
+            rect,
+            &text,
+            *button,
+            now_ms,
+            px(4),
+            px(theme::RADIUS_CONTROL),
+        );
+        layout.buttons.push((*button, rect));
+        x = x.saturating_sub(px(8));
     }
+    let mut x = margin;
+    for (button, label) in &left {
+        let text = wide(label);
+        let (_, text_w) = dc.measure(&text, i32::MAX);
+        let w = text_w.saturating_add(px(36)).max(px(96));
+        let rect = Rect::new(x, y, w, height);
+        paint_button(
+            view,
+            dc,
+            rect,
+            &text,
+            *button,
+            now_ms,
+            px(4),
+            px(theme::RADIUS_CONTROL),
+        );
+        layout.buttons.push((*button, rect));
+        x = x.saturating_add(w).saturating_add(px(8));
+    }
+}
 
-    #[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
-    fn paint_buttons(
-        &self,
-        dc: &mut PaintDc<'_>,
-        fonts: &Fonts,
-        client: Rect,
-        margin: i32,
-        y: i32,
-        height: i32,
-        px: impl Fn(i32) -> i32,
-        layout: &mut HitLayout,
-        now_ms: u64,
-    ) {
-        let (right, left) = self.button_labels(now_ms);
-        dc.select_font(&fonts.body);
-        let mut x = client.w.saturating_sub(margin);
-        for (button, label) in right.iter().rev() {
-            let text = wide(label);
-            let (_, text_w) = dc.measure(&text, i32::MAX);
-            let w = text_w.saturating_add(px(36)).max(px(96));
-            x = x.saturating_sub(w);
-            let rect = Rect::new(x, y, w, height);
-            self.paint_button(
-                dc,
-                rect,
-                &text,
-                *button,
-                now_ms,
-                px(4),
-                px(theme::RADIUS_CONTROL),
-            );
-            layout.buttons.push((*button, rect));
-            x = x.saturating_sub(px(8));
-        }
-        let mut x = margin;
-        for (button, label) in &left {
-            let text = wide(label);
-            let (_, text_w) = dc.measure(&text, i32::MAX);
-            let w = text_w.saturating_add(px(36)).max(px(96));
-            let rect = Rect::new(x, y, w, height);
-            self.paint_button(
-                dc,
-                rect,
-                &text,
-                *button,
-                now_ms,
-                px(4),
-                px(theme::RADIUS_CONTROL),
-            );
-            layout.buttons.push((*button, rect));
-            x = x.saturating_add(w).saturating_add(px(8));
-        }
+#[expect(clippy::too_many_arguments, reason = "plain paint helper")]
+fn paint_button(
+    view: &SecretView<'_>,
+    dc: &mut PaintDc<'_>,
+    rect: Rect,
+    text: &[u16],
+    button: SecretButton,
+    now_ms: u64,
+    bar: i32,
+    radius: i32,
+) {
+    let enabled = view.button_enabled(button, now_ms);
+    let primary = button == SecretButton::Primary;
+    let (fill, border) = match (enabled, primary) {
+        (false, true) => (
+            theme::BUTTON_PRIMARY.disabled_fill,
+            theme::BUTTON_PRIMARY.disabled_border,
+        ),
+        (false, false) => (theme::DISABLED_BG, theme::CARD_BORDER),
+        (true, true) => (theme::PRIMARY_BG, theme::PRIMARY_BG),
+        (true, false) => (theme::CARD, theme::BUTTON_SECONDARY.border),
+    };
+    dc.round_rect(rect, radius, fill, border);
+    if primary && view.hold_active() {
+        let done = BACKUP_ACK_HOLD_MS.saturating_sub(view.hold_remaining_ms(now_ms));
+        let filled = i64::from(rect.w).saturating_mul(i64::try_from(done).unwrap_or(0)) / 2_000;
+        let bar_rect = Rect::new(
+            rect.x,
+            rect.bottom().saturating_sub(bar),
+            i32::try_from(filled).unwrap_or(0),
+            bar,
+        );
+        dc.fill_rect(bar_rect, theme::WARN_ACCENT);
     }
-
-    #[expect(clippy::too_many_arguments, reason = "plain paint helper")]
-    fn paint_button(
-        &self,
-        dc: &mut PaintDc<'_>,
-        rect: Rect,
-        text: &[u16],
-        button: SecretButton,
-        now_ms: u64,
-        bar: i32,
-        radius: i32,
-    ) {
-        let enabled = self.button_enabled(button, now_ms);
-        let primary = button == SecretButton::Primary;
-        let (fill, border) = match (enabled, primary) {
-            (false, true) => (
-                theme::BUTTON_PRIMARY.disabled_fill,
-                theme::BUTTON_PRIMARY.disabled_border,
-            ),
-            (false, false) => (theme::DISABLED_BG, theme::CARD_BORDER),
-            (true, true) => (theme::PRIMARY_BG, theme::PRIMARY_BG),
-            (true, false) => (theme::CARD, theme::BUTTON_SECONDARY.border),
-        };
-        dc.round_rect(rect, radius, fill, border);
-        if primary && self.hold.active() {
-            let done = BACKUP_ACK_HOLD_MS.saturating_sub(self.hold.remaining_ms(now_ms));
-            let filled = i64::from(rect.w).saturating_mul(i64::try_from(done).unwrap_or(0)) / 2_000;
-            let bar_rect = Rect::new(
-                rect.x,
-                rect.bottom().saturating_sub(bar),
-                i32::try_from(filled).unwrap_or(0),
-                bar,
-            );
-            dc.fill_rect(bar_rect, theme::WARN_ACCENT);
-        }
-        dc.set_text_color(match (enabled, primary) {
-            (false, true) => theme::CARD,
-            (false, false) => theme::DISABLED_TEXT,
-            (true, true) => theme::PRIMARY_TEXT,
-            (true, false) => theme::TEXT,
-        });
-        dc.draw_text(text, rect, DrawFlags::CENTER);
-    }
-
-    /// Paints the window and returns what it drew where, for the shell's hit-testing (2026-11-24,
-    /// S5-7: before, the form kept it).
-    #[must_use]
-    pub fn paint(
-        &self,
-        dc: &mut PaintDc<'_>,
-        client: Rect,
-        fonts: &Fonts,
-        dpi: u32,
-        now_ms: u64,
-    ) -> HitLayout {
-        self.layout_and_paint(dc, client, fonts, dpi, now_ms)
-    }
+    dc.set_text_color(match (enabled, primary) {
+        (false, true) => theme::CARD,
+        (false, false) => theme::DISABLED_TEXT,
+        (true, true) => theme::PRIMARY_TEXT,
+        (true, false) => theme::TEXT,
+    });
+    dc.draw_text(text, rect, DrawFlags::CENTER);
 }
 
 #[cfg(test)]

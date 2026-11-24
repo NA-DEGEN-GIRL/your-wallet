@@ -40,9 +40,11 @@ use std::cell::{Cell, RefCell};
 use yw_win::ui::UiError;
 
 use yw_engine::secret::SecretKind;
+use yw_engine::secret::form::SecretForm;
 // 2026-11-23 (S4d E1): the wallet's crate-private steps and buffers (`on_submit`, the held
-// flags) as the tests reach them across the crate boundary.
-use yw_engine::testkit::{CardStepTestExt, WalletTestExt};
+// flags) as the tests reach them across the crate boundary. 2026-11-24 (spec/15 §11.4 S5-8):
+// the secret form's counts and flags too (`SecretFormTestExt`; the form moved to yw-engine).
+use yw_engine::testkit::{CardStepTestExt, SecretFormTestExt, WalletTestExt};
 
 /// How `create_secret` refuses a window while a refusal is set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -206,6 +208,14 @@ fn probe_sink(probe: yw_engine::probe::Probe) {
             log_after(queued, Op::ApprovalClose { shown });
         }
     }
+}
+
+/// The units a secret window's form still holds, for `Op::Close`'s `left` (2026-11-24, spec/15
+/// §11.4 S5-8: the form is yw-engine's, its count reached through `testkit::SecretFormTestExt`,
+/// which a production file names only inside a `#[cfg(test)]` module; before,
+/// `SecretForm::test_held_units` was a `#[cfg(test)]` method of the yw-app form).
+pub(crate) fn held_units(form: &SecretForm) -> usize {
+    form.test_held_units()
 }
 
 /// Appends to the log while it runs.

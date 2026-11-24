@@ -1,7 +1,8 @@
 //! The secret windows W01–W12 as the wallet logic sees them (spec/04 §4, D11; spec/15 §11.4 S4):
 //! the window kinds, the flow step a window belongs to, what the logic asks the shell to do with
-//! a secret window ([`SecretEffect`]) and the windows' fixed texts ([`text`]). Never a secret: the
-//! input buffers and a displayed secret stay in the shell's window form (Windows: yw-app
+//! a secret window ([`SecretEffect`]) and the windows' fixed texts ([`text`]). Never a secret in
+//! an effect: the input buffers and a displayed secret stay in the window's form, whose instance
+//! the shell owns (since 2026-11-24, S5-8, the type is [`form::SecretForm`]; before, yw-app
 //! `ui::secret::SecretForm`), and a submission reaches the logic in-process, never as a `Cmd`.
 //!
 //! 2026-11-20 (spec/15 §11.4 S4 P7a1, critique B-7): created. [`SecretKind`], [`CardSecretKind`]
@@ -26,7 +27,8 @@
 //! 2 s hold), [`DisplaySecret`] (the W08/W09 secret's container; it holds a secret, so it is never
 //! in an effect, and its `Debug` prints `[REDACTED]`) and [`backup_retry_text`] (T-BACKUP-FAIL)
 //! moved from yw-app `ui::secret` and `ui::screens` unchanged, so the wallet code names no shell
-//! module for them. The window's form (`SecretForm`) and the submission stay in yw-app.
+//! module for them. The window's form (`SecretForm`) and the submission stay in yw-app (the
+//! submission moved at S4d E1, the form at S5-8).
 //!
 //! 2026-11-24 (spec/15 §11.4 S5-1, §18 30 (나), 주인 결정(2026-11-23); spec/04 §4.5 item 4):
 //! [`DisplayHost`] and [`DisplayMade`], the shell's half of a display window's open. The wallet
@@ -36,6 +38,13 @@
 //! 2026-11-24 (spec/15 §11.4 S5-7; spec/04 §4.3): [`input`], the neutral key and pointer events
 //! the window's form takes (`SecretKey`, `SecretPointer` with `SecretTarget`/`SecretButton`)
 //! instead of Windows virtual-key codes and pixels.
+//!
+//! 2026-11-24 (spec/15 §11.4 S5-8; spec/04 §4.2, §4.7, §4.8): [`form`], the windows' input state
+//! machine `SecretForm` with its actions and its read-only paint view `SecretView`, moved from
+//! yw-app `ui::secret` (the paint stayed there). [`DisplayHost::fill_and_show`] takes the form
+//! the wallet built around the secret (critic C1 of the S5 plan), so the shell never names the
+//! secret; [`DisplayHost::flags`] is new: what the shell's platform offers, which the display
+//! form's copy is narrowed by.
 
 use core::fmt;
 
@@ -44,8 +53,10 @@ use yw_core::lang::Lang;
 use yw_core::secret::{SecretString, Zeroizing};
 
 use crate::approval::flow::OpenOutcome;
+use crate::screen::facts::PlatformFlags;
 use crate::yubikey::PinTarget;
 
+pub mod form;
 pub mod input;
 pub mod text;
 
@@ -534,11 +545,12 @@ pub enum DisplayMade<W> {
 /// 주인 결정(2026-11-23); spec/04 §4.5 item 4). The wallet calls it from
 /// `Wallet::open_display_window`, the one way a display secret leaves the wallet: first
 /// [`Self::make`], then — only for a [`DisplayMade::Verified`] window of the open, unshown
-/// session — [`Self::fill_and_show`], which takes the secret by value into the window and never
-/// hands it back. The order make → verify → move → show is the engine's code, and no call returns
-/// the secret (before S5-1 the shell asked for it with `Wallet::hand_display_secret`, whose return
-/// value was the secret). The engine still trusts what `make` reports (spec/15 §18 30: every
-/// design must trust the shell's capture read-back); which impls exist is a source check
+/// session — [`Self::fill_and_show`], which takes the window's form, built by the wallet around
+/// the secret, by value into the window and never hands it back. The order make → verify → move →
+/// show is the engine's code, and no call returns the secret (before S5-1 the shell asked for it
+/// with `Wallet::hand_display_secret`, whose return value was the secret). The engine still
+/// trusts what `make` reports (spec/15 §18 30: every design must trust the shell's capture
+/// read-back); which impls exist is a source check
 /// (`the_display_secret_moves_only_in_the_composition`: one in the Windows shell, one in
 /// `testkit`, the rest in tests).
 pub trait DisplayHost {
@@ -549,24 +561,16 @@ pub trait DisplayHost {
     /// back (`Required`, spec/04 §4.5). Holds no secret.
     fn make(&mut self, serial: u64, kind: SecretKind, lang: Lang) -> DisplayMade<Self::Window>;
 
-    /// Fills the verified `window`'s form with `secret` (moved in; the form wipes it) and shows
-    /// the window. `now_ms` is the wallet's clock, read right before (2026-11-24, S5-1: the shell
-    /// read it itself before).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the open effect's fields, the window, the secret and the clock"
-    )]
-    fn fill_and_show(
-        &mut self,
-        serial: u64,
-        window: Self::Window,
-        kind: SecretKind,
-        secret: DisplaySecret,
-        step: Option<SecretStep>,
-        timeout_note: Option<&'static str>,
-        lang: Lang,
-        now_ms: u64,
-    );
+    /// What the shell's platform offers (2026-11-24, S5-8; Windows: `PlatformFlags::WINDOWS`):
+    /// the display form's copy is narrowed by it (`secret_copy`, spec/15 §9.3).
+    fn flags(&self) -> PlatformFlags;
+
+    /// Shows the verified `window` with `form`: the display window's form the wallet built
+    /// around the session's secret (moved in; the form wipes it), with the open's step, note and
+    /// language and the wallet's clock (2026-11-24, S5-8, S5 plan critic C1; before, the host
+    /// got the secret, the step, the note, the language and the clock and built the form itself,
+    /// so the shell named the secret; S5-1: the shell read the clock itself before).
+    fn fill_and_show(&mut self, serial: u64, window: Self::Window, form: form::SecretForm);
 }
 
 /// The secret shown by W08/W09.

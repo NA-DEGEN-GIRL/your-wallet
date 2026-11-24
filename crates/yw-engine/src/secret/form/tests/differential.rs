@@ -11,17 +11,120 @@
 //! with copy on and off), lock-step key sequences, and pointer press-move-move-release sequences
 //! over a layout whose rects overlap (a field and its `보기`, the checkbox and the primary
 //! button), so first-hit and any-hit differ. Test values only.
+//!
+//! 2026-11-24 (spec/15 §11.4 S5-8): moved here from yw-app `ui::secret::tests::differential` with
+//! the form (the reference and the comparisons unchanged; the forms are built with
+//! `PlatformFlags::WINDOWS`). The Windows map and hit layout the new entries are fed by are
+//! yw-app's (`ui::secret_input`, which this crate cannot name), so this file keeps a copy of them
+//! as they are at S5-7 (`a9006d1`/`90f8e0f`, unchanged by S5-8): [`map_secret_key`],
+//! [`map_secret_char`], [`HitLayout`] with its `down`/`moved`/`up` and a [`Rect`] with
+//! `yw_win::ui::Rect::contains`'s rule. yw-app's own table tests
+//! (`ui::secret_input::tests`) pin the real map.
 
 use yw_core::keyimport::ImportChain;
 use yw_core::lang::Lang;
 use yw_core::secret::{SecretString, Zeroizing};
-use yw_engine::secret::input::SecretButton;
-use yw_engine::secure_field::{PushResult, RejectReason};
-use yw_engine::yubikey::PinTarget;
-use yw_win::ui::Rect;
 
 use super::super::{CardSecretKind, DisplaySecret, FormAction, SecretForm, SecretKind};
-use crate::ui::secret_input::{HitLayout, map_secret_char, map_secret_key};
+use crate::screen::facts::PlatformFlags;
+use crate::secret::input::{SecretButton, SecretKey, SecretPointer, SecretTarget};
+use crate::secure_field::{PushResult, RejectReason};
+use crate::yubikey::PinTarget;
+
+// ---- a copy of yw-app `ui::secret_input` at S5-7 (the Windows map and hit layout) ----
+
+/// `yw_win::ui::Rect` (its `contains`: left and top inclusive, right and bottom exclusive).
+#[derive(Clone, Copy)]
+struct Rect {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+impl Rect {
+    const fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
+        Self { x, y, w, h }
+    }
+
+    const fn contains(&self, px: i32, py: i32) -> bool {
+        px >= self.x
+            && py >= self.y
+            && px < self.x.saturating_add(self.w)
+            && py < self.y.saturating_add(self.h)
+    }
+}
+
+const VK_C: u16 = 0x43;
+const VK_V: u16 = 0x56;
+
+/// yw-app `ui::secret_input::map_secret_key`.
+const fn map_secret_key(vk: u16, ctrl: bool, shift: bool, alt: bool) -> SecretKey {
+    if vk == VK_PROCESSKEY {
+        return SecretKey::Composition;
+    }
+    if vk == VK_ESCAPE {
+        return SecretKey::Escape;
+    }
+    if alt {
+        return SecretKey::Other;
+    }
+    if (ctrl && vk == VK_V) || (shift && vk == VK_INSERT) {
+        return SecretKey::Paste;
+    }
+    if ctrl && vk == VK_C {
+        return SecretKey::Copy;
+    }
+    if vk == VK_TAB && !ctrl {
+        return SecretKey::Tab { back: shift };
+    }
+    SecretKey::Other
+}
+
+/// yw-app `ui::secret_input::map_secret_char`.
+const fn map_secret_char(unit: u16) -> SecretKey {
+    SecretKey::Char(unit)
+}
+
+/// yw-app `ui::secret_input::HitLayout`.
+#[derive(Default)]
+struct HitLayout {
+    fields: Vec<Rect>,
+    buttons: Vec<(SecretButton, Rect)>,
+}
+
+impl HitLayout {
+    fn button_at(&self, x: i32, y: i32) -> Option<SecretButton> {
+        self.buttons
+            .iter()
+            .find(|(_, rect)| rect.contains(x, y))
+            .map(|(button, _)| *button)
+    }
+
+    fn down(&self, x: i32, y: i32) -> SecretPointer {
+        SecretPointer::Down(
+            self.fields
+                .iter()
+                .position(|rect| rect.contains(x, y))
+                .map(SecretTarget::Field)
+                .or_else(|| self.button_at(x, y).map(SecretTarget::Button)),
+        )
+    }
+
+    fn moved(&self, x: i32, y: i32) -> SecretPointer {
+        SecretPointer::Move(
+            self.buttons
+                .iter()
+                .filter(|(_, rect)| rect.contains(x, y))
+                .map(|(button, _)| *button)
+                .collect(),
+        )
+    }
+
+    fn up(&self, x: i32, y: i32) -> SecretPointer {
+        SecretPointer::Up(self.button_at(x, y))
+    }
+}
 
 const VK_TAB: u16 = 0x09;
 const VK_ESCAPE: u16 = 0x1B;
@@ -335,9 +438,16 @@ fn build(kind: SecretKind, variant: Variant) -> SecretForm {
                 passphrase_note: false,
                 copy_allowed: matches!(variant, Variant::CopyOn),
             },
+            PlatformFlags::WINDOWS,
         )
     } else {
-        SecretForm::new(kind, Lang::Ko, 0, !matches!(variant, Variant::NotExcluded))
+        SecretForm::new(
+            kind,
+            Lang::Ko,
+            0,
+            !matches!(variant, Variant::NotExcluded),
+            PlatformFlags::WINDOWS,
+        )
     };
     let typed = if kind == SecretKind::Mnemonic {
         "a1 "

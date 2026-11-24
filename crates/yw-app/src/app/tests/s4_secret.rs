@@ -66,13 +66,15 @@
 pub(crate) mod host {
     use std::cell::RefCell;
 
-    use yw_engine::testkit::WalletTestExt;
+    use yw_engine::testkit::{SecretFormTestExt, WalletTestExt};
 
     use yw_core::lang::Lang;
     use yw_engine::approval::flow::OpenOutcome;
     use yw_engine::cmd::Cmd;
+    use yw_engine::screen::facts::PlatformFlags;
+    use yw_engine::secret::form::SecretForm;
     use yw_engine::secret::{
-        DisplayHost, DisplayMade, DisplaySecret, SecretEffect, SecretFormOp, SecretKind, SecretStep,
+        DisplayHost, DisplayMade, SecretEffect, SecretFormOp, SecretKind, SecretStep,
     };
     #[cfg(debug_assertions)]
     use yw_win::ui::{Msg, Reply};
@@ -81,12 +83,14 @@ pub(crate) mod host {
     use crate::app::{App, SecretWin};
     #[cfg(debug_assertions)]
     use crate::app::{VK_CONTROL, VK_MENU, VK_SHIFT, secret_modifier};
-    use crate::ui::secret::{CaptureDecision, SecretForm, capture_decision};
     #[cfg(debug_assertions)]
-    use crate::ui::secret::{FormAction, SECRET_TIMER_ID};
+    use crate::ui::secret::SECRET_TIMER_ID;
+    use crate::ui::secret::{CaptureDecision, capture_decision};
     #[cfg(debug_assertions)]
     use crate::ui::secret_input::{map_secret_char, map_secret_key};
     use yw_engine::errors::ErrorCode;
+    #[cfg(debug_assertions)]
+    use yw_engine::secret::form::FormAction;
 
     /// The window the headless host holds instead of a Win32 window: its session's serial and
     /// its form.
@@ -285,7 +289,13 @@ pub(crate) mod host {
         App::log_capture(kind, excluded);
         let outcome = match capture_decision(kind, Ok(excluded)) {
             CaptureDecision::Show { warning } => {
-                let mut form = SecretForm::new(kind, lang, app.clock.now_ms(), !warning);
+                let mut form = SecretForm::new(
+                    kind,
+                    lang,
+                    app.clock.now_ms(),
+                    !warning,
+                    PlatformFlags::WINDOWS,
+                );
                 form.set_step(step);
                 show(app.secret.as_ref(), serial, form);
                 OpenOutcome::Shown {
@@ -352,22 +362,15 @@ pub(crate) mod host {
             }
         }
 
-        fn fill_and_show(
-            &mut self,
-            serial: u64,
-            (): (),
-            kind: SecretKind,
-            display: DisplaySecret,
-            step: Option<SecretStep>,
-            timeout_note: Option<&'static str>,
-            lang: Lang,
-            now_ms: u64,
-        ) {
+        fn flags(&self) -> PlatformFlags {
+            PlatformFlags::WINDOWS
+        }
+
+        /// 2026-11-24 (S5-8): the form the wallet built around the secret (before, the secret,
+        /// from which this built the form as the shell's host did).
+        fn fill_and_show(&mut self, serial: u64, (): (), form: SecretForm) {
             self.unfilled = false;
-            note(format!("{display:?}"));
-            let mut form = SecretForm::display(kind, lang, now_ms, display);
-            form.set_step(step);
-            form.set_timeout_note(timeout_note);
+            note(format!("{form:?}"));
             show(self.secret, serial, form);
             let _shown = answered(OpenOutcome::Shown {
                 capture_excluded: true,
@@ -400,7 +403,7 @@ pub(crate) mod host {
         held.form.wipe();
         secret_seam::log(Op::Close {
             kind: held.form.kind().id(),
-            left: held.form.test_held_units(),
+            left: secret_seam::held_units(&held.form),
         });
         true
     }
@@ -648,7 +651,10 @@ fn secret_sessions_run_headless() {
         "Submit",
         "SecretSession",
         "SecretForm",
-        "DisplaySecret",
+        // 2026-11-24 (S5-8): a display window's form (the host notes the form the wallet built
+        // around the secret; before, the secret's own `DisplaySecret([REDACTED])`).
+        "SecretForm(W08",
+        "SecretForm(W09",
         "SecretOpened",
     ] {
         assert!(
@@ -1026,7 +1032,8 @@ fn the_headless_secret_host_mirrors_the_shell() {
                 "match self.create_secret(serial, kind, topmost, lang) { Ok(window) => { let \
                  excluded = window.capture_excluded(); Self::log_capture(kind, excluded); match \
                  capture_decision(kind, Ok(excluded)) { CaptureDecision::Show { warning } => { \
-                 let mut form = SecretForm::new(kind, lang, self.clock.now_ms(), !warning); \
+                 let mut form = SecretForm::new(kind, lang, self.clock.now_ms(), !warning, \
+                 PlatformFlags::WINDOWS, ); \
                  form.set_step(step); self.show_secret(serial, window, form); OpenOutcome::Shown \
                  { capture_excluded: !warning, } } CaptureDecision::Refuse(code) => { \
                  drop(window); OpenOutcome::Refused(code) } } }",
@@ -1080,13 +1087,14 @@ fn the_headless_secret_host_mirrors_the_shell() {
             ],
         ),
         // `WinDisplayHost::fill_and_show` (2026-11-24, S5-1; `show_display` before, which read the
-        // clock itself).
+        // clock itself). 2026-11-24 (S5-8, S5 plan critic C1): it takes the form the wallet built
+        // around the secret and shows it, nothing else (before, it built the form from the secret,
+        // the step, the note, the language and the clock).
         (
             "fill_and_show",
             &[
-                "let mut form = SecretForm::display(kind, lang, now_ms, display); \
-               form.set_step(step); form.set_timeout_note(timeout_note); \
-               show_secret_window(self.main, self.secret, serial, window, form);",
+                "fn fill_and_show(&mut self, serial: u64, window: Window, form: SecretForm) { \
+                 show_secret_window(self.main, self.secret, serial, window, form); }",
             ],
         ),
         (
@@ -1108,7 +1116,7 @@ fn the_headless_secret_host_mirrors_the_shell() {
                 "#[cfg(test)] if tests::s4_secret::host::close(serial) { return; }",
                 "if let Some(mut secret) = self.secret.take_if(|secret| secret.serial == serial) \
                  { secret.form.wipe(); #[cfg(test)] secret_seam::log(secret_seam::Op::Close { \
-                 kind: secret.form.kind().id(), left: secret.form.test_held_units(), });",
+                 kind: secret.form.kind().id(), left: secret_seam::held_units(&secret.form), });",
             ],
         ),
         (
@@ -1187,15 +1195,16 @@ fn the_headless_secret_host_mirrors_the_shell() {
                 "Self::log_capture(kind, excluded);",
                 "match capture_decision(kind, Ok(excluded)) { CaptureDecision::Show { warning } \
                  => { let mut form = SecretForm::new(kind, lang, self.clock.now_ms(), \
-                 !warning); form.set_step(step); self.show_secret(serial, window, form); \
-                 OpenOutcome::Shown { capture_excluded: !warning, } } \
-                 CaptureDecision::Refuse(code) =>",
+                 !warning, PlatformFlags::WINDOWS, ); form.set_step(step); \
+                 self.show_secret(serial, window, form); OpenOutcome::Shown { capture_excluded: \
+                 !warning, } } CaptureDecision::Refuse(code) =>",
                 "OpenOutcome::Refused(code)",
             ],
         ),
         // 2026-11-24 (S5-1): the two display hosts' `make` (the decision) and `fill_and_show`
         // (the form); before (S4 W2), the host's one `open_display` against the shell's
         // `make_display_window`, the composition's `display_window_handoff` and `show_display`.
+        // 2026-11-24 (S5-8): `fill_and_show` takes the wallet's form (both build none).
         (
             "make",
             "make",
@@ -1214,8 +1223,8 @@ fn the_headless_secret_host_mirrors_the_shell() {
             "fill_and_show",
             "fill_and_show",
             &[
-                "let mut form = SecretForm::display(kind, lang, now_ms, display); \
-               form.set_step(step); form.set_timeout_note(timeout_note);",
+                "fn fill_and_show(&mut self, serial: u64,",
+                "form: SecretForm) {",
             ],
         ),
         (
@@ -1235,7 +1244,8 @@ fn the_headless_secret_host_mirrors_the_shell() {
                 ".form.wipe();",
                 "secret_seam::log(secret_seam::Op::Close { kind:",
                 ".form.kind().id(), left:",
-                ".form.test_held_units(), });",
+                "secret_seam::held_units(&",
+                ".form), });",
             ],
         ),
         (
@@ -1300,7 +1310,7 @@ fn the_headless_secret_host_mirrors_the_shell() {
         (
             "fill_and_show",
             &[
-                "self.unfilled = false; note(format!(\"{display:?}\"));",
+                "self.unfilled = false; note(format!(\"{form:?}\"));",
                 "show(self.secret, serial, form);",
                 "OpenOutcome::Shown { capture_excluded: true, }",
             ][..],

@@ -4855,7 +4855,7 @@ fn yubikey_accounts_and_the_card_step() {
     );
     let card = h.app.card_step_card(step.role);
     assert!(
-        crate::ui::secret::card_pin_steps(yw_core::lang::Lang::Ko, card.as_deref())
+        yw_engine::secret::form::card_pin_steps(yw_core::lang::Lang::Ko, card.as_deref())
             .starts_with("1. YubiKey 메인 (#7700011) 연결 → ")
     );
     h.app.meta.as_mut().unwrap().set_card_name(7_700_011, None);
@@ -8009,8 +8009,8 @@ fn secret_sessions_follow_their_window_results() {
     use yw_engine::cmd::Cmd;
     use yw_engine::secret::SecretKind;
 
-    use crate::ui::secret::FormAction;
     use yw_engine::errors::ErrorCode;
+    use yw_engine::secret::form::FormAction;
 
     let dir = temp_dir("secret-session-seam");
     let mut app = app_at(&dir);
@@ -8322,7 +8322,9 @@ fn display_secrets_move_only_into_verified_windows() {
 
     use super::secret_seam;
     use yw_engine::errors::ErrorCode;
-    use yw_engine::secret::{DisplayHost, DisplayMade, DisplaySecret, SecretStep};
+    use yw_engine::screen::facts::PlatformFlags;
+    use yw_engine::secret::form::SecretForm;
+    use yw_engine::secret::{DisplayHost, DisplayMade, DisplaySecret};
     use yw_engine::wallet::app_yubikey::{YkPurpose, YkWords};
     use yw_engine::wallet::secret_session::AfterShown;
 
@@ -8374,19 +8376,15 @@ fn display_secrets_move_only_into_verified_windows() {
             }
         }
 
-        fn fill_and_show(
-            &mut self,
-            _serial: u64,
-            window: ModelWindow,
-            _kind: SecretKind,
-            secret: DisplaySecret,
-            _step: Option<SecretStep>,
-            _timeout_note: Option<&'static str>,
-            _lang: yw_core::lang::Lang,
-            _now_ms: u64,
-        ) {
+        fn flags(&self) -> PlatformFlags {
+            PlatformFlags::WINDOWS
+        }
+
+        /// 2026-11-24 (S5-8): the form the wallet built around the secret (before, the secret).
+        fn fill_and_show(&mut self, _serial: u64, window: ModelWindow, mut form: SecretForm) {
             self.filled += 1;
-            drop(secret);
+            form.wipe();
+            drop(form);
             self.log.borrow_mut().push("filled".to_owned());
             drop(window);
         }

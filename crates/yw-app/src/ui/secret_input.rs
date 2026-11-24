@@ -9,6 +9,11 @@
 //! rects it kept from its own paint (`on_mouse_down`/`on_mouse_move`/`on_mouse_up`); the
 //! precedence below is that of its `on_key`, so Windows behaves as before (the differential test
 //! `ui::secret::tests::differential`). Source check `secret_keys_are_mapped_only_by_the_mapper`.
+//!
+//! 2026-11-24 (S5-8): the form is `yw_engine::secret::form::SecretForm`, and the differential
+//! test moved with it (`yw_engine::secret::form::tests::differential`, which keeps a copy of this
+//! map and hit layout as they are here; their code is unchanged). Its paint is
+//! `ui::secret::paint_form`.
 
 use yw_engine::secret::input::{SecretButton, SecretKey, SecretPointer, SecretTarget};
 use yw_win::ui::Rect;
