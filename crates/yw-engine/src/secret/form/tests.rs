@@ -970,7 +970,7 @@ fn the_view_reads_what_the_form_holds() {
     form.set_error(Some("error".to_owned()));
     form.set_info(Some("info".to_owned()));
     form.set_busy(true);
-    let view = form.view();
+    let view = form.paint_view();
     assert_eq!(view.lang(), Lang::En);
     assert_eq!(view.kind(), SecretKind::SetPassword);
     assert!(!view.capture_excluded() && view.step().is_none());
@@ -1039,7 +1039,7 @@ fn the_view_reads_what_the_form_holds() {
         PlatformFlags::WINDOWS,
     );
     shown.set_timeout_note(Some("note"));
-    let view = shown.view();
+    let view = shown.paint_view();
     assert_eq!(view.shown_text(), Some("abandon about"));
     assert_eq!(view.shown_address(), Some("address"));
     assert!(view.shown_passphrase_note());

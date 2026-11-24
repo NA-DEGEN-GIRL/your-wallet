@@ -176,6 +176,40 @@ mod tests {
         }
     }
 
+    /// Each of the six keys the map names with each of the eight modifier sets (2026-11-24, S5-8
+    /// review): with [`unnamed_keys_are_other`] every `(vk, ctrl, shift, alt)` the map takes is
+    /// pinned here, now that the differential test drives an engine copy of this map
+    /// (`yw_engine::secret::form::tests::differential`) and cannot see a change to it. Columns:
+    /// no modifier, Ctrl, Shift, Ctrl+Shift, then the same four with Alt.
+    #[test]
+    fn named_keys_with_every_modifier_set() {
+        let o = SecretKey::Other;
+        let p = SecretKey::Paste;
+        let c = SecretKey::Copy;
+        let ime = SecretKey::Composition;
+        let esc = SecretKey::Escape;
+        let tab = SecretKey::Tab { back: false };
+        let back = SecretKey::Tab { back: true };
+        let table: [(u16, [SecretKey; 8]); 6] = [
+            (0xE5, [ime, ime, ime, ime, ime, ime, ime, ime]),
+            (0x1B, [esc, esc, esc, esc, esc, esc, esc, esc]),
+            (0x56, [o, p, o, p, o, o, o, o]),
+            (0x2D, [o, o, p, p, o, o, o, o]),
+            (0x43, [o, c, o, c, o, o, o, o]),
+            (0x09, [tab, o, back, o, o, o, o, o]),
+        ];
+        for (vk, keys) in table {
+            for (bits, key) in (0_u8..).zip(keys) {
+                let (ctrl, shift, alt) = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+                assert_eq!(
+                    map_secret_key(vk, ctrl, shift, alt),
+                    key,
+                    "vk {vk:#04x} ctrl {ctrl} shift {shift} alt {alt}"
+                );
+            }
+        }
+    }
+
     /// Every virtual-key code but the six the map names is `Other` with any modifiers.
     #[test]
     fn unnamed_keys_are_other() {

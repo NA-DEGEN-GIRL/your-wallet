@@ -9525,7 +9525,10 @@ fn msg_arm_before(code: &str, at: usize) -> &str {
 /// one the window's paint returned: `on_secret` paints the form once, in its `Msg::Paint` arm,
 /// and stores the result in `*hits`. Before, nothing checked it, and a dropped paint result (no
 /// press ever hit a field or button) passed every test. 2026-11-24 (S5-8): the paint is
-/// `paint_form(&form.view(), …)` (was `form.paint(…)`).
+/// `paint_form(&form.view(), …)` (was `form.paint(…)`); since the S5-8 review (2026-11-24)
+/// `paint_form(&form.paint_view(), …)`, found as every `paint_form(` call of `on_secret` (any
+/// line breaks after the parenthesis, as rustfmt now wraps it), each of which must take the
+/// form's paint view.
 fn secret_paint_findings(src: &Src, findings: &mut Vec<String>) {
     let name = src.file.as_str();
     let code = src.code.as_str();
@@ -9533,8 +9536,9 @@ fn secret_paint_findings(src: &Src, findings: &mut Vec<String>) {
         return;
     }
     let paints: Vec<usize> = code
-        .match_indices("paint_form(&form.view(),")
+        .match_indices("paint_form(")
         .map(|(at, _)| at)
+        .filter(|&at| at == 0 || !is_ident(code.as_bytes()[at - 1]))
         .filter(|&at| fn_at(code, &src.blocks, at).as_deref() == Some("on_secret"))
         .collect();
     if paints.len() != 1 {
@@ -9553,6 +9557,14 @@ fn secret_paint_findings(src: &Src, findings: &mut Vec<String>) {
             findings.push(format!(
                 "{name}: fn on_secret's `paint_form(` in the `Msg::{arm}` arm is not stored in \
                  `*hits`"
+            ));
+        }
+        if !code[at + "paint_form(".len()..]
+            .trim_start()
+            .starts_with("&form.paint_view(),")
+        {
+            findings.push(format!(
+                "{name}: fn on_secret's `paint_form(` does not take `&form.paint_view()`"
             ));
         }
     }
@@ -9679,8 +9691,8 @@ fn secret_key_findings(files: &[Src]) -> (Vec<String>, usize) {
 /// takes a map result (`map_secret_char`, `map_secret_key`, `ime_key()`, or the hit layout's
 /// `down`/`up`/`moved`) in its own message's arm (`Char`, `KeyDown`, `ImeAttempt`, `MouseDown`,
 /// `MouseUp`, `MouseMove`; 2026-11-24, S5-7 review), the hit layout they read is the one the
-/// `Msg::Paint` arm's one `paint_form(&form.view(), …)` stored in `*hits`, and the map's key fns
-/// are called nowhere else. 2026-11-24 (S5-8): the form is yw-engine's
+/// `Msg::Paint` arm's one `paint_form(&form.paint_view(), …)` stored in `*hits` (`view` before
+/// the S5-8 review), and the map's key fns are called nowhere else. 2026-11-24 (S5-8): the form is yw-engine's
 /// `secret/form.rs`; the Windows paint (`ui/secret.rs`) names no key or pointer entry either. Before S5-7 the form
 /// compared the virtual-key codes itself (`on_key(vk, ctrl, shift, alt)`) and kept its own hit
 /// rects. The test-only callers (the tour hooks, the headless secret host, the SW tests and the
@@ -9721,7 +9733,7 @@ fn secret_key_findings_on_made_up_code() {
             "yw-app/src/app.rs",
             "use crate::ui::secret_input::{ime_key, map_secret_char, map_secret_key}; impl App { \
              fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = \
-             paint_form(&form.view(), &mut dc); } Msg::Char(unit) => form.on_key(map_secret_char(*unit), now), Msg::KeyDown { vk, .. } \
+             paint_form(&form.paint_view(), &mut dc); } Msg::Char(unit) => form.on_key(map_secret_char(*unit), now), Msg::KeyDown { vk, .. } \
              => form.on_key(map_secret_key(*vk, c, s, a), now), Msg::ImeAttempt => \
              form.on_key(ime_key(), now), Msg::MouseDown { x, y } => \
              form.on_pointer(hits.down(*x, *y), now), } } }",
@@ -9772,27 +9784,27 @@ fn secret_key_findings_on_made_up_code() {
         (
             "yw-app/src/app.rs",
             "impl App { fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = \
-             paint_form(&form.view(), &mut dc); } Msg::MouseUp { x, y } => form.on_pointer(hits.moved(*x, *y), \
+             paint_form(&form.paint_view(), &mut dc); } Msg::MouseUp { x, y } => form.on_pointer(hits.moved(*x, *y), \
              now).0, } } }",
             "`.on_pointer(` in the `Msg::MouseUp` arm of fn on_secret takes `hits.moved(",
         ),
         (
             "yw-app/src/app.rs",
             "impl App { fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = \
-             paint_form(&form.view(), &mut dc); } Msg::KeyDown { vk, .. } => form.on_key(map_secret_char(*vk), \
+             paint_form(&form.paint_view(), &mut dc); } Msg::KeyDown { vk, .. } => form.on_key(map_secret_char(*vk), \
              now), } } }",
             "`.on_key(` in the `Msg::KeyDown` arm of fn on_secret takes `map_secret_char(",
         ),
         (
             "yw-app/src/app.rs",
             "impl App { fn on_secret(&mut self) { match msg { Msg::Paint => { let _ = \
-             paint_form(&form.view(), &mut dc); } } } }",
+             paint_form(&form.paint_view(), &mut dc); } } } }",
             "`paint_form(` in the `Msg::Paint` arm is not stored",
         ),
         (
             "yw-app/src/app.rs",
             "impl App { fn on_secret(&mut self) { match msg { Msg::Size => { *hits = \
-             paint_form(&form.view(), &mut dc); } } } }",
+             paint_form(&form.paint_view(), &mut dc); } } } }",
             "`paint_form(` in the `Msg::Size` arm is not stored",
         ),
         (
@@ -9809,47 +9821,86 @@ fn secret_key_findings_on_made_up_code() {
     }
 }
 
-/// Every `.view()` call of production code (every scanned crate), as `file: fn <fn>: <receiver>`
-/// with the `Msg::` arm it stands in when it is in `App::on_secret` (2026-11-24, S5-8).
-fn view_calls(files: &[Src]) -> Vec<String> {
-    let mut calls = Vec::new();
+/// 2026-11-24 (S5-8 review): the paint call of `App::on_secret` is found however rustfmt wraps
+/// it, and one that draws from something other than the form's paint view is a finding.
+#[test]
+fn secret_paint_findings_see_a_wrapped_call() {
+    let src = |text: &str| Src::new("yw-app/src/app.rs".to_owned(), code_only(text));
+    let mut findings = Vec::new();
+    secret_paint_findings(
+        &src(
+            "impl App { fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = \
+              paint_form(\n &form.paint_view(),\n &mut dc,\n now,\n ); } } } }",
+        ),
+        &mut findings,
+    );
+    assert!(findings.is_empty(), "{findings:#?}");
+    secret_paint_findings(
+        &src(
+            "impl App { fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = \
+              paint_form(\n &other, &mut dc); } } } }",
+        ),
+        &mut findings,
+    );
+    assert_eq!(
+        findings,
+        ["yw-app/src/app.rs: fn on_secret's `paint_form(` does not take `&form.paint_view()`"]
+    );
+}
+
+/// Every mention of the secret form's view maker `SecretForm::paint_view` in `files`, as
+/// `file: fn <fn>` with the `Msg::` arm it stands in when that fn is `on_secret`, and every
+/// `SecretView { … }` the code builds, as `file: SecretView built in fn <fn>` (2026-11-24, S5-8
+/// review). It counts the identifier token, not a call shape, so a method call
+/// (`form.paint_view()`), a path call (`SecretForm::paint_view(&form)`, `<SecretForm>::paint_view(`,
+/// `Self::paint_view(self)`) and the fn named as a value (`.map(SecretForm::paint_view)`) are each
+/// a site, as in [`the_only_consume_is_wallet_code`]. Before the review it found only the text
+/// `.view()` (the fn was `view`, a name the approval flow's read model shares), so a path call
+/// such as `SecretForm::view(&secret.form)` in `App::paste` passed it.
+fn paint_view_sites(files: &[Src]) -> Vec<String> {
+    let mut sites = Vec::new();
     for src in files {
         let code = src.code.as_str();
-        let bytes = code.as_bytes();
-        for (at, _) in code.match_indices(".view()") {
-            let receiver: String = code[..at]
-                .bytes()
-                .rev()
-                .take_while(|&b| is_ident(b))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .map(char::from)
-                .collect();
-            if at > 0 && !is_ident(bytes[at - 1]) {
-                calls.push(format!("{}: a call on an expression", src.file));
-                continue;
+        let spans = fn_spans(code);
+        let fn_of = |at: usize| {
+            spans
+                .iter()
+                .filter(|span| span.start <= at && at <= span.end)
+                .max_by_key(|span| span.start)
+                .map_or_else(String::new, |span| span.name.clone())
+        };
+        for (at, token) in ident_tokens(code) {
+            if token == "paint_view" {
+                let func = fn_of(at);
+                let arm = if func == "on_secret" {
+                    format!(" in Msg::{}", msg_arm_before(code, at))
+                } else {
+                    String::new()
+                };
+                sites.push(format!("{}: fn {func}{arm}", src.file));
+            } else if token == "SecretView"
+                && code[at + token.len()..].trim_start().starts_with('{')
+            {
+                sites.push(format!(
+                    "{}: SecretView built in fn {}",
+                    src.file,
+                    fn_of(at)
+                ));
             }
-            let func = fn_at(code, &src.blocks, at).unwrap_or_default();
-            let arm = if func == "on_secret" {
-                format!(" in Msg::{}", msg_arm_before(code, at))
-            } else {
-                String::new()
-            };
-            calls.push(format!("{}: fn {func}: {receiver}{arm}", src.file));
         }
     }
-    calls
+    sites
 }
 
 /// spec/15 §11.4 S5-8 (2026-11-24; S5 plan critic C10; spec/04 §4.2, §4.8): the secret form's
 /// contents leave it, in a shell, only for drawing and for the one Windows copy. Its read-only
 /// paint view `SecretView` (and its `FieldView`) is named by no shell code but the Windows paint
-/// (`ui/secret.rs`), and the form's view is made only in `App::on_secret`'s `Msg::Paint` arm (the
-/// only other `.view()` of production code is the approval flow's, [`VIEW_CALLS`]); the display
-/// secret's copy `SecretForm::copy_units` is called only by the Windows shell's copy arm
-/// `App::copy_secret` (which first checks `allowSecretCopy`, spec/04 §4.8). The view's and the
-/// field view's `Debug` are redacted (`yw_engine::secret::form::tests::the_view_reads_what_the_form_holds`).
+/// (`ui/secret.rs`), and the form's view is made only in `App::on_secret`'s `Msg::Paint` arm
+/// ([`PAINT_VIEW_SITES`]; 2026-11-24, S5-8 review: every mention of `paint_view`, any call form,
+/// and the one `SecretView { … }`, [`paint_view_sites`]); the display secret's copy
+/// `SecretForm::copy_units` is called only by the Windows shell's copy arm `App::copy_secret`
+/// (which first checks `allowSecretCopy`, spec/04 §4.8). The view's and the field view's `Debug`
+/// are redacted (`yw_engine::secret::form::tests::the_view_reads_what_the_form_holds`).
 #[test]
 fn the_secret_form_is_read_only_by_its_paint_and_copy() {
     let files = production_code();
@@ -9887,16 +9938,94 @@ fn the_secret_form_is_read_only_by_its_paint_and_copy() {
         );
     }
     assert_eq!(
-        view_calls(&files),
-        VIEW_CALLS,
-        "the production `.view()` calls"
+        paint_view_sites(&files),
+        PAINT_VIEW_SITES,
+        "every mention of `paint_view` and every `SecretView {{ … }}` of production code"
     );
 }
 
-/// The production `.view()` calls (2026-11-24, S5-8): the secret form's, in the secret window's
-/// paint arm, and the approval flow's (its read model, `ApprovalFlow::view`).
-const VIEW_CALLS: [&str; 3] = [
-    "yw-app/src/app.rs: fn on_secret: form in Msg::Paint",
-    "yw-app/src/app_approval.rs: fn run_step: flow",
-    "yw-engine/src/wallet/app_approval.rs: fn rebuild_view_with: flow",
+/// Every mention of `paint_view` in production code and the one `SecretView { … }` (2026-11-24,
+/// S5-8 review; was `VIEW_CALLS`, the `.view()` calls, which also listed the approval flow's two
+/// `flow.view()`): the paint arm of the secret window, the fn itself and the view it builds.
+const PAINT_VIEW_SITES: [&str; 3] = [
+    "yw-app/src/app.rs: fn on_secret in Msg::Paint",
+    "yw-engine/src/secret/form.rs: fn paint_view",
+    "yw-engine/src/secret/form.rs: SecretView built in fn paint_view",
 ];
+
+/// [`paint_view_sites`] finds the view made in every call form and outside the paint arm, and a
+/// second `SecretView` maker (2026-11-24, S5-8 review: the reviewer's probe
+/// `SecretForm::view(&secret.form)` in `App::paste` passed the `.view()` scan).
+#[test]
+fn the_paint_view_check_finds_every_call_form() {
+    let src = |file: &str, text: &str| Src::new(file.to_owned(), code_only(text));
+    assert_eq!(
+        paint_view_sites(&[
+            src(
+                "yw-app/src/app.rs",
+                "impl App { fn on_secret(&mut self) { match msg { Msg::Paint => { *hits = \
+                 paint_form(&form.paint_view(), &mut dc); } } } }",
+            ),
+            src(
+                SECRET_FORM_FILE,
+                "impl SecretForm { pub const fn paint_view(&self) -> SecretView<'_> { SecretView \
+                 { form: self } } }",
+            ),
+        ]),
+        PAINT_VIEW_SITES,
+        "the allowed sites"
+    );
+    for (file, text, expected) in [
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn paste(&mut self) { let _ = secret.form.paint_view().shown_text(); } }",
+            "yw-app/src/app.rs: fn paste",
+        ),
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn paste(&mut self) { let _probe = \
+             SecretForm::paint_view(&secret.form).shown_text().map(str::len); } }",
+            "yw-app/src/app.rs: fn paste",
+        ),
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn paste(&mut self) { let _ = <SecretForm>::paint_view(&secret.form); } }",
+            "yw-app/src/app.rs: fn paste",
+        ),
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn paste(&mut self) { let _ = self.secret.as_ref().map(|secret| \
+             &secret.form).map(SecretForm::paint_view); } }",
+            "yw-app/src/app.rs: fn paste",
+        ),
+        (
+            SECRET_PAINT_FILE,
+            "pub fn paint_form(form: &SecretForm) { let make = SecretForm::paint_view; let _ = \
+             make(form); }",
+            "yw-app/src/ui/secret.rs: fn paint_form",
+        ),
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn on_secret(&mut self) { match msg { Msg::Size => { let _ = \
+             form.paint_view(); } } } }",
+            "yw-app/src/app.rs: fn on_secret in Msg::Size",
+        ),
+        (
+            SECRET_FORM_FILE,
+            "impl SecretForm { fn leak(&self) -> usize { Self::paint_view(self).details().len() \
+             } }",
+            "yw-engine/src/secret/form.rs: fn leak",
+        ),
+        (
+            SECRET_FORM_FILE,
+            "impl SecretForm { fn other(&self) -> SecretView<'_> { SecretView { form: self } } }",
+            "yw-engine/src/secret/form.rs: SecretView built in fn other",
+        ),
+    ] {
+        let found = paint_view_sites(&[src(file, text)]);
+        assert!(
+            found.iter().any(|site| site == expected),
+            "{expected}: {found:#?}"
+        );
+    }
+}

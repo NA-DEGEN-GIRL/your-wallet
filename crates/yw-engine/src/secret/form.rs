@@ -16,12 +16,15 @@
 //! Windows map, `tests::differential`). Unchanged but for these: [`PlatformFlags`] only narrow
 //! paste and copy (`secret_word_paste` for W05/W07, `secret_copy` with the user's
 //! `allowSecretCopy`; Windows sets both, so it decides as before); the paint stayed in yw-app and
-//! reads the form only through [`SecretForm::view`] (its countdown line is
+//! reads the form only through [`SecretForm::paint_view`] (its countdown line is
 //! `SecretView::countdown_line`, was part of the paint); a display window's form is built only by
 //! `Wallet::open_display_window` (`SecretForm::display` is crate-private, S5 plan critic C1), so
 //! the shell never names the displayed secret; the seam's test facts are crate-private, reached
 //! through `testkit::SecretFormTestExt`. The shell's window constants (timer, paste bound,
-//! window size, capture decision) stayed in yw-app.
+//! window size, capture decision) stayed in yw-app. 2026-11-24 (S5-8 review): the view's maker
+//! is `paint_view` (was `view`), a name no other fn has, so the source check
+//! `the_secret_form_is_read_only_by_its_paint_and_copy` counts every mention of it (a method or
+//! path call, or the fn named as a value), as `the_only_consume_is_wallet_code` does.
 
 use core::fmt;
 
@@ -162,6 +165,12 @@ pub struct SecretForm {
 // only, never a unit of a field or of the displayed secret. 2026-11-24 (S5-8): crate-private
 // here, reached by the shell's tests through `testkit::SecretFormTestExt` (yw-app's test builds
 // compile this crate without `cfg(test)`); before, `#[cfg(test)] pub(crate)` in yw-app.
+// 2026-11-24 (S5-8 review): so `test_held_units` (the units a form holds, which yw-app's
+// `#[cfg(test)]` close log also reads in release test builds) is compiled in every build and
+// reachable by any crate through the `pub` testkit trait — a count, never a unit; only the
+// source check `testkit_is_named_only_by_tests` keeps production code from it. `test_facts` is
+// `#[cfg(debug_assertions)]` again, as it was in yw-app (its readers, the seam's `test_secret`
+// and the headless host, are debug test builds only).
 impl SecretForm {
     /// The units its fields hold (after a wipe: 0).
     pub(crate) fn test_held_units(&self) -> usize {
@@ -170,6 +179,7 @@ impl SecretForm {
 
     /// Flags and counts: busy, an error, an information or transient line, the detail lines,
     /// the card name, the held units, a displayed secret, capture exclusion, the input pause.
+    #[cfg(debug_assertions)]
     pub(crate) fn test_facts(&self) -> String {
         format!(
             "busy={} error={} transient={} info={} details={} card={} units={} display={} excluded={} paused={}",
@@ -1438,9 +1448,12 @@ impl SecretForm {
 
     /// The read-only view a platform's paint draws the window from ([`SecretView`]; Windows:
     /// yw-app `ui::secret::paint_form`, the only reader, source check
-    /// `the_secret_form_is_read_only_by_its_paint_and_copy`).
+    /// `the_secret_form_is_read_only_by_its_paint_and_copy`, which counts every mention of this
+    /// fn's name: the only one outside this fn is `App::on_secret`'s `Msg::Paint` arm). 2026-11-24
+    /// (S5-8 review): named `paint_view` (was `view`, which the approval flow's read model shares)
+    /// so a path call or the fn named as a value is found too.
     #[must_use]
-    pub const fn view(&self) -> SecretView<'_> {
+    pub const fn paint_view(&self) -> SecretView<'_> {
         SecretView { form: self }
     }
 
@@ -1499,7 +1512,9 @@ impl SecretForm {
 /// What a platform's paint reads of a secret window's form (2026-11-24, spec/15 §11.4 S5-8): the
 /// texts, flags and counts it draws and, for drawing only, the field contents and the displayed
 /// secret as the paint used them before (short-lived zeroizing UTF-16 copies of a field,
-/// [`FieldView::render_utf16`]; the displayed secret borrowed, [`Self::shown_text`]). Read-only:
+/// [`FieldView::render_utf16`]; W05's recovery words as borrowed slices of the field buffer,
+/// [`FieldView::words`], no copy, for the word grid; the displayed secret borrowed,
+/// [`Self::shown_text`]). Read-only:
 /// nothing here changes the form. Its `Debug` is redacted (the window id only), so it never puts
 /// a field or the displayed secret in a log or a `Debug` text. Windows: yw-app
 /// `ui::secret::paint_form` is its only reader (source check
@@ -1564,7 +1579,8 @@ impl<'a> FieldView<'a> {
         self.slot.field.render_utf16(masked)
     }
 
-    /// W05: its words (borrowed, for the word grid).
+    /// W05: its words, borrowed slices of the field buffer itself (no copy, nothing to wipe), for
+    /// the word grid only, as the paint read them before S5-8 (`mnemonic_words(&slot.field)`).
     #[must_use]
     pub fn words(&self) -> Vec<&'a [u8]> {
         mnemonic_words(&self.slot.field)

@@ -2225,8 +2225,14 @@ impl App {
                 if let Some(fonts) = fonts.for_dpi(dpi, form.lang())
                     && let Ok(mut dc) = window.begin_paint()
                 {
-                    *hits =
-                        paint_form(&form.view(), &mut dc, window.client_rect(), fonts, dpi, now);
+                    *hits = paint_form(
+                        &form.paint_view(),
+                        &mut dc,
+                        window.client_rect(),
+                        fonts,
+                        dpi,
+                        now,
+                    );
                 }
                 return Reply::Handled(0);
             }

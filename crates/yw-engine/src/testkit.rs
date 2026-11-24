@@ -1227,12 +1227,15 @@ impl CardStepTestExt for CardStep {
 /// a unit of a field or of the displayed secret (2026-11-24, spec/15 §11.4 S5-8: the form moved
 /// here from yw-app `ui::secret`, where these were `#[cfg(test)] pub(crate)` methods; yw-app's
 /// test builds compile this crate without `cfg(test)`, so they are crate-private there and
-/// reached here).
+/// reached here). 2026-11-24 (S5-8 review): a widening against yw-app's `#[cfg(test)]`, recorded
+/// in spec/15 §18 37: `test_held_units` (a count) is in every build; `test_facts` only in debug
+/// builds (`#[cfg(debug_assertions)]`, as it was in yw-app), where its readers are.
 pub trait SecretFormTestExt {
     /// The units the form's fields hold (after a wipe: 0).
     fn test_held_units(&self) -> usize;
     /// Flags and counts: busy, an error, an information or transient line, the detail lines,
     /// the card name, the held units, a displayed secret, capture exclusion, the input pause.
+    #[cfg(debug_assertions)]
     fn test_facts(&self) -> String;
 }
 
@@ -1241,6 +1244,7 @@ impl SecretFormTestExt for SecretForm {
         Self::test_held_units(self)
     }
 
+    #[cfg(debug_assertions)]
     fn test_facts(&self) -> String {
         Self::test_facts(self)
     }
