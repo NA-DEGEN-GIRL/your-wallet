@@ -1001,17 +1001,24 @@ impl SecretField {
 - W05는 [02] §2.4(단어별 입력 칸, 단일 공백 연결)에 맞춰 버퍼를 단어별 칸 격자 "{i}. word"로 그린다. 공백·Tab이 다음 칸으로 가는 키다. 목록에 없는 완성 단어는 `DANGER_TEXT`. 넘기는 값은 소문자 단어를 공백 하나로 이은 문자열이다.
 
 ### 4.3 키 처리
-| 입력 | 동작 |
-|---|---|
-| `WM_CHAR` 0x20–0x7E | 활성 칸 `push_unit` |
-| `WM_CHAR` ≥ 0x80(서로게이트 포함) | 거부, 칸 아래 E-INP-008 |
-| Backspace(0x08) / Enter(0x0D) | `backspace` / 다음 칸, 마지막 칸이면 확정 |
-| Tab, Shift+Tab(`WM_KEYDOWN`) | 칸 이동(W05에서는 다음 단어 칸) |
-| Esc | 모든 버퍼 소거 후 닫기(제출한 작업이 도는 `확인 중…` 동안은 무시, §4.9) |
-| Ctrl+V, Shift+Insert | 붙여넣기(§4.7), 금지 창이면 무시 |
-| Ctrl+C | W08·W09에서만 복사(§4.8) |
-| 그 밖의 Ctrl·Alt 조합, 0x01–0x1F의 나머지, 0x7F | 무시 |
-| `WM_LBUTTONDOWN` | 칸 활성화(이식 `recovery_native.rs:1559-1571`) |
+| 입력 | 중립 이벤트(`yw_engine::secret::input`) | 동작 |
+|---|---|---|
+| `WM_CHAR` 0x20–0x7E | `SecretKey::Char(unit)` | 활성 칸 `push_unit` |
+| `WM_CHAR` ≥ 0x80(서로게이트 포함) | `SecretKey::Char(unit)` | 거부, 칸 아래 E-INP-008 |
+| Backspace(0x08) / Enter(0x0D)(`WM_CHAR`) | `SecretKey::Char(0x08)` / `SecretKey::Char(0x0D)` | `backspace` / 다음 칸, 마지막 칸이면 확정 |
+| `VK_PROCESSKEY`(0xE5, 수정 키 무관), `WM_IME_STARTCOMPOSITION`(`Msg::ImeAttempt`) | `SecretKey::Composition` | 거부, 칸 아래 E-INP-008(§4.6) |
+| Esc(수정 키 무관 — Alt+Esc·Shift+Esc도) | `SecretKey::Escape` | 모든 버퍼 소거 후 닫기(제출한 작업이 도는 `확인 중…` 동안은 무시, §4.9) |
+| 그 밖의 Alt 조합(Alt+Ctrl+V 포함) | `SecretKey::Other` | 무시 |
+| Ctrl+V, Shift+Insert(Alt 없이; Ctrl+Shift+Insert 포함) | `SecretKey::Paste` | 붙여넣기(§4.7), 금지 창이면 무시 |
+| Ctrl+C(Alt 없이) | `SecretKey::Copy` | W08·W09에서만 복사(§4.8) |
+| Tab, Shift+Tab(`WM_KEYDOWN`, Ctrl 없이) | `SecretKey::Tab { back }`(`back` = Shift) | 칸 이동(W05에서는 다음 단어 칸) |
+| 그 밖의 `WM_KEYDOWN`(Ctrl+Tab 포함) | `SecretKey::Other` | 무시 — 비활성 시계만 다시 잰다, 셸은 플랫폼에 넘긴다(Windows `DefWindowProc`, 그래서 Alt+F4가 닫는다) |
+| 0x01–0x1F의 나머지, 0x7F(`WM_CHAR`) | `SecretKey::Char(unit)` | 무시 |
+| `WM_LBUTTONDOWN` | `SecretPointer::Down(Option<SecretTarget>)`(칸이 먼저, 그다음 첫 단추) | 칸 활성화(이식 `recovery_native.rs:1559-1571`), 단추 누르기 |
+| `WM_MOUSEMOVE`(누른 동안) | `SecretPointer::Move(단추들)`(포인터 아래의 모든 단추) | 누른 단추가 없으면 누르고 있기·`보기` 취소(§4.9) |
+| `WM_LBUTTONUP` | `SecretPointer::Up(Option<SecretButton>)`(첫 단추, 칸은 보지 않음) | 누른 단추 위에서 놓으면 그 동작 |
+
+(2026-11-24, [15] §11.4 S5-7) 비밀 창의 양식(`SecretForm`)은 가운데 열의 중립 이벤트만 받는다: `SecretForm::on_key(SecretKey)`와 `SecretForm::on_pointer(SecretPointer)`. Windows의 가상 키 코드·수정 키를 이벤트로 바꾸는 곳은 yw-app `ui::secret_input`(`map_secret_key`·`map_secret_char`·`ime_key`) 하나이고, 포인터는 양식의 그리기가 돌려준 칸·단추 사각형(`HitLayout`, 셸의 창 기록에 둔다)에 대어 이벤트로 바꾼다. 위 표의 순서(IME 키, Esc, Alt, 붙여넣기, 복사, Tab)는 전에 양식이 가상 키 코드를 직접 견주던 순서 그대로다. 전에는 `on_char(unit)`·`on_key(vk, ctrl, shift, alt)`·`on_mouse_down/move/up(x, y)`이었고 양식이 자기 그리기의 사각형을 들고 있었다. 사각형이 겹칠 때도 같도록 누르기는 첫 칸·첫 단추, 움직임은 포인터 아래의 모든 단추, 놓기는 첫 단추를 싣는다. 동작은 바뀌지 않았다: 차이 시험 `ui::secret::tests::differential`(옛 진입의 시험 전용 사본과 가상 키 0–255 × 수정 키 8가지, `WM_CHAR` 0–0x2FF와 경계 단위, 모든 창 종류와 상태, 키 열, 겹친 사각형 위의 포인터 열에서 동작·셸 답·양식의 모든 필드가 같다 — 차이 0), 표 시험 `ui::secret_input::tests`, 원천 검사 `secret_keys_are_mapped_only_by_the_mapper`, SW-1–SW-4는 중립 키로 같은 단언, `s4_secret` 골든 바이트 같음. `SecretKey::Char`는 입력한 비밀의 한 단위이므로 `Debug`에 단위를 보이지 않고, 이벤트는 `Cmd`·`Effect`가 아니다(프로세스 안에서 창의 양식에 바로 적용한다).
 
 ### 4.4 차단 메시지
 비밀 클래스 wndproc(yw-win, [01] §7.7)은 다음을 핸들러·`DefWindowProcW`에 넘기지 않고 0을 반환한다(이식 `recovery_native.rs:1468-1498`): `WM_GETTEXT`, `WM_GETTEXTLENGTH`, `WM_GETOBJECT`, `WM_PRINT`, `WM_PRINTCLIENT`, `WM_COPY`, `WM_CUT`, `WM_PASTE`, `WM_CLEAR`, `WM_UNDO`, `WM_CONTEXTMENU`, `WM_DROPFILES`, `WM_RBUTTONDOWN`, `WM_RBUTTONUP`, `WM_MBUTTONDOWN`, `WM_MBUTTONUP`, `WM_IME_STARTCOMPOSITION`, `WM_IME_COMPOSITION`, `WM_IME_ENDCOMPOSITION`, `WM_IME_CHAR`, `WM_IME_KEYDOWN`, `WM_IME_KEYUP`. 비밀 상태를 붙인 뒤에는 `WM_SETTEXT`도. 우리 붙여넣기·복사는 키 처리에서 직접 하므로 `WM_PASTE`·`WM_COPY`를 쓰지 않는다. 차단된 IME 메시지는 핸들러에 오지 않으므로 IME 사용은 §4.6처럼 `Msg::KeyDown`·`Msg::Char`로만 감지한다.

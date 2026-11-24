@@ -84,6 +84,8 @@ pub(crate) mod host {
     use crate::ui::secret::{CaptureDecision, SecretForm, capture_decision};
     #[cfg(debug_assertions)]
     use crate::ui::secret::{FormAction, SECRET_TIMER_ID};
+    #[cfg(debug_assertions)]
+    use crate::ui::secret_input::{map_secret_char, map_secret_key};
     use yw_engine::errors::ErrorCode;
 
     /// The window the headless host holds instead of a Win32 window: its session's serial and
@@ -466,13 +468,15 @@ pub(crate) mod host {
                     .filter(|held| held.serial == serial)?;
                 let form = &mut held.form;
                 Some(match msg {
-                    Msg::Char(unit) => Step::Act(form.on_char(*unit, now)),
+                    Msg::Char(unit) => Step::Act(form.on_key(map_secret_char(*unit), now)),
                     Msg::KeyDown { vk, .. } => {
                         let action = form.on_key(
-                            *vk,
-                            secret_modifier(VK_CONTROL),
-                            secret_modifier(VK_SHIFT),
-                            secret_modifier(VK_MENU),
+                            map_secret_key(
+                                *vk,
+                                secret_modifier(VK_CONTROL),
+                                secret_modifier(VK_SHIFT),
+                                secret_modifier(VK_MENU),
+                            ),
                             now,
                         );
                         if matches!(action, FormAction::None) {
@@ -1090,7 +1094,8 @@ fn the_headless_secret_host_mirrors_the_shell() {
             &[
                 "debug_assert!(slot.is_none(), \"a secret window is already open\");",
                 "#[cfg(test)] secret_seam::log(secret_seam::Op::Show { kind: form.kind().id(), \
-                 }); *slot = Some(SecretWin { serial, window, form, });",
+                 }); *slot = Some(SecretWin { serial, window, form, layout: \
+                 HitLayout::default(), });",
             ],
         ),
         (
@@ -1126,10 +1131,10 @@ fn the_headless_secret_host_mirrors_the_shell() {
                 "let now = self.clock.now_ms();",
                 "let Some(secret) = secret.as_mut().filter(|secret| secret.serial == serial) \
                  else { return Reply::Default; };",
-                "Msg::Char(unit) => form.on_char(*unit, now),",
-                "Msg::KeyDown { vk, .. } => { let action = form.on_key( *vk, \
+                "Msg::Char(unit) => form.on_key(map_secret_char(*unit), now),",
+                "Msg::KeyDown { vk, .. } => { let action = form.on_key( map_secret_key( *vk, \
                  secret_modifier(VK_CONTROL), secret_modifier(VK_SHIFT), \
-                 secret_modifier(VK_MENU), now, ); if matches!(action, FormAction::None) { \
+                 secret_modifier(VK_MENU), ), now, ); if matches!(action, FormAction::None) { \
                  return Reply::Default; } action }",
                 "Msg::Timer(SECRET_TIMER_ID) => form.on_tick(now),",
                 "Msg::Close => { if form.busy() {",
@@ -1253,10 +1258,10 @@ fn the_headless_secret_host_mirrors_the_shell() {
                 "let now = self.clock.now_ms();",
                 ".serial == serial)",
                 "Msg::Char(unit) =>",
-                "form.on_char(*unit, now)",
-                "Msg::KeyDown { vk, .. } => { let action = form.on_key( *vk, \
+                "form.on_key(map_secret_char(*unit), now)",
+                "Msg::KeyDown { vk, .. } => { let action = form.on_key( map_secret_key( *vk, \
                  secret_modifier(VK_CONTROL), secret_modifier(VK_SHIFT), \
-                 secret_modifier(VK_MENU), now, ); if matches!(action, FormAction::None) {",
+                 secret_modifier(VK_MENU), ), now, ); if matches!(action, FormAction::None) {",
                 "Reply::Default",
                 "Msg::Timer(SECRET_TIMER_ID) =>",
                 "form.on_tick(now)",
@@ -1342,6 +1347,11 @@ fn the_headless_secret_host_mirrors_the_shell() {
 /// closed and wiped (`close:W02:left=0`) and the session ended when the entry returns. Before
 /// the review the secret arm called `on_secret` (no drain of its own) and only `Forward`'s drain
 /// after it applied `Secret(Close)`; no test pinned that drain. Headless, no window.
+/// 2026-11-24 (spec/15 §11.4 S5-7): the key messages reach the form as the neutral keys the map
+/// `ui::secret_input` makes, in the twin as in `on_secret` (their arms are pinned by
+/// [`the_headless_secret_host_mirrors_the_shell`]): before the Esc, a typed unit is handled and a
+/// key the map makes `SecretKey::Other` (`A`, any modifiers) is left to the platform
+/// (`Reply::Default`); the Esc is `SecretKey::Escape`.
 #[cfg(debug_assertions)]
 #[test]
 fn the_secret_entry_drains_and_its_headless_twin_mirrors_it() {
@@ -1412,6 +1422,29 @@ fn the_secret_entry_drains_and_its_headless_twin_mirrors_it() {
             .map(yw_engine::wallet::secret_session::SecretSession::serial);
         let serial = serial.unwrap_or_default();
         assert!(host::holds_window(), "W02 open");
+        if matches!(msg, Msg::KeyDown { .. }) {
+            let typed = app.test_secret_entry_headless(serial, &Msg::Char(u16::from(b'x')));
+            assert!(
+                matches!(typed, Reply::Handled(0)),
+                "a typed unit is handled"
+            );
+            let other = app.test_secret_entry_headless(
+                serial,
+                &Msg::KeyDown {
+                    vk: 0x41,
+                    repeat: false,
+                },
+            );
+            assert!(
+                matches!(other, Reply::Default),
+                "an `Other` key is the platform's"
+            );
+            assert!(
+                secret_seam::take_log().is_empty(),
+                "nothing opened or closed"
+            );
+            assert!(host::holds_window(), "W02 still open");
+        }
         let reply = app.test_secret_entry_headless(serial, &msg);
         assert!(matches!(reply, Reply::Handled(0)), "{msg:?}");
         assert!(app.outbox().is_empty(), "{msg:?}: the entry drained");

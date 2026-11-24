@@ -66,7 +66,7 @@ use yw_engine::testkit::WalletTestExt;
 
 /// Test code among yw-app's `src` files (each is a `#[cfg(test)]` module, or a file of one):
 /// not scanned. Other files are scanned with their `#[cfg(test)]` items blanked.
-const TEST_FILES: [&str; 8] = [
+const TEST_FILES: [&str; 9] = [
     "app/secret_seam.rs",
     "app/tests.rs",
     "app_approval_flow_support.rs",
@@ -74,6 +74,8 @@ const TEST_FILES: [&str; 8] = [
     "app_approval_smoke.rs",
     "store/tests.rs",
     "ui/secret/tests.rs",
+    // 2026-11-24 (S5-7): the differential test of the neutral secret keys.
+    "ui/secret/tests/differential.rs",
     "ui/tour.rs",
 ];
 
@@ -9438,4 +9440,209 @@ fn a_dropped_edit_change_is_read_again() {
         }
     }
     assert_eq!(callers, ["drain"]);
+}
+
+/// The form's file, the Windows map and the engine's event types (spec/15 §11.4 S5-7).
+const SECRET_FORM_FILE: &str = "yw-app/src/ui/secret.rs";
+const SECRET_MAP_FILE: &str = "yw-app/src/ui/secret_input.rs";
+const SECRET_EVENTS_FILE: &str = "yw-engine/src/secret/input.rs";
+
+/// What [`secret_keys_are_mapped_only_by_the_mapper`] finds in `files` (production code as
+/// [`production_code`] reads it), and how many form entries it found mapped.
+fn secret_key_findings(files: &[Src]) -> (Vec<String>, usize) {
+    let mut findings = Vec::new();
+    let mut mapped = 0_usize;
+    for src in files {
+        let name = src.file.as_str();
+        let code = src.code.as_str();
+        if name == SECRET_FORM_FILE {
+            // The form names no virtual-key code, modifier, Win32 message or pixel entry.
+            for word in [
+                "vk",
+                "ctrl",
+                "shift",
+                "alt",
+                "VK_TAB",
+                "VK_ESCAPE",
+                "VK_INSERT",
+                "VK_PROCESSKEY",
+                "Msg",
+                "is_down",
+                "on_mouse_down",
+                "on_mouse_move",
+                "on_mouse_up",
+            ] {
+                if has_word(code, word) {
+                    findings.push(format!("{name}: the form names `{word}`"));
+                }
+            }
+            let lower = code.to_ascii_lowercase();
+            for hex in ["0x09", "0x1b", "0x2d", "0x43", "0x56", "0xe5"] {
+                if has_word(&lower, hex) {
+                    findings.push(format!("{name}: the form names the key code {hex}"));
+                }
+            }
+            if code.contains("u16::from(b") {
+                findings.push(format!("{name}: the form names a key by its letter"));
+            }
+            let flat: String = code.split_whitespace().collect();
+            for head in [
+                "pubfnon_key(&mutself,key:SecretKey,now_ms:u64)->FormAction{",
+                "pubfnon_pointer(&mutself,pointer:SecretPointer,now_ms:u64)->(FormAction,bool){",
+            ] {
+                if flat.matches(head).count() != 1 {
+                    findings.push(format!("{name}: no one `{head}`"));
+                }
+            }
+            continue;
+        }
+        if name == SECRET_MAP_FILE || name == SECRET_EVENTS_FILE {
+            continue;
+        }
+        // Nothing else builds or matches a key or pointer event ...
+        for path in ["SecretKey::", "SecretPointer::", "SecretTarget::"] {
+            if code.contains(path) {
+                findings.push(format!("{name}: names `{path}`"));
+            }
+        }
+        // ... and the form's entries take only what the map built, in the secret window's
+        // entry `on_secret`.
+        let calls = code
+            .match_indices(".on_key(")
+            .chain(code.match_indices(".on_pointer("));
+        for (at, call) in calls {
+            let func = fn_at(code, &src.blocks, at).unwrap_or_default();
+            let argument = code[at + call.len()..].trim_start();
+            let allowed: &[&str] = if call == ".on_key(" {
+                &["map_secret_char(", "map_secret_key(", "ime_key()"]
+            } else {
+                &["hits.down(", "hits.up(", "hits.moved("]
+            };
+            if name == "yw-app/src/app.rs"
+                && func == "on_secret"
+                && allowed.iter().any(|start| argument.starts_with(start))
+            {
+                mapped += 1;
+            } else {
+                findings.push(format!(
+                    "{name}: `{call}` in fn {func} takes `{}`",
+                    argument.chars().take(30).collect::<String>()
+                ));
+            }
+        }
+        // The map's key fns are called nowhere else (their `use` aside).
+        let bytes = code.as_bytes();
+        let uses: Vec<(usize, usize)> = code
+            .match_indices("use ")
+            .filter(|&(at, _)| at == 0 || !is_ident(bytes[at - 1]))
+            .map(|(at, _)| (at, code[at..].find(';').map_or(code.len(), |n| at + n)))
+            .collect();
+        for word in ["map_secret_key", "map_secret_char", "ime_key"] {
+            for (at, _) in code.match_indices(word) {
+                let whole = (at == 0 || !is_ident(bytes[at - 1]))
+                    && bytes.get(at + word.len()).is_none_or(|&b| !is_ident(b));
+                let in_use = uses.iter().any(|&(start, end)| (start..end).contains(&at));
+                let func = fn_at(code, &src.blocks, at).unwrap_or_default();
+                if whole && !in_use && !(name == "yw-app/src/app.rs" && func == "on_secret") {
+                    findings.push(format!("{name}: `{word}` in fn {func}"));
+                }
+            }
+        }
+    }
+    (findings, mapped)
+}
+
+/// spec/15 §11.4 S5-7 (2026-11-24; spec/04 §4.3): a secret window's keys and pointer messages
+/// reach its form only as neutral events that the Windows map `ui::secret_input` built. The form
+/// (`ui/secret.rs`) names no virtual-key code, modifier, Win32 message or pixel entry and has
+/// one `on_key(SecretKey)` and one `on_pointer(SecretPointer)`; no production code but the form,
+/// the map and the engine's `secret::input` names a `SecretKey`, `SecretPointer` or
+/// `SecretTarget` variant; every production call of the two entries is in `App::on_secret` and
+/// takes a map result (`map_secret_char`, `map_secret_key`, `ime_key()`, or the hit layout's
+/// `down`/`up`/`moved`), and the map's key fns are called nowhere else. Before S5-7 the form
+/// compared the virtual-key codes itself (`on_key(vk, ctrl, shift, alt)`) and kept its own hit
+/// rects. The test-only callers (the tour hooks, the headless secret host, the SW tests and the
+/// differential test) are not production code.
+#[test]
+fn secret_keys_are_mapped_only_by_the_mapper() {
+    let files = production_code();
+    for file in [SECRET_FORM_FILE, SECRET_MAP_FILE, SECRET_EVENTS_FILE] {
+        let _ = src_of(&files, file);
+    }
+    let (findings, mapped) = secret_key_findings(&files);
+    assert!(findings.is_empty(), "{findings:#?}");
+    // `WM_CHAR`, `WM_KEYDOWN`, the IME attempt, press, release, move.
+    assert_eq!(
+        mapped, 6,
+        "the secret window's entry calls the form six times"
+    );
+}
+
+/// [`secret_key_findings`] on made-up code: it can fail.
+#[test]
+fn secret_key_findings_on_made_up_code() {
+    let src = |file: &str, text: &str| Src::new(file.to_owned(), code_only(text));
+    let clean = [
+        src(
+            SECRET_FORM_FILE,
+            "impl SecretForm { pub fn on_key(&mut self, key: SecretKey, now_ms: u64) -> \
+             FormAction { match key { SecretKey::Other => FormAction::None } } pub fn \
+             on_pointer(&mut self, pointer: SecretPointer, now_ms: u64) -> (FormAction, bool) { \
+             todo() } }",
+        ),
+        src(
+            "yw-app/src/app.rs",
+            "use crate::ui::secret_input::{ime_key, map_secret_char, map_secret_key}; impl App { \
+             fn on_secret(&mut self) { let a = form.on_key(map_secret_char(*unit), now); let b = \
+             form.on_key(map_secret_key(*vk, c, s, a), now); let c = form.on_key(ime_key(), now); \
+             let d = form.on_pointer(hits.down(*x, *y), now); } }",
+        ),
+    ];
+    let (findings, mapped) = secret_key_findings(&clean);
+    assert!(findings.is_empty(), "{findings:#?}");
+    assert_eq!(mapped, 4);
+    for (file, text, expected) in [
+        (
+            SECRET_FORM_FILE,
+            "impl SecretForm { pub fn on_key(&mut self, vk: u16, now_ms: u64) -> FormAction { if \
+             vk == 0xE5 { } } }",
+            "names `vk`",
+        ),
+        (
+            SECRET_FORM_FILE,
+            "const VK_TAB: u16 = 9; fn f() { u16::from(b'V') }",
+            "names `VK_TAB`",
+        ),
+        (
+            SECRET_FORM_FILE,
+            "fn f() { if code == 0x1B { } }",
+            "key code 0x1b",
+        ),
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn on_secret(&mut self) { form.on_key(SecretKey::Escape, now); } }",
+            "names `SecretKey::`",
+        ),
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn other(&mut self) { form.on_key(map_secret_char(1), now); } }",
+            "in fn other takes",
+        ),
+        (
+            "yw-app/src/app.rs",
+            "impl App { fn on_secret(&mut self) { form.on_pointer(pointer, now); } }",
+            "`.on_pointer(` in fn on_secret takes `pointer",
+        ),
+        (
+            "yw-engine/src/wallet/mod.rs",
+            "impl Wallet { fn key(&self) { let k = map_secret_key(9, false, false, false); } }",
+            "`map_secret_key` in fn key",
+        ),
+    ] {
+        let (findings, _) = secret_key_findings(&[src(file, text)]);
+        assert!(
+            findings.iter().any(|finding| finding.contains(expected)),
+            "{expected}: {findings:#?}"
+        );
+    }
 }

@@ -32,6 +32,10 @@
 //! [`DisplayHost`] and [`DisplayMade`], the shell's half of a display window's open. The wallet
 //! (`Wallet::open_display_window`) asks the host to make the window and moves the secret into it
 //! only when the host reported its capture exclusion verified; no call hands the secret back.
+//!
+//! 2026-11-24 (spec/15 §11.4 S5-7; spec/04 §4.3): [`input`], the neutral key and pointer events
+//! the window's form takes (`SecretKey`, `SecretPointer` with `SecretTarget`/`SecretButton`)
+//! instead of Windows virtual-key codes and pixels.
 
 use core::fmt;
 
@@ -42,6 +46,7 @@ use yw_core::secret::{SecretString, Zeroizing};
 use crate::approval::flow::OpenOutcome;
 use crate::yubikey::PinTarget;
 
+pub mod input;
 pub mod text;
 
 /// A PIN target's W12 title (`PinTarget::change_title` in `lang`).

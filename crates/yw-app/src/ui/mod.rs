@@ -42,6 +42,9 @@ pub mod screens_walletconnect;
 pub mod screens_yubikey;
 pub mod screens_zec;
 pub mod secret;
+// 2026-11-24 (spec/15 §11.4 S5-7): the secret windows' key and pointer map into the neutral
+// `yw_engine::secret::input` events.
+pub mod secret_input;
 pub mod theme;
 // DEV ONLY: needs `yw_win::ui::capture`, which exists only with debug assertions, so the tour is
 // left out of `cargo test --release` (and never part of a release binary).

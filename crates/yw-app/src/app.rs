@@ -30,6 +30,7 @@ use crate::ui::secret::{
     CaptureDecision, FormAction, PASTE_MAX_UTF16_UNITS, SECRET_TIMER_ID, SECRET_TIMER_MS,
     SecretForm, capture_decision, window_size,
 };
+use crate::ui::secret_input::{HitLayout, ime_key, map_secret_char, map_secret_key};
 use yw_engine::apikeys::ApiKeys;
 use yw_engine::errors::ErrorCode;
 use yw_engine::events::{KeyQueue, LockSignal};
@@ -123,6 +124,9 @@ struct SecretWin {
     serial: u64,
     window: Window,
     form: SecretForm,
+    /// What the form's last paint drew where, for hit-testing the pointer (2026-11-24, spec/15
+    /// §11.4 S5-7: before, the form kept it; empty until the first paint).
+    layout: HitLayout,
 }
 
 /// A secret copy still to be cleared from the clipboard (spec/04 §4.8).
@@ -1818,6 +1822,7 @@ fn show_secret_window(
         serial,
         window,
         form,
+        layout: HitLayout::default(),
     });
 }
 
@@ -2205,23 +2210,30 @@ impl App {
         let Some(secret) = secret.as_mut().filter(|secret| secret.serial == serial) else {
             return Reply::Default;
         };
-        let form = &mut secret.form;
+        let SecretWin {
+            form, layout: hits, ..
+        } = secret;
+        // 2026-11-24 (spec/15 §11.4 S5-7): keys and pointer messages reach the form as neutral
+        // events, built by `ui::secret_input` (the key map, and the hit layout the last paint
+        // returned); before, the form took the virtual-key code, the modifiers and the pixels.
         let action = match msg {
             Msg::Paint => {
                 if let Some(fonts) = fonts.for_dpi(dpi, form.lang())
                     && let Ok(mut dc) = window.begin_paint()
                 {
-                    form.paint(&mut dc, window.client_rect(), fonts, dpi, now);
+                    *hits = form.paint(&mut dc, window.client_rect(), fonts, dpi, now);
                 }
                 return Reply::Handled(0);
             }
-            Msg::Char(unit) => form.on_char(*unit, now),
+            Msg::Char(unit) => form.on_key(map_secret_char(*unit), now),
             Msg::KeyDown { vk, .. } => {
                 let action = form.on_key(
-                    *vk,
-                    secret_modifier(VK_CONTROL),
-                    secret_modifier(VK_SHIFT),
-                    secret_modifier(VK_MENU),
+                    map_secret_key(
+                        *vk,
+                        secret_modifier(VK_CONTROL),
+                        secret_modifier(VK_SHIFT),
+                        secret_modifier(VK_MENU),
+                    ),
                     now,
                 );
                 if matches!(action, FormAction::None) {
@@ -2230,7 +2242,7 @@ impl App {
                 action
             }
             Msg::MouseDown { x, y } => {
-                let (action, capture) = form.on_mouse_down(*x, *y, now);
+                let (action, capture) = form.on_pointer(hits.down(*x, *y), now);
                 if capture {
                     window.set_capture();
                 }
@@ -2238,9 +2250,9 @@ impl App {
             }
             Msg::MouseUp { x, y } => {
                 window.release_capture();
-                form.on_mouse_up(*x, *y, now)
+                form.on_pointer(hits.up(*x, *y), now).0
             }
-            Msg::MouseMove { x, y } => form.on_mouse_move(*x, *y),
+            Msg::MouseMove { x, y } => form.on_pointer(hits.moved(*x, *y), now).0,
             Msg::Timer(SECRET_TIMER_ID) => form.on_tick(now),
             Msg::ActivateApp(false) | Msg::KillFocus { to_foreign: true } => form.on_deactivate(),
             Msg::ActivateApp(true) => {
@@ -2255,7 +2267,7 @@ impl App {
                     Reply::Handled(MA_ACTIVATEANDEAT)
                 };
             }
-            Msg::ImeAttempt => form.on_key(0xE5, false, false, false, now),
+            Msg::ImeAttempt => form.on_key(ime_key(), now),
             Msg::Size { .. } | Msg::DpiChanged { .. } => {
                 window.invalidate();
                 return Reply::Default;
@@ -2749,22 +2761,26 @@ impl App {
         test_steps::open_display(&mut self.wallet, kind, purpose, display);
     }
 
-    /// Types `text` into the open secret window's active field (tour values only).
+    /// Types `text` into the open secret window's active field (tour values only). 2026-11-24
+    /// (S5-7): as `WM_CHAR` units through the key map (`on_char(unit)` before).
     pub(crate) fn tour_type(&mut self, text: &str) {
         let now = self.clock.now_ms();
         if let Some(secret) = self.secret.as_mut() {
             for unit in text.encode_utf16() {
-                let _ = secret.form.on_char(unit, now);
+                let _ = secret.form.on_key(map_secret_char(unit), now);
             }
             secret.window.invalidate();
         }
     }
 
-    /// Moves to the next field of the open secret window (Tab).
+    /// Moves to the next field of the open secret window (Tab). 2026-11-24 (S5-7): Tab with no
+    /// modifier through the key map (`on_key(0x09, false, false, false)` before).
     pub(crate) fn tour_next_field(&mut self) {
         let now = self.clock.now_ms();
         if let Some(secret) = self.secret.as_mut() {
-            let _ = secret.form.on_key(0x09, false, false, false, now);
+            let _ = secret
+                .form
+                .on_key(map_secret_key(0x09, false, false, false), now);
             secret.window.invalidate();
         }
     }

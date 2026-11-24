@@ -22,18 +22,30 @@
 //! the wallet moved (S4d E1): a frozen helper named it by this path. 2026-11-23 (S4d E1): it is
 //! `yw_engine::secret::Submission` (unchanged, its redacted `Debug` included; the wallet's
 //! `on_submit` takes it).
+//!
+//! 2026-11-24 (spec/15 §11.4 S5-7; spec/04 §4.3): the form takes neutral events,
+//! [`SecretForm::on_key`] a `yw_engine::secret::input::SecretKey` and [`SecretForm::on_pointer`] a
+//! `SecretPointer`, which the shell builds with `ui::secret_input` (the only place that names a
+//! virtual-key code or hit-tests pixels; source check `secret_keys_are_mapped_only_by_the_mapper`).
+//! Before, `on_char(unit)`, `on_key(vk, ctrl, shift, alt)` and `on_mouse_down`/`on_mouse_move`/
+//! `on_mouse_up(x, y)` took the Windows values and the form kept the hit rects of its last paint
+//! (`Layout`); now [`SecretForm::paint`] returns them as `ui::secret_input::HitLayout`, which the
+//! shell keeps in its window record. The buttons are `SecretButton` (was the private `Button`).
+//! Same decisions in the same order (the differential test `tests::differential`).
 
 use yw_core::bip39::{is_word, is_word_prefix};
 use yw_core::keyimport::ImportChain;
 use yw_core::lang::Lang;
 use yw_core::password::VaultPassword;
 use yw_core::secret::Zeroizing;
+use yw_engine::secret::input::{SecretButton, SecretKey, SecretPointer, SecretTarget};
 use yw_engine::secret::{
     BACKUP_ACK_HOLD_MS, CardSecretKind, DisplaySecret, HoldGate, SecretKind, SecretStep,
     Submission, text,
 };
 use yw_win::ui::{DrawFlags, PaintDc, Rect, scale};
 
+use crate::ui::secret_input::HitLayout;
 use crate::ui::theme::{self, Fonts, wide};
 use yw_engine::errors::ErrorCode;
 use yw_engine::secure_field::{
@@ -84,11 +96,6 @@ fn target_rule(target: PinTarget, lang: Lang) -> String {
     };
     text::PIN_RULE.fill(lang, [&min.to_string(), &max.to_string(), factory])
 }
-
-const VK_TAB: u16 = 0x09;
-const VK_ESCAPE: u16 = 0x1B;
-const VK_INSERT: u16 = 0x2D;
-const VK_PROCESSKEY: u16 = 0xE5;
 
 /// A secret window's client size in DIP (spec/04 §1.7: 640×480, W08/W09 820×680). 2026-11-20
 /// (S4 P7a1): was `SecretKind::size`; the kind moved to `yw_engine::secret`, its pixels stay here.
@@ -161,24 +168,8 @@ struct Slot {
     masked: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Button {
-    Primary,
-    Cancel,
-    ClearAll,
-    Copy,
-    Reveal(usize),
-    Checkbox,
-}
-
 /// One group of the button row: each button with its label.
-type ButtonLabels = Vec<(Button, String)>;
-
-#[derive(Debug, Default)]
-struct Layout {
-    fields: Vec<Rect>,
-    buttons: Vec<(Button, Rect)>,
-}
+type ButtonLabels = Vec<(SecretButton, String)>;
 
 /// The state of one secret window.
 #[expect(
@@ -204,8 +195,7 @@ pub struct SecretForm {
     started_ms: u64,
     last_activity_ms: u64,
     hold: HoldGate,
-    pressed: Option<Button>,
-    layout: Layout,
+    pressed: Option<SecretButton>,
     note: Option<String>,
     step: Option<SecretStep>,
     /// Extra non-secret lines under the intro (W11: the cards holding the key, the PIN tries).
@@ -737,7 +727,6 @@ impl SecretForm {
             last_activity_ms: now_ms,
             hold: HoldGate::default(),
             pressed: None,
-            layout: Layout::default(),
             step: None,
             details: Vec::new(),
             card: None,
@@ -1270,8 +1259,9 @@ impl SecretForm {
         FormAction::Redraw
     }
 
-    /// `WM_CHAR`.
-    pub fn on_char(&mut self, unit: u16, now_ms: u64) -> FormAction {
+    /// One typed unit ([`SecretKey::Char`]; was the `pub` `WM_CHAR` entry `on_char` before
+    /// 2026-11-24, S5-7).
+    fn on_char(&mut self, unit: u16, now_ms: u64) -> FormAction {
         self.touch(now_ms);
         if unit >= 0x80 {
             return self.non_ascii(now_ms);
@@ -1316,113 +1306,109 @@ impl SecretForm {
         }
     }
 
-    /// `WM_KEYDOWN` (modifier state from `input::is_down`).
-    pub fn on_key(
-        &mut self,
-        vk: u16,
-        ctrl: bool,
-        shift: bool,
-        alt: bool,
-        now_ms: u64,
-    ) -> FormAction {
+    /// A key of the window ([`SecretKey`], mapped by the shell: Windows `ui::secret_input`). Every
+    /// key touches the inactivity clock first; a [`FormAction::None`] lets the shell's platform
+    /// handle the key (Windows: `Reply::Default`). 2026-11-24 (S5-7): before, `on_key(vk, ctrl,
+    /// shift, alt)` compared the Windows virtual-key codes itself in the precedence the map now
+    /// applies, and `on_char(unit)` was the `WM_CHAR` entry ([`SecretKey::Char`]).
+    pub fn on_key(&mut self, key: SecretKey, now_ms: u64) -> FormAction {
         self.touch(now_ms);
-        if vk == VK_PROCESSKEY {
-            return self.non_ascii(now_ms);
-        }
-        if vk == VK_ESCAPE {
-            // A submitted value's job (reveal, removal, `.prev` recovery, unlock) is running
-            // and cannot be called back: Esc would only look like a cancel. The window closes
-            // with the result (1–2 s).
-            return if self.busy {
-                FormAction::None
-            } else {
-                self.cancel()
-            };
-        }
-        if alt {
-            return FormAction::None;
-        }
-        if (ctrl && vk == u16::from(b'V')) || (shift && vk == VK_INSERT) {
-            return if self.kind.paste_allowed() && self.input_enabled(now_ms) {
-                FormAction::Paste
-            } else {
-                FormAction::None
-            };
-        }
-        if ctrl && vk == u16::from(b'C') {
-            return if self.kind.is_display() {
-                FormAction::Copy
-            } else {
-                FormAction::None
-            };
-        }
-        if vk == VK_TAB && !ctrl {
-            if self.kind == SecretKind::Mnemonic {
-                return self.on_char(0x20, now_ms);
+        match key {
+            SecretKey::Char(unit) => self.on_char(unit, now_ms),
+            SecretKey::Composition => self.non_ascii(now_ms),
+            SecretKey::Escape => {
+                // A submitted value's job (reveal, removal, `.prev` recovery, unlock) is running
+                // and cannot be called back: Esc would only look like a cancel. The window closes
+                // with the result (1–2 s).
+                if self.busy {
+                    FormAction::None
+                } else {
+                    self.cancel()
+                }
             }
-            let count = self.slots.len();
-            if count > 0 {
-                self.active = if shift {
+            SecretKey::Paste => {
+                if self.kind.paste_allowed() && self.input_enabled(now_ms) {
+                    FormAction::Paste
+                } else {
+                    FormAction::None
+                }
+            }
+            SecretKey::Copy => {
+                if self.kind.is_display() {
+                    FormAction::Copy
+                } else {
+                    FormAction::None
+                }
+            }
+            SecretKey::Tab { back } => {
+                if self.kind == SecretKind::Mnemonic {
+                    return self.on_char(0x20, now_ms);
+                }
+                let count = self.slots.len();
+                if count == 0 {
+                    return FormAction::None;
+                }
+                self.active = if back {
                     self.active
                         .checked_sub(1)
                         .unwrap_or(count.saturating_sub(1))
                 } else {
                     self.active.saturating_add(1) % count
                 };
-                return FormAction::Redraw;
+                FormAction::Redraw
             }
+            SecretKey::Other => FormAction::None,
         }
-        FormAction::None
     }
 
-    fn hit(&self, x: i32, y: i32) -> Option<Button> {
-        self.layout
-            .buttons
-            .iter()
-            .find(|(_, rect)| rect.contains(x, y))
-            .map(|(button, _)| *button)
-    }
-
-    fn button_enabled(&self, button: Button, now_ms: u64) -> bool {
+    fn button_enabled(&self, button: SecretButton, now_ms: u64) -> bool {
         match button {
-            Button::Primary => self.can_submit(now_ms) || self.display.is_some(),
-            Button::Copy => self
+            SecretButton::Primary => self.can_submit(now_ms) || self.display.is_some(),
+            SecretButton::Copy => self
                 .display
                 .as_ref()
                 .is_some_and(|display| display.copy_allowed),
-            Button::Reveal(_) => self.capture_excluded && self.input_enabled(now_ms),
-            Button::ClearAll | Button::Checkbox => self.input_enabled(now_ms),
+            SecretButton::Reveal(_) => self.capture_excluded && self.input_enabled(now_ms),
+            SecretButton::ClearAll | SecretButton::Checkbox => self.input_enabled(now_ms),
             // Not while a submitted job runs (see `on_key`'s Esc).
-            Button::Cancel => !self.busy,
+            SecretButton::Cancel => !self.busy,
         }
     }
 
-    /// `WM_LBUTTONDOWN`; returns the action and whether to capture the mouse.
-    pub fn on_mouse_down(&mut self, x: i32, y: i32, now_ms: u64) -> (FormAction, bool) {
+    /// A pointer event of the window ([`SecretPointer`], hit-tested by the shell against the
+    /// layout [`Self::paint`] returned); returns the action and, for a press, whether to capture
+    /// the pointer (a move or a release never asks). 2026-11-24 (S5-7): was `on_mouse_down`,
+    /// `on_mouse_move` and `on_mouse_up(x, y)` over the rects the form kept from its paint.
+    pub fn on_pointer(&mut self, pointer: SecretPointer, now_ms: u64) -> (FormAction, bool) {
+        match pointer {
+            SecretPointer::Down(target) => self.pointer_down(target, now_ms),
+            SecretPointer::Move(over) => (self.pointer_move(&over), false),
+            SecretPointer::Up(button) => (self.pointer_up(button, now_ms), false),
+        }
+    }
+
+    /// `WM_LBUTTONDOWN` on `target`.
+    fn pointer_down(&mut self, target: Option<SecretTarget>, now_ms: u64) -> (FormAction, bool) {
         self.touch(now_ms);
         self.masked = false;
-        if let Some(index) = self
-            .layout
-            .fields
-            .iter()
-            .position(|rect| rect.contains(x, y))
-        {
-            self.active = index;
-            return (FormAction::Redraw, false);
-        }
-        let Some(button) = self.hit(x, y) else {
-            return (FormAction::Redraw, false);
+        let button = match target {
+            Some(SecretTarget::Field(index)) => {
+                self.active = index;
+                return (FormAction::Redraw, false);
+            }
+            Some(SecretTarget::Button(button)) => button,
+            None => return (FormAction::Redraw, false),
         };
         if !self.button_enabled(button, now_ms) {
             return (FormAction::None, false);
         }
         self.pressed = Some(button);
         match button {
-            Button::Primary if self.kind.needs_hold() => {
+            SecretButton::Primary if self.kind.needs_hold() => {
                 self.hold.begin(now_ms);
                 (FormAction::Redraw, true)
             }
-            Button::Reveal(index) => {
+            SecretButton::Reveal(index) => {
                 self.revealing = Some(index);
                 (FormAction::Redraw, true)
             }
@@ -1430,16 +1416,12 @@ impl SecretForm {
         }
     }
 
-    /// `WM_MOUSEMOVE` while captured.
-    pub fn on_mouse_move(&mut self, x: i32, y: i32) -> FormAction {
+    /// `WM_MOUSEMOVE` while captured, over the buttons `over`.
+    fn pointer_move(&mut self, over: &[SecretButton]) -> FormAction {
         let Some(pressed) = self.pressed else {
             return FormAction::None;
         };
-        let inside = self
-            .layout
-            .buttons
-            .iter()
-            .any(|(button, rect)| *button == pressed && rect.contains(x, y));
+        let inside = over.contains(&pressed);
         if !inside && (self.hold.active() || self.revealing.is_some()) {
             self.hold.cancel();
             self.revealing = None;
@@ -1448,8 +1430,8 @@ impl SecretForm {
         FormAction::None
     }
 
-    /// `WM_LBUTTONUP`.
-    pub fn on_mouse_up(&mut self, x: i32, y: i32, now_ms: u64) -> FormAction {
+    /// `WM_LBUTTONUP` over `button`.
+    fn pointer_up(&mut self, button: Option<SecretButton>, now_ms: u64) -> FormAction {
         self.touch(now_ms);
         let pressed = self.pressed.take();
         self.revealing = None;
@@ -1460,12 +1442,12 @@ impl SecretForm {
         let Some(pressed) = pressed else {
             return FormAction::None;
         };
-        if self.hit(x, y) != Some(pressed) || !self.button_enabled(pressed, now_ms) {
+        if button != Some(pressed) || !self.button_enabled(pressed, now_ms) {
             return FormAction::Redraw;
         }
         match pressed {
-            Button::Primary => self.submit(now_ms),
-            Button::Cancel => {
+            SecretButton::Primary => self.submit(now_ms),
+            SecretButton::Cancel => {
                 if self.display.is_some() && !self.kind.needs_hold() {
                     self.wipe();
                     FormAction::Close
@@ -1473,7 +1455,7 @@ impl SecretForm {
                     self.cancel()
                 }
             }
-            Button::ClearAll => {
+            SecretButton::ClearAll => {
                 for slot in &mut self.slots {
                     slot.field.clear();
                 }
@@ -1481,17 +1463,16 @@ impl SecretForm {
                 self.error = None;
                 FormAction::Redraw
             }
-            Button::Copy => FormAction::Copy,
-            Button::Checkbox => {
+            SecretButton::Copy => FormAction::Copy,
+            SecretButton::Checkbox => {
                 if let Some((_, checked)) = self.checkbox.as_mut() {
                     *checked = !*checked;
                 }
                 FormAction::Redraw
             }
-            Button::Reveal(_) => FormAction::Redraw,
+            SecretButton::Reveal(_) => FormAction::Redraw,
         }
     }
-
     /// Capture lost / cancel mode / focus lost: cancel holds and reveals.
     pub fn on_capture_lost(&mut self) -> FormAction {
         self.pressed = None;
@@ -1522,7 +1503,7 @@ impl SecretForm {
     /// Whether `보기` may reveal masked fields (never without capture exclusion).
     #[must_use]
     pub fn reveal_enabled(&self, now_ms: u64) -> bool {
-        self.button_enabled(Button::Reveal(0), now_ms)
+        self.button_enabled(SecretButton::Reveal(0), now_ms)
     }
 
     /// Whether the content is masked (T-MASKED).
@@ -1609,13 +1590,13 @@ impl SecretForm {
         reason = "one linear paint pass for every window kind"
     )]
     fn layout_and_paint(
-        &mut self,
+        &self,
         dc: &mut PaintDc<'_>,
         client: Rect,
         fonts: &Fonts,
         dpi: u32,
         now_ms: u64,
-    ) {
+    ) -> HitLayout {
         let px = |dip: i32| scale(dip, dpi);
         let margin = px(theme::SPACE_XL);
         let width = client
@@ -1623,7 +1604,7 @@ impl SecretForm {
             .saturating_sub(margin.saturating_mul(2))
             .max(px(100));
         let mut y = px(theme::SPACE_L);
-        let mut layout = Layout::default();
+        let mut layout = HitLayout::default();
         dc.fill_rect(client, theme::BG);
 
         if !self.capture_excluded {
@@ -1734,9 +1715,10 @@ impl SecretForm {
                 px(22),
             );
             dc.draw_text(&wide(label), label_rect, DrawFlags::LINE);
-            layout
-                .buttons
-                .push((Button::Checkbox, Rect::new(inner_x, y, inner_w / 2, px(20))));
+            layout.buttons.push((
+                SecretButton::Checkbox,
+                Rect::new(inner_x, y, inner_w / 2, px(20)),
+            ));
             y = y.saturating_add(px(26));
             if checked && let Some(note) = &self.note {
                 dc.set_text_color(theme::MUTED);
@@ -1808,7 +1790,7 @@ impl SecretForm {
             layout.fields.clear();
             let _ = content_top;
         }
-        self.layout = layout;
+        layout
     }
 
     #[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
@@ -1931,7 +1913,7 @@ impl SecretForm {
         y: i32,
         width: i32,
         px: impl Fn(i32) -> i32,
-        layout: &mut Layout,
+        layout: &mut HitLayout,
     ) -> i32 {
         let Some(slot) = self.slots.first() else {
             return y;
@@ -2011,7 +1993,7 @@ impl SecretForm {
         mut y: i32,
         width: i32,
         px: impl Fn(i32) -> i32,
-        layout: &mut Layout,
+        layout: &mut HitLayout,
         now_ms: u64,
     ) -> i32 {
         let enabled = self.input_enabled(now_ms);
@@ -2104,7 +2086,7 @@ impl SecretForm {
                     reveal,
                     DrawFlags::CENTER,
                 );
-                layout.buttons.push((Button::Reveal(index), reveal));
+                layout.buttons.push((SecretButton::Reveal(index), reveal));
             }
             y = y.saturating_add(px(48));
         }
@@ -2137,12 +2119,12 @@ impl SecretForm {
             SecretKind::PrivateKey { .. } => text::IMPORT.get(lang).to_owned(),
             _ => text::OK.get(lang).to_owned(),
         };
-        let mut right: Vec<(Button, String)> = vec![(Button::Primary, primary_label)];
+        let mut right: Vec<(SecretButton, String)> = vec![(SecretButton::Primary, primary_label)];
         if self.display.is_none() {
             right.insert(
                 0,
                 (
-                    Button::Cancel,
+                    SecretButton::Cancel,
                     if self.kind == SecretKind::Unlock {
                         text::LATER
                     } else {
@@ -2153,15 +2135,15 @@ impl SecretForm {
                 ),
             );
         }
-        let mut left: Vec<(Button, String)> = Vec::new();
+        let mut left: Vec<(SecretButton, String)> = Vec::new();
         if self.display.is_none() {
-            left.push((Button::ClearAll, text::CLEAR_ALL.get(lang).to_owned()));
+            left.push((SecretButton::ClearAll, text::CLEAR_ALL.get(lang).to_owned()));
         } else if self
             .display
             .as_ref()
             .is_some_and(|display| display.copy_allowed)
         {
-            left.push((Button::Copy, text::COPY.get(lang).to_owned()));
+            left.push((SecretButton::Copy, text::COPY.get(lang).to_owned()));
         }
         (right, left)
     }
@@ -2176,7 +2158,7 @@ impl SecretForm {
         y: i32,
         height: i32,
         px: impl Fn(i32) -> i32,
-        layout: &mut Layout,
+        layout: &mut HitLayout,
         now_ms: u64,
     ) {
         let (right, left) = self.button_labels(now_ms);
@@ -2226,13 +2208,13 @@ impl SecretForm {
         dc: &mut PaintDc<'_>,
         rect: Rect,
         text: &[u16],
-        button: Button,
+        button: SecretButton,
         now_ms: u64,
         bar: i32,
         radius: i32,
     ) {
         let enabled = self.button_enabled(button, now_ms);
-        let primary = button == Button::Primary;
+        let primary = button == SecretButton::Primary;
         let (fill, border) = match (enabled, primary) {
             (false, true) => (
                 theme::BUTTON_PRIMARY.disabled_fill,
@@ -2263,16 +2245,18 @@ impl SecretForm {
         dc.draw_text(text, rect, DrawFlags::CENTER);
     }
 
-    /// Paints the window and caches the layout used for hit-testing.
+    /// Paints the window and returns what it drew where, for the shell's hit-testing (2026-11-24,
+    /// S5-7: before, the form kept it).
+    #[must_use]
     pub fn paint(
-        &mut self,
+        &self,
         dc: &mut PaintDc<'_>,
         client: Rect,
         fonts: &Fonts,
         dpi: u32,
         now_ms: u64,
-    ) {
-        self.layout_and_paint(dc, client, fonts, dpi, now_ms);
+    ) -> HitLayout {
+        self.layout_and_paint(dc, client, fonts, dpi, now_ms)
     }
 }
 

@@ -1,7 +1,15 @@
 //! SW-1 (ported `archive/spec-v2.4:crates/secret-input-ui/src/recovery_native.rs:1610-1738`
 //! tests with v3 semantics) and the app half of SW-4 (spec/04 §4.10).
+//!
+//! 2026-11-24 (spec/15 §11.4 S5-7): the form takes neutral keys (`SecretKey`); these tests send
+//! them with the same assertions (before, `on_char(unit)` and `on_key(vk, ctrl, shift, alt)`:
+//! Tab was `0x09`, paste `Ctrl+'V'`, copy `Ctrl+'C'`, the IME key `0xE5`). [`differential`]
+//! compares the new entries with a test-only copy of the old ones.
 
+use yw_engine::secret::input::SecretKey;
 use yw_win::ui::is_blocked_secret_msg;
+
+mod differential;
 
 use super::{
     BACKUP_ACK_HOLD_MS, CaptureDecision, DisplaySecret, FormAction, HoldGate,
@@ -15,7 +23,7 @@ use yw_engine::secure_field::{Charset, PushResult, SecretField};
 
 fn type_text(form: &mut SecretForm, text: &str, now: u64) {
     for unit in text.encode_utf16() {
-        form.on_char(unit, now);
+        form.on_key(SecretKey::Char(unit), now);
     }
 }
 
@@ -66,11 +74,11 @@ fn sw1_backup_form_collects_only_owned_buffers() {
         .enumerate()
     {
         if index > 0 {
-            form.on_key(0x09, false, false, false, 10);
+            form.on_key(SecretKey::Tab { back: false }, 10);
         }
         type_text(&mut form, word, 10);
     }
-    let FormAction::Submit(submission) = form.on_char(0x0D, 20) else {
+    let FormAction::Submit(submission) = form.on_key(SecretKey::Char(0x0D), 20) else {
         unreachable!("expected submit");
     };
     let values: Vec<&[u8]> = submission
@@ -81,7 +89,7 @@ fn sw1_backup_form_collects_only_owned_buffers() {
     assert_eq!(values, [b"apple".as_slice(), b"breeze", b"cement", b"dune"]);
     // Paste is refused in W10 (paper backup check).
     assert!(matches!(
-        form.on_key(u16::from(b'V'), true, false, false, 30),
+        form.on_key(SecretKey::Paste, 30),
         FormAction::None
     ));
 }
@@ -133,7 +141,10 @@ fn sw1_timeout_wipes_and_focus_loss_masks() {
     );
     let mut display = display;
     // Display windows time out from when they were shown, regardless of input.
-    display.on_char(u16::from(b'a'), 5_000 + SECRET_WINDOW_TIMEOUT_MS - 10);
+    display.on_key(
+        SecretKey::Char(u16::from(b'a')),
+        5_000 + SECRET_WINDOW_TIMEOUT_MS - 10,
+    );
     assert!(matches!(
         display.on_tick(5_000 + SECRET_WINDOW_TIMEOUT_MS),
         FormAction::TimedOut
@@ -145,19 +156,28 @@ fn sw1_timeout_wipes_and_focus_loss_masks() {
 fn password_rules_and_confirmation() {
     let mut form = SecretForm::new(SecretKind::SetPassword, Lang::Ko, 0, true);
     type_text(&mut form, "short", 0);
-    form.on_key(0x09, false, false, false, 0);
+    form.on_key(SecretKey::Tab { back: false }, 0);
     type_text(&mut form, "short", 0);
-    assert!(matches!(form.on_char(0x0D, 0), FormAction::Redraw));
+    assert!(matches!(
+        form.on_key(SecretKey::Char(0x0D), 0),
+        FormAction::Redraw
+    ));
     let mut form = SecretForm::new(SecretKind::SetPassword, Lang::Ko, 0, true);
     type_text(&mut form, "m3-test-password!", 0);
-    form.on_key(0x09, false, false, false, 0);
+    form.on_key(SecretKey::Tab { back: false }, 0);
     type_text(&mut form, "m3-test-password?", 0);
-    assert!(matches!(form.on_char(0x0D, 0), FormAction::Redraw));
+    assert!(matches!(
+        form.on_key(SecretKey::Char(0x0D), 0),
+        FormAction::Redraw
+    ));
     let mut form = SecretForm::new(SecretKind::SetPassword, Lang::Ko, 0, true);
     type_text(&mut form, "m3-test-password!", 0);
-    form.on_key(0x09, false, false, false, 0);
+    form.on_key(SecretKey::Tab { back: false }, 0);
     type_text(&mut form, "m3-test-password!", 0);
-    assert!(matches!(form.on_char(0x0D, 0), FormAction::Submit(_)));
+    assert!(matches!(
+        form.on_key(SecretKey::Char(0x0D), 0),
+        FormAction::Submit(_)
+    ));
 }
 
 /// W01/W04's status line names what is wrong: a ✗ never stands before the rule itself, and an
@@ -180,7 +200,7 @@ fn password_status_names_the_problem() {
     let mut form = SecretForm::new(SecretKind::SetPassword, Lang::Ko, 0, true);
     type_text(&mut form, "short", 0);
     assert_eq!(form.password_checks(), Some((Some(false), None)));
-    form.on_key(0x09, false, false, false, 0);
+    form.on_key(SecretKey::Tab { back: false }, 0);
     type_text(&mut form, "shorT", 0);
     assert_eq!(form.password_checks(), Some((Some(false), Some(false))));
 }
@@ -189,13 +209,16 @@ fn password_status_names_the_problem() {
 fn ime_and_non_ascii_show_e_inp_008_without_changing_the_buffer() {
     let mut form = SecretForm::new(SecretKind::Unlock, Lang::Ko, 0, true);
     type_text(&mut form, "ab", 0);
-    assert!(matches!(form.on_char(0xAC00, 0), FormAction::Redraw));
     assert!(matches!(
-        form.on_key(0xE5, false, false, false, 0),
+        form.on_key(SecretKey::Char(0xAC00), 0),
+        FormAction::Redraw
+    ));
+    assert!(matches!(
+        form.on_key(SecretKey::Composition, 0),
         FormAction::Redraw
     ));
     assert!(
-        matches!(form.on_char(0x0D, 0), FormAction::Submit(ref s) if s.values[0].as_slice() == b"ab")
+        matches!(form.on_key(SecretKey::Char(0x0D), 0), FormAction::Submit(ref s) if s.values[0].as_slice() == b"ab")
     );
 }
 
@@ -204,13 +227,13 @@ fn wrong_password_disables_input_for_one_second() {
     let mut form = SecretForm::new(SecretKind::Unlock, Lang::Ko, 0, true);
     form.fail_password(1_000);
     assert!(matches!(
-        form.on_char(u16::from(b'a'), 1_999),
+        form.on_key(SecretKey::Char(u16::from(b'a')), 1_999),
         FormAction::None
     ));
     assert!(!form.can_submit(1_999));
     form.on_tick(2_000);
     assert!(matches!(
-        form.on_char(u16::from(b'a'), 2_000),
+        form.on_key(SecretKey::Char(u16::from(b'a')), 2_000),
         FormAction::Redraw
     ));
 }
@@ -221,7 +244,7 @@ fn mnemonic_next_requires_valid_count_and_known_words() {
     let about = format!("{}about", "abandon ".repeat(11));
     type_text(&mut form, &about, 0);
     assert!(form.can_submit(0));
-    let FormAction::Submit(submission) = form.on_char(0x0D, 0) else {
+    let FormAction::Submit(submission) = form.on_key(SecretKey::Char(0x0D), 0) else {
         unreachable!("expected submit");
     };
     assert_eq!(submission.values[0].as_slice(), about.as_bytes());
@@ -229,7 +252,10 @@ fn mnemonic_next_requires_valid_count_and_known_words() {
     let mut form = SecretForm::new(SecretKind::Mnemonic, Lang::Ko, 0, true);
     type_text(&mut form, &format!("{}abandonn", "abandon ".repeat(11)), 0);
     assert!(!form.can_submit(0));
-    assert!(matches!(form.on_char(0x0D, 0), FormAction::Redraw));
+    assert!(matches!(
+        form.on_key(SecretKey::Char(0x0D), 0),
+        FormAction::Redraw
+    ));
     let mut paste = SecretForm::new(SecretKind::Mnemonic, Lang::Ko, 0, true);
     let units: Vec<u16> = "Abandon\r\n abandon\tabout".encode_utf16().collect();
     assert_eq!(paste.apply_paste(&units), Ok(false));
@@ -386,7 +412,10 @@ fn w07_solana_and_bitcoin_fields_take_their_formats() {
         true,
     );
     type_text(&mut btc, "KwDiBf89", 1);
-    assert!(matches!(btc.on_char(0x0D, 2), FormAction::Redraw));
+    assert!(matches!(
+        btc.on_key(SecretKey::Char(0x0D), 2),
+        FormAction::Redraw
+    ));
     // Pasted JSON with line breaks collapses to single spaces.
     let units: Vec<u16> = "[1,
   2,
@@ -465,12 +494,12 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
     form.set_details(vec!["이 키를 가진 YubiKey: #7700011".to_owned()]);
     type_text(&mut form, "12345", 0);
     assert!(
-        matches!(form.on_char(0x0D, 0), FormAction::Redraw),
+        matches!(form.on_key(SecretKey::Char(0x0D), 0), FormAction::Redraw),
         "too short"
     );
     type_text(&mut form, "6789", 0);
     // The field holds at most 8 characters.
-    let FormAction::Submit(submission) = form.on_char(0x0D, 0) else {
+    let FormAction::Submit(submission) = form.on_key(SecretKey::Char(0x0D), 0) else {
         unreachable!("expected submit");
     };
     let [pin] = submission.values.as_slice() else {
@@ -478,12 +507,12 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
     };
     let owned: &Zeroizing<Vec<u8>> = pin;
     assert_eq!(owned.as_slice(), b"12345678");
-    assert!(matches!(
-        form.on_key(u16::from(b'C'), true, false, false, 0),
-        FormAction::None
-    ));
+    assert!(matches!(form.on_key(SecretKey::Copy, 0), FormAction::None));
     // Non-ASCII is refused like in every secret window.
-    assert!(matches!(form.on_char(0xAC00, 0), FormAction::Redraw));
+    assert!(matches!(
+        form.on_key(SecretKey::Char(0xAC00), 0),
+        FormAction::Redraw
+    ));
     assert!(!form.can_submit(0), "the field was wiped by the submission");
 }
 
@@ -499,11 +528,11 @@ fn w12_card_secrets() {
         let mut form = SecretForm::new(kind, Lang::Ko, 0, true);
         for (index, text) in fields.iter().enumerate() {
             if index > 0 {
-                form.on_key(0x09, false, false, false, 0);
+                form.on_key(SecretKey::Tab { back: false }, 0);
             }
             type_text(&mut form, text, 0);
         }
-        form.on_char(0x0D, 0)
+        form.on_key(SecretKey::Char(0x0D), 0)
     };
     let admin = SecretKind::CardSecret(CardSecretKind::AdminPin);
     assert_eq!(admin.id(), "W12");
@@ -603,7 +632,7 @@ fn w10_word_not_in_the_list_keeps_confirm_off() {
         .enumerate()
     {
         if index > 0 {
-            form.on_key(0x09, false, false, false, 10);
+            form.on_key(SecretKey::Tab { back: false }, 10);
         }
         type_text(&mut form, word, 10);
         if index == 2 {
@@ -614,17 +643,26 @@ fn w10_word_not_in_the_list_keeps_confirm_off() {
     assert_eq!(form.word_mark(2), WordMark::Unlisted, "left unfinished");
     assert_eq!(form.word_mark(3), WordMark::Unlisted, "no word starts so");
     assert!(!form.can_submit(20));
-    assert!(matches!(form.on_char(0x0D, 20), FormAction::Redraw));
-    form.on_char(0x08, 30);
-    form.on_key(0x09, false, false, false, 30);
-    form.on_key(0x09, false, false, false, 30);
-    form.on_key(0x09, false, false, false, 30);
+    assert!(matches!(
+        form.on_key(SecretKey::Char(0x0D), 20),
+        FormAction::Redraw
+    ));
+    form.on_key(SecretKey::Char(0x08), 30);
+    form.on_key(SecretKey::Tab { back: false }, 30);
+    form.on_key(SecretKey::Tab { back: false }, 30);
+    form.on_key(SecretKey::Tab { back: false }, 30);
     type_text(&mut form, "don", 30);
     assert_eq!(form.word_mark(2), WordMark::Listed);
     assert!(form.can_submit(40));
     // Enter moves to the last field, then sends.
-    assert!(matches!(form.on_char(0x0D, 40), FormAction::Redraw));
-    assert!(matches!(form.on_char(0x0D, 50), FormAction::Submit(_)));
+    assert!(matches!(
+        form.on_key(SecretKey::Char(0x0D), 40),
+        FormAction::Redraw
+    ));
+    assert!(matches!(
+        form.on_key(SecretKey::Char(0x0D), 50),
+        FormAction::Submit(_)
+    ));
 }
 
 /// spec/14: every secret-window text exists in both languages with the same placeholders (each
@@ -848,11 +886,14 @@ fn every_secret_window_is_english_with_lang_en() {
         let mut form = SecretForm::new(kind, Lang::En, 0, true);
         for (index, text) in fields.iter().enumerate() {
             if index > 0 {
-                form.on_key(0x09, false, false, false, 0);
+                form.on_key(SecretKey::Tab { back: false }, 0);
             }
             type_text(&mut form, text, 0);
         }
-        assert!(matches!(form.on_char(0x0D, 0), FormAction::Redraw));
+        assert!(matches!(
+            form.on_key(SecretKey::Char(0x0D), 0),
+            FormAction::Redraw
+        ));
         let error = form.error.clone().unwrap_or_default();
         assert!(
             !error.is_empty() && !has_hangul(&error),
