@@ -10123,3 +10123,80 @@ fn the_paint_view_check_finds_every_call_form() {
         );
     }
 }
+
+/// spec/04 §4.8 (2026-11-24, spec/15 §11.4 S5-9 review): every clear of a secret copy hands its
+/// notice to the wallet. The lock's `SecretEffect::ClearClip { at_exit: false }` answers with
+/// what `clear_secret_clip` returned (`App::drain` sends an applied effect's answer to `on_cmd`),
+/// the main tick sends it and then drains, the start's clear of an earlier run's copy and a
+/// secret copy that replaced a noticed one send theirs, and `clear_secret_clip` returns its note
+/// on every path. Why a source check: a test build has no main window, so `clear_secret_clip`
+/// ends before the clipboard is touched and no notice is made — the headless `s4_secret`
+/// `clear-clip` lines pin the clears' order only (a probe whose lock arm dropped the answer
+/// passed every lib test). What the wallet writes for each note is the engine test
+/// `tests/shell_cmds.rs` `clip_notes_write_the_clip_notices`.
+#[test]
+fn clip_clear_notices_reach_the_wallet() {
+    let files = production_code();
+    let app = src_of(&files, "yw-app/src/app.rs");
+    let one = |name: &str| {
+        let bodies = fn_bodies(app, name);
+        assert_eq!(bodies.len(), 1, "one {name}");
+        normalized(bodies[0])
+    };
+    let apply = one("apply_secret_effect");
+    assert!(
+        apply.contains(
+            "SecretEffect::ClearClip { at_exit } => { if at_exit { \
+             self.clear_secret_clip_at_exit(); None } else { \
+             self.clear_secret_clip(self.clock.now_ms()) } }"
+        ),
+        "the lock's clear answers with its notice: {apply}"
+    );
+    let tick = one("tick");
+    assert!(
+        tick.contains(
+            "if let Some(note) = self.clear_secret_clip(now) { self.on_cmd(note); } self.drain();"
+        ),
+        "the main tick's clear sends its notice: {tick}"
+    );
+    let clear = one("clear_secret_clip");
+    assert!(
+        clear.ends_with("note.map(Cmd::SecretClip) }"),
+        "clear_secret_clip returns its note: {clear}"
+    );
+    for note in [
+        "then_some(ClipNote::NoticeEnds { cleared })",
+        "notice.then_some(ClipNote::NotCleared)",
+        "(!pending.retry.noticed).then_some(ClipNote::NotCleared)",
+    ] {
+        assert!(clear.contains(note), "clear_secret_clip: {note}");
+    }
+    assert!(
+        one("clear_earlier_secret_clip")
+            .contains("self.on_cmd(Cmd::SecretClip(ClipNote::EarlierRunCleared));"),
+        "the start's clear sends its notice"
+    );
+    assert!(
+        one("copy_secret")
+            .contains("self.on_cmd(Cmd::SecretClip(ClipNote::NoticeEnds { cleared: false }));"),
+        "a copy that replaced a noticed one ends its notice"
+    );
+    let mut callers: Vec<String> = files
+        .iter()
+        .flat_map(|src| {
+            fn_blocks(src)
+                .into_iter()
+                .map(move |(name, body)| (src, name, body))
+        })
+        .filter(|(_, _, body)| app_calls(body).contains("clear_secret_clip"))
+        .map(|(src, name, _)| format!("{}:{name}", src.file))
+        .collect();
+    callers.sort();
+    assert_eq!(
+        callers,
+        [
+            "yw-app/src/app.rs:apply_secret_effect",
+            "yw-app/src/app.rs:tick"
+        ]
+    );
+}
