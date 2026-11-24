@@ -907,7 +907,11 @@ impl FormSync {
     }
 
     /// The lock dropped the screen with the edits (O-4): nothing is shown. The plan drawn last
-    /// stays (the next render compares with it).
+    /// stays (the next render compares with it), with its model texts (`Zeroizing`), until the
+    /// lock's render is answered — or, with no window or no fonts, the next drawn render
+    /// (2026-11-24, S5-6 review, spec/15 §18 36 (2)): the Windows controls of the screen before
+    /// stay just as long, so dropping the plan here could make the engine's keep rule differ from
+    /// the window's at that render; the same texts live in the screens' drafts anyway.
     pub(crate) fn clear(&mut self) {
         self.shown = FormState::default();
     }

@@ -105,6 +105,11 @@
 //! `Wallet::next_effect`). Before, `Render` answered `Cmd::Form` (every plain edit read back)
 //! and the field writes `Cmd::FieldShown` (the written edit read back). The shell's debug shadow
 //! read `App::check_form_in_step` still compares the form state with the edits after every drain.
+//! (2026-11-24, S5-6 review:) a main-window edit's `EN_CHANGE` that arrives inside the borrow is
+//! no longer only dropped: the main `Forward` remembers the edit's id, and once the queue is empty
+//! the drain sends `Cmd::Edit` for each such edit that shows another text than the form state
+//! (`App::edit_changed_in_borrow`; the engine's own writes show what it holds and send nothing),
+//! then drains what that emitted. Until S5-6 the read-back `Cmd::Form` healed such a change.
 
 use yw_engine::cmd::Cmd;
 use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
@@ -268,41 +273,51 @@ impl App {
         if deferred::hold(&mut self.wallet) {
             return;
         }
-        while let Some(effect) = self.wallet.next_effect() {
-            // 2026-11-21 (S4 W2, plan §3.4, D-4): the composition. A display window's open is the
-            // one effect that moves a value from the wallet into the shell (the secret), so it
-            // is not the executor's: `open_display_composed` has the shell make and verify the
-            // window, moves the secret in only then, and answers. Every other effect is the
-            // executor's (`apply`), which writes no wallet state (source check
-            // `the_executor_writes_no_wallet_state`). Before W2 the executor's display arm
-            // moved the secret itself (`open_display_window`), at the same point.
-            let answer = match effect {
-                Effect::Secret(SecretEffect::OpenDisplay {
-                    serial,
-                    kind,
-                    step,
-                    timeout_note,
-                    lang,
-                }) => Some(self.open_display_composed(serial, kind, step, timeout_note, lang)),
-                effect => self.apply(effect),
+        // 2026-11-24 (spec/15 §11.4 S5-6 review, spec/04 §1.3): once the queue is empty, an edit
+        // change the borrow dropped (`App::edit_changed_in_borrow`) goes to the wallet as the
+        // user's change, one at a time, and what it emits is drained the same way; with none lost,
+        // one pass as before (the queue's loop stays in this fn: the source checks read it here).
+        loop {
+            while let Some(effect) = self.wallet.next_effect() {
+                // 2026-11-21 (S4 W2, plan §3.4, D-4): the composition. A display window's open is
+                // the one effect that moves a value from the wallet into the shell (the secret), so
+                // it is not the executor's: `open_display_composed` has the shell make and verify
+                // the window, moves the secret in only then, and answers. Every other effect is the
+                // executor's (`apply`), which writes no wallet state (source check
+                // `the_executor_writes_no_wallet_state`). Before W2 the executor's display arm
+                // moved the secret itself (`open_display_window`), at the same point.
+                let answer = match effect {
+                    Effect::Secret(SecretEffect::OpenDisplay {
+                        serial,
+                        kind,
+                        step,
+                        timeout_note,
+                        lang,
+                    }) => Some(self.open_display_composed(serial, kind, step, timeout_note, lang)),
+                    effect => self.apply(effect),
+                };
+                // Tests: the logic's steps logged behind this effect are logged now.
+                #[cfg(test)]
+                crate::app::secret_seam::applied();
+                // 2026-11-21 (S4 W3, critique B-10): an effect that changed the main window's
+                // hidden state (`RaiseMain` shows it; a secret or approval window's close asks
+                // for its foreground, which can show a hidden one) — the wallet's mirror follows
+                // at once, before the effect's answer; the window's own `WM_SIZE` came inside this
+                // borrow and was dropped. Before W3 the wallet read the window when it needed to.
+                if let Some(hidden) = self.main_hidden_answer() {
+                    self.wallet.on_cmd(hidden);
+                }
+                // Tests (2026-11-23, S4d E2): a held batch's answers go back after the batch.
+                #[cfg(test)]
+                let answer = answer.and_then(deferred::answer_now);
+                if let Some(answer) = answer {
+                    self.wallet.on_cmd(answer);
+                }
+            }
+            let Some(edit) = self.edit_changed_in_borrow() else {
+                break;
             };
-            // Tests: the logic's steps logged behind this effect are logged now.
-            #[cfg(test)]
-            crate::app::secret_seam::applied();
-            // 2026-11-21 (S4 W3, critique B-10): an effect that changed the main window's
-            // hidden state (`RaiseMain` shows it; a secret or approval window's close asks for
-            // its foreground, which can show a hidden one) — the wallet's mirror follows at once,
-            // before the effect's answer; the window's own `WM_SIZE` came inside this borrow and
-            // was dropped. Before W3 the wallet read the window when it needed to.
-            if let Some(hidden) = self.main_hidden_answer() {
-                self.wallet.on_cmd(hidden);
-            }
-            // Tests (2026-11-23, S4d E2): a held batch's answers go back after the batch.
-            #[cfg(test)]
-            let answer = answer.and_then(deferred::answer_now);
-            if let Some(answer) = answer {
-                self.wallet.on_cmd(answer);
-            }
+            self.wallet.on_cmd(edit);
         }
         debug_assert!(self.queued_effects() == 0, "the outbox drained");
         // Tests (2026-11-23, S4d E2): a held batch is checked once its answers went back

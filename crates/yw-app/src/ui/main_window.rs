@@ -2875,4 +2875,383 @@ mod tests {
         );
         assert_eq!(break_spans(&spans, 10).len(), 1);
     }
+    // ---- The engine's copy of the keep rule (2026-11-24, spec/15 §11.4 S5-6 review) ----
+
+    use yw_engine::cmd::{BookPress, BtcPress, CorePress};
+    use yw_engine::form::{CredField, EditField};
+    use yw_engine::screen::model::{Ctl as ModelCtl, Item as ModelItem};
+
+    /// One table row: a screen model drawn, the user's typing into its drawn plain edits, and the
+    /// next model drawn with the plain edit that had the keyboard focus.
+    struct KeepCase {
+        name: &'static str,
+        old: Vec<ModelItem>,
+        typed: Vec<(EditField, &'static str)>,
+        new: Vec<ModelItem>,
+        focus: Option<EditField>,
+    }
+
+    /// The controls `items` places, in placed order: lowered as `App::items` lowers them, laid
+    /// out as `App::render_main` lays them out (made-up text sizes; they move rectangles, not the
+    /// order).
+    fn placed_of(items: &[ModelItem]) -> Vec<(Ctl, Rect)> {
+        let items = crate::ui::lower::lowered(items.to_vec());
+        let measure = |_: &str, _: FontRole, _: i32| 20;
+        let width = |text: &str| i32::try_from(text.len()).unwrap_or(0).saturating_mul(7);
+        layout(&items, Lang::Ko, 900, 96, 0, &measure, &width).controls
+    }
+
+    /// What the window's plain edits show after `ControlSet::sync` drew `case.old` from an empty
+    /// set, the user typed `case.typed` into the edits and `sync` drew `case.new` with the focus on
+    /// `case.focus`'s edit: [`ControlSet::signature`], [`common_ends`] and [`keeps_edit`] decide,
+    /// as in [`ControlSet::rebuild`] (the old head and tail stay at their places, every other
+    /// edit is created from its model text); each field read as `ControlSet::text` reads it.
+    fn window_keeps(case: &KeepCase) -> Vec<(EditField, String)> {
+        let old = placed_of(&case.old);
+        let new = placed_of(&case.new);
+        let is_edit = |ctl: &Ctl| matches!(ctl.kind, ControlKind::Edit { .. });
+        // A first draw creates every control from the model.
+        let mut live: Vec<Option<String>> = old
+            .iter()
+            .map(|(ctl, _)| is_edit(ctl).then(|| ctl.text.clone()))
+            .collect();
+        let first_of = |placed: &[(Ctl, Rect)], field: EditField| {
+            let id = crate::ui::cmd_table::edit_id_of(field);
+            placed
+                .iter()
+                .position(|(ctl, _)| ctl.id == id && is_edit(ctl))
+        };
+        for (field, text) in &case.typed {
+            let at = first_of(&old, *field).unwrap();
+            live[at] = Some((*text).to_owned());
+        }
+        let focused = case.focus.and_then(|field| first_of(&old, field));
+        let (old_sig, new_sig) = (ControlSet::signature(&old), ControlSet::signature(&new));
+        let shown: Vec<Option<String>> = if old_sig == new_sig {
+            live
+        } else {
+            let (prefix, suffix) = common_ends(&old_sig, &new_sig);
+            let new_tail = new.len() - suffix;
+            let old_tail = old.len() - suffix;
+            new.iter()
+                .enumerate()
+                .map(|(at, (wanted, _))| {
+                    let kept = if at < prefix {
+                        Some(at)
+                    } else if at >= new_tail {
+                        Some(old_tail + (at - new_tail))
+                    } else {
+                        None
+                    };
+                    let stays = kept.and_then(|was| {
+                        let (before, _) = &old[was];
+                        let text = live[was].clone();
+                        (!is_edit(before)
+                            || keeps_edit(before, wanted, focused == Some(was), |model| {
+                                text.as_deref() == Some(model)
+                            }))
+                        .then_some(text)
+                    });
+                    match stays {
+                        Some(text) => text,
+                        None => is_edit(wanted).then(|| wanted.text.clone()),
+                    }
+                })
+                .collect()
+        };
+        EditField::ALL
+            .iter()
+            .filter_map(|field| {
+                let at = first_of(&new, *field)?;
+                let units: Vec<u16> = shown[at]
+                    .as_deref()?
+                    .encode_utf16()
+                    .take(field.cap())
+                    .collect();
+                Some((*field, String::from_utf16_lossy(&units)))
+            })
+            .collect()
+    }
+
+    fn model_edit(field: EditField, text: &str) -> ModelCtl {
+        ModelCtl::edit(field, text, 200, false, 512)
+    }
+
+    /// The send-like form: a lock row, the address edit, a picker button, `between`, the amount
+    /// edit and a save button.
+    fn send_form(to: &str, amount: &str, between: Vec<ModelItem>) -> Vec<ModelItem> {
+        let mut items = vec![
+            ModelItem::Row(vec![ModelCtl::button(CorePress::Lock, "잠금")]),
+            ModelItem::Row(vec![
+                model_edit(EditField::EvmSendTo, to),
+                ModelCtl::button(CorePress::SwitchAccount, "주소록"),
+            ]),
+        ];
+        items.extend(between);
+        items.push(ModelItem::Row(vec![
+            model_edit(EditField::EvmSendAmount, amount),
+            ModelCtl::primary(CorePress::RenameSave, "저장"),
+        ]));
+        items
+    }
+
+    fn opened() -> Vec<ModelItem> {
+        vec![ModelItem::Row(vec![ModelCtl::link(
+            CorePress::DismissBanners,
+            "닫기",
+        )])]
+    }
+
+    #[expect(clippy::too_many_lines, reason = "one table row each")]
+    fn keep_cases() -> Vec<KeepCase> {
+        use EditField::{CoreAutoLock, EvmSendAmount as AMOUNT, EvmSendTo as TO, SolFeeCap};
+        let typed = vec![(TO, "typed-to"), (AMOUNT, "typed-1")];
+        let nested = |auto_lock: &str, fee: &str, open: bool| {
+            let mut items = vec![
+                ModelItem::Toolbar(
+                    "Your Wallet".to_owned(),
+                    vec![
+                        ModelCtl::button(CorePress::OpenSettings, "설정"),
+                        ModelCtl::button(CorePress::Lock, "잠금"),
+                    ],
+                ),
+                ModelItem::LabeledRow(
+                    "자동 잠금".to_owned(),
+                    vec![
+                        model_edit(CoreAutoLock, auto_lock),
+                        ModelCtl::button(CorePress::AutolockSave, "저장"),
+                    ],
+                ),
+            ];
+            if open {
+                items.push(ModelItem::Menu(vec![
+                    ModelCtl::entry(BtcPress::AddressModeSingle, "하나", true),
+                    ModelCtl::entry(BtcPress::AddressModeHd, "여럿", false),
+                ]));
+            }
+            items.push(ModelItem::Badged(
+                yw_engine::badge::Badge::evm(1, "Ethereum"),
+                Box::new(ModelItem::Row(vec![
+                    model_edit(SolFeeCap, fee),
+                    ModelCtl::edit(CredField::QnToken, "", 200, true, 256),
+                ])),
+            ));
+            items.push(ModelItem::Row(vec![ModelCtl::check(
+                BookPress::Verified(None),
+                "확인",
+                false,
+            )]));
+            items
+        };
+        vec![
+            KeepCase {
+                name: "the same controls keep every edit",
+                old: send_form("to", "1", Vec::new()),
+                typed: typed.clone(),
+                new: send_form("other", "2", Vec::new()),
+                focus: None,
+            },
+            KeepCase {
+                name: "a button's look changes nothing",
+                old: send_form("to", "1", Vec::new()),
+                typed: typed.clone(),
+                new: {
+                    let mut items = send_form("to", "1", Vec::new());
+                    items[0] = ModelItem::Row(vec![ModelCtl::primary(CorePress::Lock, "잠금")]);
+                    items
+                },
+                focus: Some(AMOUNT),
+            },
+            KeepCase {
+                name: "a row between: both edits at kept places, the focused one stays",
+                old: send_form("to", "1", Vec::new()),
+                typed: typed.clone(),
+                new: send_form("to", "1", opened()),
+                focus: Some(TO),
+            },
+            KeepCase {
+                name: "a row between, focus on the amount",
+                old: send_form("to", "1", Vec::new()),
+                typed: typed.clone(),
+                new: send_form("to", "1", opened()),
+                focus: Some(AMOUNT),
+            },
+            KeepCase {
+                name: "a row between, no focus",
+                old: send_form("to", "1", Vec::new()),
+                typed: typed.clone(),
+                new: send_form("to", "1", opened()),
+                focus: None,
+            },
+            KeepCase {
+                name: "the focused edit's model text changed",
+                old: send_form("to", "1", Vec::new()),
+                typed: typed.clone(),
+                new: send_form("new", "1", opened()),
+                focus: Some(TO),
+            },
+            KeepCase {
+                name: "the model now gives what the focused edit shows",
+                old: send_form("to", "1", Vec::new()),
+                typed: typed.clone(),
+                new: send_form("typed-to", "1", opened()),
+                focus: Some(TO),
+            },
+            KeepCase {
+                name: "the focused edit's limit changed",
+                old: send_form("to", "1", Vec::new()),
+                typed: typed.clone(),
+                new: {
+                    let mut items = send_form("to", "1", opened());
+                    items[1] = ModelItem::Row(vec![
+                        ModelCtl::edit(TO, "to", 200, false, 64),
+                        ModelCtl::button(CorePress::SwitchAccount, "주소록"),
+                    ]);
+                    items
+                },
+                focus: Some(TO),
+            },
+            KeepCase {
+                name: "a masked plain edit never stays",
+                old: vec![ModelItem::Row(vec![ModelCtl::edit(
+                    TO, "to", 200, true, 512,
+                )])],
+                typed: vec![(TO, "typed-to")],
+                new: [
+                    vec![ModelItem::Row(vec![ModelCtl::edit(
+                        TO, "to", 200, true, 512,
+                    )])],
+                    opened(),
+                ]
+                .concat(),
+                focus: Some(TO),
+            },
+            KeepCase {
+                name: "a readonly edit is another class",
+                old: send_form("to", "1", Vec::new()),
+                typed: typed.clone(),
+                new: {
+                    let mut items = send_form("to", "1", Vec::new());
+                    items[1] = ModelItem::Row(vec![
+                        model_edit(TO, "to").readonly(),
+                        ModelCtl::button(CorePress::SwitchAccount, "주소록"),
+                    ]);
+                    items
+                },
+                focus: Some(TO),
+            },
+            KeepCase {
+                name: "the focused edit moved into the middle",
+                old: send_form("to", "1", Vec::new()),
+                typed: typed.clone(),
+                new: [
+                    vec![ModelItem::Row(vec![model_edit(TO, "to")])],
+                    send_form("to", "1", Vec::new())[2..].to_vec(),
+                ]
+                .concat(),
+                focus: Some(TO),
+            },
+            KeepCase {
+                name: "a field no edit draws is gone",
+                old: send_form("to", "1", Vec::new()),
+                typed: typed.clone(),
+                new: vec![ModelItem::Row(vec![ModelCtl::button(
+                    CorePress::Lock,
+                    "잠금",
+                )])],
+                focus: Some(TO),
+            },
+            KeepCase {
+                name: "a first radio becomes the second",
+                old: [
+                    send_form("to", "1", Vec::new()),
+                    vec![ModelItem::Row(vec![ModelCtl::radio(
+                        BtcPress::AddressModeSingle,
+                        "하나",
+                        true,
+                        true,
+                    )])],
+                ]
+                .concat(),
+                typed: typed.clone(),
+                new: [
+                    send_form("to", "1", Vec::new()),
+                    vec![ModelItem::Row(vec![ModelCtl::radio(
+                        BtcPress::AddressModeSingle,
+                        "하나",
+                        true,
+                        false,
+                    )])],
+                ]
+                .concat(),
+                focus: Some(AMOUNT),
+            },
+            KeepCase {
+                name: "toolbar, labeled row, badged row and a credential edit; a menu opens",
+                old: nested("5", "100", false),
+                typed: vec![(CoreAutoLock, "9"), (SolFeeCap, "250")],
+                new: nested("5", "100", true),
+                focus: Some(CoreAutoLock),
+            },
+            KeepCase {
+                name: "the same nested screen, the badged edit focused",
+                old: nested("5", "100", false),
+                typed: vec![(CoreAutoLock, "9"), (SolFeeCap, "250")],
+                new: nested("5", "100", true),
+                focus: Some(SolFeeCap),
+            },
+            KeepCase {
+                name: "the menu closes",
+                old: nested("5", "100", true),
+                typed: vec![(CoreAutoLock, "9"), (SolFeeCap, "250")],
+                new: nested("6", "100", false),
+                focus: Some(SolFeeCap),
+            },
+            KeepCase {
+                name: "a model text past the field's cap",
+                old: vec![ModelItem::Row(vec![model_edit(CoreAutoLock, "1")])],
+                typed: Vec::new(),
+                new: [
+                    opened(),
+                    vec![ModelItem::Row(vec![model_edit(
+                        CoreAutoLock,
+                        &"7".repeat(20),
+                    )])],
+                ]
+                .concat(),
+                focus: None,
+            },
+        ]
+    }
+
+    /// The Windows keep rule (`ControlSet::sync`) and the engine's copy (`form::FormSync`, the
+    /// form state since S5-6) agree on every table row: the same plain edits are shown with the
+    /// same texts (2026-11-24, spec/15 §11.4 S5-6 review: the census and the headless tests draw
+    /// nothing, so before this table only the on-request windowed form test compared the two).
+    /// Each row also shows that it tests something: the engine's result with the focus taken away
+    /// differs where a focused edit stays.
+    #[test]
+    fn the_engine_keeps_what_the_window_keeps() {
+        let mut focus_mattered = 0;
+        for case in keep_cases() {
+            let window = window_keeps(&case);
+            let engine =
+                yw_engine::testkit::form_keep_rule(&case.old, &case.typed, &case.new, case.focus);
+            assert_eq!(engine, window, "{}", case.name);
+            assert!(
+                !window.is_empty() || case.name.contains("gone"),
+                "{}",
+                case.name
+            );
+            let unfocused =
+                yw_engine::testkit::form_keep_rule(&case.old, &case.typed, &case.new, None);
+            if unfocused != engine {
+                focus_mattered += 1;
+            }
+        }
+        assert!(
+            focus_mattered >= 3,
+            "{focus_mattered} rows where the focus kept an edit"
+        );
+    }
 }

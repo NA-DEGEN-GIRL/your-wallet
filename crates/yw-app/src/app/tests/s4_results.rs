@@ -9335,3 +9335,107 @@ fn item_31_surface_is_pinned() {
         Some("pub")
     );
 }
+
+/// The shell's half of the engine's form state (2026-11-24, spec/15 §11.4 S5-6 review): the
+/// executor's `Render` arm samples the plain edit that has the keyboard focus
+/// (`controls.focused_id()` through `cmd_table::field_of`) before it lays the screen out, and
+/// answers `Cmd::Rendered { focus }` exactly when `render_main` says it synced the controls,
+/// which it says only after `controls.sync`; no other production code of yw-app builds the answer.
+/// The census and the headless tests have no main window (nothing is drawn, nothing answered), so
+/// a shell that stopped answering or sampled the focus after the layout passed every gated test
+/// (only the on-request windowed form test `ui::tour_forms` draws). A gated windowed test cannot
+/// draw either: `ControlSet::sync`'s `WM_SETREDRAW(TRUE)` makes a hidden main window visible, and
+/// gate step winui shows no window. So this check pins the code, and the table test
+/// `ui::main_window::tests::the_engine_keeps_what_the_window_keeps` the rule the answer feeds.
+#[test]
+fn the_render_arm_answers_what_it_drew() {
+    let files = production_code();
+    let flat = |text: &str| text.split_whitespace().collect::<String>();
+    let effects = src_of(&files, "yw-app/src/app_effects.rs");
+    let apply = fn_bodies(effects, "apply");
+    assert_eq!(apply.len(), 1, "one apply");
+    let apply = flat(apply[0]);
+    let arm_at = apply.find("Effect::Render=>{");
+    assert!(arm_at.is_some(), "the Render arm: {apply}");
+    let arm = &apply[arm_at.unwrap_or_default()..];
+    let arm = &arm[..arm.find("Effect::StartTimer").unwrap_or(arm.len())];
+    let sample = "letfocus=self.controls.focused_id().and_then(cmd_table::field_of);";
+    let answer = "self.render_main().then_some(Cmd::Rendered{focus})}";
+    assert!(
+        arm.contains(sample) && arm.ends_with(answer),
+        "the arm samples the focus, then answers what it drew: {arm}"
+    );
+    assert!(arm.find(sample) < arm.find("self.render_main()"));
+    assert_eq!(arm.matches("render_main").count(), 1, "{arm}");
+    // `render_main` says `true` only after the controls were synced, as its last expression.
+    let app = src_of(&files, "yw-app/src/app.rs");
+    let render = fn_bodies(app, "render_main");
+    assert_eq!(render.len(), 1, "one render_main");
+    let render = flat(render[0]);
+    let sync = render.find("self.controls.sync(main,&placed,fonts,client);");
+    assert!(sync.is_some(), "{render}");
+    assert!(render.ends_with("main.invalidate();true}"), "{render}");
+    assert_eq!(render.matches("true").count(), 1, "{render}");
+    assert!(!render.contains("returntrue"), "{render}");
+    // The arm is the one builder of the answer in the shell.
+    let mut builders = Vec::new();
+    for src in files.iter().filter(|src| src.file.starts_with("yw-app/")) {
+        let count = src.code.matches("Cmd::Rendered").count();
+        builders.extend(core::iter::repeat_n(src.file.clone(), count));
+    }
+    assert_eq!(builders, ["yw-app/src/app_effects.rs"]);
+}
+
+/// A main-window `EN_CHANGE` dropped inside the `App`'s borrow is read again (2026-11-24, spec/15
+/// §11.4 S5-6 review, spec/04 §1.3): the main window's `Forward` notes it in the branch where it
+/// cannot borrow the app (after the owed paint, before it returns `Reply::Default`), and the drain
+/// asks for the next noted edit each time its queue is empty, hands its change to the wallet and
+/// drains again, until none is left; the debug checks come after the loop. The behaviour is
+/// pinned headless by `app::tests::an_edit_change_dropped_in_a_borrow_reaches_the_wallet`; this
+/// pins the wiring that test cannot reach (a real `EN_CHANGE` needs a drawn main window).
+#[test]
+fn a_dropped_edit_change_is_read_again() {
+    let files = production_code();
+    let flat = |text: &str| text.split_whitespace().collect::<String>();
+    let app = src_of(&files, "yw-app/src/app.rs");
+    let on = fn_bodies(app, "on");
+    let forward = on
+        .iter()
+        .map(|body| flat(body))
+        .find(|body| body.contains("Target::Main=>app.on_main(window,msg)"));
+    assert!(forward.is_some(), "the main Forward's on");
+    let forward = forward.unwrap_or_default();
+    assert!(
+        forward.contains(concat!(
+            "letOk(mutapp)=app.try_borrow_mut()else{ifmatches!(msg,Msg::Paint){",
+            "window.defer_paint();returnReply::Handled(0);}",
+            "note_dropped(self.target,msg);returnReply::Default;};"
+        )),
+        "{forward}"
+    );
+    let note = flat(fn_bodies(app, "note_dropped")[0]);
+    assert!(
+        note.contains("target==Target::Main&&letMsg::Command{id,code}=msg&&*code==EN_CHANGE"),
+        "{note}"
+    );
+    let effects = src_of(&files, "yw-app/src/app_effects.rs");
+    let drain = flat(fn_bodies(effects, "drain")[0]);
+    let queue = drain.find("loop{whileletSome(effect)=self.wallet.next_effect(){");
+    let ask = drain.find(
+        "}letSome(edit)=self.edit_changed_in_borrow()else{break;};self.wallet.on_cmd(edit);}",
+    );
+    let check = drain.find("self.check_form_in_step();");
+    assert!(
+        queue.is_some() && queue < ask && ask < check,
+        "the drain asks once its queue is empty, before its checks: {drain}"
+    );
+    let mut callers = Vec::new();
+    for src in &files {
+        for (name, block) in fn_blocks(src) {
+            if block.contains("edit_changed_in_borrow()") {
+                callers.push(name);
+            }
+        }
+    }
+    assert_eq!(callers, ["drain"]);
+}

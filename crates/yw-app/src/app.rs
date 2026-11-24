@@ -233,6 +233,32 @@ struct Forward {
     target: Target,
 }
 
+thread_local! {
+    /// The main window's edits whose `EN_CHANGE` arrived while the `App` was borrowed (2026-11-24,
+    /// spec/15 §11.4 S5-6 review, spec/01 §7.7): their control ids only, never a text. The drain
+    /// that ends the borrow reads each one again ([`App::edit_changed_in_borrow`]).
+    static EDITS_CHANGED_IN_BORROW: RefCell<Vec<u16>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A main window message the `App`'s borrow drops (re-entrancy, spec/01 §7.7): an edit's
+/// `EN_CHANGE` is remembered by its control id (2026-11-24, S5-6 review: a change made while the
+/// app is borrowed — an IME composition that a focus change inside a drain ends, say — would
+/// otherwise never reach the wallet; before S5-6 the next press's or render's read-back `Cmd::Form`
+/// healed the form state). Nothing else is kept, and nothing is posted.
+fn note_dropped(target: Target, msg: &Msg) {
+    if target == Target::Main
+        && let Msg::Command { id, code } = msg
+        && *code == EN_CHANGE
+    {
+        EDITS_CHANGED_IN_BORROW.with(|ids| {
+            let mut ids = ids.borrow_mut();
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        });
+    }
+}
+
 impl Handler for Forward {
     fn on(&mut self, window: &Window, msg: &Msg) -> Reply {
         let Some(app) = self.app.upgrade() else {
@@ -244,6 +270,7 @@ impl Handler for Forward {
                 window.defer_paint();
                 return Reply::Handled(0);
             }
+            note_dropped(self.target, msg);
             return Reply::Default;
         };
         // 2026-11-20 (S4 P10b, critique A-14): every entry drained before it returned, and this
@@ -2549,6 +2576,35 @@ impl App {
             #[cfg(debug_assertions)]
             self.note_form_mismatch(field);
         }
+    }
+
+    /// The next edit whose `EN_CHANGE` the `App`'s borrow dropped ([`note_dropped`]; 2026-11-24,
+    /// spec/15 §11.4 S5-6 review, spec/04 §1.3) and that is still drawn and shows another text
+    /// than the wallet's form state: the user's change as `on_edit_notify` reads it, `Cmd::Edit`,
+    /// which [`App::drain`] hands to the wallet once its queue is empty (then drains again and asks
+    /// for the next). An edit the engine wrote itself (`SetField`/`ClearField`, whose `EN_CHANGE`
+    /// always arrives inside the borrow) shows what the form state holds and gives nothing, so a
+    /// drain that lost no user change runs as before; an edit that is gone, or a masked credential
+    /// edit (never read), gives nothing either. Each noted edit is asked once.
+    pub(crate) fn edit_changed_in_borrow(&self) -> Option<Cmd> {
+        let next = || {
+            EDITS_CHANGED_IN_BORROW.with(|ids| {
+                let mut ids = ids.borrow_mut();
+                (!ids.is_empty()).then(|| ids.remove(0))
+            })
+        };
+        while let Some(id) = next() {
+            let Some(field) = cmd_table::field_of(id) else {
+                continue;
+            };
+            let Some(text) = self.controls.text(id, field.cap()).map(Zeroizing::new) else {
+                continue;
+            };
+            if self.form.text(field) != Some(text.as_str()) {
+                return Some(Cmd::Edit { field, text });
+            }
+        }
+        None
     }
 }
 

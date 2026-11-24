@@ -206,3 +206,40 @@ fn the_lock_clears_the_form_state() {
         assert_eq!(wallet.form.text(field), None, "{field:?}");
     }
 }
+
+/// O-4, the other branch (2026-11-24, S5-6 review): with no vault (`NoVault`), the lock leaves the
+/// screen for S01 and clears the form state at once too; a mode with no vault that is not
+/// `NoVault` keeps its screen, and so its form state.
+#[test]
+fn the_lock_with_no_vault_clears_the_form_state() {
+    let mut wallet = wallet();
+    draw(&mut wallet, None);
+    assert_eq!(wallet.form.text(EditField::BookAddress), Some("draft"));
+    wallet.mode = AppMode::NoVault;
+    let vault_present = wallet.lock_steps(LockReason::Manual);
+    assert!(!vault_present);
+    wallet.lock_after_wait(vault_present);
+    assert_eq!(wallet.screen, Screen::FirstRun);
+    for field in EditField::ALL {
+        assert_eq!(wallet.form.text(field), None, "{field:?}");
+    }
+    take_all(&mut wallet);
+    draw(&mut wallet, None);
+    for field in EditField::ALL {
+        assert_eq!(wallet.form.text(field), None, "{field:?}");
+    }
+    // `Starting` has no vault either but is not `NoVault`: the screen and its edits stay.
+    let mut wallet = wallet_on_book();
+    wallet.mode = AppMode::Starting;
+    let vault_present = wallet.lock_steps(LockReason::Manual);
+    wallet.lock_after_wait(vault_present);
+    assert_eq!(wallet.screen, Screen::AddressBook);
+    assert_eq!(wallet.form.text(EditField::BookAddress), Some("draft"));
+}
+
+/// [`wallet`] with its address-book screen drawn.
+fn wallet_on_book() -> Wallet {
+    let mut wallet = wallet();
+    draw(&mut wallet, None);
+    wallet
+}

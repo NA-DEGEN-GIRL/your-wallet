@@ -2059,3 +2059,36 @@ pub const fn fee_choice(
 ) -> Option<(crate::wallet::app_btc::BtcFeeChoice, bool)> {
     crate::wallet::app_btc_commands::fee_choice(press)
 }
+
+/// The engine's copy of the Windows keep rule (`crate::form::FormSync`, 2026-11-24, spec/15
+/// §11.4 S5-6 review): what the plain edits show after a shell drew `old` (every edit from its
+/// model text), the user typed `typed` into drawn edits (`Cmd::Edit`), and the shell drew `new`
+/// with `focus` the plain edit that had the keyboard focus (`Cmd::Rendered`). Every shown field
+/// with its text, in [`crate::form::EditField::ALL`] order. yw-app's table test runs the Windows
+/// rule (`ui::main_window`'s `common_ends` and `keeps_edit` over the lowered, laid-out lists) on
+/// the same lists, so the two copies cannot drift apart unseen.
+#[must_use]
+pub fn form_keep_rule(
+    old: &[crate::screen::model::Item],
+    typed: &[(crate::form::EditField, &str)],
+    new: &[crate::screen::model::Item],
+    focus: Option<crate::form::EditField>,
+) -> Vec<(crate::form::EditField, String)> {
+    use crate::form::{EditField, FormPlan, FormSync};
+    let mut sync = FormSync::default();
+    *sync.built.get_mut() = Some(FormPlan::of(old));
+    sync.drawn(None);
+    for (field, text) in typed {
+        sync.edited(*field, Zeroizing::new((*text).to_owned()));
+    }
+    *sync.built.get_mut() = Some(FormPlan::of(new));
+    sync.drawn(focus);
+    EditField::ALL
+        .iter()
+        .filter_map(|field| {
+            sync.shown()
+                .text(*field)
+                .map(|text| (*field, text.to_owned()))
+        })
+        .collect()
+}

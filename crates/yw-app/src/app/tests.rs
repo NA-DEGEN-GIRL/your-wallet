@@ -4095,6 +4095,71 @@ fn missing_edit_notify_is_counted_and_clear_field_clears() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// 2026-11-24 (spec/15 §11.4 S5-6 review, spec/04 §1.3, spec/01 §7.7): an edit's `EN_CHANGE` that
+/// the main `Forward` dropped while the `App` was borrowed (noted here as the `Forward` notes it,
+/// `note_dropped`; a real one needs a drawn main window, which `ControlSet::sync`'s
+/// `WM_SETREDRAW` would show) is read again when the next drain has emptied the queue: the edit's
+/// text goes to the wallet as `Cmd::Edit`, and the draft follows as for a notified change, with no
+/// shadow-read difference. An edit that shows what the form state holds (the engine's own write,
+/// whose `EN_CHANGE` always comes inside the borrow) sends nothing, nor does an edit that is gone
+/// (not counted, unlike an `on_edit_notify` of one) or a masked credential edit (never read), and
+/// a note is used once.
+#[test]
+#[cfg(debug_assertions)]
+fn an_edit_change_dropped_in_a_borrow_reaches_the_wallet() {
+    use crate::ui::screens_book::ids::ADDR_EDIT;
+    use crate::ui::screens_llm::ids::{KEY_EDIT, MODEL_EDIT};
+    use yw_engine::form::EditField;
+    let dropped = |id: u16| {
+        super::note_dropped(
+            super::Target::Main,
+            &yw_win::ui::Msg::Command {
+                id,
+                code: super::EN_CHANGE,
+            },
+        );
+    };
+    let (mut app, dir) = unlocked_app("form-dropped-edit", false);
+    app.screen = Screen::Settings(yw_engine::screen::SettingsSection::Ai);
+    "draft-model".clone_into(&mut app.llm_ui.model_text);
+    // Only the main window's `EN_CHANGE` is noted: a secret window's or another code is not.
+    super::note_dropped(
+        super::Target::Secret(1),
+        &yw_win::ui::Msg::Command {
+            id: MODEL_EDIT,
+            code: super::EN_CHANGE,
+        },
+    );
+    super::note_dropped(
+        super::Target::Main,
+        &yw_win::ui::Msg::Command {
+            id: MODEL_EDIT,
+            code: 0,
+        },
+    );
+    app.controls.type_text(MODEL_EDIT, "typed-model");
+    app.controls.type_text(KEY_EDIT, "key-units");
+    assert!(app.edit_changed_in_borrow().is_none(), "nothing noted");
+    dropped(MODEL_EDIT);
+    dropped(MODEL_EDIT);
+    dropped(KEY_EDIT);
+    dropped(ADDR_EDIT);
+    assert_eq!(app.form.text(EditField::LlmModel), None, "not seen yet");
+    app.drain();
+    assert_eq!(app.form.text(EditField::LlmModel), Some("typed-model"));
+    assert_eq!(app.llm_ui.model_text, "typed-model", "the draft follows");
+    assert_eq!(app.form.text(EditField::BookAddress), None);
+    assert_eq!(app.form_mismatch.get(), 0);
+    // Used once; an edit that shows what the form state holds sends nothing.
+    "kept-draft".clone_into(&mut app.llm_ui.model_text);
+    app.drain();
+    dropped(MODEL_EDIT);
+    app.drain();
+    assert_eq!(app.llm_ui.model_text, "kept-draft", "nothing sent");
+    assert_eq!(app.form_mismatch.get(), 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// 2026-11-20 (S4 P10b, owner decision O-10): a field write (`Effect::SetField`) is form state
 /// as soon as it is emitted — cut to the field's cap, as the edit would hold it — so the logic
 /// reads what it wrote before the shell applies the write; the write itself waits in the outbox
