@@ -34,6 +34,7 @@ public final class JvmTests {
         run("secret window inputs are the bytes Rust decodes", JvmTests::secretInputs);
         run("the app keyboard types every printable ASCII unit", JvmTests::keyLayout);
         run("secret windows close by session, by window and by resync", JvmTests::secretWindows);
+        run("a held button takes its label from the model", JvmTests::heldButtonLabel);
         run("the app is in the background only with no Activity started", JvmTests::startedCount);
         run("the main screen shows only after the check of its own front", JvmTests::frontGate);
         System.out.println("jvmTest: " + passed + " passed, " + failed + " failed");
@@ -60,6 +61,17 @@ public final class JvmTests {
         if (!condition) {
             throw new AssertionError(what);
         }
+    }
+
+    /** 2026-11-25 A2 device run: W08's held button is relabelled from each model, never rebuilt. */
+    private static void heldButtonLabel() {
+        Object held = Json.parse(utf8("{\"t\":\"s_model\",\"serial\":3,\"win\":1,\"buttons\":["
+                + "{\"b\":\"cancel\",\"label\":\"Cancel\",\"on\":true,\"hold\":false,\"done\":0},"
+                + "{\"b\":\"primary\",\"label\":\"1.5 s\",\"on\":true,\"hold\":true,\"done\":500}]}"));
+        check("1.5 s".equals(SecretWire.buttonLabel(held, "primary")), "label of the held button");
+        check("Cancel".equals(SecretWire.buttonLabel(held, "cancel")), "label of another button");
+        check(SecretWire.buttonLabel(held, "reveal") == null && SecretWire.buttonLabel(held, null) == null, "no button");
+        check(SecretWire.buttonLabel(Json.parse(utf8("{\"t\":\"s_model\"}")), "primary") == null, "no row");
     }
 
     /** 2026-11-25 A2-7: the same bytes as yw-android secret_wire's and secret_keys' tests. */

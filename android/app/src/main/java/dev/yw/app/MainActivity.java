@@ -108,6 +108,10 @@ public final class MainActivity extends Activity {
         long before = screen.rev();
         long focus = screen.draw(model);
         Screen.send(UiWire.rendered(screen.rev(), focus, before));
+        // 2026-11-25 A2 device run (spec/15 §8.2, spec/14): the bands are asked again with every model, so that they
+        // follow a language change at once and fresh facts (before, only at onStart: after switching to English the
+        // main screen kept its Korean bands until the app was started again).
+        drawBands(App.loaded() ? Wire.bands(Native.call(DeviceFacts.input(this))) : null);
     }
 
     /**

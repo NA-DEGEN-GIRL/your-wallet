@@ -60,6 +60,17 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
     private boolean readySent;
     private boolean closedByRust;
     private LinearLayout content;
+    /**
+     * 2026-11-25 A2 device run (spec/15 §9.1): {@code content} holds {@code body}, redrawn with every model, and then
+     * {@code buttons}, the button row, which is rebuilt only while no finger is on one of its buttons. Before, every
+     * model removed every view: W08's countdown (a new model each second) and its hold's own progress label removed
+     * the held button, Android cancelled the touch ({@code out}), and the 2 s hold could never finish.
+     */
+    private LinearLayout body;
+    private LinearLayout buttons;
+    /** The button a finger is on (from its down to its up or cancel), and its word. */
+    private Button pressed;
+    private String pressedWord;
     private LinearLayout candidates;
     private KeyPad keypad;
     private Object model;
@@ -106,6 +117,13 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
         content.setOrientation(LinearLayout.VERTICAL);
         int padding = dp(16);
         content.setPadding(padding, padding, padding, padding);
+        body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        content.addView(body);
+        buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.setGravity(Gravity.END);
+        content.addView(buttons, spaced());
         scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         candidates = new LinearLayout(this);
@@ -159,6 +177,8 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
     @Override
     protected void onStop() {
         main.removeCallbacks(tick);
+        pressed = null;
+        pressedWord = null;
         wipeAll();
         Screen.stopped(this);
         super.onStop();
@@ -257,19 +277,19 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
     private void draw(Object frame) {
         wipeAll();
         boxes.clear();
-        content.removeAllViews();
+        body.removeAllViews();
         candidates.removeAllViews();
         for (Object band : Json.list(frame, "bands")) {
             if (band instanceof String) {
                 TextView view = text((String) band, 14, false, getColor(R.color.band_text));
                 view.setBackgroundColor(getColor(R.color.band_background));
                 view.setPadding(dp(12), dp(8), dp(12), dp(8));
-                content.addView(view, spaced());
+                body.addView(view, spaced());
             }
         }
         Object step = Json.get(frame, "step");
         if (step instanceof java.util.Map) {
-            content.addView(text(Json.string(step, "head"), 13, false, MUTED), spaced());
+            body.addView(text(Json.string(step, "head"), 13, false, MUTED), spaced());
             SpannableStringBuilder labels = new SpannableStringBuilder();
             long current = Json.number(step, "current", 0);
             int number = 0;
@@ -287,17 +307,17 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
             TextView view = new TextView(this);
             view.setText(labels);
             view.setTextColor(INK);
-            content.addView(view, spaced());
+            body.addView(view, spaced());
         }
-        content.addView(text(Json.string(frame, "title"), 20, true, INK), spaced());
+        body.addView(text(Json.string(frame, "title"), 20, true, INK), spaced());
         for (Object paragraph : Json.list(frame, "intro")) {
             if (paragraph instanceof String) {
-                content.addView(text((String) paragraph, 15, false, INK), spaced());
+                body.addView(text((String) paragraph, 15, false, INK), spaced());
             }
         }
         String masked = Json.string(frame, "masked");
         if (masked != null) {
-            content.addView(text(masked, 15, false, MUTED), spaced());
+            body.addView(text(masked, 15, false, MUTED), spaced());
         }
         int index = 0;
         active = 0;
@@ -307,56 +327,47 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
         }
         String words = Json.string(frame, "words");
         if (words != null) {
-            content.addView(text(words, 13, false, MUTED), spaced());
+            body.addView(text(words, 13, false, MUTED), spaced());
         }
         for (Object check : Json.list(frame, "checks")) {
-            content.addView(toned(check), spaced());
+            body.addView(toned(check), spaced());
         }
         Object checkbox = Json.get(frame, "checkbox");
         if (checkbox instanceof java.util.Map) {
             boolean on = Boolean.TRUE.equals(Json.bool(checkbox, "on"));
             Button box = button((on ? "☑ " : "☐ ") + Json.string(checkbox, "label"), "checkbox", 0,
                     Boolean.TRUE.equals(Json.bool(checkbox, "enabled")));
-            content.addView(box, spaced());
+            body.addView(box, spaced());
         }
         String note = Json.string(frame, "note");
         if (note != null) {
-            content.addView(text(note, 14, false, MUTED), spaced());
+            body.addView(text(note, 14, false, MUTED), spaced());
         }
         Object shown = Json.get(frame, "shown");
         if (shown instanceof java.util.Map && masked == null) {
             SecretBox box = new SecretBox(this, Json.number(shown, "h", 0), (int) Json.number(shown, "cap", 0),
                     Boolean.TRUE.equals(Json.bool(shown, "grid")), true, 18);
             boxes.add(box);
-            content.addView(box, spaced());
+            body.addView(box, spaced());
         }
         Object address = Json.get(frame, "address");
         if (address instanceof java.util.Map) {
-            content.addView(text(Json.string(address, "label"), 14, true, INK), spaced());
+            body.addView(text(Json.string(address, "label"), 14, true, INK), spaced());
             TextView line = text(Json.string(address, "text"), 14, false, INK);
             line.setTypeface(Typeface.MONOSPACE);
-            content.addView(line, spaced());
+            body.addView(line, spaced());
         }
         String passphrase = Json.string(frame, "pp_note");
         if (passphrase != null) {
-            content.addView(text(passphrase, 14, false, BAD), spaced());
+            body.addView(text(passphrase, 14, false, BAD), spaced());
         }
         for (Object line : Json.list(frame, "status")) {
-            content.addView(toned(line), spaced());
+            body.addView(toned(line), spaced());
         }
         for (Object line : Json.list(frame, "msgs")) {
-            content.addView(toned(line), spaced());
+            body.addView(toned(line), spaced());
         }
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.END);
-        for (Object item : Json.list(frame, "buttons")) {
-            String word = Json.string(item, "b");
-            if (word != null) {
-                row.addView(button(Json.string(item, "label"), word, 0, Boolean.TRUE.equals(Json.bool(item, "on"))));
-            }
-        }
-        content.addView(row, spaced());
+        drawButtons(frame);
         boolean input = Boolean.TRUE.equals(Json.bool(frame, "input"));
         if (masked == null && input) {
             for (Object candidate : Json.list(frame, "cands")) {
@@ -373,6 +384,36 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
         }
     }
 
+    /**
+     * The button row of {@code frame}. While a finger is on one of its buttons the row is kept and only that button is
+     * relabelled (W08's hold counts down in its label); the latest model's row is drawn when the finger leaves.
+     */
+    private void drawButtons(Object frame) {
+        if (pressed != null) {
+            String label = SecretWire.buttonLabel(frame, pressedWord);
+            if (label != null) {
+                pressed.setText(label);
+            }
+            return;
+        }
+        buttons.removeAllViews();
+        for (Object item : Json.list(frame, "buttons")) {
+            String word = Json.string(item, "b");
+            if (word != null) {
+                buttons.addView(button(Json.string(item, "label"), word, 0, Boolean.TRUE.equals(Json.bool(item, "on"))));
+            }
+        }
+    }
+
+    /** The finger left the pressed button: the latest model's row is drawn. */
+    private void released() {
+        pressed = null;
+        pressedWord = null;
+        if (model != null && !closedByRust) {
+            drawButtons(model);
+        }
+    }
+
     private void addField(Object field, int index, boolean visible) {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
@@ -382,7 +423,7 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
         if (right != null && !right.isEmpty()) {
             head.addView(text(right, 13, false, Boolean.TRUE.equals(Json.bool(field, "bad")) ? BAD : MUTED));
         }
-        content.addView(head, spaced());
+        body.addView(head, spaced());
         if (!visible) {
             return;
         }
@@ -400,10 +441,10 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
             return true;
         });
         boxes.add(box);
-        content.addView(box, spaced());
+        body.addView(box, spaced());
         Object reveal = Json.get(field, "reveal");
         if (reveal instanceof java.util.Map) {
-            content.addView(button(Json.string(reveal, "label"), "reveal", index,
+            body.addView(button(Json.string(reveal, "label"), "reveal", index,
                     Boolean.TRUE.equals(Json.bool(reveal, "on"))));
         }
     }
@@ -440,6 +481,10 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     view.setPressed(true);
+                    if (button.getParent() == buttons) {
+                        pressed = button;
+                        pressedWord = word;
+                    }
                     Screen.send(SecretWire.button(win, word, index, "down"));
                     return true;
                 case MotionEvent.ACTION_UP:
@@ -447,10 +492,16 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
                     boolean inside = event.getX() >= 0 && event.getY() >= 0 && event.getX() <= view.getWidth()
                             && event.getY() <= view.getHeight();
                     Screen.send(SecretWire.button(win, word, index, inside ? "up" : "out"));
+                    if (pressed == button) {
+                        released();
+                    }
                     return true;
                 case MotionEvent.ACTION_CANCEL:
                     view.setPressed(false);
                     Screen.send(SecretWire.button(win, word, index, "out"));
+                    if (pressed == button) {
+                        released();
+                    }
                     return true;
                 default:
                     return true;

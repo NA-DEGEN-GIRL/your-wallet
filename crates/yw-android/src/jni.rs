@@ -134,7 +134,8 @@ const INPUT_READ_MAX: usize = if yw_engine::wire::INPUT_MAX > interim::START_MAX
 /// kept and answered with the main screen's bands from those facts
 /// ([`crate::device::bands_with`]) in the default language (Korean until the settings are read,
 /// A2-8; 2026-11-25 A2-8: the app language, `crate::shell::language`); a `-DeviceTest` build checks its fault points on the status request
-/// (`crate::devtest::fault_points`). (2026-11-25 A2-5 review: an input that begins like a facts
+/// (`crate::devtest::fault_points`; 2026-11-25 A2 device run: also right after the start input
+/// started the shell, since Java no longer sends the status request). (2026-11-25 A2-5 review: an input that begins like a facts
 /// input ([`interim::is_facts`]) but is refused is answered with the worst case's bands, never
 /// null, so the test-build band cannot go missing.) 2026-11-25 A2-6: every other input (up to
 /// [`INPUT_READ_MAX`] bytes) is a screen input of the wire format (yw-engine `wire`, spec/15 §18 8):
@@ -155,6 +156,11 @@ extern "C" fn call(jni: JniEnv, _class: JObject, input: JObject) -> JObject {
             Interim::Unknown => {
                 if let Some(dir) = interim::start_dir(&bytes) {
                     if crate::shell::start(&dir) {
+                        // 2026-11-25 A2 device run: Java has not sent the status request since
+                        // A2-6, so the fault points are read once the start input made the data
+                        // folder (before, only on the status request: unreachable on the device).
+                        #[cfg(yw_device_test)]
+                        crate::devtest::fault_points();
                         new_byte_array(jni, interim::STATUS_LINE.as_bytes())
                     } else {
                         core::ptr::null_mut()

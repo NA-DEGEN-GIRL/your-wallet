@@ -3,6 +3,8 @@
 //! the gate, never into a release APK).
 //!
 //! 2026-11-25 A2-5: the panic test's fault points ([`fault_points`], read by the status call).
+//! 2026-11-25 A2 device run: also read by the start input once it started the shell (Java has not
+//! sent the status request since A2-6, so the test could not run on the device).
 //!
 //! 2026-11-25 A2-8: the A2-4b device round trip is gone. It made (or unlocked) a vault from the
 //! public test vector under a fixed synthetic password on its own thread at every start, on the
@@ -19,11 +21,11 @@ const FAULT_MAX: u64 = 16;
 
 /// The panic test of A2-5 (2026-11-25; spec/15 §5.3, spec/09 §2.1 fault injection, the
 /// Android form of `YW_FAULT_POINT`): when the fault file holds exactly `call` (optionally with
-/// one line end), the status call panics on its own (Java's) thread; `thread`, a new Rust thread
-/// panics while the status call waits. Either way the panic hook must wipe the slots, write the
+/// one line end), the status call (or the start input) panics on its own (Java's) thread;
+/// `thread`, a new Rust thread panics while that call waits. Either way the panic hook must wipe the slots, write the
 /// one `app.panic` line and `_exit(70)` (no tombstone, no crash record). Anything else, or no
 /// file, does nothing. Compiled only with `--cfg yw_device_test` (never the gate's or a release
-/// build); the status call is its only caller.
+/// build); the status call and the start input (2026-11-25 A2 device run) are its only callers.
 pub(crate) fn fault_points() {
     let Some(data) = crate::shell::data() else {
         return;

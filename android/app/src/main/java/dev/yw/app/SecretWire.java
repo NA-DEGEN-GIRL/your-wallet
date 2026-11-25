@@ -89,6 +89,19 @@ final class SecretWire {
         return kept;
     }
 
+    /**
+     * The label of the button {@code word} in the model {@code frame}'s {@code buttons}, or null when it has none
+     * (2026-11-25 A2 device run: a held button keeps its view and takes only its new label, spec/15 §9.1).
+     */
+    static String buttonLabel(Object frame, String word) {
+        for (Object button : Json.list(frame, "buttons")) {
+            if (word != null && word.equals(Json.string(button, "b"))) {
+                return Json.string(button, "label");
+            }
+        }
+        return null;
+    }
+
     private static byte[] utf8(String text) {
         return text.getBytes(StandardCharsets.UTF_8);
     }

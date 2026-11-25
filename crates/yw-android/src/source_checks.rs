@@ -59,7 +59,8 @@ fn purge_is_the_one_mallopt() {
 /// The device round trip (a vault from the public test vector under a fixed password) is compiled
 /// only with `--cfg yw_device_test` (spec/09 §2.6): `lib.rs` declares it under that cfg, and only
 /// `shell.rs` (the round trip) and, since 2026-11-25 A2-5, `jni.rs` (the panic test's fault points on
-/// the status request) name it, each under the same cfg.
+/// the status request and, since the 2026-11-25 A2 device run, on the start input) name it, each
+/// under the same cfg.
 #[test]
 fn the_device_test_is_cfg_gated() {
     for (name, text) in sources() {
