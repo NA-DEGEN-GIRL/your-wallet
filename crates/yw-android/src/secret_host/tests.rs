@@ -440,6 +440,129 @@ fn completions_fill_by_handle_and_are_picked_by_index() {
     assert!(!host.wallet().secret_open());
 }
 
+/// The last window model of `frames`.
+fn last_model(frames: &[String]) -> &str {
+    frames
+        .iter()
+        .rev()
+        .find(|frame| frame.starts_with(r#"{"t":"s_model","#))
+        .expect("a window model")
+}
+
+fn button(host: &mut UiHost, win: u32, word: &str, index: u8, edge: &str) -> Vec<String> {
+    send(
+        host,
+        &format!(r#"{{"t":"s_btn","win":{win},"b":"{word}","i":{index},"e":"{edge}"}}"#),
+    )
+}
+
+/// 2026-11-26 A2 final review (spec/15 §9.1): a `보기` lasts from its down to its up or out, over
+/// every redraw in between (its own, a resync, a tick, a key of another finger): Java keeps the
+/// body meanwhile and refills its boxes, so each redraw's fill must still be the plain text.
+#[test]
+fn a_held_reveal_lasts_until_up_or_out() {
+    let mut host = host();
+    let _ = press(&mut host, Press::Core(CorePress::FirstCreate));
+    let serial = opened(&press(&mut host, Press::Core(CorePress::CreateNext)));
+    let _ = send(&mut host, &ready(serial, 1, true));
+    let _ = typed(&mut host, 1, 0, "correct horse 1x");
+    for end in ["up", "out"] {
+        // The down itself sends a model: the redraw that removed the button before this review.
+        let frames = button(&mut host, 1, "reveal", 0, "down");
+        assert!(last_model(&frames).contains(r#""reveal""#), "{frames:?}");
+        let plain = fill(&host, 1, FillItem::Field(0)).unwrap();
+        assert!(plain.starts_with("correct horse 1x"), "{end}");
+        let _ = host.resync();
+        assert_eq!(
+            fill(&host, 1, FillItem::Field(0)).as_deref(),
+            Some(plain.as_str())
+        );
+        let _ = send(&mut host, r#"{"t":"tick"}"#);
+        // A second finger types: the reveal goes on, with the new character.
+        let _ = typed(&mut host, 1, 0, "y");
+        assert_eq!(
+            fill(&host, 1, FillItem::Field(0)),
+            Some(format!("{plain}y"))
+        );
+        let frames = button(&mut host, 1, "reveal", 0, end);
+        assert!(!frames.is_empty(), "{end}");
+        assert!(!fill(&host, 1, FillItem::Field(0)).unwrap().contains('h'));
+    }
+    // Only the field whose `보기` is held is shown.
+    let _ = host.on_secret_key(field_token(1, 0), 0x0D);
+    let _ = typed(&mut host, 1, 1, "second");
+    let _ = button(&mut host, 1, "reveal", 1, "down");
+    assert_eq!(
+        fill(&host, 1, FillItem::Field(1)).as_deref(),
+        Some("second")
+    );
+    assert!(!fill(&host, 1, FillItem::Field(0)).unwrap().contains('h'));
+    // The window leaving the front ends a reveal with no edge at all.
+    let _ = send(&mut host, r#"{"t":"s_focus","win":1,"on":false}"#);
+    assert!(!fill(&host, 1, FillItem::Field(1)).unwrap().contains('s'));
+}
+
+/// 2026-11-26 A2 final review (spec/15 §9.1, §17): the restore flow W01 → W05 → W06 with the
+/// public phrase and passphrase. A down and an up on W05's checkbox toggle it although the down
+/// and a resync redraw the window in between; an out does not; checked, `다음` opens W06, which
+/// takes the passphrase twice.
+#[test]
+fn a_held_checkbox_toggles_and_opens_the_passphrase_window() {
+    let mut host = host();
+    let _ = press(&mut host, Press::Core(CorePress::FirstImport));
+    let serial = opened(&press(&mut host, Press::Core(CorePress::ImportNext)));
+    let _ = send(&mut host, &ready(serial, 1, true));
+    let _ = typed(&mut host, 1, 0, "abcdefghijkl");
+    let _ = host.on_secret_key(field_token(1, 0), 0x0D);
+    let _ = typed(&mut host, 1, 1, "abcdefghijkl");
+    let _ = button(&mut host, 1, "primary", 0, "down");
+    let serial = opened(&button(&mut host, 1, "primary", 0, "up"));
+    let frames = send(&mut host, &ready(serial, 2, true));
+    assert!(last_model(&frames).contains(r#""kind":"W05""#));
+    let _ = typed(&mut host, 2, 0, &phrase());
+    // Left or cancelled: no toggle.
+    let _ = button(&mut host, 2, "checkbox", 0, "down");
+    let _ = button(&mut host, 2, "checkbox", 0, "out");
+    let checked = r#""on":true,"enabled":true"#;
+    let unchecked = r#""on":false,"enabled":true"#;
+    assert!(last_model(&texts(&host.resync())).contains(unchecked));
+    // Held over two redraws, then up: toggled, and again back, and again on.
+    for wanted in [checked, unchecked, checked] {
+        let frames = button(&mut host, 2, "checkbox", 0, "down");
+        assert!(!last_model(&frames).contains(wanted), "{frames:?}");
+        let _ = host.resync();
+        let frames = button(&mut host, 2, "checkbox", 0, "up");
+        assert!(last_model(&frames).contains(wanted), "{frames:?}");
+    }
+    let _ = button(&mut host, 2, "primary", 0, "down");
+    let frames = button(&mut host, 2, "primary", 0, "up");
+    let serial = opened(&frames);
+    let frames = send(&mut host, &ready(serial, 3, true));
+    let model = last_model(&frames);
+    assert!(
+        model.contains(r#""kind":"W06""#) && model.contains(r#""keys":"text""#),
+        "{model}"
+    );
+    let _ = typed(&mut host, 3, 0, "TREZOR");
+    let _ = host.on_secret_key(field_token(3, 0), 0x0D);
+    let _ = typed(&mut host, 3, 1, "TREZOR");
+    // W06's `보기` too.
+    let _ = button(&mut host, 3, "reveal", 1, "down");
+    assert_eq!(
+        fill(&host, 3, FillItem::Field(1)).as_deref(),
+        Some("TREZOR")
+    );
+    let _ = button(&mut host, 3, "reveal", 1, "up");
+    let _ = button(&mut host, 3, "primary", 0, "down");
+    let frames = button(&mut host, 3, "primary", 0, "up");
+    assert!(
+        frames.contains(&format!(r#"{{"t":"s_close","serial":{serial}}}"#)),
+        "{frames:?}"
+    );
+    assert!(frames.iter().all(|frame| !frame.contains("TREZOR")));
+    assert!(!host.wallet().secret_open());
+}
+
 /// 2026-11-25 A2-7 review: a second Activity of the open session (a resync's `s_open` sent again
 /// while the first one was starting) is closed alone, by its instance; the open window, its form
 /// and its session stay. A resync names the windows that may exist (`s_keep`): the asked

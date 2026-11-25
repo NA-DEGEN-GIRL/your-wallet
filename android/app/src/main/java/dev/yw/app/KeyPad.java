@@ -15,6 +15,10 @@ import android.view.ViewStructure;
  * with no key preview, no popup and no window of its own. A key released where it was pressed sends its one unit to
  * the sink (which calls {@link Native#secretKey}); a layer key only changes the layer. Nothing typed is kept here.
  * Sound and vibration follow the system settings (the view's own feedback calls, which the platform gates).
+ *
+ * <p>2026-11-26 A2 final review: every finger is followed by its pointer id ({@link KeyTracker}; before, only the first
+ * one, so two-thumb typing lost keys), and the rows get lower when the window is low ({@link #room},
+ * {@link KeyLayout#keyHeight}), so that the warning bands above the content always stay.
  */
 final class KeyPad extends View {
     /** Where a key's unit goes. */
@@ -36,14 +40,16 @@ final class KeyPad extends View {
     private int layer = KeyLayout.LOWER;
     private boolean enabled;
     private int[][] rows = new int[0][];
-    private int downRow = -1;
-    private int downCol = -1;
+    private final KeyTracker fingers = new KeyTracker();
+    /** The height the window has for the content and this keyboard together (bands and completions taken off). */
+    private int room = Integer.MAX_VALUE;
+    private float keyHeight;
 
     KeyPad(Context context, Sink sink) {
         super(context);
         this.sink = sink;
         density = context.getResources().getDisplayMetrics().density;
-        labelPaint.setTextSize(20 * density);
+        keyHeight = KeyLayout.KEY_DP * density;
         labelPaint.setTextAlign(Paint.Align.CENTER);
         setSaveEnabled(false);
         setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
@@ -57,6 +63,7 @@ final class KeyPad extends View {
         if (!next.equals(mode)) {
             mode = next;
             layer = KeyLayout.LOWER;
+            fingers.clear();
         }
         this.enabled = enabled;
         rows = KeyLayout.rows(mode, layer);
@@ -65,14 +72,21 @@ final class KeyPad extends View {
         invalidate();
     }
 
-    private float keyHeight() {
-        return 52 * density;
+    /** The height for the content and this keyboard (the window's root says it before it measures its children). */
+    void room(int px) {
+        if (px != room) {
+            room = px;
+            forceLayout();
+        }
     }
 
     @Override
     protected void onMeasure(int widthSpec, int heightSpec) {
         int width = MeasureSpec.getSize(widthSpec);
-        setMeasuredDimension(width, Math.round(rows.length * keyHeight() + 8 * density));
+        keyHeight = KeyLayout.keyHeight(room, rows.length, density);
+        labelPaint.setTextSize(Math.min(20 * density, keyHeight * 0.5f));
+        float pad = KeyLayout.PAD_DP * density;
+        setMeasuredDimension(width, rows.length == 0 ? 0 : Math.round(rows.length * keyHeight + pad));
     }
 
     private static int rowSpan(int[] row) {
@@ -91,9 +105,9 @@ final class KeyPad extends View {
         for (int at = 0; at < col; at++) {
             x += unit * KeyLayout.span(keys[at]);
         }
-        float top = 4 * density + row * keyHeight();
+        float top = KeyLayout.PAD_DP * density / 2 + row * keyHeight;
         float gap = 3 * density;
-        return new RectF(x + gap, top + gap, x + unit * KeyLayout.span(keys[col]) - gap, top + keyHeight() - gap);
+        return new RectF(x + gap, top + gap, x + unit * KeyLayout.span(keys[col]) - gap, top + keyHeight - gap);
     }
 
     @Override
@@ -102,7 +116,7 @@ final class KeyPad extends View {
             for (int col = 0; col < rows[row].length; col++) {
                 int code = rows[row][col];
                 RectF key = bounds(row, col);
-                boolean down = row == downRow && col == downCol;
+                boolean down = fingers.isDown(row, col);
                 keyPaint.setColor(down ? KEY_DOWN : KeyLayout.sends(code) && code > 0x20 ? KEY : SPECIAL);
                 canvas.drawRoundRect(key, 6 * density, 6 * density, keyPaint);
                 labelPaint.setColor(enabled || !KeyLayout.sends(code) ? LABEL : OFF);
@@ -126,29 +140,44 @@ final class KeyPad extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        int[] key = keyAt(event.getX(), event.getY());
+        int index = event.getActionIndex();
+        int id = event.getPointerId(index);
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
-                downRow = key == null ? -1 : key[0];
-                downCol = key == null ? -1 : key[1];
-                invalidate();
+                fingers.clear();
+                touchDown(id, event.getX(index), event.getY(index));
                 return true;
-            case MotionEvent.ACTION_UP:
-                if (key != null && key[0] == downRow && key[1] == downCol) {
-                    press(rows[downRow][downCol]);
+            case MotionEvent.ACTION_POINTER_DOWN:
+                // The keys still under another finger are typed first; a layer key among them changes the keys hit now.
+                for (int code : fingers.rollover()) {
+                    press(code);
                 }
-                downRow = -1;
-                downCol = -1;
+                touchDown(id, event.getX(index), event.getY(index));
+                return true;
+            case MotionEvent.ACTION_POINTER_UP:
+            case MotionEvent.ACTION_UP:
+                int[] key = keyAt(event.getX(index), event.getY(index));
+                int code = fingers.up(id, key == null ? -1 : key[0], key == null ? -1 : key[1]);
+                if (code != KeyTracker.NONE) {
+                    press(code);
+                }
                 invalidate();
                 return true;
             case MotionEvent.ACTION_CANCEL:
-                downRow = -1;
-                downCol = -1;
+                fingers.clear();
                 invalidate();
                 return true;
             default:
                 return true;
         }
+    }
+
+    private void touchDown(int id, float x, float y) {
+        int[] key = keyAt(x, y);
+        if (key != null) {
+            fingers.down(id, key[0], key[1], rows[key[0]][key[1]]);
+        }
+        invalidate();
     }
 
     private void press(int code) {

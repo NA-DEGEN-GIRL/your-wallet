@@ -39,6 +39,11 @@ import java.util.List;
  *
  * <p>The root view is excluded from autofill, content capture (API 30+), marked accessibility-data-sensitive (API 34+)
  * and content-sensitive (API 35+). Every text drawn comes from the model (Rust's catalogues, spec/15 §3.3).
+ *
+ * <p>2026-11-26 A2 final review (spec/15 §1.1, §9.1): the window is, from the top, the warning bands (outside the scroll
+ * view, always in sight, drawn from each model), the scrolled content, W05's completions and the app keyboard, whose rows
+ * get lower before the bands would give way ({@link Root}). Before, the bands were the first thing in the scrolled body
+ * and scrolled away. And no button a finger is on is ever rebuilt ({@link HeldButtons}).
  */
 public final class SecretActivity extends Activity implements SecretWindows.Win {
     /** The intent extra: the secret session's serial. */
@@ -54,23 +59,30 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable tick = this::tick;
+    /** The boxes of the body (kept with it) and, apart, those of the completions. */
     private final List<SecretBox> boxes = new ArrayList<>();
+    private final List<SecretBox> candidateBoxes = new ArrayList<>();
+    /** The field boxes of the drawn body by field index (empty while the content is masked). */
+    private final List<SecretBox> fieldBoxes = new ArrayList<>();
     private long serial = -1;
     private int win;
     private boolean readySent;
     private boolean closedByRust;
+    /** The warning bands (spec/15 §1.1, §8.2), above and outside the scroll view, and the texts drawn now. */
+    private LinearLayout bands;
+    private List<String> bandTexts = new ArrayList<>();
     private LinearLayout content;
     /**
-     * 2026-11-25 A2 device run (spec/15 §9.1): {@code content} holds {@code body}, redrawn with every model, and then
-     * {@code buttons}, the button row, which is rebuilt only while no finger is on one of its buttons. Before, every
-     * model removed every view: W08's countdown (a new model each second) and its hold's own progress label removed
-     * the held button, Android cancelled the touch ({@code out}), and the 2 s hold could never finish.
+     * 2026-11-25 A2 device run (spec/15 §9.1): {@code content} holds {@code body} and then {@code buttons}, the button
+     * row. 2026-11-26 A2 final review: each of the two is rebuilt from a model only while no finger is on one of its own
+     * buttons ({@link HeldButtons}); a kept body still refills its boxes (a held reveal shows the field that way) and a
+     * kept row still takes the model's labels (W08's hold counts down in its label). The latest model is drawn when the
+     * finger is gone. Before the device run every model removed every view, and until this review the body's buttons
+     * (W05's checkbox, the reveals) were still removed under the finger: Android cancelled the touch.
      */
     private LinearLayout body;
     private LinearLayout buttons;
-    /** The button a finger is on (from its down to its up or cancel), and its word. */
-    private Button pressed;
-    private String pressedWord;
+    private final HeldButtons held = new HeldButtons();
     private LinearLayout candidates;
     private KeyPad keypad;
     private Object model;
@@ -98,7 +110,7 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
         serial = getIntent().getLongExtra(EXTRA_SERIAL, -1);
         win = ++lastWin;
         Screen.secretCreated(this);
-        LinearLayout root = new LinearLayout(this);
+        Root root = new Root(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setFitsSystemWindows(true);
         root.setBackgroundColor(0xffffffff);
@@ -112,6 +124,9 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
         if (Build.VERSION.SDK_INT >= 35) {
             root.setContentSensitivity(View.CONTENT_SENSITIVITY_SENSITIVE);
         }
+        bands = new LinearLayout(this);
+        bands.setOrientation(LinearLayout.VERTICAL);
+        root.addView(bands);
         ScrollView scroll = new ScrollView(this);
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -177,8 +192,7 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
     @Override
     protected void onStop() {
         main.removeCallbacks(tick);
-        pressed = null;
-        pressedWord = null;
+        held.clear();
         wipeAll();
         Screen.stopped(this);
         super.onStop();
@@ -207,6 +221,8 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
     @Override
     public void onConfigurationChanged(android.content.res.Configuration config) {
         super.onConfigurationChanged(config);
+        // The bands too: drawn again although their texts are the same (a new font scale).
+        bands.removeAllViews();
         if (model != null) {
             draw(model);
         }
@@ -255,6 +271,9 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
         for (SecretBox box : boxes) {
             box.wipe();
         }
+        for (SecretBox box : candidateBoxes) {
+            box.wipe();
+        }
     }
 
     /** Fills every box, after reading FLAG_SECURE back; with the flag off nothing is filled and the window closes. */
@@ -267,6 +286,9 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
         for (SecretBox box : boxes) {
             box.fill();
         }
+        for (SecretBox box : candidateBoxes) {
+            box.fill();
+        }
         return true;
     }
 
@@ -276,17 +298,75 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
 
     private void draw(Object frame) {
         wipeAll();
-        boxes.clear();
-        body.removeAllViews();
+        drawBands(frame);
+        String masked = Json.string(frame, "masked");
+        if (held.rebuilds(HeldButtons.BODY)) {
+            drawBody(frame, masked);
+        } else {
+            keepBody(frame);
+        }
+        drawButtons(frame);
         candidates.removeAllViews();
-        for (Object band : Json.list(frame, "bands")) {
-            if (band instanceof String) {
-                TextView view = text((String) band, 14, false, getColor(R.color.band_text));
-                view.setBackgroundColor(getColor(R.color.band_background));
-                view.setPadding(dp(12), dp(8), dp(12), dp(8));
-                body.addView(view, spaced());
+        candidateBoxes.clear();
+        boolean input = Boolean.TRUE.equals(Json.bool(frame, "input"));
+        if (masked == null && input) {
+            for (Object candidate : Json.list(frame, "cands")) {
+                addCandidate(candidate);
             }
         }
+        keypad.set(Json.string(frame, "keys"), input && masked == null);
+        if (fillAll()) {
+            // A completion that fills nothing is not shown (the model never says how many there are).
+            for (SecretBox box : candidateBoxes) {
+                box.setVisibility(box.count() > 0 ? View.VISIBLE : View.GONE);
+            }
+        }
+    }
+
+    /**
+     * The warning bands of {@code frame}, top first; the views are rebuilt only when a text changed. An entry that is no
+     * text still draws an empty band (the window is never shown as if it had no warning, as on the main screen).
+     */
+    private void drawBands(Object frame) {
+        List<String> texts = new ArrayList<>();
+        for (Object band : Json.list(frame, "bands")) {
+            texts.add(band instanceof String ? (String) band : "");
+        }
+        if (texts.equals(bandTexts) && bands.getChildCount() == texts.size()) {
+            return;
+        }
+        bandTexts = texts;
+        bands.removeAllViews();
+        for (String value : texts) {
+            TextView view = text(value, 14, false, getColor(R.color.band_text));
+            view.setBackgroundColor(getColor(R.color.band_background));
+            view.setPadding(dp(12), dp(8), dp(12), dp(8));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            params.setMargins(0, 0, 0, dp(2));
+            bands.addView(view, params);
+        }
+    }
+
+    /** The body while a finger is on one of its buttons: its views stay; only the active field follows the model. */
+    private void keepBody(Object frame) {
+        int index = 0;
+        for (Object field : Json.list(frame, "fields")) {
+            boolean isActive = Boolean.TRUE.equals(Json.bool(field, "active"));
+            if (isActive) {
+                active = index;
+            }
+            if (index < fieldBoxes.size()) {
+                fieldBoxes.get(index).setActive(isActive);
+            }
+            index++;
+        }
+    }
+
+    private void drawBody(Object frame, String masked) {
+        boxes.clear();
+        fieldBoxes.clear();
+        body.removeAllViews();
         Object step = Json.get(frame, "step");
         if (step instanceof java.util.Map) {
             body.addView(text(Json.string(step, "head"), 13, false, MUTED), spaced());
@@ -315,7 +395,6 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
                 body.addView(text((String) paragraph, 15, false, INK), spaced());
             }
         }
-        String masked = Json.string(frame, "masked");
         if (masked != null) {
             body.addView(text(masked, 15, false, MUTED), spaced());
         }
@@ -335,7 +414,7 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
         Object checkbox = Json.get(frame, "checkbox");
         if (checkbox instanceof java.util.Map) {
             boolean on = Boolean.TRUE.equals(Json.bool(checkbox, "on"));
-            Button box = button((on ? "☑ " : "☐ ") + Json.string(checkbox, "label"), "checkbox", 0,
+            Button box = button((on ? "☑ " : "☐ ") + Json.string(checkbox, "label"), "checkbox", 0, HeldButtons.BODY,
                     Boolean.TRUE.equals(Json.bool(checkbox, "enabled")));
             body.addView(box, spaced());
         }
@@ -367,32 +446,20 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
         for (Object line : Json.list(frame, "msgs")) {
             body.addView(toned(line), spaced());
         }
-        drawButtons(frame);
-        boolean input = Boolean.TRUE.equals(Json.bool(frame, "input"));
-        if (masked == null && input) {
-            for (Object candidate : Json.list(frame, "cands")) {
-                addCandidate(candidate);
-            }
-        }
-        keypad.set(Json.string(frame, "keys"), input && masked == null);
-        if (fillAll()) {
-            // A completion that fills nothing is not shown (the model never says how many there are).
-            for (int at = 0; at < candidates.getChildCount(); at++) {
-                SecretBox box = (SecretBox) candidates.getChildAt(at);
-                box.setVisibility(box.count() > 0 ? View.VISIBLE : View.GONE);
-            }
-        }
     }
 
     /**
-     * The button row of {@code frame}. While a finger is on one of its buttons the row is kept and only that button is
-     * relabelled (W08's hold counts down in its label); the latest model's row is drawn when the finger leaves.
+     * The button row of {@code frame}. While a finger is on one of its buttons the row is kept and its buttons only take
+     * the model's labels (W08's hold counts down in its label).
      */
     private void drawButtons(Object frame) {
-        if (pressed != null) {
-            String label = SecretWire.buttonLabel(frame, pressedWord);
-            if (label != null) {
-                pressed.setText(label);
+        if (!held.rebuilds(HeldButtons.ROW)) {
+            for (int at = 0; at < buttons.getChildCount(); at++) {
+                Button button = (Button) buttons.getChildAt(at);
+                String label = SecretWire.buttonLabel(frame, (String) button.getTag());
+                if (label != null) {
+                    button.setText(label);
+                }
             }
             return;
         }
@@ -400,17 +467,9 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
         for (Object item : Json.list(frame, "buttons")) {
             String word = Json.string(item, "b");
             if (word != null) {
-                buttons.addView(button(Json.string(item, "label"), word, 0, Boolean.TRUE.equals(Json.bool(item, "on"))));
+                buttons.addView(button(Json.string(item, "label"), word, 0, HeldButtons.ROW,
+                        Boolean.TRUE.equals(Json.bool(item, "on"))));
             }
-        }
-    }
-
-    /** The finger left the pressed button: the latest model's row is drawn. */
-    private void released() {
-        pressed = null;
-        pressedWord = null;
-        if (model != null && !closedByRust) {
-            drawButtons(model);
         }
     }
 
@@ -441,10 +500,11 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
             return true;
         });
         boxes.add(box);
+        fieldBoxes.add(box);
         body.addView(box, spaced());
         Object reveal = Json.get(field, "reveal");
         if (reveal instanceof java.util.Map) {
-            body.addView(button(Json.string(reveal, "label"), "reveal", index,
+            body.addView(button(Json.string(reveal, "label"), "reveal", index, HeldButtons.BODY,
                     Boolean.TRUE.equals(Json.bool(reveal, "on"))));
         }
     }
@@ -459,53 +519,55 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
             }
             return true;
         });
-        boxes.add(box);
+        candidateBoxes.add(box);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         params.setMargins(dp(4), dp(4), dp(4), dp(4));
         candidates.addView(box, params);
     }
 
     /**
-     * A button of the model: a press, a release on it and a finger that leaves it are each sent (Rust decides; a held
-     * button such as W08's acknowledgement needs them all).
+     * A button of the model in {@code place} of the window: a press, a release on it and a finger that leaves it are each
+     * sent (Rust decides; a held button such as W08's acknowledgement or a reveal needs them all). {@link HeldButtons}
+     * says which, and keeps the place from being rebuilt until the finger is gone; then the latest model is drawn.
      */
-    private Button button(String label, String word, int index, boolean enabled) {
+    private Button button(String label, String word, int index, int place, boolean enabled) {
         Button button = new Button(this);
         button.setText(label);
         button.setAllCaps(false);
         button.setEnabled(enabled);
+        button.setTag(word);
         button.setOnTouchListener((view, event) -> {
-            if (!view.isEnabled()) {
-                return true;
-            }
+            float x = event.getRawX();
+            float y = event.getRawY();
+            String edge;
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    view.setPressed(true);
-                    if (button.getParent() == buttons) {
-                        pressed = button;
-                        pressedWord = word;
-                    }
-                    Screen.send(SecretWire.button(win, word, index, "down"));
-                    return true;
+                    edge = held.down(view, place, view.isEnabled(), x - event.getX(), y - event.getY(), view.getWidth(),
+                            view.getHeight());
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    edge = held.moved(view, x, y);
+                    break;
                 case MotionEvent.ACTION_UP:
-                    view.setPressed(false);
-                    boolean inside = event.getX() >= 0 && event.getY() >= 0 && event.getX() <= view.getWidth()
-                            && event.getY() <= view.getHeight();
-                    Screen.send(SecretWire.button(win, word, index, inside ? "up" : "out"));
-                    if (pressed == button) {
-                        released();
-                    }
-                    return true;
+                    edge = held.up(view, x, y);
+                    break;
                 case MotionEvent.ACTION_CANCEL:
-                    view.setPressed(false);
-                    Screen.send(SecretWire.button(win, word, index, "out"));
-                    if (pressed == button) {
-                        released();
-                    }
-                    return true;
+                    edge = held.cancelled(view);
+                    break;
                 default:
-                    return true;
+                    edge = null;
+                    break;
             }
+            if (edge == null) {
+                return true;
+            }
+            boolean down = HeldButtons.DOWN.equals(edge);
+            view.setPressed(down);
+            Screen.send(SecretWire.button(win, word, index, edge));
+            if (!down && model != null && !closedByRust) {
+                draw(model);
+            }
+            return true;
         });
         return button;
     }
@@ -536,5 +598,30 @@ public final class SecretActivity extends Activity implements SecretWindows.Win 
 
     private int dp(int value) {
         return Math.round(value * density);
+    }
+
+    /**
+     * The window's root: the bands and the completions keep their height, the keyboard takes lower rows when little is
+     * left ({@link KeyLayout#keyHeight}), and the scrolled content has the rest. A LinearLayout alone would measure the
+     * keyboard against the whole height and, in a low window, lay it out below the screen's end.
+     */
+    private final class Root extends LinearLayout {
+        Root(android.content.Context context) {
+            super(context);
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            int width = MeasureSpec.getSize(widthSpec) - getPaddingLeft() - getPaddingRight();
+            int height = MeasureSpec.getSize(heightSpec) - getPaddingTop() - getPaddingBottom();
+            int fixed = 0;
+            for (View view : new View[] {bands, candidates}) {
+                view.measure(MeasureSpec.makeMeasureSpec(Math.max(0, width), MeasureSpec.EXACTLY),
+                        MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+                fixed += view.getMeasuredHeight();
+            }
+            keypad.room(Math.max(0, height - fixed));
+            super.onMeasure(widthSpec, heightSpec);
+        }
     }
 }

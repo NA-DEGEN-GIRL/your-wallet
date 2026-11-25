@@ -141,6 +141,34 @@ final class KeyLayout {
         }
     }
 
+    /** The height of a key row in dp when there is room. */
+    static final int KEY_DP = 52;
+
+    /** The lowest a key row gets in dp while the content still has any height. */
+    static final int KEY_MIN_DP = 30;
+
+    /** The height in dp the content above the keyboard keeps while the rows can still get lower. */
+    static final int CONTENT_MIN_DP = 112;
+
+    /** The keyboard's own padding in dp (half above the first row, half under the last one). */
+    static final int PAD_DP = 8;
+
+    /**
+     * The height in px of each of {@code rows} key rows, when the window has {@code room} px for the content and the
+     * keyboard together (2026-11-26 A2 final review, spec/15 §9.1: the bands are outside of it and never give way).
+     * Full height when the content keeps {@link #CONTENT_MIN_DP}; else lower, down to {@link #KEY_MIN_DP}; then the
+     * content gives way, and at last the keyboard takes what there is.
+     */
+    static float keyHeight(int room, int rows, float density) {
+        if (rows <= 0) {
+            return KEY_DP * density;
+        }
+        float all = Math.max(0, room - PAD_DP * density);
+        float shared = (all - CONTENT_MIN_DP * density) / rows;
+        float height = Math.max(KEY_MIN_DP * density, Math.min(KEY_DP * density, shared));
+        return Math.min(height, all / rows);
+    }
+
     /** How many key widths a key takes (space is wide). */
     static int span(int code) {
         return code == SPACE ? 4 : 1;

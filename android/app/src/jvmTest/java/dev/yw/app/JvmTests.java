@@ -35,6 +35,10 @@ public final class JvmTests {
         run("the app keyboard types every printable ASCII unit", JvmTests::keyLayout);
         run("secret windows close by session, by window and by resync", JvmTests::secretWindows);
         run("a held button takes its label from the model", JvmTests::heldButtonLabel);
+        run("a button a finger is on is not rebuilt", JvmTests::heldButtons);
+        run("what a touch of a button sends", JvmTests::heldButtonEdges);
+        run("two thumbs lose no key", JvmTests::keyTracker);
+        run("the keyboard gives way before the bands", JvmTests::keyHeight);
         run("the app is in the background only with no Activity started", JvmTests::startedCount);
         run("the main screen shows only after the check of its own front", JvmTests::frontGate);
         System.out.println("jvmTest: " + passed + " passed, " + failed + " failed");
@@ -72,6 +76,163 @@ public final class JvmTests {
         check("Cancel".equals(SecretWire.buttonLabel(held, "cancel")), "label of another button");
         check(SecretWire.buttonLabel(held, "reveal") == null && SecretWire.buttonLabel(held, null) == null, "no button");
         check(SecretWire.buttonLabel(Json.parse(utf8("{\"t\":\"s_model\"}")), "primary") == null, "no row");
+    }
+
+    /** A secret window's two redrawn parts, as SecretActivity draws them: a part is rebuilt from a model or kept. */
+    private static final class FakeWindow {
+        final HeldButtons held = new HeldButtons();
+        /** The checkbox and two reveals. */
+        Object[] body = new Object[0];
+        /** Cancel and primary. */
+        Object[] row = new Object[0];
+
+        FakeWindow() {
+            model();
+        }
+
+        void model() {
+            if (held.rebuilds(HeldButtons.BODY)) {
+                body = new Object[] {new Object(), new Object(), new Object()};
+            }
+            if (held.rebuilds(HeldButtons.ROW)) {
+                row = new Object[] {new Object(), new Object()};
+            }
+        }
+
+        /** A finger down on {@code button}, whose rectangle is (100, 200)-(300, 250); Rust answers with a model. */
+        void down(Object button, int place) {
+            check(HeldButtons.DOWN.equals(held.down(button, place, true, 100, 200, 200, 50)), "down");
+            model();
+        }
+    }
+
+    /**
+     * 2026-11-26 A2 final review (spec/15 §9.1): the part that holds the button under a finger is kept while models come
+     * (the one that answers the down among them), until the last finger on it is gone; the other part is rebuilt.
+     */
+    private static void heldButtons() {
+        // Body: the checkbox and each reveal.
+        for (int at = 0; at < 3; at++) {
+            FakeWindow window = new FakeWindow();
+            Object button = window.body[at];
+            Object primary = window.row[1];
+            window.down(button, HeldButtons.BODY);
+            window.model();
+            check(window.body[at] == button, "kept " + at);
+            check(window.row[1] != primary, "the row is rebuilt");
+            check(HeldButtons.UP.equals(window.held.up(button, 200, 225)), "up " + at);
+            window.model();
+            check(window.body[at] != button, "rebuilt after up " + at);
+        }
+        // Row: W08's hold (its body's countdown goes on).
+        FakeWindow window = new FakeWindow();
+        Object primary = window.row[1];
+        Object checkbox = window.body[0];
+        window.down(primary, HeldButtons.ROW);
+        window.model();
+        check(window.row[1] == primary && window.body[0] != checkbox, "the row is kept, the body rebuilt");
+        check(HeldButtons.OUT.equals(window.held.cancelled(primary)), "cancel");
+        window.model();
+        check(window.row[1] != primary, "rebuilt after a cancel");
+        // A second finger: the part stays until both are gone.
+        window = new FakeWindow();
+        Object reveal = window.body[1];
+        checkbox = window.body[0];
+        window.down(reveal, HeldButtons.BODY);
+        window.down(checkbox, HeldButtons.BODY);
+        check(HeldButtons.UP.equals(window.held.up(checkbox, 200, 225)), "second finger up");
+        window.model();
+        check(window.body[1] == reveal, "the first finger is still on its reveal");
+        check(HeldButtons.OUT.equals(window.held.moved(reveal, 200, 300)), "the first finger leaves");
+        window.model();
+        check(window.body[1] != reveal, "rebuilt");
+        // Fingers in both parts.
+        window = new FakeWindow();
+        reveal = window.body[2];
+        window.down(reveal, HeldButtons.BODY);
+        primary = window.row[0];
+        window.down(primary, HeldButtons.ROW);
+        window.model();
+        check(window.body[2] == reveal && window.row[0] == primary, "both kept");
+        window.held.clear();
+        window.model();
+        check(window.body[2] != reveal && window.row[0] != primary, "hidden: nothing is held");
+    }
+
+    /** The edges of a touch: up on the button, out once when the finger left or was cancelled, nothing when disabled. */
+    private static void heldButtonEdges() {
+        HeldButtons held = new HeldButtons();
+        Object button = new Object();
+        check(held.down(button, HeldButtons.BODY, false, 100, 200, 200, 50) == null, "disabled");
+        check(held.up(button, 200, 225) == null && held.rebuilds(HeldButtons.BODY), "a disabled touch sends nothing");
+        // The rectangle is the one at the down; its edges belong to it.
+        for (float[] at : new float[][] {{100, 200}, {300, 250}, {200, 225}}) {
+            held.down(button, HeldButtons.BODY, true, 100, 200, 200, 50);
+            check(held.moved(button, at[0], at[1]) == null && !held.rebuilds(HeldButtons.BODY), "on it");
+            check(HeldButtons.UP.equals(held.up(button, at[0], at[1])), "up on it");
+        }
+        for (float[] at : new float[][] {{99, 225}, {301, 225}, {200, 199}, {200, 251}}) {
+            held.down(button, HeldButtons.BODY, true, 100, 200, 200, 50);
+            check(HeldButtons.OUT.equals(held.up(button, at[0], at[1])), "up beside it");
+            held.down(button, HeldButtons.BODY, true, 100, 200, 200, 50);
+            check(HeldButtons.OUT.equals(held.moved(button, at[0], at[1])), "left");
+            check(held.moved(button, 200, 225) == null, "coming back is nothing");
+            check(held.up(button, 200, 225) == null && held.cancelled(button) == null, "out is sent once");
+        }
+        held.down(button, HeldButtons.ROW, true, 0, 0, 10, 10);
+        check(HeldButtons.OUT.equals(held.cancelled(button)) && held.cancelled(button) == null, "cancelled once");
+        check(held.up(new Object(), 0, 0) == null && held.moved(new Object(), 0, 0) == null, "another button");
+    }
+
+    /** 2026-11-26 A2 final review (spec/15 §9.2): rollover typing, pointer by pointer. */
+    private static void keyTracker() {
+        KeyTracker keys = new KeyTracker();
+        // One finger: typed on its own key only.
+        keys.down(0, 0, 3, 'r');
+        check(keys.isDown(0, 3) && !keys.isDown(0, 2), "down");
+        check(keys.up(0, 0, 3) == 'r' && keys.up(0, 0, 3) == KeyTracker.NONE, "typed once");
+        keys.down(0, 0, 3, 'r');
+        check(keys.up(0, 0, 4) == KeyTracker.NONE && !keys.isDown(0, 3), "released elsewhere");
+        keys.down(0, 0, 3, 'r');
+        check(keys.up(0, -1, -1) == KeyTracker.NONE, "released on no key");
+        // Rollover: the second finger goes down before the first is up; either may go up first.
+        keys.down(0, 0, 0, 'q');
+        check(Arrays.equals(keys.rollover(), new int[] {'q'}), "the first key is typed at the second's down");
+        keys.down(1, 1, 8, 'l');
+        check(keys.up(0, 0, 0) == KeyTracker.NONE, "the first finger's up types nothing more");
+        check(keys.up(1, 1, 8) == 'l', "the second key at its own up");
+        keys.down(0, 0, 0, 'q');
+        keys.rollover();
+        keys.down(1, 1, 8, 'l');
+        check(keys.up(1, 1, 8) == 'l' && keys.up(0, 0, 0) == KeyTracker.NONE, "the second finger up first");
+        // A third finger, and a pointer id used again.
+        keys.down(0, 0, 0, 'q');
+        keys.rollover();
+        keys.down(1, 0, 1, 'w');
+        check(Arrays.equals(keys.rollover(), new int[] {'w'}), "only what is not typed yet");
+        keys.down(2, 0, 2, 'e');
+        keys.down(2, 0, 4, 't');
+        check(keys.rollover().length == 1 && keys.rollover().length == 0, "one key per finger, once");
+        keys.down(0, 0, 0, 'q');
+        keys.clear();
+        check(keys.up(0, 0, 0) == KeyTracker.NONE && keys.rollover().length == 0, "cancelled");
+    }
+
+    /** 2026-11-26 A2 final review (spec/15 §9.1): the rows get lower, then the content gives way; never the bands. */
+    private static void keyHeight() {
+        check(KeyLayout.keyHeight(Integer.MAX_VALUE, 4, 2f) == 104f, "full");
+        check(KeyLayout.keyHeight(800, 4, 2f) == 104f, "full with a small content");
+        // 560 px = 280 dp, 8 dp of them the padding: the content keeps 112 dp, the rows share 160 dp.
+        check(KeyLayout.keyHeight(560, 4, 2f) == 80f, "shared");
+        check(KeyLayout.keyHeight(300, 4, 2f) == 60f, "lowest");
+        check(KeyLayout.keyHeight(200, 4, 2f) == 46f, "what there is");
+        check(KeyLayout.keyHeight(0, 4, 2f) == 0f, "none");
+        check(KeyLayout.keyHeight(100, 0, 2f) == 104f, "no rows");
+        for (int room = 0; room < 2000; room += 7) {
+            float height = KeyLayout.keyHeight(room, 4, 2.625f);
+            check(height >= 0 && height <= 52 * 2.625f, "bounds at " + room);
+            check(height * 4 + 8 * 2.625f <= Math.max(room, 8 * 2.625f) + 0.01f, "fits at " + room);
+        }
     }
 
     /** 2026-11-25 A2-7: the same bytes as yw-android secret_wire's and secret_keys' tests. */
