@@ -59,8 +59,10 @@ public final class MainActivity extends Activity {
             }
 
             @Override
-            public void edit(long rev, long slot, String text) {
-                Screen.send(UiWire.edit(rev, slot, text));
+            public boolean edit(long rev, long slot, String text) {
+                byte[] input = UiWire.edit(rev, slot, text);
+                Screen.send(input);
+                return input != null;
             }
         });
         setContentView(root);

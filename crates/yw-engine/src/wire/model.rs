@@ -17,9 +17,11 @@
 //! A control: `s`, `c` (`button`, `check`, `radio`, `edit`, `cred`), `style` (a button's), `text`,
 //! `on` (enabled), `checked`, `first` (a radio's group start), `password`, `readonly`, `limit` (an
 //! edit's), `badge`, `compact`, `face`, `tip` — every member present, `null` where it does not
-//! apply.
+//! apply. A plain edit whose field never goes on the wire (`super::field_on_wire`: the
+//! `WalletConnect` pairing link) is sent as `cred`, with no text (2026-11-25 A2-6 review).
 
 use yw_core::lang::Lang;
+use yw_core::secret::Zeroize;
 use yw_json::{Number, Object, Value};
 
 use crate::badge::{Badge, Mark};
@@ -53,9 +55,11 @@ pub struct Drawn {
 }
 
 impl Drawn {
-    /// Records `items` as model `rev`.
+    /// Records `items` as model `rev`, wiped of the texts that never go on the wire first
+    /// ([`scrub`]).
     #[must_use]
-    pub fn new(rev: u64, items: Vec<Item>) -> Self {
+    pub fn new(rev: u64, mut items: Vec<Item>) -> Self {
+        scrub(&mut items);
         let mut slots = Vec::new();
         for_each_ctl(&items, &mut |item, ctl| {
             slots.push(SlotInfo {
@@ -111,6 +115,34 @@ impl Drawn {
 pub fn for_each_ctl(items: &[Item], visit: &mut dyn FnMut(usize, &Ctl)) {
     for (index, item) in items.iter().enumerate() {
         item_ctls(item, index, visit, BADGED_DEPTH);
+    }
+}
+
+/// Wipes the text of every plain edit whose field never goes on the wire
+/// (`super::field_on_wire`) in `items` (2026-11-25 A2-6 review): the drawn record keeps no copy,
+/// and a rebuilt model is compared with it only after the same wipe.
+pub(crate) fn scrub(items: &mut [Item]) {
+    for item in items {
+        scrub_item(item, BADGED_DEPTH);
+    }
+}
+
+fn scrub_item(item: &mut Item, depth: u32) {
+    let wipe = |ctl: &mut Ctl| {
+        if matches!(ctl.act, Act::Field(field) if !super::field_on_wire(field)) {
+            ctl.text.zeroize();
+        }
+    };
+    match item {
+        Item::CopyLine { value, actions } => {
+            wipe(value);
+            actions.iter_mut().for_each(wipe);
+        }
+        Item::Menu(ctls) | Item::Row(ctls) | Item::LabeledRow(_, ctls) | Item::Toolbar(_, ctls) => {
+            ctls.iter_mut().for_each(wipe);
+        }
+        Item::Badged(_, inner) if depth > 0 => scrub_item(inner, depth - 1),
+        _ => {}
     }
 }
 
@@ -296,8 +328,13 @@ fn encode_item(item: &Item, lang: Lang, slot: &mut u64, depth: u32) -> Value {
 fn encode_ctl(ctl: &Ctl, slot: &mut u64) -> Value {
     let at = *slot;
     *slot = slot.saturating_add(1);
+    let hidden = match ctl.act {
+        Act::Cred(_) => true,
+        Act::Field(field) => !super::field_on_wire(field),
+        Act::Press(_) => false,
+    };
     let (kind, style, first, password, readonly) = match (ctl.kind, ctl.act) {
-        (_, Act::Cred(_)) => ("cred", None, None, None, None),
+        _ if hidden => ("cred", None, None, None, None),
         (CtlKind::Button(style), _) => ("button", Some(style_word(style)), None, None, None),
         (CtlKind::Check, _) => ("check", None, None, None, None),
         (CtlKind::Radio { first }, _) => ("radio", None, Some(first), None, None),
@@ -310,7 +347,7 @@ fn encode_ctl(ctl: &Ctl, slot: &mut u64) -> Value {
         ("s", number(at)),
         ("c", string(kind)),
         ("style", optional(style)),
-        ("text", string(&ctl.text)),
+        ("text", string(if hidden { "" } else { &ctl.text })),
         ("on", Value::Bool(ctl.enabled)),
         ("checked", flag(ctl.checked)),
         ("first", flag(first)),

@@ -17,6 +17,23 @@
 //!   credential edit are refused ([`InputOutcome::Refused`]): a credential never comes this way
 //!   (the app keyboard's `secretKey`, spec/15 §9.2).
 //!
+//! What a plain edit shows is the engine's to decide, never the shell's (2026-11-25 A2-6 review):
+//! the shell draws every edit of a model with the model's text and keeps nothing it typed; when
+//! it answers the render, the engine applies the Windows keep rule (`form::FormSync`, field
+//! identity at the common ends of the control keys) and hands back, with
+//! [`Wallet::take_edit_sync`](crate::wallet::Wallet::take_edit_sync), the text of every drawn
+//! plain edit that differs from its model text and the slot the focused field is drawn at now.
+//! The shell's field writes carry how many edits of that slot the engine had taken since the
+//! render ([`Wallet::edits_seen`](crate::wallet::Wallet::edits_seen)); one the shell has sent more
+//! edits for since is stale (the engine takes those edits after the write) and is not applied.
+//! Before the review the Android shell kept the focused edit's typed text by its own rule (same
+//! slot, limit and model text), which could differ from the engine's.
+//!
+//! A plain field whose text carries a secret ([`field_on_wire`]: the `WalletConnect` pairing link
+//! with its `symKey`, spec/15 §12.2) never goes on the wire: it is drawn like a credential (no
+//! text, takes no input), its text is wiped from the drawn record, and no field write names it,
+//! until the §12.2 pairing path exists (2026-11-25 A2-6 review).
+//!
 //! There is no decoder of `Cmd::Approval` here or anywhere on the wire (spec/15 §18 8, §11.4 S4
 //! end): an approval window's input is made only by the Android shell's own mapper from touch
 //! facts (A3), as Windows makes it only in `ui::approval_input`. Source check
@@ -32,6 +49,7 @@ use yw_json::{Limits, Value};
 
 use crate::cmd::TickPart;
 use crate::effect::TimerId;
+use crate::form::EditField;
 use crate::screen::model::{Act, CtlKind, Item};
 
 pub mod model;
@@ -344,6 +362,51 @@ pub struct WireState {
     /// The model before it (a render's answer names the focused edit in the model the shell
     /// showed before it drew the new one).
     pub(crate) previous: Option<Drawn>,
+    /// The edits taken per slot of the drawn model since the shell last answered its render
+    /// (2026-11-25 A2-6 review; module doc).
+    pub(crate) seen: std::collections::BTreeMap<u32, u64>,
+    /// The drawn model's render was answered and its edit texts are not handed back yet
+    /// ([`crate::wallet::Wallet::take_edit_sync`]), with the field that had the focus.
+    pub(crate) sync: Option<(u64, Option<EditField>)>,
+}
+
+/// What the plain edits of the drawn model must show after the shell answered its render
+/// (2026-11-25 A2-6 review; module doc). Not `Clone`; the texts are wiped on drop, and `Debug`
+/// prints slots and lengths only.
+pub struct EditSync {
+    /// The model's revision.
+    pub rev: u64,
+    /// Each drawn plain edit whose text differs from its model text, by slot, with the text it
+    /// shows (the engine's form state).
+    pub fields: Vec<(u32, Zeroizing<String>)>,
+    /// The slot the field that had the focus is drawn at now (`None`: none had it, or it is not
+    /// drawn as an edit that takes input).
+    pub focus: Option<u32>,
+}
+
+impl fmt::Debug for EditSync {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EditSync")
+            .field("rev", &self.rev)
+            .field(
+                "fields",
+                &self
+                    .fields
+                    .iter()
+                    .map(|(slot, text)| (*slot, text.len()))
+                    .collect::<Vec<_>>(),
+            )
+            .field("focus", &self.focus)
+            .finish()
+    }
+}
+
+/// Whether plain field `field`'s text may go on the wire (module doc): every field but the
+/// `WalletConnect` pairing link, which carries the pairing `symKey` (spec/15 §12.2).
+#[must_use]
+pub const fn field_on_wire(field: EditField) -> bool {
+    !matches!(field, EditField::WcUri)
 }
 
 /// What a slot's control may take: a press (a button, link, check box or radio, enabled), or a
@@ -352,10 +415,10 @@ pub(crate) fn takes_press(slot: &SlotInfo) -> bool {
     slot.enabled && matches!(slot.act, Act::Press(_)) && !matches!(slot.kind, CtlKind::Edit { .. })
 }
 
-/// See [`takes_press`].
+/// See [`takes_press`]; a field that never goes on the wire ([`field_on_wire`]) takes no text.
 pub(crate) fn takes_edit(slot: &SlotInfo) -> bool {
     slot.enabled
-        && matches!(slot.act, Act::Field(_))
+        && matches!(slot.act, Act::Field(field) if field_on_wire(field))
         && matches!(
             slot.kind,
             CtlKind::Edit {
@@ -365,8 +428,10 @@ pub(crate) fn takes_edit(slot: &SlotInfo) -> bool {
         )
 }
 
-/// The item a slot's control is in, rebuilt now, is the one drawn (see the module doc).
-pub(crate) fn item_unchanged(drawn: &Drawn, slot: &SlotInfo, now: &[Item]) -> bool {
+/// The item a slot's control is in, rebuilt now, is the one drawn (see the module doc); `now`
+/// is wiped of what never goes on the wire first, as the drawn record was ([`model::scrub`]).
+pub(crate) fn item_unchanged(drawn: &Drawn, slot: &SlotInfo, now: &mut [Item]) -> bool {
+    model::scrub(now);
     drawn.items().get(slot.item) == now.get(slot.item)
 }
 

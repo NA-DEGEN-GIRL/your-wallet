@@ -10,8 +10,15 @@
 //!
 //! Frames (yw-json, UTF-8): the model (yw-engine `wire::model`), and
 //!
-//! - `{"t":"field","rev":R,"slot":S,"text":"…"}`: a plain edit of model `R` now shows `text`
-//!   (one frame per slot the field is drawn at; none when it is not drawn);
+//! - `{"t":"field","rev":R,"slot":S,"text":"…","seen":N}`: a plain edit of model `R` now shows
+//!   `text` (one frame per slot the field is drawn at; none when it is not drawn), unless Java has
+//!   sent more than `N` edits of that slot since it drew `R` (yw-engine `Wallet::edits_seen`: the
+//!   engine takes those after the write, so the edit already shows the engine's text). 2026-11-25
+//!   A2-6 review: after Java answers a render, the engine's text of every drawn plain edit that
+//!   differs from its model text comes as such a frame, and the field that had the focus as a
+//!   `reveal` (`Wallet::take_edit_sync`): Java draws the model's texts and keeps none of its own,
+//!   so what an edit shows is always the engine's form state, which a press reads; before, Java
+//!   kept the focused edit's typed text by a rule of its own, which could differ;
 //! - `{"t":"reveal","rev":R,"slot":S}`: scroll that control into view and focus it;
 //! - `{"t":"top"}`: the screen opens at its top (a screen entry; A2 keeps no scroll memory);
 //! - `{"t":"timer","id":"send_check","ms":N}`, `{"t":"stop_timer","id":"send_check"}`;
@@ -19,9 +26,18 @@
 //!   answered with the input `{"t":"copied","id":N,"ok":B}`. The shell keeps the copy's mark by
 //!   id; an id it does not know is dropped.
 //!
-//! No frame carries a secret (spec/15 §3.1): the model has none, a field write is a plain field's,
-//! a copy is `Effect::CopyText`'s non-secret text. Platform-neutral: the gate's Windows build
-//! tests it.
+//! No frame carries a secret (spec/15 §3.1): the model has none (a credential edit's text is never
+//! in it, and the `WalletConnect` pairing link, a plain field that carries the pairing `symKey`,
+//! is drawn like one, yw-engine `wire::field_on_wire`), a field write is a plain field's and never
+//! that link's, a copy is `Effect::CopyText`'s non-secret text. 2026-11-25 A2-6 review: before,
+//! the pairing link's text would have gone in the model and its field writes (no A2 screen draws
+//! it: no network, `walletconnect: None`).
+//!
+//! A full UI queue (`crate::io_request::IoBroker::post_ui`) that cannot make room drops every
+//! waiting frame; the poster then sends [`UiHost::resync`]: a fresh model (whose render answer
+//! hands back the edit texts), the one-shot timers still running, and a failed answer for every
+//! copy Java has not answered (its frame may be lost; a late answer is dropped). Platform-neutral:
+//! the gate's Windows build tests it.
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
@@ -29,7 +45,7 @@ use std::collections::BTreeMap;
 use yw_core::lang::Lang;
 use yw_engine::approval::flow::{ApprovalEffect, OpenOutcome};
 use yw_engine::cmd::{Cmd, CopyMark};
-use yw_engine::effect::{Effect, Folder, RevealTarget};
+use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 use yw_engine::errors::ErrorCode;
 use yw_engine::screen::facts::{PipeStatus, PlatformFlags, ScreenFacts};
 use yw_engine::screen::model::Act;
@@ -37,6 +53,8 @@ use yw_engine::secret::SecretEffect;
 use yw_engine::wallet::Wallet;
 use yw_engine::wire::{self, Input, InputOutcome, Life, WireError};
 use yw_json::{Number, Object, Value};
+
+use crate::io_request::UiKind;
 
 /// What the Android build offers (spec/15 §11.3, §9.3–§9.4, §8.5): no secret copy, no word paste,
 /// no `rpc.json`, no Chrome extension, no folders; the narrow-screen `seen_all` rule on.
@@ -109,6 +127,9 @@ pub struct UiHost {
     frames: Vec<Vec<u8>>,
     /// An answer was given since the screen was last drawn (see [`Self::drain`]).
     answered: bool,
+    /// The one-shot timers Java runs (started, not yet stopped or fired), with their period:
+    /// [`Self::resync`] sends them again.
+    timers: Vec<(TimerId, u64)>,
 }
 
 impl core::fmt::Debug for UiHost {
@@ -132,6 +153,7 @@ impl UiHost {
             last_copy: 0,
             frames: Vec::new(),
             answered: false,
+            timers: Vec::new(),
         }
     }
 
@@ -191,10 +213,52 @@ impl UiHost {
                 Ok((InputOutcome::Done, self.take_frames()))
             }
             other => {
+                if let Input::Timer(fired) = &other {
+                    self.timers.retain(|(timer, _)| timer != fired);
+                }
                 let outcome = self.wallet.on_input(other, &self.facts);
                 self.drain();
+                self.edit_sync();
                 Ok((outcome, self.take_frames()))
             }
+        }
+    }
+
+    /// The screen's state again, after the UI queue dropped every waiting frame (module doc):
+    /// a failed answer for every copy Java has not answered, a fresh model, and the one-shot
+    /// timers still running.
+    pub fn resync(&mut self) -> Vec<Vec<u8>> {
+        self.frames.clear();
+        for (_, mark) in core::mem::take(&mut self.copies) {
+            self.wallet.on_cmd(Cmd::CopyDone { ok: false, mark });
+            self.drain();
+        }
+        self.frames.clear();
+        let model = self.wallet.draw(&self.facts);
+        self.frames.push(model);
+        self.drain();
+        for (timer, ms) in self.timers.clone() {
+            self.frames.push(timer_frame(timer, ms));
+        }
+        self.take_frames()
+    }
+
+    /// After Java answered a render: the field writes and the focus the engine hands back
+    /// (`Wallet::take_edit_sync`, module doc).
+    fn edit_sync(&mut self) {
+        let Some(sync) = self.wallet.take_edit_sync() else {
+            return;
+        };
+        for (slot, shown) in &sync.fields {
+            let seen = self.wallet.edits_seen(*slot);
+            self.frames.push(field_frame(sync.rev, *slot, shown, seen));
+        }
+        if let Some(slot) = sync.focus {
+            self.frames.push(frame(vec![
+                ("t", text("reveal")),
+                ("rev", number(sync.rev)),
+                ("slot", number(u64::from(slot))),
+            ]));
         }
     }
 
@@ -253,15 +317,18 @@ impl UiHost {
             Effect::ScreenEntered { .. } | Effect::ScrollTop => {
                 frames.push(frame(vec![("t", text("top"))]));
             }
-            Effect::StartTimer { timer, ms } => frames.push(frame(vec![
-                ("t", text("timer")),
-                ("id", text(wire::timer_word(timer))),
-                ("ms", number(ms)),
-            ])),
-            Effect::StopTimer { timer } => frames.push(frame(vec![
-                ("t", text("stop_timer")),
-                ("id", text(wire::timer_word(timer))),
-            ])),
+            Effect::StartTimer { timer, ms } => {
+                self.timers.retain(|(running, _)| *running != timer);
+                self.timers.push((timer, ms));
+                frames.push(timer_frame(timer, ms));
+            }
+            Effect::StopTimer { timer } => {
+                self.timers.retain(|(running, _)| *running != timer);
+                frames.push(frame(vec![
+                    ("t", text("stop_timer")),
+                    ("id", text(wire::timer_word(timer))),
+                ]));
+            }
             Effect::CopyText { text: copied, mark } => {
                 self.last_copy = self.last_copy.saturating_add(1);
                 let id = self.last_copy;
@@ -312,19 +379,55 @@ impl UiHost {
         }
     }
 
+    /// The field writes of `act` (a plain field) in the drawn model; none for a field that never
+    /// goes on the wire (`wire::field_on_wire`).
     fn field_frames(&self, act: Act, shown: &str, frames: &mut Vec<Vec<u8>>) {
         let Some(drawn) = self.wallet.drawn() else {
             return;
         };
+        if matches!(act, Act::Field(field) if !wire::field_on_wire(field)) {
+            return;
+        }
         for slot in drawn.slots_of(act) {
-            frames.push(frame(vec![
-                ("t", text("field")),
-                ("rev", number(drawn.rev())),
-                ("slot", number(u64::from(slot))),
-                ("text", text(shown)),
-            ]));
+            frames.push(field_frame(
+                drawn.rev(),
+                slot,
+                shown,
+                self.wallet.edits_seen(slot),
+            ));
         }
     }
+}
+
+/// What a UI frame is to the queue (`crate::io_request::UiKind`): every frame this host makes
+/// starts with its `t` member, so the kind is read from that.
+#[must_use]
+pub fn ui_kind(frame: &[u8]) -> UiKind {
+    if frame.starts_with(br#"{"t":"model","#) {
+        UiKind::Model
+    } else if frame.starts_with(br#"{"t":"field","#) || frame.starts_with(br#"{"t":"reveal","#) {
+        UiKind::OfModel
+    } else {
+        UiKind::Other
+    }
+}
+
+fn field_frame(rev: u64, slot: u32, shown: &str, seen: u64) -> Vec<u8> {
+    frame(vec![
+        ("t", text("field")),
+        ("rev", number(rev)),
+        ("slot", number(u64::from(slot))),
+        ("text", text(shown)),
+        ("seen", number(seen)),
+    ])
+}
+
+fn timer_frame(timer: TimerId, ms: u64) -> Vec<u8> {
+    frame(vec![
+        ("t", text("timer")),
+        ("id", text(wire::timer_word(timer))),
+        ("ms", number(ms)),
+    ])
 }
 
 /// Whether the outcome is a lifetime event the shell acts on itself (A2-8: the screen-off and

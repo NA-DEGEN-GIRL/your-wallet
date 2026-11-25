@@ -16,6 +16,7 @@ import android.text.style.StyleSpan;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -38,18 +39,25 @@ import java.util.Map;
  *
  * <p>A credential edit ({@code "c":"cred"}) is drawn as an empty box that takes no input: credentials are typed only
  * on the app keyboard of the secret windows (spec/15 §9.2, A3/A7), never through the system keyboard. Plain edits use
- * the system keyboard with suggestions and autofill off.
+ * the system keyboard with suggestions, personalised learning and autofill off (2026-11-25 A2-6 review: the learning
+ * flag added; it is a request to the keyboard, not a guarantee, spec/15 §9.2).
  *
- * <p>The keep rule of a plain edit (yw-engine form::FormSync, the Windows rule): when the edit that had the focus is
- * drawn again at the same slot with the same limit and the model gives it the same text as before, what was typed
- * stays (and the focus); otherwise the model's text is shown.
+ * <p>What a plain edit shows is Rust's (2026-11-25 A2-6 review; yw-engine wire module doc): a model is drawn with its
+ * own texts and nothing typed is kept here; Rust answers the rendered input with a field frame for every edit whose
+ * text differs (the Windows keep rule, decided by the engine) and a reveal for the edit that keeps the focus. A field
+ * frame names how many edits of its slot Rust had taken since the render ({@code seen}); when more were sent since,
+ * the frame is older than what the edit shows and is not applied (Rust takes those edits after it). Before the
+ * review this class kept the focused edit's typed text by a rule of its own (same slot, limit and model text), which
+ * could differ from the engine's form state that a press reads. A check box or radio shows its drawn state until the
+ * next model: a click sends the press and puts the box back.
  */
 final class ScreenView {
     /** What a drawn control sends. */
     interface Sink {
         void press(long rev, long slot);
 
-        void edit(long rev, long slot, String text);
+        /** Sends a typed text; false when it could not be sent (too long for Rust to read). */
+        boolean edit(long rev, long slot, String text);
     }
 
     private static final int INK = 0xff1f2328;
@@ -63,22 +71,12 @@ final class ScreenView {
     private final Sink sink;
     private final float density;
     private long rev = -1;
-    /** Each drawn edit by slot, with the model text and limit it was drawn with. */
-    private final Map<Long, Drawn> edits = new HashMap<>();
+    /** Each drawn plain edit by slot. */
+    private final Map<Long, EditText> edits = new HashMap<>();
+    /** The edits sent per slot since the model was drawn (a field frame's {@code seen} is compared with it). */
+    private final Map<Long, Long> sent = new HashMap<>();
     private final Map<Long, View> controls = new HashMap<>();
     private boolean writing;
-
-    private static final class Drawn {
-        final EditText view;
-        final String modelText;
-        final long limit;
-
-        Drawn(EditText view, String modelText, long limit) {
-            this.view = view;
-            this.modelText = modelText;
-            this.limit = limit;
-        }
-    }
 
     ScreenView(Context context, LinearLayout root, Sink sink) {
         this.context = context;
@@ -93,23 +91,20 @@ final class ScreenView {
     }
 
     /**
-     * Draws {@code model} in place of the screen drawn before and returns the slot of the plain edit that had the focus
-     * before (-1: none), which the rendered answer names.
+     * Draws {@code model} in place of the screen drawn before, each edit with the model's text, and returns the slot of
+     * the plain edit that had the focus before (-1: none), which the rendered answer names. Rust answers with the texts
+     * and the focus (class doc).
      */
     long draw(Object model) {
         long focus = -1;
-        String typed = null;
-        Drawn focused = null;
-        for (Map.Entry<Long, Drawn> entry : edits.entrySet()) {
-            if (entry.getValue().view.hasFocus()) {
+        for (Map.Entry<Long, EditText> entry : edits.entrySet()) {
+            if (entry.getValue().hasFocus()) {
                 focus = entry.getKey();
-                focused = entry.getValue();
-                typed = focused.view.getText().toString();
             }
         }
         rev = Json.number(model, "rev", -1);
-        Map<Long, Drawn> before = new HashMap<>(edits);
         edits.clear();
+        sent.clear();
         controls.clear();
         root.removeAllViews();
         Deque<LinearLayout> cards = new ArrayDeque<>();
@@ -141,16 +136,6 @@ final class ScreenView {
                 }
             }
         }
-        // The keep rule (class doc).
-        if (focused != null) {
-            Drawn now = edits.get(focus);
-            if (now != null && now.limit == focused.limit && now.modelText.equals(focused.modelText)) {
-                write(now.view, typed);
-                now.view.requestFocus();
-                now.view.setSelection(now.view.length());
-            }
-        }
-        before.clear();
         return focus;
     }
 
@@ -166,15 +151,18 @@ final class ScreenView {
         }
         long slot = Json.number(frame, "slot", -1);
         if ("field".equals(kind)) {
-            Drawn drawn = edits.get(slot);
+            EditText edit = edits.get(slot);
             String text = Json.string(frame, "text");
-            if (drawn != null && text != null) {
-                write(drawn.view, text);
+            if (edit != null && text != null && UiWire.fieldApplies(frame, rev, sent.getOrDefault(slot, 0L))) {
+                write(edit, text);
             }
         } else if ("reveal".equals(kind)) {
             View view = controls.get(slot);
             if (view != null) {
                 view.requestFocus();
+                if (view instanceof EditText) {
+                    ((EditText) view).setSelection(((EditText) view).length());
+                }
                 scroll.requestChildFocus(view, view);
             }
         }
@@ -184,6 +172,9 @@ final class ScreenView {
         writing = true;
         try {
             view.setText(text);
+            if (view.hasFocus()) {
+                view.setSelection(view.length());
+            }
         } finally {
             writing = false;
         }
@@ -502,17 +493,26 @@ final class ScreenView {
             }
             case "check": {
                 CheckBox box = new CheckBox(context);
+                boolean drawn = Boolean.TRUE.equals(Json.bool(ctl, "checked"));
                 box.setText(Json.string(ctl, "text"));
-                box.setChecked(Boolean.TRUE.equals(Json.bool(ctl, "checked")));
-                box.setOnClickListener(clicked -> sink.press(drawnRev, slot));
+                box.setChecked(drawn);
+                // The click turned the box over; it shows the drawn state until Rust's next model (class doc).
+                box.setOnClickListener(clicked -> {
+                    box.setChecked(drawn);
+                    sink.press(drawnRev, slot);
+                });
                 view = box;
                 break;
             }
             case "radio": {
                 RadioButton radio = new RadioButton(context);
+                boolean drawn = Boolean.TRUE.equals(Json.bool(ctl, "checked"));
                 radio.setText(Json.string(ctl, "text"));
-                radio.setChecked(Boolean.TRUE.equals(Json.bool(ctl, "checked")));
-                radio.setOnClickListener(clicked -> sink.press(drawnRev, slot));
+                radio.setChecked(drawn);
+                radio.setOnClickListener(clicked -> {
+                    radio.setChecked(drawn);
+                    sink.press(drawnRev, slot);
+                });
                 view = radio;
                 break;
             }
@@ -525,6 +525,7 @@ final class ScreenView {
                     type |= InputType.TYPE_TEXT_VARIATION_PASSWORD;
                 }
                 edit.setInputType(type);
+                edit.setImeOptions(EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
                 edit.setSingleLine(true);
                 edit.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
                 if (limit > 0) {
@@ -544,13 +545,13 @@ final class ScreenView {
 
                         @Override
                         public void afterTextChanged(Editable text) {
-                            if (!writing) {
-                                sink.edit(drawnRev, slot, text.toString());
+                            if (!writing && drawnRev == rev && sink.edit(drawnRev, slot, text.toString())) {
+                                sent.put(slot, sent.getOrDefault(slot, 0L) + 1);
                             }
                         }
                     });
                 }
-                edits.put(slot, new Drawn(edit, modelText == null ? "" : modelText, limit));
+                edits.put(slot, edit);
                 view = edit;
                 break;
             }

@@ -19,7 +19,7 @@ use yw_engine::screen::model::{
     GLYPH_SAVE, GLYPH_UP, Item, Style, T_COPIED, T_COPIED_ADDRESS,
 };
 use yw_engine::wallet::{AppMode, Screen, Wallet};
-use yw_engine::wire::{Drawn, Input, InputOutcome, Life, decode_input};
+use yw_engine::wire::{Drawn, EditSync, Input, InputOutcome, Life, decode_input};
 use yw_json::{Limits, Value};
 
 // --- The model's round trip -------------------------------------------------------------------
@@ -712,6 +712,145 @@ fn edits_and_renders_resolve_their_fields() {
             &Facts
         ),
         InputOutcome::Stale
+    );
+}
+
+/// A check box's press over the wire carries the drawn state turned over (2026-11-25 A2-6
+/// review: before, no test failed when the press carried the drawn state itself), and the next
+/// model draws what the engine holds.
+#[test]
+fn a_check_box_press_turns_the_drawn_state_over() {
+    let mut wallet = book_form_wallet();
+    let _ = wallet.draw(&Facts);
+    let verified = Act::Press(Press::Book(BookPress::Verified(None)));
+    let checked = |wallet: &Wallet| {
+        let slot = slot_of(wallet, verified);
+        wallet
+            .drawn()
+            .and_then(|drawn| drawn.slot(slot))
+            .and_then(|info| info.checked)
+    };
+    assert_eq!(checked(&wallet), Some(false));
+    assert!(!wallet.book.form.verified);
+    let slot = slot_of(&wallet, verified);
+    assert_eq!(wallet.on_input(press(1, slot), &Facts), InputOutcome::Done);
+    assert!(wallet.book.form.verified, "drawn off, pressed: on");
+    let _ = take_all(&mut wallet);
+    let _ = wallet.draw(&Facts);
+    assert_eq!(checked(&wallet), Some(true));
+    let slot = slot_of(&wallet, verified);
+    assert_eq!(wallet.on_input(press(2, slot), &Facts), InputOutcome::Done);
+    assert!(!wallet.book.form.verified, "drawn on, pressed: off");
+}
+
+fn book_form_wallet() -> Wallet {
+    let mut wallet = first_run_wallet();
+    wallet.mode = AppMode::Unlocked {
+        alt_passphrase: false,
+    };
+    wallet.screen = Screen::AddressBook;
+    wallet.book.form.open = true;
+    wallet
+}
+
+fn rendered(wallet: &mut Wallet, rev: u64, focus: Option<(u64, u32)>) {
+    assert_eq!(
+        wallet.on_input(Input::Rendered { rev, focus }, &Facts),
+        InputOutcome::Done
+    );
+}
+
+fn sync_fields(sync: &EditSync) -> Vec<(u32, String)> {
+    sync.fields
+        .iter()
+        .map(|(slot, text)| (*slot, text.as_str().to_owned()))
+        .collect()
+}
+
+/// What a plain edit shows on the wire is the engine's (2026-11-25 A2-6 review): after a render's
+/// answer the engine hands back every drawn edit whose form text differs from its model text and
+/// the focused field's slot, once; the edits it took per slot since the answer are counted for
+/// the shell's field writes.
+#[test]
+fn the_engine_decides_what_the_edits_show() {
+    let mut wallet = book_form_wallet();
+    let _ = wallet.draw(&Facts);
+    // Nothing answered yet: nothing to hand back.
+    assert!(wallet.take_edit_sync().is_none());
+    rendered(&mut wallet, 1, None);
+    let sync = wallet.take_edit_sync().unwrap_or_else(|| panic!("no sync"));
+    assert_eq!((sync.rev, sync.focus), (1, None));
+    assert!(sync.fields.is_empty(), "{sync:?}");
+    assert!(wallet.take_edit_sync().is_none(), "handed back once");
+    let label = slot_of(&wallet, Act::Field(EditField::BookLabel));
+    let address = slot_of(&wallet, Act::Field(EditField::BookAddress));
+    assert_eq!(
+        wallet.on_input(edit(1, label, "typed"), &Facts),
+        InputOutcome::Done
+    );
+    assert_eq!(
+        wallet.on_input(edit(1, label, "typed2"), &Facts),
+        InputOutcome::Done
+    );
+    assert_eq!(
+        wallet.on_input(edit(1, address, "0xab"), &Facts),
+        InputOutcome::Done
+    );
+    assert_eq!(
+        (wallet.edits_seen(label), wallet.edits_seen(address)),
+        (2, 1)
+    );
+    // The drafts move away from what the edits show (as a handler's write could), the same
+    // controls are drawn again: the Windows rule keeps every edit's text (the keys are the
+    // same), while the model gives other texts. The shell draws the model's texts; the engine
+    // hands its own back, with the focused field.
+    "draft label".clone_into(&mut wallet.book.form.label);
+    "0xdraft".clone_into(&mut wallet.book.form.address);
+    let _ = wallet.draw(&Facts);
+    assert_eq!(wallet.edits_seen(label), 0, "a new model counts afresh");
+    rendered(&mut wallet, 2, Some((1, label)));
+    let sync = wallet.take_edit_sync().unwrap_or_else(|| panic!("no sync"));
+    assert_eq!(sync.rev, 2);
+    let mut fields = sync_fields(&sync);
+    fields.sort();
+    let mut expected = vec![(label, "typed2".to_owned()), (address, "0xab".to_owned())];
+    expected.sort();
+    assert_eq!(fields, expected);
+    assert_eq!(
+        sync.focus,
+        Some(slot_of(&wallet, Act::Field(EditField::BookLabel)))
+    );
+    assert_eq!(wallet.form.text(EditField::BookLabel), Some("typed2"));
+    assert!(!format!("{sync:?}").contains("typed"), "{sync:?}");
+    // A model drawn after the answer, or an answer of another model: nothing handed back.
+    rendered(&mut wallet, 2, None);
+    let _ = wallet.draw(&Facts);
+    assert!(wallet.take_edit_sync().is_none());
+    assert_eq!(
+        wallet.on_input(
+            Input::Rendered {
+                rev: 2,
+                focus: None
+            },
+            &Facts
+        ),
+        InputOutcome::Stale
+    );
+    assert!(wallet.take_edit_sync().is_none());
+    // The same model answered again (the Activity drew it once more): handed back again, and
+    // the count starts over.
+    rendered(&mut wallet, 3, None);
+    assert_eq!(
+        wallet.on_input(edit(3, label, "again"), &Facts),
+        InputOutcome::Done
+    );
+    assert_eq!(wallet.edits_seen(label), 1);
+    rendered(&mut wallet, 3, None);
+    assert_eq!(wallet.edits_seen(label), 0);
+    let sync = wallet.take_edit_sync().unwrap_or_else(|| panic!("no sync"));
+    assert!(
+        sync_fields(&sync).contains(&(label, "again".to_owned())),
+        "{sync:?}"
     );
 }
 

@@ -11,8 +11,8 @@ import java.util.Arrays;
  * word it draws comes in a frame.
  *
  * <p>Frames ({@code 0x02} then yw-json): the model {@code {"t":"model","rev":R,"items":[…]}} (yw-engine
- * wire::model), {@code field}, {@code reveal}, {@code top}, {@code timer}, {@code stop_timer} and {@code copy}
- * (yw-android ui_host). Inputs: {@code press}, {@code edit}, {@code rendered}, {@code life}, {@code tick},
+ * wire::model), {@code field} (with {@code seen}, 2026-11-25 A2-6 review: {@link #fieldApplies}), {@code reveal},
+ * {@code top}, {@code timer}, {@code stop_timer} and {@code copy} (yw-android ui_host). Inputs: {@code press}, {@code edit}, {@code rendered}, {@code life}, {@code tick},
  * {@code timer} and {@code copied} (yw-engine wire::decode_input).
  *
  * <p>Platform-neutral: tested by the JVM runner; Rust's tests pin the same bytes.
@@ -36,6 +36,16 @@ final class UiWire {
         }
         Object frame = Json.parse(Arrays.copyOfRange(bytes, 1, bytes.length));
         return Json.string(frame, "t") == null ? null : frame;
+    }
+
+    /**
+     * Whether a field frame applies to the model drawn now ({@code rev}) whose slot has had {@code sent} edits sent since
+     * it was drawn: the frame must be of that model and Rust must have taken exactly those edits ({@code seen}); with
+     * more sent since, the edit already shows a newer text than the frame's, which Rust takes after it (2026-11-25 A2-6
+     * review).
+     */
+    static boolean fieldApplies(Object frame, long rev, long sent) {
+        return Json.number(frame, "rev", -2) == rev && Json.number(frame, "seen", -1) == sent;
     }
 
     /** {@code {"t":"press","rev":R,"slot":S}}. */

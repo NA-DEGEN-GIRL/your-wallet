@@ -3,13 +3,15 @@
 //! rules are `crate::wire`'s module doc. Windows draws through [`Wallet::screen`] and its control
 //! ids, never through these.
 
+use yw_core::secret::Zeroizing;
+
 use crate::cmd::{Cmd, Press};
 use crate::effect::Effect;
 use crate::form::PressInput;
 use crate::screen::facts::ScreenFacts;
 use crate::screen::model::{Act, CtlKind};
 use crate::wallet::Wallet;
-use crate::wire::{self, Drawn, Input, InputOutcome};
+use crate::wire::{self, Drawn, EditSync, Input, InputOutcome};
 
 impl Wallet {
     /// Builds the current screen ([`Wallet::screen`], which also keeps the plan of the plain
@@ -22,7 +24,54 @@ impl Wallet {
         let drawn = Drawn::new(self.wire.rev, items);
         let bytes = drawn.encode(self.settings.language);
         self.wire.previous = self.wire.drawn.replace(drawn);
+        self.wire.seen.clear();
+        self.wire.sync = None;
         bytes
+    }
+
+    /// What the drawn model's plain edits must show, once after the shell answered its render
+    /// (`crate::wire` module doc, 2026-11-25 A2-6 review): every drawn plain edit whose text in the
+    /// form state differs from its model text, and the slot the field that had the focus is drawn
+    /// at now. `None` when no render was answered since, or a newer model is drawn or queued.
+    pub fn take_edit_sync(&mut self) -> Option<EditSync> {
+        let (rev, focus) = self.wire.sync.take()?;
+        let drawn = self.current_slot(rev)?;
+        let mut fields = Vec::new();
+        let mut focus_slot = None;
+        let mut slot = 0_u32;
+        wire::for_each_ctl(drawn.items(), &mut |_, ctl| {
+            let at = slot;
+            slot = slot.saturating_add(1);
+            let (Act::Field(field), CtlKind::Edit { .. }) = (ctl.act, ctl.kind) else {
+                return;
+            };
+            if !wire::field_on_wire(field) {
+                return;
+            }
+            let shown = self.form.text(field).unwrap_or("");
+            if shown != ctl.text {
+                fields.push((at, Zeroizing::new(shown.to_owned())));
+            }
+            if focus == Some(field)
+                && focus_slot.is_none()
+                && drawn.slot(at).is_some_and(wire::takes_edit)
+            {
+                focus_slot = Some(at);
+            }
+        });
+        Some(EditSync {
+            rev,
+            fields,
+            focus: focus_slot,
+        })
+    }
+
+    /// How many edits of `slot` of the drawn model the engine took since the shell answered its
+    /// render (`crate::wire` module doc): a field write carries it, and the shell applies the
+    /// write only when it sent no more edits of that slot since.
+    #[must_use]
+    pub fn edits_seen(&self, slot: u32) -> u64 {
+        self.wire.seen.get(&slot).copied().unwrap_or(0)
     }
 
     /// The model [`Self::draw`] handed out last (`None`: none yet). The shell finds the slots of
@@ -34,8 +83,10 @@ impl Wallet {
 
     /// One input from the shell, resolved against the model drawn last (`crate::wire` module
     /// doc): a press or an edit reaches the logic as the `Cmd` of the control drawn at its slot,
-    /// a render's answer as `Cmd::Rendered` with the focused field, a timer as `Cmd::Timer`, the lifetime events as `Cmd::MainHidden`. `facts` are the
-    /// shell's, for the rebuild that checks a pressed control's item.
+    /// a render's answer as `Cmd::Rendered` with the focused field (and the edit texts to hand
+    /// back, [`Self::take_edit_sync`]), a timer as `Cmd::Timer`, the lifetime events as
+    /// `Cmd::MainHidden`. `facts` are the shell's, for the rebuild that checks a pressed control's
+    /// item.
     pub fn on_input(&mut self, input: Input, facts: &dyn ScreenFacts) -> InputOutcome {
         match input {
             Input::Press { rev, slot } => self.wire_press(rev, slot, facts),
@@ -54,6 +105,8 @@ impl Wallet {
                 let Some(field) = field else {
                     return InputOutcome::Refused;
                 };
+                let seen = self.wire.seen.entry(slot).or_insert(0);
+                *seen = seen.saturating_add(1);
                 self.on_cmd(Cmd::Edit { field, text });
                 InputOutcome::Done
             }
@@ -80,6 +133,10 @@ impl Wallet {
                         Act::Field(field) => Some(field),
                         Act::Press(_) | Act::Cred(_) => None,
                     });
+                // The shell drew this model with its model texts and counts its edits from here
+                // (`crate::wire` module doc): so does the engine, and it hands the texts back.
+                self.wire.seen.clear();
+                self.wire.sync = Some((rev, focus));
                 self.on_cmd(Cmd::Rendered { focus });
                 InputOutcome::Done
             }
@@ -130,8 +187,8 @@ impl Wallet {
         };
         // Built from the state now, never recorded (`Wallet::screen` would replace the plan the
         // shell's next `Rendered` answers).
-        let now = crate::screen::build::Screen::new(self, facts).screen_model();
-        if !wire::item_unchanged(drawn, &info, &now) {
+        let mut now = crate::screen::build::Screen::new(self, facts).screen_model();
+        if !wire::item_unchanged(drawn, &info, &mut now) {
             self.refresh();
             return InputOutcome::Changed;
         }

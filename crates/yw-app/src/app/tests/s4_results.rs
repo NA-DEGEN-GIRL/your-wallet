@@ -4806,7 +4806,7 @@ fn wallet_chains_on_made_up_code() {
 /// §11.4 S5-10): `timer_tail`, the window timer's tail after its `Tick` (`ApprovalSignal::TimerTail`;
 /// was the shell's `Step::TimerTail` arm); `toggle_ai_panel` and `hold_shown_ai_for_ack` above
 /// are reached through `ApprovalSignal::AiExpand`/`AiPaint` since, no longer from the shell.
-static WALLET_FNS: [(&str, &str); 1004] = [
+static WALLET_FNS: [(&str, &str); 1006] = [
     ("W3", "key"),
     ("W3", "set_mode"),
     ("W3", "passphrase_unverified"),
@@ -5823,6 +5823,10 @@ static WALLET_FNS: [(&str, &str); 1004] = [
     ("A2-6", "on_input"),
     ("A2-6", "current_slot"),
     ("A2-6", "wire_press"),
+    // 2026-11-25 (A2-6 review): the edit texts the engine hands back after a render's answer
+    // and the edits it took per slot since (the shell keeps no text of its own).
+    ("A2-6", "take_edit_sync"),
+    ("A2-6", "edits_seen"),
 ];
 
 /// The `self.` field names `body` reads or writes: the first segment of each `self.` chain that

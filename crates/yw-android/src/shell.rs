@@ -38,7 +38,7 @@ use crate::kdf_gate::{self, Gate};
 use crate::log_file::LogFile;
 use crate::slot::AndroidSlot;
 use crate::storage::{DATA_FOLDER, DataPlatform, DataStore};
-use crate::ui_host::UiHost;
+use crate::ui_host::{self, UiHost};
 
 /// The process's platform I/O broker.
 pub(crate) static BROKER: IoBroker = IoBroker::new();
@@ -163,9 +163,8 @@ fn start_screen() {
         wallet.screen = yw_engine::wallet::Screen::FirstRun;
     }
     let mut host = UiHost::new(wallet);
-    for frame in host.start() {
-        BROKER.post_ui(&frame);
-    }
+    let frames = host.start();
+    post_frames(&mut host, frames);
     if let Ok(mut slot) = HOST.lock() {
         *slot = Some(host);
     }
@@ -182,16 +181,27 @@ pub(crate) fn ui_input(bytes: &[u8]) {
         return;
     };
     match host.on_wire_input(bytes) {
-        Ok((_outcome, frames)) => {
-            for frame in frames {
-                BROKER.post_ui(&frame);
-            }
-        }
+        Ok((_outcome, frames)) => post_frames(host, frames),
         Err(error) => logging::warn(
             "ui",
             "wire.refused",
             &[("why", Field::Word(wire_word(error)))],
         ),
+    }
+}
+
+/// Posts `frames` for `next`, in order. When the UI queue was full and could not make room it
+/// dropped every waiting frame (`IoBroker::post_ui`, 2026-11-25 A2-6 review): the rest of the
+/// batch is dropped too and the host's state is sent again (`UiHost::resync`), once.
+fn post_frames(host: &mut UiHost, frames: Vec<Vec<u8>>) {
+    for frame in frames {
+        if !BROKER.post_ui(ui_host::ui_kind(&frame), &frame) {
+            logging::warn("ui", "ui.resync", &[]);
+            for frame in host.resync() {
+                let _ = BROKER.post_ui(ui_host::ui_kind(&frame), &frame);
+            }
+            return;
+        }
     }
 }
 

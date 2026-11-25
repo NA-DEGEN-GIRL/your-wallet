@@ -29,6 +29,7 @@ public final class JvmTests {
         run("JSON is read strictly", JvmTests::jsonStrict);
         run("the pinned model frame is read as Rust writes it", JvmTests::modelFrame);
         run("screen inputs are the bytes Rust decodes", JvmTests::screenInputs);
+        run("a field frame applies only to the edits Rust has seen", JvmTests::fieldFrames);
         run("QR modules are read from their hex", JvmTests::qrModules);
         System.out.println("jvmTest: " + passed + " passed, " + failed + " failed");
         if (failed != 0 || passed == 0) {
@@ -302,6 +303,22 @@ public final class JvmTests {
         check(Json.number(edit, "s", -1) == 2 && Json.number(edit, "limit", -1) == 32, "edit");
         check(UiWire.frame(json) == null, "untagged");
         check(UiWire.frame(new byte[] {(byte) UiWire.FRAME_UI, '{'}) == null, "cut");
+    }
+
+    private static void fieldFrames() {
+        // 2026-11-25 A2-6 review: the shape yw-android ui_host writes (its test a_render_answer_hands_back_the_edit_texts).
+        byte[] json = utf8("{\"t\":\"field\",\"rev\":2,\"slot\":3,\"text\":\"written\",\"seen\":1}");
+        byte[] framed = new byte[json.length + 1];
+        framed[0] = (byte) UiWire.FRAME_UI;
+        System.arraycopy(json, 0, framed, 1, json.length);
+        Object frame = UiWire.frame(framed);
+        check("written".equals(Json.string(frame, "text")), "text");
+        check(UiWire.fieldApplies(frame, 2, 1), "applies");
+        check(!UiWire.fieldApplies(frame, 2, 2), "an edit sent since");
+        check(!UiWire.fieldApplies(frame, 2, 0), "seen more than sent");
+        check(!UiWire.fieldApplies(frame, 3, 1), "another model");
+        Object unseen = Json.parse(utf8("{\"t\":\"field\",\"rev\":2,\"slot\":3,\"text\":\"x\"}"));
+        check(!UiWire.fieldApplies(unseen, 2, 0), "no seen member");
     }
 
     private static void screenInputs() {

@@ -17,8 +17,13 @@
 //! 2026-11-25 A2-6: or `0x02` ‖ a UI frame (yw-json, UTF-8: the screen model and the effects Java
 //! applies, `crate::ui_host`), posted with [`IoBroker::post_ui`]. Java's I/O thread hands a UI
 //! frame to the main thread. An I/O request goes first (a Rust thread waits for it); at most
-//! [`UI_MAX`] UI frames wait, and a full queue drops its oldest (a later model replaces it). Platform-neutral (std only, no `unsafe`): the gate's
-//! Windows build tests it, and Java's `IoFrame` reads the same layout (`JvmTests`).
+//! [`UI_MAX`] UI frames wait. A full queue first drops what a later queued model makes useless
+//! (an older model, and the field writes and reveals of a model before it, [`UiKind`]); when that
+//! frees nothing, it drops every waiting UI frame and tells the poster, who sends the state again
+//! (`crate::ui_host::UiHost::resync`). 2026-11-25 A2-6 review: before, a full queue dropped its
+//! oldest frame of any kind, so a lost field write, timer or copy left the screen silently wrong.
+//! Platform-neutral (std only, no `unsafe`): the gate's Windows build tests it, and Java's
+//! `IoFrame` reads the same layout (`JvmTests`).
 #![forbid(unsafe_code)]
 
 use core::fmt;
@@ -40,6 +45,19 @@ pub const FRAME_HEADER: usize = 1 + 1 + 1 + 8;
 pub const ANSWER_MAX: usize = 256;
 /// The most requests waiting at once (more fail at once: nothing queues without bound).
 pub const QUEUE_MAX: usize = 16;
+
+/// What a UI frame is to the queue (2026-11-25 A2-6 review; module doc).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiKind {
+    /// A screen model: a later model replaces it.
+    Model,
+    /// A field write or a reveal: it names a slot of the model before it, so a later model makes
+    /// it useless too (Java drops a frame of another model).
+    OfModel,
+    /// Anything else (the scroll to the top, a timer, a copy): never dropped while room can be
+    /// made.
+    Other,
+}
 
 /// A platform service op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,8 +147,8 @@ enum Answer {
 struct State {
     last_id: u64,
     queue: VecDeque<Queued>,
-    /// UI frames for Java, tagged (2026-11-25 A2-6).
-    ui: VecDeque<Vec<u8>>,
+    /// UI frames for Java, tagged, with their kind (2026-11-25 A2-6).
+    ui: VecDeque<(UiKind, Vec<u8>)>,
     waiting: BTreeMap<u64, Answer>,
 }
 
@@ -240,7 +258,7 @@ impl IoBroker {
             if let Some(queued) = state.queue.pop_front() {
                 return Some(queued.frame);
             }
-            if let Some(frame) = state.ui.pop_front() {
+            if let Some((_, frame)) = state.ui.pop_front() {
                 return Some(Zeroizing::new(frame));
             }
             let left = deadline
@@ -250,20 +268,41 @@ impl IoBroker {
         }
     }
 
-    /// Queues one UI frame (`json`, tagged here with [`FRAME_UI`]) for Java's `next` (2026-11-25
-    /// A2-6). A full queue drops its oldest frame first. Nothing happens on a poisoned lock.
-    pub fn post_ui(&self, json: &[u8]) {
+    /// Queues one UI frame (`json` of `kind`, tagged here with [`FRAME_UI`]) for Java's `next`
+    /// (2026-11-25 A2-6). A full queue first drops what a later queued model makes useless; when
+    /// that frees nothing, every waiting UI frame is dropped, this one is not queued, and the
+    /// answer is `false`: the caller must send the screen's state again (module doc; 2026-11-25
+    /// A2-6 review). Nothing happens on a poisoned lock (`true`: the process is ending).
+    #[must_use]
+    pub fn post_ui(&self, kind: UiKind, json: &[u8]) -> bool {
         let Ok(mut state) = self.lock() else {
-            return;
+            return true;
         };
-        while state.ui.len() >= UI_MAX {
-            let _ = state.ui.pop_front();
+        if state.ui.len() >= UI_MAX {
+            // Keep the last model, everything after it, and every frame no model replaces.
+            if let Some(last) = state
+                .ui
+                .iter()
+                .rposition(|(kind, _)| *kind == UiKind::Model)
+            {
+                let mut at = 0_usize;
+                state.ui.retain(|(kind, _)| {
+                    let keep = at >= last || *kind == UiKind::Other;
+                    at = at.saturating_add(1);
+                    keep
+                });
+            }
+            if state.ui.len() >= UI_MAX {
+                state.ui.clear();
+                return false;
+            }
         }
         let mut frame = Vec::with_capacity(json.len().saturating_add(1));
         frame.push(FRAME_UI);
         frame.extend_from_slice(json);
-        state.ui.push_back(frame);
+        state.ui.push_back((kind, frame));
         self.queued.notify_one();
+        true
     }
 
     /// Java's `ioComplete`: the answer of `id`. Dropped (and `body` wiped) unless `id` is waiting
@@ -311,7 +350,7 @@ mod tests {
     use yw_core::secret::Zeroizing;
 
     use super::{
-        FRAME_IO, FRAME_UI, IoBroker, IoError, Op, QUEUE_MAX, UI_MAX, parse_frame, status,
+        FRAME_IO, FRAME_UI, IoBroker, IoError, Op, QUEUE_MAX, UI_MAX, UiKind, parse_frame, status,
     };
 
     const LONG: Duration = Duration::from_secs(5);
@@ -464,12 +503,11 @@ mod tests {
         assert!(broker.take(SHORT).is_none());
     }
 
-    /// 2026-11-25 A2-6: UI frames are tagged, come after a waiting I/O request, in order, and a
-    /// full queue drops its oldest.
+    /// 2026-11-25 A2-6: UI frames are tagged and come after a waiting I/O request, in order.
     #[test]
     fn ui_frames_follow_requests_in_order() {
         let broker = Arc::new(IoBroker::new());
-        broker.post_ui(b"{\"t\":\"top\"}");
+        assert!(broker.post_ui(UiKind::Other, b"{\"t\":\"top\"}"));
         let requester = std::thread::spawn({
             let broker = Arc::clone(&broker);
             move || broker.request(Op::Memory, 0, &[], LONG).is_ok()
@@ -485,10 +523,57 @@ mod tests {
         let (_, _, id, _) = parse_frame(&first).unwrap();
         assert!(broker.complete(id, status::OK, Zeroizing::new(Vec::new())));
         assert!(requester.join().unwrap());
-        for at in 0..UI_MAX + 2 {
-            broker.post_ui(at.to_string().as_bytes());
+    }
+
+    fn drain_ui(broker: &IoBroker) -> Vec<Vec<u8>> {
+        std::iter::from_fn(|| broker.take(Duration::ZERO))
+            .map(|frame| frame[1..].to_vec())
+            .collect()
+    }
+
+    /// 2026-11-25 A2-6 review: a full queue drops only what a later model replaces (older models
+    /// and their field writes and reveals), never a timer, copy or scroll frame.
+    #[test]
+    fn a_full_ui_queue_drops_only_replaced_frames() {
+        let broker = IoBroker::new();
+        assert!(broker.post_ui(UiKind::Other, b"timer"));
+        for at in 0..UI_MAX - 3 {
+            let kind = if at % 2 == 0 {
+                UiKind::Model
+            } else {
+                UiKind::OfModel
+            };
+            assert!(broker.post_ui(kind, format!("m{at}").as_bytes()));
         }
-        let oldest = broker.take(SHORT).unwrap();
-        assert_eq!(&oldest[..], [&[FRAME_UI][..], b"2"].concat());
+        assert!(broker.post_ui(UiKind::Other, b"copy"));
+        assert!(broker.post_ui(UiKind::OfModel, b"field"));
+        // Full: the next frame drops every model and write before the last model.
+        assert!(broker.post_ui(UiKind::Other, b"top"));
+        // The last model is `m{UI_MAX - 4}` (an even index): it and what follows it stay.
+        let last = UI_MAX - 4;
+        assert_eq!(
+            drain_ui(&broker),
+            [
+                b"timer".to_vec(),
+                format!("m{last}").into_bytes(),
+                b"copy".to_vec(),
+                b"field".to_vec(),
+                b"top".to_vec(),
+            ]
+        );
+    }
+
+    /// 2026-11-25 A2-6 review: when nothing can be dropped, every waiting frame goes and the
+    /// poster is told (it sends the state again); the queue takes frames again at once.
+    #[test]
+    fn a_full_ui_queue_with_nothing_replaced_asks_for_a_resync() {
+        let broker = IoBroker::new();
+        for at in 0..UI_MAX {
+            assert!(broker.post_ui(UiKind::Other, at.to_string().as_bytes()));
+        }
+        assert!(!broker.post_ui(UiKind::Model, b"late"));
+        assert!(broker.take(Duration::ZERO).is_none(), "all dropped");
+        assert!(broker.post_ui(UiKind::Model, b"fresh"));
+        assert_eq!(drain_ui(&broker), [b"fresh".to_vec()]);
     }
 }

@@ -184,6 +184,45 @@ fn a_control_takes_only_its_own_input() {
     assert_eq!(take(4), Some((false, false)));
 }
 
+/// The `WalletConnect` pairing link (it carries the pairing `symKey`, spec/15 §12.2) never goes on
+/// the wire (2026-11-25 A2-6 review): sent like a credential, with no text, wiped from the drawn
+/// record, taking no input; every other plain field's text goes.
+#[test]
+fn the_pairing_link_never_goes_on_the_wire() {
+    const LINK: &str = "wc:7f6e5d@2?relay-protocol=irn&symKey=00112233";
+    let items = vec![Item::Row(vec![
+        Ctl::edit(EditField::WcUri, LINK, 200, false, 2_048),
+        Ctl::edit(EditField::WcProject, "project", 200, false, 64),
+    ])];
+    for wire in [
+        String::from_utf8(encode_model(1, &items, yw_core::lang::Lang::En)).unwrap_or_default(),
+        String::from_utf8(Drawn::new(1, items.clone()).encode(yw_core::lang::Lang::En))
+            .unwrap_or_default(),
+    ] {
+        assert!(
+            !wire.contains("symKey") && !wire.contains("7f6e5d"),
+            "{wire}"
+        );
+        assert!(wire.contains(r#"{"s":0,"c":"cred","#), "{wire}");
+        assert!(wire.contains(r#""text":"project""#), "{wire}");
+    }
+    let drawn = Drawn::new(1, items.clone());
+    assert!(!format!("{:?}", drawn.items()).contains("symKey"));
+    assert_eq!(drawn.slot(0).map(takes_edit), Some(false));
+    assert_eq!(drawn.slot(1).map(takes_edit), Some(true));
+    // A rebuilt model is compared after the same wipe: the drawn item is the same item.
+    let mut now = items;
+    let info = drawn.slot(0).cloned().unwrap_or_else(|| panic!("slot 0"));
+    assert!(item_unchanged(&drawn, &info, &mut now));
+    assert!(!field_on_wire(EditField::WcUri));
+    assert!(
+        EditField::ALL
+            .into_iter()
+            .filter(|field| !field_on_wire(*field))
+            .eq([EditField::WcUri])
+    );
+}
+
 /// The pressed state of a check box is the drawn state turned over; `with_check(None)` is
 /// `without_check`.
 #[test]
