@@ -370,8 +370,9 @@ const fn wire_word(error: WireError) -> &'static str {
 
 /// Before an Argon2-bound vault call (module doc; spec/15 §5.3): the memory facts and the gate. A
 /// refusal is `VaultError::OutOfMemory` (spec/04 E-VLT-007) with one `kdf.refused` line. A call
-/// that runs Argon2 twice (the password change) is refused in A2 (`why=two_runs`): the margin and
-/// the purge were measured for one run only (spec/15 §5.3 "한 호출 안의 Argon2 둘").
+/// that runs Argon2 twice (the password change, a `.prev` recovery from `Locked`) is refused in A2
+/// (`why=two_runs`): the margin and the purge were measured for one run only (spec/15 §5.3 "한
+/// 호출 안의 Argon2 둘").
 fn argon2_gate(runs: KdfRuns) -> Result<(), VaultError> {
     if runs == KdfRuns::Two {
         logging::warn("kdf", "kdf.refused", &[("why", Field::Word("two_runs"))]);

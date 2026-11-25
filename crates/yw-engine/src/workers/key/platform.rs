@@ -62,12 +62,15 @@ pub trait WalletStore: VaultStorage {
 
 /// How many Argon2id derivations one vault call runs (2026-11-25 A2-8, spec/15 §5.3): most run
 /// one; a password change runs two in one call (the old password's check and the new KEK,
-/// yw-core `Session::change_password`, spec/02 §4.4).
+/// yw-core `Session::change_password`, spec/02 §4.4), and so does a `.prev` recovery from
+/// `Locked` (the main file first, then `.prev` with the same password, `Vault::recover_from_prev`;
+/// 2026-11-25 A2-8 review: before, only the password change was named).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KdfRuns {
-    /// One derivation (create, import, unlock, every password check).
+    /// One derivation (create, import, unlock, every password check, a `.prev` recovery from
+    /// `Corrupt`/`MainMissing`).
     One,
-    /// Two derivations in one call (the password change).
+    /// Two derivations in one call (the password change, a `.prev` recovery from `Locked`).
     Two,
 }
 

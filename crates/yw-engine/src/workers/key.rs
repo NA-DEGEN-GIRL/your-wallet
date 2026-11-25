@@ -98,6 +98,19 @@ pub fn sidecar_readable(kind: FileKind, plaintext: &[u8]) -> bool {
     }
 }
 
+/// The Argon2id derivations `Vault::recover_from_prev` runs from `status` (spec/15 §5.3 "한 호출
+/// 안의 Argon2 둘"): from `Locked` it opens the main file first and, when that fails, derives
+/// again for `vault.ywv.prev` in the same call, two; from `Corrupt`/`MainMissing` only `.prev`,
+/// one. Any other state is refused by the vault before a derivation (one asked, none run).
+/// (2026-11-25 A2-8 review: before, always one, so Android let the two-run case through its
+/// one-run memory gate with no purge between the two.)
+const fn recover_runs(status: Option<VaultStatus>) -> KdfRuns {
+    match status {
+        Some(VaultStatus::Locked) => KdfRuns::Two,
+        _ => KdfRuns::One,
+    }
+}
+
 fn ascii(bytes: &[u8]) -> Result<&str, KeyError> {
     core::str::from_utf8(bytes).map_err(|_| KeyError::MnemonicFormat)
 }
@@ -1236,6 +1249,11 @@ impl KeyWorker {
         self.platform.kdf_begin(runs)
     }
 
+    /// The derivations of the next `Vault::recover_from_prev` ([`recover_runs`]).
+    fn recover_runs(&self) -> KdfRuns {
+        recover_runs(self.vault.as_ref().map(Vault::status))
+    }
+
     fn is_alt(&self) -> bool {
         matches!(
             self.vault.as_ref().map(Vault::status),
@@ -1503,7 +1521,7 @@ impl KeyWorker {
         let result = (|| {
             let password = password(bytes).map_err(|_| VaultError::UnlockFailed)?;
             let slot = self.platform.new_slot()?;
-            let _kdf = self.kdf(KdfRuns::One)?;
+            let _kdf = self.kdf(self.recover_runs())?;
             self.vault()?.recover_from_prev(&password, slot, now)
         })();
         let mut out = Vec::with_capacity(2);
@@ -4173,7 +4191,8 @@ pub(crate) mod tests {
     /// 2026-11-25 A2-8 (spec/15 §5.3): every Argon2-bound job asks the platform first; a refusal
     /// is the job's own error (`OutOfMemory`, E-VLT-007) and the vault call is not made (the vault
     /// stays as it was), a granted leave is dropped right after the call, and a password change
-    /// asks for two derivations. The default platform (Windows) grants every leave.
+    /// and a `.prev` recovery from `Locked` ask for two derivations (the latter since the
+    /// 2026-11-25 A2-8 review). The default platform (Windows) grants every leave.
     #[test]
     fn argon2_calls_take_the_platform_leave() {
         use std::sync::atomic::Ordering;
@@ -4238,9 +4257,23 @@ pub(crate) mod tests {
                 .first(),
             Some(KeyOutcome::PasswordChanged(Err(VaultError::OutOfMemory)))
         ));
+        // 2026-11-25 A2-8 review: a `.prev` recovery from `Locked` tries the main file and then
+        // `.prev`, two derivations in one call, so it asks for two (Android refuses it in A2).
+        assert!(matches!(
+            worker
+                .handle(KeyJob::RecoverFromPrev {
+                    password: bytes(LOCK_SAVE_PASSWORD),
+                })
+                .first(),
+            Some(KeyOutcome::Status(Err(VaultError::OutOfMemory)))
+        ));
+        assert!(matches!(
+            worker.vault.as_ref().map(yw_core::vault::Vault::status),
+            Some(VaultStatus::Locked)
+        ));
         assert_eq!(
             *asked.lock().unwrap(),
-            [KdfRuns::One, KdfRuns::One, KdfRuns::Two]
+            [KdfRuns::One, KdfRuns::One, KdfRuns::Two, KdfRuns::Two]
         );
         assert_eq!(LEAVES_DONE.load(Ordering::SeqCst), done_before + 1);
         // Granted again: the unlock runs and its leave is dropped after it.
@@ -4261,93 +4294,233 @@ pub(crate) mod tests {
         assert_eq!(LEAVES_DONE.load(Ordering::SeqCst), done_before + 2);
     }
 
-    /// 2026-11-25 A2-8 (spec/15 §5.3), source check: every vault call of this worker that derives
-    /// the KEK with Argon2id (the yw-core fns that call `derive_kek`: `unwrap_dek`,
-    /// `seal_create_with`, `verify_password`) holds the platform's leave, taken in the same fn
-    /// within the lines before it (`self.kdf(KdfRuns::…)`), so Android's memory check and purge
-    /// cannot be skipped by a new job.
+    /// 2026-11-25 A2-8 review (spec/15 §5.3): a `.prev` recovery asks for two derivations from
+    /// `Locked` (the main file first, then `.prev`) and for one from `Corrupt`/`MainMissing`.
     #[test]
-    fn every_argon2_call_holds_the_platform_leave() {
-        const ARGON2: [&str; 18] = [
-            "create_wallet",
-            "import_mnemonic",
-            "create_with_key",
-            "create_with_hardware",
-            "unlock",
-            "recover_from_prev",
-            "change_password",
-            "remove_imported_key",
-            "remove_evm_raw_key",
-            "remove_hardware_key",
-            "reveal_mnemonic",
-            "reveal_evm_private_key",
-            "reveal_imported_key",
-            "reveal_evm_shared_wif",
-            "generate_mnemonic",
-            "remove_mnemonic",
-            "reveal_mnemonic_of",
-            "add_mnemonic",
-        ];
-        const WINDOW: usize = 25;
-        let sources = [
-            ("key.rs", include_str!("key.rs")),
-            ("key/mnemonics.rs", include_str!("key/mnemonics.rs")),
-            ("key/yubikey.rs", include_str!("key/yubikey.rs")),
+    fn recover_runs_follow_the_vault_state() {
+        use super::KdfRuns;
+        use yw_core::vault::VaultStatus;
+
+        // The vault refuses other states before a derivation.
+        for (status, runs) in [
+            (Some(VaultStatus::Locked), KdfRuns::Two),
             (
-                "key/yubikey/connect.rs",
-                include_str!("key/yubikey/connect.rs"),
+                Some(VaultStatus::Corrupt {
+                    prev_available: true,
+                }),
+                KdfRuns::One,
             ),
-            (
-                "key/yubikey/manage.rs",
-                include_str!("key/yubikey/manage.rs"),
-            ),
-        ];
+            (Some(VaultStatus::MainMissing), KdfRuns::One),
+            (Some(VaultStatus::NoVault), KdfRuns::One),
+            (None, KdfRuns::One),
+        ] {
+            assert_eq!(super::recover_runs(status), runs, "{status:?}");
+        }
+    }
+
+    /// The vault calls that derive the KEK with Argon2id (the yw-core fns that call `derive_kek`:
+    /// `unwrap_dek`, `seal_create_with`, `verify_password`) and the argument of the leave each
+    /// must hold, `self.kdf(<it>)`: the runs it asks for (spec/15 §5.3). A `.prev` recovery's
+    /// runs follow the vault's state (`recover_runs`; 2026-11-25 A2-8 review).
+    const ARGON2: [(&str, &str); 18] = [
+        ("create_wallet", "KdfRuns::One"),
+        ("import_mnemonic", "KdfRuns::One"),
+        ("create_with_key", "KdfRuns::One"),
+        ("create_with_hardware", "KdfRuns::One"),
+        ("unlock", "KdfRuns::One"),
+        ("recover_from_prev", "self.recover_runs()"),
+        ("change_password", "KdfRuns::Two"),
+        ("remove_imported_key", "KdfRuns::One"),
+        ("remove_evm_raw_key", "KdfRuns::One"),
+        ("remove_hardware_key", "KdfRuns::One"),
+        ("reveal_mnemonic", "KdfRuns::One"),
+        ("reveal_evm_private_key", "KdfRuns::One"),
+        ("reveal_imported_key", "KdfRuns::One"),
+        ("reveal_evm_shared_wif", "KdfRuns::One"),
+        ("generate_mnemonic", "KdfRuns::One"),
+        ("remove_mnemonic", "KdfRuns::One"),
+        ("reveal_mnemonic_of", "KdfRuns::One"),
+        ("add_mnemonic", "KdfRuns::One"),
+    ];
+
+    /// The worker's sources the scan reads.
+    const KEY_SOURCES: [(&str, &str); 5] = [
+        ("key.rs", include_str!("key.rs")),
+        ("key/mnemonics.rs", include_str!("key/mnemonics.rs")),
+        ("key/yubikey.rs", include_str!("key/yubikey.rs")),
+        (
+            "key/yubikey/connect.rs",
+            include_str!("key/yubikey/connect.rs"),
+        ),
+        (
+            "key/yubikey/manage.rs",
+            include_str!("key/yubikey/manage.rs"),
+        ),
+    ];
+
+    fn is_fn_line(line: &str) -> bool {
+        let mut rest = line.trim_start();
+        for prefix in ["pub(crate) ", "pub(super) ", "pub ", "const ", "unsafe "] {
+            rest = rest.strip_prefix(prefix).unwrap_or(rest);
+        }
+        rest.starts_with("fn ")
+    }
+
+    /// Moves `depth` back over the braces of `text`, read from its end: a `}` enters a block
+    /// that closed before the call, a `{` leaves one (or, at 0, steps out to an enclosing block).
+    fn braces_back(text: &str, depth: &mut usize) {
+        for unit in text.chars().rev() {
+            match unit {
+                '}' => *depth += 1,
+                '{' => *depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+
+    /// The scan of [`every_argon2_call_holds_the_platform_leave`] over one source (up to its
+    /// `#[cfg(test)] mod tests`): the number of vault Argon2 calls and a line for each that holds
+    /// no leave of its row's runs. From the call back to the start of its fn it tracks the braces,
+    /// so only a leave in a block that encloses the call counts (one in a block that already
+    /// closed, such as another match arm or closure, does not), the first `self.kdf(` met in an
+    /// enclosing block must be a binding (`let kdf`/`let _kdf`) with the row's argument, and a
+    /// `drop(kdf)` between it and the call ends it (2026-11-25 A2-8 review: before, any
+    /// `self.kdf(KdfRuns::` up to 25 lines back counted, across match arms, and the runs were not
+    /// checked).
+    fn unheld_argon2_calls(name: &str, source: &str) -> (usize, Vec<String>) {
+        let lines: Vec<&str> = source.lines().collect();
+        let end = lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].contains("mod tests"))
+            .unwrap_or(lines.len());
         let mut calls = 0;
-        for (name, source) in sources {
-            let lines: Vec<&str> = source.lines().collect();
-            let end = lines
-                .windows(2)
-                .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].contains("mod tests"))
-                .unwrap_or(lines.len());
-            for (at, line) in lines.iter().enumerate().take(end) {
-                for function in ARGON2 {
-                    let needle = format!(".{function}(");
-                    let Some(found) = line.find(&needle) else {
-                        continue;
-                    };
-                    // Only a vault's: on `vault`, on `self.vault()?` (or a line that continues
-                    // one). A worker method of the same name (`self.remove_mnemonic(…)`) or another
-                    // type's (`document.mnemonic_accounts.remove_mnemonic(…)`) is no vault call.
-                    let receiver: String = line[..found]
-                        .chars()
-                        .rev()
-                        .take_while(|unit| unit.is_ascii_alphanumeric() || *unit == '_')
-                        .collect();
-                    if (!receiver.is_empty() && receiver != "tluav")
-                        || line.trim_start().starts_with("//")
-                    {
+        let mut bad = Vec::new();
+        for (at, line) in lines.iter().enumerate().take(end) {
+            for (function, runs) in ARGON2 {
+                let needle = format!(".{function}(");
+                let Some(found) = line.find(&needle) else {
+                    continue;
+                };
+                // Only a vault's: on `vault`, on `self.vault()?` (or a line that continues one).
+                // A worker method of the same name (`self.remove_mnemonic(…)`) or another type's
+                // (`document.mnemonic_accounts.remove_mnemonic(…)`) is no vault call.
+                let receiver: String = line[..found]
+                    .chars()
+                    .rev()
+                    .take_while(|unit| unit.is_ascii_alphanumeric() || *unit == '_')
+                    .collect();
+                if (!receiver.is_empty() && receiver != "tluav")
+                    || line.trim_start().starts_with("//")
+                {
+                    continue;
+                }
+                calls += 1;
+                let leave = format!("kdf = self.kdf({runs})");
+                // How many blocks deeper than an enclosing one the scan is (0: a block that
+                // encloses the call).
+                let mut depth = 0_usize;
+                let mut dropped = false;
+                let mut verdict = Err("no leave in its fn");
+                braces_back(&line[..found], &mut depth);
+                for before in lines[..at].iter().rev() {
+                    let text = before.trim_start();
+                    if text.starts_with("//") {
                         continue;
                     }
-                    calls += 1;
-                    let from = at.saturating_sub(WINDOW);
-                    let mut held = false;
-                    for before in lines[from..at].iter().rev() {
-                        if before.contains("self.kdf(KdfRuns::") {
-                            held = true;
-                            break;
+                    if depth == 0 {
+                        if text.contains("drop(kdf)") || text.contains("drop(_kdf)") {
+                            dropped = true;
                         }
-                        if before.trim_start().starts_with("fn ")
-                            || before.trim_start().starts_with("pub fn ")
-                            || before.trim_start().starts_with("pub(super) fn ")
-                            || before.trim_start().starts_with("pub(crate) fn ")
-                        {
+                        if text.contains("self.kdf(") {
+                            verdict = if !text.starts_with("let ") || !text.contains(&leave) {
+                                Err("a leave of other runs")
+                            } else if dropped {
+                                Err("its leave dropped before it")
+                            } else {
+                                Ok(())
+                            };
                             break;
                         }
                     }
-                    assert!(held, "{name}:{}: `{function}` without the leave", at + 1);
+                    if is_fn_line(before) {
+                        break;
+                    }
+                    braces_back(before, &mut depth);
+                }
+                if let Err(why) = verdict {
+                    bad.push(format!("{name}:{}: `{function}`: {why}", at + 1));
                 }
             }
         }
+        (calls, bad)
+    }
+
+    /// 2026-11-25 A2-8 (spec/15 §5.3), source check: every vault call of this worker that derives
+    /// the KEK with Argon2id holds the platform's leave of the runs it makes (`ARGON2`), taken in
+    /// a block that encloses the call within the same fn (`let kdf = self.kdf(…)?`, not dropped
+    /// before it), so Android's memory check and purge cannot be skipped by a new job or asked
+    /// for too few runs. 2026-11-25 A2-8 review: the scan follows the braces (before, it looked up
+    /// to 25 lines back, so another match arm's leave counted) and checks the runs; the mutations
+    /// below are its negative self-tests.
+    #[test]
+    fn every_argon2_call_holds_the_platform_leave() {
+        let mut calls = 0;
+        for (name, source) in KEY_SOURCES {
+            let (found, bad) = unheld_argon2_calls(name, source);
+            calls += found;
+            assert!(bad.is_empty(), "{bad:#?}");
+        }
         assert!(calls >= 18, "the scan found the calls ({calls})");
+
+        // Negative self-tests on mutated copies of key.rs's code (not this test's own text).
+        let source = KEY_SOURCES[0].1;
+        let source = &source[..source.find("#[cfg(test)]\npub(crate) mod tests").unwrap()];
+        let lines: Vec<&str> = source.lines().collect();
+        // (1) The `RemoveRawKey` arm without its leave: the `ChangePassword` arm's leave above it
+        // is in a closed block and does not count.
+        let call = lines
+            .iter()
+            .position(|line| line.contains("self.vault()?.remove_evm_raw_key("))
+            .unwrap();
+        assert!(lines[call - 1].contains("let _kdf = self.kdf(KdfRuns::One)?;"));
+        let mut cut = lines.clone();
+        cut.remove(call - 1);
+        let (_, bad) = unheld_argon2_calls("key.rs", &cut.join("\n"));
+        assert_eq!(bad.len(), 1, "{bad:#?}");
+        assert!(
+            bad[0].contains("`remove_evm_raw_key`: no leave"),
+            "{bad:#?}"
+        );
+        // (2) The password change asking for one run.
+        assert_eq!(source.matches("self.kdf(KdfRuns::Two)").count(), 1);
+        let one = source.replacen("self.kdf(KdfRuns::Two)", "self.kdf(KdfRuns::One)", 1);
+        let (_, bad) = unheld_argon2_calls("key.rs", &one);
+        assert_eq!(bad.len(), 1, "{bad:#?}");
+        assert!(
+            bad[0].contains("`change_password`: a leave of other runs"),
+            "{bad:#?}"
+        );
+        // (3) A `.prev` recovery asking for one run whatever the vault's state.
+        assert_eq!(source.matches("self.kdf(self.recover_runs())").count(), 1);
+        let one = source.replacen("self.kdf(self.recover_runs())", "self.kdf(KdfRuns::One)", 1);
+        let (_, bad) = unheld_argon2_calls("key.rs", &one);
+        assert_eq!(bad.len(), 1, "{bad:#?}");
+        assert!(
+            bad[0].contains("`recover_from_prev`: a leave of other runs"),
+            "{bad:#?}"
+        );
+        // (4) The leave dropped before the call (`create`).
+        let early = source.replacen(
+            "let vault = self.vault()?;\n        let phrase = vault.create_wallet(",
+            "drop(kdf);\n        let vault = self.vault()?;\n        let phrase = vault.create_wallet(",
+            1,
+        );
+        assert_ne!(early, source);
+        let (_, bad) = unheld_argon2_calls("key.rs", &early);
+        assert!(
+            bad.iter()
+                .any(|line| line.contains("`create_wallet`: its leave dropped before it")),
+            "{bad:#?}"
+        );
     }
 }
