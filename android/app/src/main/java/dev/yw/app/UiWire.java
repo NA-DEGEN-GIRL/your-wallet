@@ -15,6 +15,9 @@ import java.util.Arrays;
  * {@code top}, {@code timer}, {@code stop_timer} and {@code copy} (yw-android ui_host). Inputs: {@code press}, {@code edit}, {@code rendered}, {@code life}, {@code tick},
  * {@code timer} and {@code copied} (yw-engine wire::decode_input).
  *
+ * <p>2026-11-25 A2-8: the shell's frames {@code events}, {@code wake} and {@code shown} and its inputs {@code events} and
+ * {@code wake} (yw-android ui_host; spec/15 §5.4).
+ *
  * <p>Platform-neutral: tested by the JVM runner; Rust's tests pin the same bytes.
  */
 final class UiWire {
@@ -81,6 +84,16 @@ final class UiWire {
     /** {@code {"t":"timer","id":"…"}}. */
     static byte[] timer(String id) {
         return utf8("{\"t\":\"timer\",\"id\":" + Json.quote(id) + "}");
+    }
+
+    /** {@code {"t":"events"}}: the answer to the workers' doorbell frame (2026-11-25 A2-8; yw-android ui_host). */
+    static byte[] events() {
+        return utf8("{\"t\":\"events\"}");
+    }
+
+    /** {@code {"t":"wake"}}: the background wake fired (2026-11-25 A2-8; yw-android ui_host). */
+    static byte[] wake() {
+        return utf8("{\"t\":\"wake\"}");
     }
 
     /** {@code {"t":"copied","id":N,"ok":B}}. */

@@ -43,6 +43,26 @@
 //! review: first the secret windows' `s_keep` (`crate::secret_host::SecretHost::resync`), so a
 //! secret window whose `s_close` was dropped closes. Platform-neutral:
 //! the gate's Windows build tests it.
+//!
+//! 2026-11-25 A2-8 (spec/15 §5.4, §18 42 N17): the workers' events and the locks.
+//!
+//! - The key worker's (and the RPC worker's) results wait in the wallet's event queue; its
+//!   doorbell (`crate::shell`) posts the frame `{"t":"events"}`, Java answers with the input
+//!   [`EVENTS_INPUT`], and the shell hands each event to the wallet (`Wallet::worker_event`), each
+//!   an entry with its drain, as Windows does on `WM_YW_EVENTS`. The main timer's tick drains
+//!   them first too (Windows: first thing in the main timer).
+//! - The lock is the shell's composition of the wallet's halves, `lock_steps` then
+//!   `lock_after_wait` (Windows `App::lock`; never `Suspend`, so no wait between them).
+//! - `life screen_off` (`ACTION_SCREEN_OFF`) locks at once (`LockReason::ScreenOff`), whatever
+//!   the mode, as Windows locks on a session lock.
+//! - `life back` starts the time away (`crate::away::Away`) and asks Java for the one-shot wake
+//!   `{"t":"wake","ms":N}`, answered with [`WAKE_INPUT`] when it fires; a due wake locks
+//!   (`LockReason::Background`), an early one asks again.
+//! - `life front` checks the time away first and locks when it is due, and only then hands the
+//!   event to the wallet; the frames end with a fresh model and `{"t":"shown","n":N}` (`N`: the
+//!   `front` events handled). Java keeps the screen hidden from `back` until the `shown` of its own
+//!   `front`, so nothing the app showed before it left is drawn before the check (spec/15 §5.4
+//!   "그리기 전에 먼저 경과를 검사").
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
@@ -53,15 +73,18 @@ use yw_engine::approval::flow::{ApprovalEffect, OpenOutcome};
 use yw_engine::cmd::{Cmd, CopyMark};
 use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 use yw_engine::errors::ErrorCode;
+use yw_engine::logging;
 use yw_engine::protection::Surface;
 use yw_engine::screen::facts::{PipeStatus, PlatformFlags, ScreenFacts};
 use yw_engine::screen::model::Act;
 use yw_engine::secret::SecretEffect;
 use yw_engine::wallet::Wallet;
+use yw_engine::wallet::lock::LockReason;
 use yw_engine::wallet::secret_session::SecretAction;
 use yw_engine::wire::{self, Input, InputOutcome, Life, WireError};
 use yw_json::{Number, Object, Value};
 
+use crate::away::{Away, BACKGROUND_LOCK_MS};
 use crate::io_request::UiKind;
 use crate::secret_host::{Reply, SecretHost, Shape};
 use crate::{device, secret_keys, secret_wire};
@@ -79,6 +102,20 @@ pub const ANDROID_FLAGS: PlatformFlags = PlatformFlags {
 
 /// The most copies waiting for their answer (older ones are forgotten: their answer is dropped).
 const COPIES_MAX: usize = 16;
+
+/// Java's answer to the frame `{"t":"events"}`: drain the workers' events (2026-11-25 A2-8).
+pub const EVENTS_INPUT: &[u8] = br#"{"t":"events"}"#;
+
+/// Java's answer to the frame `{"t":"wake","ms":N}` when it fires (2026-11-25 A2-8).
+pub const WAKE_INPUT: &[u8] = br#"{"t":"wake"}"#;
+
+/// The doorbell frame of the workers' events (2026-11-25 A2-8).
+pub const EVENTS_FRAME: &[u8] = br#"{"t":"events"}"#;
+
+/// How often the main timer's tick writes the log's buffered `info` lines (Windows: the main
+/// timer's `LOG_FLUSH_MS`; `warn` and above are written at once). 2026-11-25 A2-8: before, no
+/// Android code flushed, so `info` lines stayed in the buffer until a `warn` line came.
+pub const LOG_FLUSH_MS: u64 = 2_000;
 
 /// The shell facts the screens ask while they are built: answered from values held here, never
 /// by calling Java (spec/15 §3.2, §11.3).
@@ -150,6 +187,12 @@ pub struct UiHost {
     /// The one-shot timers Java runs (started, not yet stopped or fired), with their period:
     /// [`Self::resync`] sends them again.
     timers: Vec<(TimerId, u64)>,
+    /// The time away for the background lock (2026-11-25 A2-8).
+    away: Away,
+    /// The background time before the lock (2026-11-25 A2-8; [`BACKGROUND_LOCK_MS`]).
+    background_ms: u64,
+    /// When the log's buffered lines were last written (2026-11-25 A2-8, [`LOG_FLUSH_MS`]).
+    last_flush_ms: u64,
 }
 
 impl core::fmt::Debug for UiHost {
@@ -175,7 +218,17 @@ impl UiHost {
             frames: Vec::new(),
             answered: false,
             timers: Vec::new(),
+            away: Away::NEW,
+            background_ms: BACKGROUND_LOCK_MS,
+            last_flush_ms: 0,
         }
+    }
+
+    /// The same host with another background time (tests; spec/15 §5.4 allows 0–10 minutes).
+    #[must_use]
+    pub const fn with_background_ms(mut self, ms: u64) -> Self {
+        self.background_ms = ms;
+        self
     }
 
     /// The wallet.
@@ -214,9 +267,25 @@ impl UiHost {
         &mut self,
         bytes: &[u8],
     ) -> Result<(InputOutcome, Vec<Vec<u8>>), WireError> {
+        // 2026-11-25 A2-8: the shell's own inputs, matched byte for byte: the workers' doorbell
+        // and the background wake.
+        if bytes == EVENTS_INPUT {
+            self.events();
+            return Ok((InputOutcome::Done, self.take_frames()));
+        }
+        if bytes == WAKE_INPUT {
+            self.wake();
+            return Ok((InputOutcome::Done, self.take_frames()));
+        }
         // 2026-11-25 A2-7: a secret window's input (`s_…`, which no engine input begins with).
         if secret_wire::is_secret_input(bytes) {
             let input = secret_wire::decode(bytes).ok_or(WireError::Shape)?;
+            // 2026-11-25 A2-8: the user's own input restarts the idle clock (`Cmd::Input`, as
+            // Windows' `note_input` for every key or button of an app window); a window's ready or
+            // gone is no input.
+            if secret_wire::is_user_input(&input) {
+                self.user_input();
+            }
             let now_ms = self.wallet.clock.now_ms();
             let wall_ms = self.wallet.clock.now_unix_ms();
             let mut frames = Vec::new();
@@ -245,6 +314,9 @@ impl UiHost {
                 Ok((InputOutcome::Done, self.take_frames()))
             }
             Input::Tick => {
+                // 2026-11-25 A2-8: the workers' events first (Windows: first thing in the main
+                // timer).
+                self.events();
                 let now_ms = self.wallet.clock.now_ms();
                 for part in wire::TICK_PARTS {
                     self.wallet.on_cmd(Cmd::Tick { now_ms, part });
@@ -258,11 +330,20 @@ impl UiHost {
                     .tick(&mut self.wallet, now_ms, &mut frames, &mut reply);
                 self.frames.extend(frames);
                 self.answer(reply);
+                if now_ms.saturating_sub(self.last_flush_ms) >= LOG_FLUSH_MS {
+                    self.last_flush_ms = now_ms;
+                    logging::flush();
+                }
                 Ok((InputOutcome::Done, self.take_frames()))
             }
+            Input::Life(life) => Ok((self.life(life), self.take_frames())),
             other => {
                 if let Input::Timer(fired) = &other {
                     self.timers.retain(|(timer, _)| timer != fired);
+                }
+                // 2026-11-25 A2-8: a press or a typed text is the user's input (the idle clock).
+                if matches!(other, Input::Press { .. } | Input::Edit { .. }) {
+                    self.user_input();
                 }
                 let outcome = self.wallet.on_input(other, &self.facts);
                 self.drain();
@@ -278,6 +359,8 @@ impl UiHost {
         let Some(event) = secret_keys::decode_key(field, code_unit) else {
             return Vec::new();
         };
+        // 2026-11-25 A2-8: a key of the app keyboard is the user's input (the idle clock).
+        self.user_input();
         let now_ms = self.wallet.clock.now_ms();
         let mut frames = Vec::new();
         let mut reply = Reply::default();
@@ -298,6 +381,101 @@ impl UiHost {
     #[must_use]
     pub const fn secret(&self) -> &SecretHost {
         &self.secret
+    }
+
+    /// One of the start's findings (2026-11-25 A2-8; Windows `App::platform_note`): the refused
+    /// `settings.json` values, whether `apikeys.ks` was readable. An entry with its drain.
+    pub fn start_finding(&mut self, note: yw_engine::cmd::PlatformNote) {
+        self.wallet.on_cmd(Cmd::Platform(note));
+        self.drain();
+    }
+
+    /// The time away (tests).
+    #[must_use]
+    pub const fn away(&self) -> &Away {
+        &self.away
+    }
+
+    /// The user's own input (a press, a typed text, an app-keyboard key, a secret window's
+    /// button): `Cmd::Input` restarts the idle clock (spec/04 §5.1; 2026-11-25 A2-8, Windows'
+    /// `App::note_input`), an entry with its drain before the input itself is handled.
+    fn user_input(&mut self) {
+        self.wallet.on_cmd(Cmd::Input);
+        self.drain();
+    }
+
+    /// The workers' events (2026-11-25 A2-8, module doc): each one to the wallet's typed entry
+    /// `Wallet::worker_event` (never a `Cmd`: a key result can hold a secret), each followed by its
+    /// drain, as Windows' `App::drain_events`.
+    pub fn events(&mut self) {
+        let Some(events) = self.wallet.events.clone() else {
+            return;
+        };
+        for event in events.drain() {
+            self.wallet.worker_event(event);
+            self.drain();
+        }
+    }
+
+    /// The lock (spec/04 §5.3), the shell's composition of the wallet's two halves as Windows'
+    /// `App::lock` for every reason but `Suspend` (no wait between them: Android asks for none),
+    /// then the drain of what they queued (2026-11-25 A2-8).
+    pub fn lock(&mut self, reason: LockReason) {
+        let vault_present = self.wallet.lock_steps(reason);
+        self.wallet.lock_after_wait(vault_present);
+        self.drain();
+    }
+
+    /// A lifetime event (2026-11-25 A2-8, module doc): `screen_off` locks after the wallet took
+    /// it; `back` starts the time away and asks for the wake; `front` checks the time away first
+    /// and locks when due, then the wallet takes it, then the screen is drawn and `shown` sent.
+    fn life(&mut self, life: Life) -> InputOutcome {
+        let now = self.wallet.clock.now_ms();
+        let due = life == Life::Front && self.away.front(now, self.background_ms);
+        if due {
+            logging::info("app", "background.due", &[]);
+            self.lock(LockReason::Background);
+        }
+        let outcome = self.wallet.on_input(Input::Life(life), &self.facts);
+        self.drain();
+        match life {
+            Life::ScreenOff => {
+                self.lock(LockReason::ScreenOff);
+                logging::flush();
+            }
+            Life::Back => {
+                let wait = self.away.back(now, self.background_ms);
+                self.frames.push(wake_frame(wait));
+                // Android may end a background process without notice: the lines so far.
+                logging::flush();
+            }
+            Life::Front => {
+                let model = self.wallet.draw(&self.facts);
+                self.frames.push(model);
+                self.drain();
+                self.frames.push(self.shown_frame());
+            }
+        }
+        outcome
+    }
+
+    /// Java's wake timer fired (2026-11-25 A2-8): the background lock when due, another wake when
+    /// it is not yet, nothing when the app is not away.
+    fn wake(&mut self) {
+        let now = self.wallet.clock.now_ms();
+        match self.away.wake(now, self.background_ms) {
+            Ok(true) => self.lock(LockReason::Background),
+            Ok(false) => {}
+            Err(rest) => self.frames.push(wake_frame(rest)),
+        }
+    }
+
+    /// `{"t":"shown","n":N}`: the screen drawn after the `front` events handled so far.
+    fn shown_frame(&self) -> Vec<u8> {
+        frame(vec![
+            ("t", text("shown")),
+            ("n", number(self.away.fronts())),
+        ])
     }
 
     /// Gives the wallet the secret host's answers and window actions, each an entry followed by
@@ -341,6 +519,14 @@ impl UiHost {
         for (timer, ms) in self.timers.clone() {
             self.frames.push(timer_frame(timer, ms));
         }
+        // 2026-11-25 A2-8: the wake of the time away, and the `shown` of the `front` events
+        // handled so far (a dropped `shown` would keep Java's screen hidden; Java takes only the
+        // one of its own last `front`).
+        let now = self.wallet.clock.now_ms();
+        if let Some(rest) = self.away.remaining(now, self.background_ms) {
+            self.frames.push(wake_frame(rest));
+        }
+        self.frames.push(self.shown_frame());
         self.take_frames()
     }
 
@@ -586,6 +772,11 @@ fn field_frame(rev: u64, slot: u32, shown: &str, seen: u64) -> Vec<u8> {
     ])
 }
 
+/// `{"t":"wake","ms":N}`: Java's one-shot wake for the background lock (2026-11-25 A2-8).
+fn wake_frame(ms: u64) -> Vec<u8> {
+    frame(vec![("t", text("wake")), ("ms", number(ms))])
+}
+
 fn timer_frame(timer: TimerId, ms: u64) -> Vec<u8> {
     frame(vec![
         ("t", text("timer")),
@@ -594,8 +785,8 @@ fn timer_frame(timer: TimerId, ms: u64) -> Vec<u8> {
     ])
 }
 
-/// Whether the outcome is a lifetime event the shell acts on itself (A2-8: the screen-off and
-/// background locks).
+/// Whether the outcome is a lifetime event the shell acts on itself (2026-11-25 A2-8: the
+/// screen-off and background locks, [`UiHost`]'s module doc).
 #[must_use]
 pub const fn life_of(outcome: InputOutcome) -> Option<Life> {
     match outcome {

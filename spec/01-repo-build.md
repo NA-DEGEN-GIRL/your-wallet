@@ -158,9 +158,12 @@ crates/
                               sealed_files.rs(`YWK2` 봉투를 씌운 `Files`), storage.rs(키 작업자 `KeyPlatform`·`AppStore`),
                               kdf_gate.rs(Argon2 전 메모리 규칙), log_file.rs(로그 파일), 2026-11-25 A2-5부터 device.rs(기기 사실·시험용 빌드 상수),
                               2026-11-25 A2-7부터 secret_host.rs(비밀 창: 두 단계 열기·창 모델·채우기 핸들, [15] §9.1)·secret_keys.rs(앱 키보드·
-                              창 버튼 → 양식 사건)·secret_wire.rs(비밀 창의 입력·틀) — 모두 모든 타깃;
+                              창 버튼 → 양식 사건)·secret_wire.rs(비밀 창의 입력·틀), 2026-11-25 A2-8부터 away.rs(백그라운드 잠금의
+                              떠난 시간, [15] §5.4) — 모두 모든 타깃;
                               android_files.rs(std·`libc` 깃발의 `Files`, `unsafe` 없음), purge.rs(`mallopt(M_PURGE)`),
-                              shell.rs(중개자·데이터 폴더·`run_argon2`) — Android만; devtest.rs(기기 왕복 시험과 2026-11-25 A2-5부터 패닉 장애 주입,
+                              boottime.rs(`CLOCK_BOOTTIME`, 2026-11-25 A2-8),
+                              shell.rs(중개자·데이터 폴더·Argon2 갈고리; 2026-11-25 A2-8부터 지갑·키 작업자·RPC 작업자 시작, 전에는 `run_argon2`)
+                              — Android만; devtest.rs(2026-11-25 A2-5부터 패닉 장애 주입; A2-4b의 기기 왕복 시험은 A2-8에서 없앰,
                               `--cfg yw_device_test` 빌드만, [09] §2.6); source_checks.rs(원천 검사, 시험만)}
              (Android 셸의 Rust 쪽 `libyw.so`, cdylib + rlib, [15](15-android.md) §3; 2026-11-24 A2-1)
 android/     settings.gradle  build.gradle  gradle.properties  buildscript-gradle.lockfile  toolchain.sha256  runtime-deps.txt

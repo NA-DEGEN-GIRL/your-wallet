@@ -27,12 +27,22 @@ import java.util.Map;
  * The lifetime events go by the app's started-Activity count (spec/15 §5.4): {@code life front} when the first Activity
  * starts, {@code life back} when the last one stops; a secret window covering the main one is not the background.
  * Before, Screen kept only the last secret window made, and MainActivity sent the events on its own onStart/onStop.
+ *
+ * <p>2026-11-25 A2-8 (spec/15 §5.4): the frames {@code events} (the workers' doorbell: answered with the events
+ * input), {@code wake} (a one-shot timer for the background lock, answered with the wake input when it fires; it runs
+ * while the process is not frozen) and {@code shown} ({@link FrontGate}: the main screen's content is hidden from
+ * {@code life back} until Rust's {@code shown} of the next {@code front}, so nothing drawn before the time-away check is
+ * seen).
  */
 final class Screen {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final Map<String, Runnable> TIMERS = new HashMap<>();
     /** The secret windows and the started count (2026-11-25 A2-7 review). */
     private static final SecretWindows<SecretActivity> WINDOWS = new SecretWindows<>();
+    /** The main screen's background gate (2026-11-25 A2-8). */
+    private static final FrontGate GATE = new FrontGate();
+    /** The background wake (2026-11-25 A2-8). */
+    private static final Runnable WAKE = () -> send(UiWire.wake());
     private static Context app;
     private static Object model;
     private static MainActivity shown;
@@ -68,6 +78,7 @@ final class Screen {
     static void started(Activity activity) {
         top = activity;
         if (WINDOWS.started()) {
+            GATE.front();
             send(UiWire.life("front"));
         }
         long serial = WINDOWS.takePending();
@@ -85,6 +96,11 @@ final class Screen {
             top = null;
         }
         if (WINDOWS.stopped()) {
+            // 2026-11-25 A2-8: hidden until the time-away check of the next front (FrontGate).
+            GATE.back();
+            if (shown != null) {
+                shown.setScreenShown(false);
+            }
             send(UiWire.life("back"));
         }
     }
@@ -114,6 +130,7 @@ final class Screen {
     /** The Activity in front draws from now on; it gets the last model at once. */
     static void attach(MainActivity activity) {
         shown = activity;
+        activity.setScreenShown(!GATE.hidden());
         if (model != null) {
             activity.drawModel(model);
         }
@@ -150,6 +167,22 @@ final class Screen {
                 break;
             case "copy":
                 copy(Json.number(frame, "id", -1), Json.string(frame, "text"));
+                break;
+            case "events":
+                send(UiWire.events());
+                break;
+            case "wake": {
+                long ms = Json.number(frame, "ms", -1);
+                MAIN.removeCallbacks(WAKE);
+                if (ms >= 0) {
+                    MAIN.postDelayed(WAKE, ms);
+                }
+                break;
+            }
+            case "shown":
+                if (GATE.shown(Json.number(frame, "n", -1)) && shown != null) {
+                    shown.setScreenShown(true);
+                }
                 break;
             case "s_open":
                 launch(Json.number(frame, "serial", -1));

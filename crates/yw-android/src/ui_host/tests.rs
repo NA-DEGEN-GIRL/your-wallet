@@ -363,9 +363,14 @@ fn a_resync_sends_the_state_again() {
     // 2026-11-25 A2-7 review: first the secret windows that may exist (none here).
     assert_eq!(frames[0], r#"{"t":"s_keep","wins":[]}"#, "{frames:?}");
     assert!(frames[1].starts_with(r#"{"t":"model","#), "{frames:?}");
+    // 2026-11-25 A2-8: then the `shown` of the `front` events handled so far (none here).
+    assert_eq!(
+        frames[frames.len() - 2],
+        r#"{"t":"timer","id":"send_check","ms":700}"#
+    );
     assert_eq!(
         frames.last().map(String::as_str),
-        Some(r#"{"t":"timer","id":"send_check","ms":700}"#)
+        Some(r#"{"t":"shown","n":0}"#)
     );
     let copied = yw_engine::screen::model::T_COPIED.ko;
     assert!(
@@ -386,4 +391,201 @@ fn a_resync_sends_the_state_again() {
         frames.iter().all(|frame| !frame.contains(r#""t":"timer""#)),
         "{frames:?}"
     );
+}
+
+/// A clock the test moves (2026-11-25 A2-8).
+#[derive(Debug, Default)]
+struct ManualClock(std::sync::atomic::AtomicU64);
+
+impl yw_platform::clock::Clock for ManualClock {
+    fn now_ms(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn now_unix_ms(&self) -> u64 {
+        1_794_873_600_000
+    }
+
+    fn sleep_ms(&self, _ms: u64) {}
+}
+
+/// An unlocked wallet on the main screen with a clock the test moves.
+fn unlocked_host() -> (UiHost, Arc<ManualClock>) {
+    let clock = Arc::new(ManualClock::default());
+    let mut wallet = Wallet::new(
+        Box::new(NoFiles),
+        Services {
+            llm: Arc::new(|_endpoint| None),
+            walletconnect: None,
+            ua_platform: "android",
+        },
+        false,
+        Settings::default(),
+        ApiKeys::default(),
+        Arc::clone(&clock) as Arc<dyn yw_platform::clock::Clock>,
+        0,
+    );
+    wallet.mode = AppMode::Unlocked {
+        alt_passphrase: false,
+    };
+    wallet.screen = Screen::Main;
+    let mut host = UiHost::new(wallet);
+    let _ = host.start();
+    (host, clock)
+}
+
+fn at(clock: &ManualClock, ms: u64) {
+    clock.0.store(ms, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 2026-11-25 A2-8 (spec/15 §5.4): the screen going off locks at once.
+#[test]
+fn the_screen_going_off_locks() {
+    let (mut host, _clock) = unlocked_host();
+    let (outcome, frames) = host
+        .on_wire_input(br#"{"t":"life","e":"screen_off"}"#)
+        .unwrap();
+    assert_eq!(
+        outcome,
+        InputOutcome::Life(yw_engine::wire::Life::ScreenOff)
+    );
+    assert_eq!(host.wallet().mode, AppMode::Locked);
+    assert_eq!(host.wallet().screen, Screen::Locked);
+    let frames = texts(&frames);
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame.starts_with(r#"{"t":"model","#)),
+        "{frames:?}"
+    );
+}
+
+/// 2026-11-25 A2-8 (spec/15 §5.4): `back` asks for the wake; a short absence does not lock; a
+/// long one locks on the way back before the screen is drawn, and the frames end with a fresh
+/// model and the `shown` of that `front`.
+#[test]
+fn the_background_lock_is_checked_before_drawing() {
+    let (mut host, clock) = unlocked_host();
+    at(&clock, 1_000);
+    let (_, frames) = host.on_wire_input(br#"{"t":"life","e":"back"}"#).unwrap();
+    assert_eq!(
+        texts(&frames).last().map(String::as_str),
+        Some(r#"{"t":"wake","ms":60500}"#)
+    );
+    assert!(host.away().is_away());
+    // Back after 30 s: no lock.
+    at(&clock, 31_000);
+    let (_, frames) = host.on_wire_input(br#"{"t":"life","e":"front"}"#).unwrap();
+    let frames = texts(&frames);
+    assert_eq!(host.wallet().screen, Screen::Main);
+    assert_eq!(
+        frames.last().map(String::as_str),
+        Some(r#"{"t":"shown","n":1}"#)
+    );
+    assert!(frames[frames.len() - 2].starts_with(r#"{"t":"model","#));
+    // Away for the whole time (the process was frozen, no wake): locked before the model.
+    at(&clock, 40_000);
+    let _ = host.on_wire_input(br#"{"t":"life","e":"back"}"#).unwrap();
+    at(&clock, 40_000 + 60_500);
+    let (_, frames) = host.on_wire_input(br#"{"t":"life","e":"front"}"#).unwrap();
+    assert_eq!(host.wallet().mode, AppMode::Locked);
+    assert_eq!(host.wallet().screen, Screen::Locked);
+    let frames = texts(&frames);
+    assert_eq!(
+        frames.last().map(String::as_str),
+        Some(r#"{"t":"shown","n":2}"#)
+    );
+    assert!(!host.away().is_away());
+}
+
+/// 2026-11-25 A2-8 (spec/15 §5.4): the wake timer locks in the background when due and asks again
+/// when early; with the time 0 the lock is due once the settle time passed.
+#[test]
+fn the_wake_locks_in_the_background() {
+    let (mut host, clock) = unlocked_host();
+    at(&clock, 0);
+    let _ = host.on_wire_input(br#"{"t":"life","e":"back"}"#).unwrap();
+    at(&clock, 1_000);
+    let (_, frames) = host.on_wire_input(super::WAKE_INPUT).unwrap();
+    assert_eq!(texts(&frames), [r#"{"t":"wake","ms":59500}"#]);
+    assert!(matches!(host.wallet().mode, AppMode::Unlocked { .. }));
+    at(&clock, 60_500);
+    let _ = host.on_wire_input(super::WAKE_INPUT).unwrap();
+    assert_eq!(host.wallet().mode, AppMode::Locked);
+    // A wake when not away does nothing.
+    let (_, frames) = host.on_wire_input(super::WAKE_INPUT).unwrap();
+    assert!(frames.is_empty());
+    // Time 0.
+    let (host, clock) = unlocked_host();
+    let mut host = host.with_background_ms(0);
+    at(&clock, 5_000);
+    let (_, frames) = host.on_wire_input(br#"{"t":"life","e":"back"}"#).unwrap();
+    assert_eq!(
+        texts(&frames).last().map(String::as_str),
+        Some(r#"{"t":"wake","ms":500}"#)
+    );
+    at(&clock, 5_500);
+    let _ = host.on_wire_input(super::WAKE_INPUT).unwrap();
+    assert_eq!(host.wallet().mode, AppMode::Locked);
+}
+
+/// 2026-11-25 A2-8: the events input hands the workers' results to the wallet (here the key
+/// worker's load: a locked vault), and the tick drains them too.
+#[test]
+fn the_events_input_drains_the_workers_results() {
+    use yw_core::vault::VaultStatus;
+    use yw_engine::events::{EventQueue, KeyOutcome, KeyResult, UiEvent};
+
+    let mut host = host();
+    let _ = host.start();
+    let events = Arc::new(EventQueue::new(Box::new(|| {})));
+    host.wallet_mut().events = Some(Arc::clone(&events));
+    host.wallet_mut().mode = AppMode::Starting;
+    host.wallet_mut().screen = Screen::Starting;
+    let push = || {
+        events
+            .push(UiEvent::Key(Box::new(KeyResult {
+                epoch: 0,
+                outcome: KeyOutcome::Loaded {
+                    status: VaultStatus::Locked,
+                    leftover: false,
+                },
+            })))
+            .unwrap();
+    };
+    push();
+    let (_, frames) = host.on_wire_input(super::EVENTS_INPUT).unwrap();
+    assert_eq!(host.wallet().mode, AppMode::Locked);
+    assert!(
+        texts(&frames)
+            .iter()
+            .any(|frame| frame.starts_with(r#"{"t":"model","#))
+    );
+    assert_eq!(super::EVENTS_FRAME, super::EVENTS_INPUT);
+    assert_eq!(ui_kind(super::EVENTS_FRAME), UiKind::Other);
+    // The tick drains them first.
+    host.wallet_mut().mode = AppMode::Starting;
+    push();
+    let _ = host.on_wire_input(br#"{"t":"tick"}"#).unwrap();
+    assert_eq!(host.wallet().mode, AppMode::Locked);
+}
+
+/// 2026-11-25 A2-8 (spec/04 §5.1): a press restarts the idle clock (`Cmd::Input`); with no
+/// input the idle lock comes after the set minutes.
+#[test]
+fn a_press_restarts_the_idle_clock() {
+    let (mut host, clock) = unlocked_host();
+    let minutes = u64::from(host.wallet().settings.auto_lock_minutes);
+    let limit = minutes * 60_000;
+    at(&clock, limit - 1_000);
+    let lock = slot_of(&host, Press::Core(CorePress::Lock));
+    // A stale press (another revision) is still the user's input: the clock restarts.
+    let stale = format!(r#"{{"t":"press","rev":0,"slot":{lock}}}"#);
+    let _ = host.on_wire_input(stale.as_bytes()).unwrap();
+    at(&clock, limit + 500);
+    let _ = host.on_wire_input(br#"{"t":"tick"}"#).unwrap();
+    assert!(matches!(host.wallet().mode, AppMode::Unlocked { .. }));
+    at(&clock, 2 * limit);
+    let _ = host.on_wire_input(br#"{"t":"tick"}"#).unwrap();
+    assert_eq!(host.wallet().mode, AppMode::Locked);
 }

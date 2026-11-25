@@ -60,8 +60,65 @@ pub trait WalletStore: VaultStorage {
     ) -> Result<Option<String>, StorageError>;
 }
 
+/// How many Argon2id derivations one vault call runs (2026-11-25 A2-8, spec/15 §5.3): most run
+/// one; a password change runs two in one call (the old password's check and the new KEK,
+/// yw-core `Session::change_password`, spec/02 §4.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KdfRuns {
+    /// One derivation (create, import, unlock, every password check).
+    One,
+    /// Two derivations in one call (the password change).
+    Two,
+}
+
+/// The platform's leave for one Argon2-bound vault call (2026-11-25 A2-8, spec/15 §5.3): while
+/// it lives the call runs; when it is dropped — right after the call, whatever its result — the
+/// platform releases the working memory (Android: `mallopt(M_PURGE)`). Windows gives one that
+/// does nothing.
+#[derive(Debug)]
+pub struct KdfPass {
+    done: Option<fn()>,
+}
+
+impl KdfPass {
+    /// A leave with nothing to do afterwards (Windows, tests).
+    #[must_use]
+    pub const fn none() -> Self {
+        Self { done: None }
+    }
+
+    /// A leave that runs `done` when it is dropped.
+    #[must_use]
+    pub const fn then(done: fn()) -> Self {
+        Self { done: Some(done) }
+    }
+}
+
+impl Drop for KdfPass {
+    fn drop(&mut self) {
+        if let Some(done) = self.done.take() {
+            done();
+        }
+    }
+}
+
 /// The key worker's platform services.
 pub trait KeyPlatform: Send {
+    /// Asks to run one vault call that derives the KEK with Argon2id `runs` times (2026-11-25
+    /// A2-8, spec/15 §5.3). Android checks the device's memory first and refuses with
+    /// [`VaultError::OutOfMemory`] (E-VLT-007) when the run could get the app killed, so the call
+    /// is not made and the job ends with that error; the leave it gives purges the allocator's
+    /// free memory when dropped. The default (Windows) lets every call run and does nothing
+    /// after: Windows behaviour is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// [`VaultError::OutOfMemory`] when the platform refuses the run.
+    fn kdf_begin(&self, runs: KdfRuns) -> Result<KdfPass, VaultError> {
+        let _ = runs;
+        Ok(KdfPass::none())
+    }
+
     /// Opens the wallet data folder `dir` (creating it, removing orphan temporary files).
     ///
     /// # Errors

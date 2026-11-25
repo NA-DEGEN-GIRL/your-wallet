@@ -20,6 +20,12 @@ pub enum LockReason {
     Suspend,
     /// App shutdown.
     Shutdown,
+    /// Android: the screen went off (`ACTION_SCREEN_OFF`, spec/15 §5.4; 2026-11-25 A2-8).
+    /// Windows never locks for it.
+    ScreenOff,
+    /// Android: the app stayed in the background past its time (spec/15 §5.4; 2026-11-25 A2-8).
+    /// Windows never locks for it.
+    Background,
 }
 
 impl LockReason {
@@ -33,6 +39,8 @@ impl LockReason {
             Self::SessionDisconnect => "SessionDisconnect",
             Self::Suspend => "Suspend",
             Self::Shutdown => "Shutdown",
+            Self::ScreenOff => "ScreenOff",
+            Self::Background => "Background",
         }
     }
 }

@@ -96,6 +96,13 @@ pub fn is_secret_input(bytes: &[u8]) -> bool {
     bytes.starts_with(HEAD)
 }
 
+/// Whether the input is the user's own (a button, a field box, the Back key) and so restarts the
+/// idle clock (2026-11-25 A2-8, spec/04 §5.1): a window's ready, focus change or end is not.
+#[must_use]
+pub const fn is_user_input(input: &SecretInput) -> bool {
+    matches!(input, SecretInput::Button { .. } | SecretInput::Back { .. })
+}
+
 fn win_of(object: &Object) -> Option<u32> {
     let win = u32::try_from(object.get("win")?.as_number()?.as_u64()?).ok()?;
     (1..=WIN_MAX).contains(&win).then_some(win)

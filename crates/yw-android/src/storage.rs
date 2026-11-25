@@ -6,7 +6,10 @@
 //!   `YWK2` envelope), [`KeyPlatform::new_slot`] the platform's locked slot (Android:
 //!   `slot::AndroidSlot`, `mmap` + `mlock` + `madvise(MADV_DONTDUMP)`, fail closed).
 //!   `move_wallet_files` (the wallet reset, spec/04 §2.20) is not on Android before its settings
-//!   screen: it refuses and moves nothing.
+//!   screen: it refuses and moves nothing. 2026-11-25 A2-8 (spec/15 §5.3): its
+//!   [`KeyPlatform::kdf_begin`] asks [`KdfHooks::gate`] before every Argon2-bound vault call and
+//!   the leave it gives runs [`KdfHooks::done`] right after it (Android: the memory check and
+//!   `mallopt(M_PURGE)`, `crate::shell`).
 //! - [`DataStore`] is the engine's [`AppStore`]: `settings.json` plain and atomic (temp → sync →
 //!   rename → folder sync), `apikeys.ks` sealed ([`SealKind::ApiKeys`]; a damaged file is
 //!   "unreadable", never its raw bytes), the `vault.ywv` facts (the generation needs the device key:
@@ -20,7 +23,11 @@
 //!   engine calls it on the wallet thread (lock screen, settings, the meta write's rollback
 //!   check). Before A2-6/A2-8 wire [`DataStore`] into the wallet, the generation must come from
 //!   the key worker (which reads the vault anyway), or this call must run off the wallet thread
-//!   with a short deadline that gives `None` (spec/15 §5.2).
+//!   with a short deadline that gives `None` (spec/15 §5.2). (2026-11-25 A2-8: the second, on
+//!   the wallet thread: `crate::shell::app_store` gives this store a device key whose requests
+//!   end after `crate::shell::STORE_TIMEOUT` (3 s, under Android's 5 s input deadline), so a slow
+//!   Keystore makes the read `None` — no generation, so no rollback note that time, as when
+//!   Windows cannot read the file — and a slow `apikeys.ks` write fails as a failed write.)
 //!
 //! Platform-neutral over any [`Files`] (the Windows gate tests it in memory); Android passes
 //! `android_files::AndroidFiles` and the broker's device key.
@@ -35,7 +42,7 @@ use yw_core::vault::{FileKind, LockedSlot, peek_generation};
 use yw_engine::app_store::{AppStore, SealedRead};
 use yw_engine::file_storage::FileStorage;
 use yw_engine::wallet_files::{ResetError, ResetReport, file_name, with_suffix};
-use yw_engine::workers::key::platform::{KeyPlatform, WalletStore};
+use yw_engine::workers::key::platform::{KdfPass, KdfRuns, KeyPlatform, WalletStore};
 use yw_platform::files::{Files, FsError};
 
 use crate::device_key::MakeKey;
@@ -57,11 +64,37 @@ pub const RESET_REFUSED: u32 = crate::device_key::DeviceCode::BASE + 0x120;
 /// Makes the platform's locked slot.
 pub type SlotMaker = fn() -> Result<Box<dyn LockedSlot>, VaultError>;
 
+/// What runs around every Argon2-bound vault call (2026-11-25 A2-8, spec/15 §5.3).
+#[derive(Clone, Copy, Debug)]
+pub struct KdfHooks {
+    /// Before the call: `Err` refuses it (the job ends with that error, the call is not made).
+    pub gate: fn(KdfRuns) -> Result<(), VaultError>,
+    /// Right after the call, whatever its result.
+    pub done: fn(),
+}
+
+impl KdfHooks {
+    /// No check and nothing after (the gate's in-memory tests; never the Android build, whose
+    /// platform is `crate::shell::platform`).
+    pub const UNCHECKED: Self = Self {
+        gate: unchecked_gate,
+        done: nothing,
+    };
+}
+
+#[expect(clippy::unnecessary_wraps, reason = "the `KdfHooks::gate` signature")]
+const fn unchecked_gate(_runs: KdfRuns) -> Result<(), VaultError> {
+    Ok(())
+}
+
+const fn nothing() {}
+
 /// The key worker's platform on Android (module doc).
 pub struct DataPlatform<F, D> {
     files: F,
     device: D,
     slot: SlotMaker,
+    kdf: KdfHooks,
 }
 
 impl<F, D> fmt::Debug for DataPlatform<F, D> {
@@ -71,12 +104,14 @@ impl<F, D> fmt::Debug for DataPlatform<F, D> {
 }
 
 impl<F, D> DataPlatform<F, D> {
-    /// The platform over `files` and `device`, making slots with `slot`.
-    pub const fn new(files: F, device: D, slot: SlotMaker) -> Self {
+    /// The platform over `files` and `device`, making slots with `slot`, with `kdf` around every
+    /// Argon2-bound vault call.
+    pub const fn new(files: F, device: D, slot: SlotMaker, kdf: KdfHooks) -> Self {
         Self {
             files,
             device,
             slot,
+            kdf,
         }
     }
 }
@@ -93,6 +128,11 @@ where
 
     fn new_slot(&self) -> Result<Box<dyn LockedSlot>, VaultError> {
         (self.slot)()
+    }
+
+    fn kdf_begin(&self, runs: KdfRuns) -> Result<KdfPass, VaultError> {
+        (self.kdf.gate)(runs)?;
+        Ok(KdfPass::then(self.kdf.done))
     }
 
     fn move_wallet_files(
@@ -606,7 +646,12 @@ mod tests {
     fn create_reopen_unlock_over_sealed_files() {
         let files = MemFiles::default();
         let key = SharedKey::default();
-        let platform = DataPlatform::new(files.clone(), key.clone(), heap_slot);
+        let platform = DataPlatform::new(
+            files.clone(),
+            key.clone(),
+            heap_slot,
+            super::KdfHooks::UNCHECKED,
+        );
         let password = VaultPassword::new(b"synthetic test password 1").unwrap();
         {
             let storage = platform.open_storage(Path::new(DIR)).unwrap();
@@ -668,6 +713,48 @@ mod tests {
             platform
                 .move_wallet_files(Path::new(DIR), "x", true, yw_core::lang::Lang::Ko)
                 .is_err()
+        );
+    }
+
+    /// 2026-11-25 A2-8 (spec/15 §5.3): the platform asks its gate before every Argon2-bound call
+    /// (a refusal is the call's error) and its leave runs the purge hook once, when dropped.
+    #[test]
+    fn the_platform_asks_its_kdf_hooks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use yw_engine::workers::key::platform::KdfRuns;
+
+        static DONE: AtomicUsize = AtomicUsize::new(0);
+        fn one_only(runs: KdfRuns) -> Result<(), VaultError> {
+            if runs == KdfRuns::One {
+                Ok(())
+            } else {
+                Err(VaultError::OutOfMemory)
+            }
+        }
+        fn done() {
+            DONE.fetch_add(1, Ordering::SeqCst);
+        }
+        let platform = DataPlatform::new(
+            MemFiles::default(),
+            SharedKey::default(),
+            heap_slot,
+            super::KdfHooks {
+                gate: one_only,
+                done,
+            },
+        );
+        let pass = platform.kdf_begin(KdfRuns::One).unwrap();
+        assert_eq!(DONE.load(Ordering::SeqCst), 0, "not before the call ended");
+        drop(pass);
+        assert_eq!(DONE.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            platform.kdf_begin(KdfRuns::Two),
+            Err(VaultError::OutOfMemory)
+        ));
+        assert_eq!(
+            DONE.load(Ordering::SeqCst),
+            1,
+            "a refusal has nothing to purge"
         );
     }
 

@@ -34,7 +34,6 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use yw_core::lang::Lang;
 use yw_core::secret::Zeroizing;
 use yw_engine::protection::Surface;
 
@@ -134,7 +133,7 @@ const INPUT_READ_MAX: usize = if yw_engine::wire::INPUT_MAX > interim::START_MAX
 /// event writes its line (`panic_hook::java_uncaught`); the facts input ([`interim::facts`]) is
 /// kept and answered with the main screen's bands from those facts
 /// ([`crate::device::bands_with`]) in the default language (Korean until the settings are read,
-/// A2-8); a `-DeviceTest` build checks its fault points on the status request
+/// A2-8; 2026-11-25 A2-8: the app language, `crate::shell::language`); a `-DeviceTest` build checks its fault points on the status request
 /// (`crate::devtest::fault_points`). (2026-11-25 A2-5 review: an input that begins like a facts
 /// input ([`interim::is_facts`]) but is refused is answered with the worst case's bands, never
 /// null, so the test-build band cannot go missing.) 2026-11-25 A2-6: every other input (up to
@@ -164,7 +163,11 @@ extern "C" fn call(jni: JniEnv, _class: JObject, input: JObject) -> JObject {
                     let now = crate::shell::now_unix_ms();
                     let fresh = interim::facts(&bytes);
                     let bands = crate::device::bands_with(fresh, Surface::Main, now);
-                    new_byte_array(jni, &interim::bands_answer(&bands, Lang::default()))
+                    // 2026-11-25 A2-8: in the app language (before, always the default).
+                    new_byte_array(
+                        jni,
+                        &interim::bands_answer(&bands, crate::shell::language()),
+                    )
                 } else {
                     // 2026-11-25 A2-6: a screen input; its frames go out through `next`.
                     crate::shell::ui_input(&bytes);

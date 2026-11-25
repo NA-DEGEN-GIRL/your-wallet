@@ -25,7 +25,7 @@ use crate::events::{
 use crate::logging::{self, Field};
 use crate::meta::{self, Account, EvmAccountPref, Meta, RawAccount, SolRawAccount, Tab};
 use crate::workers::journal::{JournalState, SolSignTimes};
-use platform::{KeyDeps, KeyPlatform};
+use platform::{KdfPass, KdfRuns, KeyDeps, KeyPlatform};
 
 pub mod mnemonics;
 pub mod platform;
@@ -1227,6 +1227,15 @@ impl KeyWorker {
         self.vault.as_mut().ok_or(VaultError::InvalidState)
     }
 
+    /// The platform's leave for the next vault call, which derives the KEK with Argon2id `runs`
+    /// times (2026-11-25 A2-8, spec/15 §5.3; [`KeyPlatform::kdf_begin`]). Every such call in
+    /// this worker holds it across the call (source check
+    /// `every_argon2_call_holds_the_platform_leave`); a refusal is the job's own error
+    /// (`VaultError::OutOfMemory`, E-VLT-007). Windows: always given, nothing after.
+    fn kdf(&self, runs: KdfRuns) -> Result<KdfPass, VaultError> {
+        self.platform.kdf_begin(runs)
+    }
+
     fn is_alt(&self) -> bool {
         matches!(
             self.vault.as_ref().map(Vault::status),
@@ -1297,8 +1306,11 @@ impl KeyWorker {
         let slot = self.platform.new_slot()?;
         let lang = self.lang;
         let now = now_unix(&*self.clock);
+        let kdf = self.kdf(KdfRuns::One)?;
         let vault = self.vault()?;
-        let phrase = vault.create_wallet(&password, slot, now)?;
+        let phrase = vault.create_wallet(&password, slot, now);
+        drop(kdf);
+        let phrase = phrase?;
         let address = vault.evm_address(EvmKeySource::Derived(AccountIndex::ZERO))?;
         Self::write_default_meta(vault, &address, lang);
         Ok((phrase, address))
@@ -1340,8 +1352,11 @@ impl KeyWorker {
         let slot = self.platform.new_slot()?;
         let lang = self.lang;
         let now = now_unix(&*self.clock);
+        let kdf = self.kdf(KdfRuns::One)?;
         let vault = self.vault()?;
-        vault.import_mnemonic(&password, phrase, passphrase, slot, now)?;
+        let imported = vault.import_mnemonic(&password, phrase, passphrase, slot, now);
+        drop(kdf);
+        imported?;
         let address = vault.evm_address(EvmKeySource::Derived(AccountIndex::ZERO))?;
         Self::write_default_meta(vault, &address, lang);
         Ok(())
@@ -1396,8 +1411,11 @@ impl KeyWorker {
         let slot = self.platform.new_slot()?;
         let lang = self.lang;
         let now = now_unix(&*self.clock);
+        let kdf = self.kdf(KdfRuns::One)?;
         let vault = self.vault()?;
-        vault.create_with_key(&password, key, slot, now)?;
+        let created = vault.create_with_key(&password, key, slot, now);
+        drop(kdf);
+        created?;
         Self::write_key_only_meta(vault, pending.spec.chain(), lang)
     }
 
@@ -1466,6 +1484,7 @@ impl KeyWorker {
         }
         let result = (|| {
             let password = password(password_bytes).map_err(|_| VaultError::UnlockFailed)?;
+            let _kdf = self.kdf(KdfRuns::One)?;
             let chain = self.vault()?.remove_imported_key(&password, id)?;
             Ok((id, chain))
         })();
@@ -1484,6 +1503,7 @@ impl KeyWorker {
         let result = (|| {
             let password = password(bytes).map_err(|_| VaultError::UnlockFailed)?;
             let slot = self.platform.new_slot()?;
+            let _kdf = self.kdf(KdfRuns::One)?;
             self.vault()?.recover_from_prev(&password, slot, now)
         })();
         let mut out = Vec::with_capacity(2);
@@ -1510,6 +1530,8 @@ impl KeyWorker {
         VaultError,
     > {
         let password = password(password_bytes).map_err(|_| VaultError::UnlockFailed)?;
+        // Every arm checks the password (one derivation); the leave ends with this fn.
+        let _kdf = self.kdf(KdfRuns::One)?;
         let vault = self.vault()?;
         match what {
             RevealWhat::Mnemonic => {
@@ -1989,6 +2011,7 @@ impl KeyWorker {
             KeyJob::Unlock { password: bytes } => KeyOutcome::Status((|| {
                 let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
                 let slot = self.platform.new_slot()?;
+                let _kdf = self.kdf(KdfRuns::One)?;
                 self.vault()?.unlock(&password, slot)
             })()),
             KeyJob::EnterPassphrase { passphrase: bytes } => KeyOutcome::Status((|| {
@@ -2023,6 +2046,8 @@ impl KeyWorker {
                 let new = password(&new)?;
                 // A meta or journal this build cannot read refuses the change (E-VLT-006):
                 // the rotation would push out its readable older `.prev` (spec/02 §4.4 step 0).
+                // Two derivations in one call (spec/15 §5.3: Android refuses it in A2).
+                let _kdf = self.kdf(KdfRuns::Two)?;
                 self.vault()?.change_password(&old, &new, &sidecar_readable)
             })()),
             KeyJob::ImportPrivateKey { hex } => KeyOutcome::RawKeyImported((|| {
@@ -2039,6 +2064,7 @@ impl KeyWorker {
                 id,
             } => KeyOutcome::RawKeyRemoved((|| {
                 let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
+                let _kdf = self.kdf(KdfRuns::One)?;
                 self.vault()?.remove_evm_raw_key(&password, id)?;
                 Ok(id)
             })()),
@@ -4089,5 +4115,239 @@ pub(crate) mod tests {
             unreachable!("counters");
         };
         assert_eq!(counters.pw3, Some(3));
+    }
+
+    /// The platform of [`argon2_calls_take_the_platform_leave`]: the in-memory folder, a record of
+    /// every leave asked for, a switch that refuses them, and a count of the leaves dropped.
+    struct Gated {
+        inner: testing::MemPlatform,
+        asked: std::sync::Arc<Mutex<Vec<super::KdfRuns>>>,
+        refuse: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    /// Leaves dropped (only [`argon2_calls_take_the_platform_leave`] counts them).
+    static LEAVES_DONE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn leave_done() {
+        LEAVES_DONE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    impl super::KeyPlatform for Gated {
+        fn open_storage(
+            &self,
+            dir: &std::path::Path,
+        ) -> Result<Box<dyn super::platform::WalletStore>, yw_core::error::StorageError> {
+            self.inner.open_storage(dir)
+        }
+
+        fn new_slot(
+            &self,
+        ) -> Result<Box<dyn yw_core::vault::LockedSlot>, yw_core::error::VaultError> {
+            self.inner.new_slot()
+        }
+
+        fn move_wallet_files(
+            &self,
+            dir: &std::path::Path,
+            stamp: &str,
+            include_settings: bool,
+            lang: yw_core::lang::Lang,
+        ) -> Result<crate::wallet_files::ResetReport, crate::wallet_files::ResetError> {
+            self.inner
+                .move_wallet_files(dir, stamp, include_settings, lang)
+        }
+
+        fn kdf_begin(
+            &self,
+            runs: super::KdfRuns,
+        ) -> Result<super::KdfPass, yw_core::error::VaultError> {
+            self.asked.lock().unwrap().push(runs);
+            if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(yw_core::error::VaultError::OutOfMemory)
+            } else {
+                Ok(super::KdfPass::then(leave_done))
+            }
+        }
+    }
+
+    /// 2026-11-25 A2-8 (spec/15 §5.3): every Argon2-bound job asks the platform first; a refusal
+    /// is the job's own error (`OutOfMemory`, E-VLT-007) and the vault call is not made (the vault
+    /// stays as it was), a granted leave is dropped right after the call, and a password change
+    /// asks for two derivations. The default platform (Windows) grants every leave.
+    #[test]
+    fn argon2_calls_take_the_platform_leave() {
+        use std::sync::atomic::Ordering;
+        use yw_core::error::VaultError;
+        use yw_core::secret::Zeroizing;
+        use yw_core::vault::VaultStatus;
+
+        use super::KdfRuns;
+
+        let asked = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let refuse = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let deps = super::platform::KeyDeps {
+            platform: Box::new(Gated {
+                inner: testing::MemPlatform::default(),
+                asked: std::sync::Arc::clone(&asked),
+                refuse: std::sync::Arc::clone(&refuse),
+            }),
+            clock: Box::new(testing::FixedClock),
+            cards: Box::new(crate::yubikey::NoReaders),
+        };
+        let mut worker = KeyWorker::new(&testing::temp_name("kdf-leave"), deps);
+        let about = format!("{} about", ["abandon"; 11].join(" "));
+        let bytes = |text: &str| Zeroizing::new(text.as_bytes().to_vec());
+        let done_before = LEAVES_DONE.load(Ordering::SeqCst);
+        worker.handle(KeyJob::Load);
+        worker.handle(KeyJob::PreviewImport {
+            password: Some(bytes(LOCK_SAVE_PASSWORD)),
+            phrase: bytes(&about),
+            passphrase: None,
+        });
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "a preview derives nothing"
+        );
+        assert!(matches!(
+            worker.handle(KeyJob::CommitImport).first(),
+            Some(KeyOutcome::Imported(Ok(())))
+        ));
+        assert_eq!(*asked.lock().unwrap(), [KdfRuns::One]);
+        assert_eq!(LEAVES_DONE.load(Ordering::SeqCst), done_before + 1);
+        worker.lock();
+        // Refused: the unlock is not tried, the vault stays locked, no leave to drop.
+        refuse.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            worker
+                .handle(KeyJob::Unlock {
+                    password: bytes(LOCK_SAVE_PASSWORD),
+                })
+                .first(),
+            Some(KeyOutcome::Status(Err(VaultError::OutOfMemory)))
+        ));
+        assert!(matches!(
+            worker.vault.as_ref().map(yw_core::vault::Vault::status),
+            Some(VaultStatus::Locked)
+        ));
+        assert!(matches!(
+            worker
+                .handle(KeyJob::ChangePassword {
+                    old: bytes(LOCK_SAVE_PASSWORD),
+                    new: bytes("another synthetic password"),
+                })
+                .first(),
+            Some(KeyOutcome::PasswordChanged(Err(VaultError::OutOfMemory)))
+        ));
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [KdfRuns::One, KdfRuns::One, KdfRuns::Two]
+        );
+        assert_eq!(LEAVES_DONE.load(Ordering::SeqCst), done_before + 1);
+        // Granted again: the unlock runs and its leave is dropped after it.
+        refuse.store(false, Ordering::SeqCst);
+        assert!(matches!(
+            worker
+                .handle(KeyJob::Unlock {
+                    password: bytes(LOCK_SAVE_PASSWORD),
+                })
+                .first(),
+            Some(KeyOutcome::Status(Ok(VaultStatus::Unlocked { .. })))
+        ));
+        assert_eq!(LEAVES_DONE.load(Ordering::SeqCst), done_before + 2);
+        // The default platform grants every leave and drops nothing.
+        let pass = super::KeyPlatform::kdf_begin(&testing::MemPlatform::default(), KdfRuns::Two);
+        assert!(pass.is_ok());
+        drop(pass);
+        assert_eq!(LEAVES_DONE.load(Ordering::SeqCst), done_before + 2);
+    }
+
+    /// 2026-11-25 A2-8 (spec/15 §5.3), source check: every vault call of this worker that derives
+    /// the KEK with Argon2id (the yw-core fns that call `derive_kek`: `unwrap_dek`,
+    /// `seal_create_with`, `verify_password`) holds the platform's leave, taken in the same fn
+    /// within the lines before it (`self.kdf(KdfRuns::…)`), so Android's memory check and purge
+    /// cannot be skipped by a new job.
+    #[test]
+    fn every_argon2_call_holds_the_platform_leave() {
+        const ARGON2: [&str; 18] = [
+            "create_wallet",
+            "import_mnemonic",
+            "create_with_key",
+            "create_with_hardware",
+            "unlock",
+            "recover_from_prev",
+            "change_password",
+            "remove_imported_key",
+            "remove_evm_raw_key",
+            "remove_hardware_key",
+            "reveal_mnemonic",
+            "reveal_evm_private_key",
+            "reveal_imported_key",
+            "reveal_evm_shared_wif",
+            "generate_mnemonic",
+            "remove_mnemonic",
+            "reveal_mnemonic_of",
+            "add_mnemonic",
+        ];
+        const WINDOW: usize = 25;
+        let sources = [
+            ("key.rs", include_str!("key.rs")),
+            ("key/mnemonics.rs", include_str!("key/mnemonics.rs")),
+            ("key/yubikey.rs", include_str!("key/yubikey.rs")),
+            (
+                "key/yubikey/connect.rs",
+                include_str!("key/yubikey/connect.rs"),
+            ),
+            (
+                "key/yubikey/manage.rs",
+                include_str!("key/yubikey/manage.rs"),
+            ),
+        ];
+        let mut calls = 0;
+        for (name, source) in sources {
+            let lines: Vec<&str> = source.lines().collect();
+            let end = lines
+                .windows(2)
+                .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].contains("mod tests"))
+                .unwrap_or(lines.len());
+            for (at, line) in lines.iter().enumerate().take(end) {
+                for function in ARGON2 {
+                    let needle = format!(".{function}(");
+                    let Some(found) = line.find(&needle) else {
+                        continue;
+                    };
+                    // Only a vault's: on `vault`, on `self.vault()?` (or a line that continues
+                    // one). A worker method of the same name (`self.remove_mnemonic(…)`) or another
+                    // type's (`document.mnemonic_accounts.remove_mnemonic(…)`) is no vault call.
+                    let receiver: String = line[..found]
+                        .chars()
+                        .rev()
+                        .take_while(|unit| unit.is_ascii_alphanumeric() || *unit == '_')
+                        .collect();
+                    if (!receiver.is_empty() && receiver != "tluav")
+                        || line.trim_start().starts_with("//")
+                    {
+                        continue;
+                    }
+                    calls += 1;
+                    let from = at.saturating_sub(WINDOW);
+                    let mut held = false;
+                    for before in lines[from..at].iter().rev() {
+                        if before.contains("self.kdf(KdfRuns::") {
+                            held = true;
+                            break;
+                        }
+                        if before.trim_start().starts_with("fn ")
+                            || before.trim_start().starts_with("pub fn ")
+                            || before.trim_start().starts_with("pub(super) fn ")
+                            || before.trim_start().starts_with("pub(crate) fn ")
+                        {
+                            break;
+                        }
+                    }
+                    assert!(held, "{name}:{}: `{function}` without the leave", at + 1);
+                }
+            }
+        }
+        assert!(calls >= 18, "the scan found the calls ({calls})");
     }
 }

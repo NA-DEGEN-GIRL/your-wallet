@@ -35,6 +35,7 @@ public final class JvmTests {
         run("the app keyboard types every printable ASCII unit", JvmTests::keyLayout);
         run("secret windows close by session, by window and by resync", JvmTests::secretWindows);
         run("the app is in the background only with no Activity started", JvmTests::startedCount);
+        run("the main screen shows only after the check of its own front", JvmTests::frontGate);
         System.out.println("jvmTest: " + passed + " passed, " + failed + " failed");
         if (failed != 0 || passed == 0) {
             System.exit(1);
@@ -183,6 +184,20 @@ public final class JvmTests {
         check(windows.stopped(), "home: back");
         check(!windows.stopped(), "no count below zero");
         check(windows.started(), "front again");
+    }
+
+    /** 2026-11-25 A2-8 (spec/15 §5.4): hidden from back until Rust's shown of the last front; an older one does not show. */
+    private static void frontGate() {
+        FrontGate gate = new FrontGate();
+        check(!gate.hidden(), "shown at start");
+        check(gate.front() == 1 && gate.shown(1), "first front");
+        gate.back();
+        check(gate.hidden(), "hidden from back");
+        check(!gate.shown(1), "a resync's shown of the earlier front");
+        check(gate.front() == 2, "second front");
+        check(!gate.shown(1) && gate.hidden(), "still the earlier one");
+        check(gate.shown(2) && !gate.hidden(), "its own front");
+        check(gate.shown(1), "an old one later changes nothing");
     }
 
     /** 2026-11-25 A2-7 (spec/15 §9.2): the four text layers hold exactly printable ASCII; words and letters a-z. */
@@ -519,6 +534,10 @@ public final class JvmTests {
         check(Arrays.equals(UiWire.timer("send_check"), utf8("{\"t\":\"timer\",\"id\":\"send_check\"}")), "timer");
         check(Arrays.equals(UiWire.copied(5, true), utf8("{\"t\":\"copied\",\"id\":5,\"ok\":true}")), "copied");
         check(UiWire.TICK_MS == 250, "tick period");
+        // 2026-11-25 A2-8: the shell's inputs (yw-android ui_host EVENTS_INPUT, WAKE_INPUT).
+        check(Arrays.equals(UiWire.events(), utf8("{\"t\":\"events\"}")), "events");
+        check(Arrays.equals(UiWire.wake(), utf8("{\"t\":\"wake\"}")), "wake");
+        check(Arrays.equals(UiWire.life("screen_off"), utf8("{\"t\":\"life\",\"e\":\"screen_off\"}")), "screen off");
     }
 
     private static void qrModules() {

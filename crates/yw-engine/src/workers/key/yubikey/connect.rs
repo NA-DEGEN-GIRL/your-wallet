@@ -9,6 +9,7 @@ use yw_core::yubikey::enrol::Enrolled;
 use yw_core::yubikey::plan::CardSlot;
 use yw_core::yubikey::record::HwKeyRecord;
 
+use super::super::platform::KdfRuns;
 use super::super::{KeyWorker, now_unix, password};
 use crate::events::YubiKeyJobError;
 use crate::logging::{self, Field};
@@ -48,10 +49,11 @@ impl KeyWorker {
             let slot = self.platform.new_slot().map_err(YubiKeyJobError::Vault)?;
             let lang = self.lang;
             let now = now_unix(&*self.clock);
+            let kdf = self.kdf(KdfRuns::One).map_err(YubiKeyJobError::Vault)?;
             let vault = self.vault().map_err(YubiKeyJobError::Vault)?;
-            let id = vault
-                .create_with_hardware(&password, enrolled.record.clone(), slot, now)
-                .map_err(YubiKeyJobError::Vault)?;
+            let created = vault.create_with_hardware(&password, enrolled.record.clone(), slot, now);
+            drop(kdf);
+            let id = created.map_err(YubiKeyJobError::Vault)?;
             super::write_yubikey_meta(vault, lang).map_err(YubiKeyJobError::Vault)?;
             // The wallet exists: the password is not needed again.
             self.connect_password = None;

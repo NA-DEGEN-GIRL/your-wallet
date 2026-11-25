@@ -47,6 +47,12 @@ public final class MainActivity extends Activity {
         if (getActionBar() != null) {
             getActionBar().hide();
         }
+        // 2026-11-25 A2-8 (spec/15 §9.1 "API 33+ 모든 Activity", §5.4): no recents screenshot of the main screen either,
+        // so the screen from before the app left is not shown in recents or while it returns (API 33+; below, the
+        // platform keeps one, a residual).
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            setRecentsScreenshotEnabled(false);
+        }
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setFitsSystemWindows(true);
@@ -102,6 +108,14 @@ public final class MainActivity extends Activity {
         long before = screen.rev();
         long focus = screen.draw(model);
         Screen.send(UiWire.rendered(screen.rev(), focus, before));
+    }
+
+    /**
+     * Shows or hides the screen's content (2026-11-25 A2-8, spec/15 §5.4, {@link FrontGate}): hidden from the moment the
+     * app goes to the background until Rust has checked the time away on the way back; the warning bands stay.
+     */
+    void setScreenShown(boolean on) {
+        scroll.setVisibility(on ? android.view.View.VISIBLE : android.view.View.INVISIBLE);
     }
 
     /** A field, reveal or top frame. */

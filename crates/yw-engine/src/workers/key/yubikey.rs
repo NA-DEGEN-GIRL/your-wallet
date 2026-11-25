@@ -16,6 +16,7 @@ use yw_core::yubikey::piv::ManagementState;
 use yw_core::yubikey::plan::{PlanError, PlannedSlot};
 use yw_core::yubikey::record::HwKeyRecord;
 
+use super::platform::KdfRuns;
 use super::{KeyWorker, ascii, now_unix, passphrase, password, reconcile_hardware};
 
 pub mod connect;
@@ -511,6 +512,7 @@ impl KeyWorker {
                 }
                 KeyOutcome::YubiKey(YkOutcome::Removed((|| {
                     let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
+                    let _kdf = self.kdf(KdfRuns::One)?;
                     self.vault()?.remove_hardware_key(&password, id)?;
                     logging::info("key", "yubikey.removed", &[]);
                     Ok(id)
@@ -866,10 +868,11 @@ impl KeyWorker {
             let slot = self.platform.new_slot().map_err(YubiKeyJobError::Vault)?;
             let lang = self.lang;
             let now = now_unix(&*self.clock);
+            let kdf = self.kdf(KdfRuns::One).map_err(YubiKeyJobError::Vault)?;
             let vault = self.vault().map_err(YubiKeyJobError::Vault)?;
-            let id = vault
-                .create_with_hardware(&password, enrolled.record.clone(), slot, now)
-                .map_err(YubiKeyJobError::Vault)?;
+            let created = vault.create_with_hardware(&password, enrolled.record.clone(), slot, now);
+            drop(kdf);
+            let id = created.map_err(YubiKeyJobError::Vault)?;
             write_yubikey_meta(vault, lang).map_err(YubiKeyJobError::Vault)?;
             // The wallet exists: the password is not needed again. The words stay held for a
             // backup YubiKey until the wizard ends (`Discard`) or the wallet locks.

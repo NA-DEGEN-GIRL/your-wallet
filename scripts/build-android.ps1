@@ -3,7 +3,8 @@
 #        [-Abi arm64-v8a|x86_64|all] [-SignKey <키스토어.p12> -SignPassFile <암호 파일>] [-Offline] [-ToolRoot <폴더>]
 #      게이트: ... -File scripts/build-android.ps1 -Check [-Require] [-Offline]  (scripts/check.ps1의 android 단계, 종료 33)
 #      기기 왕복 시험(2026-11-25 A2-4b, [09] §2.6): ... -Variant debug -DeviceTest -SignKey <키> -SignPassFile <파일> — libyw.so에 --cfg yw_device_test를 더해
-#      공개 시험 니모닉 vault를 만들고 다시 여는 devtest를 넣는다. -Check·release와 함께 쓰면 멈춘다(게이트·릴리스 APK에는 절대 들어가지 않는다).
+#      시험 지점(devtest)을 넣는다. -Check·release와 함께 쓰면 멈춘다(게이트·릴리스 APK에는 절대 들어가지 않는다). 2026-11-25 A2-8: devtest에는 이제
+#      패닉 장애 주입(A2-5)만 있다 — 전에는 공개 시험 니모닉 vault를 만들고 다시 여는 왕복도 있었다(키 작업자가 같은 폴더를 연다).
 #      3의 .so 검사가 이를 확인한다: -DeviceTest 없는 .so에 "devtest." 문자열이 있으면, -DeviceTest인데 없으면 멈춘다(2026-11-25 A2-4b 검토).
 # 순서([15] §13): 1 도구 판 확인(android/toolchain.sha256, §4.4) → 2 cargo로 libyw.so(--release, 경로 지우기) → 3 .so 검사
 # (LOAD 정렬 0x4000, 내보낸 기호 다섯, 빌드 PC 경로 문자열 없음) → 4 Gradle(--no-daemon, 검증 메타데이터 강제)이 서명 전 APK →
@@ -261,7 +262,7 @@ foreach ($triple in $Triples) {
     }
     if ($hits -gt 0) { Stop-Build "libyw.so ($triple) holds $hits build-PC path strings" }
     # 2026-11-25 A2-4b 검토: 기기 왕복 시험 코드(고정 시험 암호, 공개 니모닉 vault)는 -DeviceTest 빌드에만 있다. 그 사건 이름
-    # (devtest.done·devtest.failed)이 -DeviceTest 없이 만든 .so에 있으면 멈추고, -DeviceTest인데 없으면 멈춘다.
+    # (2026-11-25 A2-8부터 devtest.fault; 전에는 devtest.done·devtest.failed)이 -DeviceTest 없이 만든 .so에 있으면 멈추고, -DeviceTest인데 없으면 멈춘다.
     if ($DeviceTest -and $devtestHits -eq 0) { Stop-Build "libyw.so ($triple) built with -DeviceTest holds no devtest code" }
     if (-not $DeviceTest -and $devtestHits -gt 0) { Stop-Build "libyw.so ($triple) holds devtest code without -DeviceTest" }
     $abiDir = Join-Path $JniDir $AbiOf[$triple]

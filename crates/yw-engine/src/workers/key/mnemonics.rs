@@ -13,6 +13,7 @@ use yw_core::password::Bip39Passphrase;
 use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::vault::{BackupChallenge, ChallengeId, EvmKeySource, RecordId, Vault};
 
+use super::platform::KdfRuns;
 use super::{KeyWorker, PendingImport, ascii, now_unix, passphrase, password};
 use crate::events::KeyOutcome;
 use crate::meta::{self, Account, EvmAccountPref, Meta, MnemonicEntry};
@@ -156,6 +157,7 @@ impl KeyWorker {
         }
         let result = (|| {
             let password = password(bytes).map_err(|_| VaultError::UnlockFailed)?;
+            let _kdf = self.kdf(KdfRuns::One)?;
             self.vault()?.remove_mnemonic(&password, id)?;
             Ok(id)
         })();
@@ -180,8 +182,11 @@ impl KeyWorker {
             MnJob::Generate { password: bytes } => MnOutcome::Generated((|| {
                 let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
                 let now = now_unix(&*self.clock);
+                let kdf = self.kdf(KdfRuns::One)?;
                 let vault = self.vault()?;
-                let (id, phrase) = vault.generate_mnemonic(&password, now)?;
+                let generated = vault.generate_mnemonic(&password, now);
+                drop(kdf);
+                let (id, phrase) = generated?;
                 let address = vault.evm_address(EvmKeySource::Mnemonic(id, AccountIndex::ZERO))?;
                 Ok((id, phrase, address))
             })()),
@@ -205,6 +210,7 @@ impl KeyWorker {
                 then_backup,
             } => MnOutcome::Revealed((|| {
                 let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
+                let _kdf = self.kdf(KdfRuns::One)?;
                 let phrase = self.vault()?.reveal_mnemonic_of(&password, id)?;
                 Ok((id, phrase, then_backup))
             })()),
@@ -296,6 +302,7 @@ impl KeyWorker {
                 .transpose()
                 .map_err(VaultError::Key)?;
             let now = now_unix(&*self.clock);
+            let _kdf = self.kdf(KdfRuns::One)?;
             self.vault()?
                 .add_mnemonic(&password, phrase, passphrase, now)
         })();

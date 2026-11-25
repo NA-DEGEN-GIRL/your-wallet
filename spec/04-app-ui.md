@@ -1083,7 +1083,7 @@ impl SecretField {
 ## 5. 자동 잠금 (D12)
 
 ### 5.1 계기
-`pub enum LockReason { Manual, Idle, SessionLock, SessionDisconnect, Suspend, Shutdown }`, `IDLE_CHECK_MS = 1_000`.
+`pub enum LockReason { Manual, Idle, SessionLock, SessionDisconnect, Suspend, Shutdown, ScreenOff, Background }`, `IDLE_CHECK_MS = 1_000`. (2026-11-25 [15] A2-8: `ScreenOff`·`Background`(로그 낱말 그대로)는 Android 셸만 쓴다 — 화면 꺼짐과 백그라운드 시간, [15] §5.4. Windows는 이 둘로 잠그지 않는다. 전에는 앞의 여섯뿐이었다.)
 
 | 계기 | 감지 | 사유 |
 |---|---|---|

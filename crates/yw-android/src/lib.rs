@@ -36,7 +36,14 @@
 //! host, the window model with fill handles, `secretFill`'s units), [`secret_keys`] (the app
 //! keyboard's and the window buttons' map to the form's events) and [`secret_wire`] (the secret
 //! windows' inputs and frames); `jni` gives `secretKey` and `secretFill` their bodies.
+//!
+//! 2026-11-25 A2-8 (spec/15 §5.3–§5.4, §17 A2): the wallet runs — `shell` starts the key worker
+//! (its Argon2 calls behind the memory check and `M_PURGE`) and the RPC worker with no transport,
+//! [`ui_host`] drains their events and composes the locks (manual, idle, screen off, background),
+//! [`away`] keeps the time away for the background lock, and on Android the clock is
+//! `CLOCK_BOOTTIME` (`boottime`, the clock of `elapsedRealtime`).
 
+pub mod away;
 pub mod clock;
 pub mod device;
 pub mod device_key;
@@ -55,6 +62,8 @@ pub mod ui_host;
 
 #[cfg(target_os = "android")]
 mod android_files;
+#[cfg(target_os = "android")]
+mod boottime;
 #[cfg(all(target_os = "android", yw_device_test))]
 mod devtest;
 #[cfg(target_os = "android")]

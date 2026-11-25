@@ -1,7 +1,10 @@
 package dev.yw.app;
 
 import android.app.Application;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 
 /**
  * The application (spec/15 §3.2-§3.3; 2026-11-24 A2-3). Before anything else it replaces the default
@@ -18,6 +21,10 @@ import android.content.Context;
  *
  * <p>2026-11-25 A2-6: the screen state keeps the application context (the clipboard of a copy) before the I/O thread
  * starts handing it frames; the start input makes Rust post the first screen model.
+ *
+ * <p>2026-11-25 A2-8 (spec/15 §5.4): the screen-off lock. The main process registers for {@code ACTION_SCREEN_OFF}
+ * (a protected system broadcast that only the system sends; it can only be registered at run time, and from API 33
+ * the receiver is marked not exported) and sends {@code life screen_off}, on which Rust locks at once.
  */
 public final class App extends Application {
     private static volatile boolean loaded;
@@ -43,6 +50,20 @@ public final class App extends Application {
                 Native.call(start);
             }
             Native.call(DeviceFacts.input(this));
+            BroadcastReceiver screenOff = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
+                        Screen.send(UiWire.life("screen_off"));
+                    }
+                }
+            };
+            IntentFilter filter = new IntentFilter(Intent.ACTION_SCREEN_OFF);
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(screenOff, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                registerReceiver(screenOff, filter);
+            }
         }
     }
 
