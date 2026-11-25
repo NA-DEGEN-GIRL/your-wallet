@@ -116,10 +116,11 @@ fn a_press_draws_the_next_model() {
     assert_eq!(host.wallet().screen, Screen::CreateIntro);
 }
 
-/// A secret window is refused until the secure window exists (A2-7): the wallet ends the session
-/// and draws its error band; nothing secret leaves in a frame.
+/// A secret window of no open session is refused at once; the open session's window is asked of
+/// Java (2026-11-25 A2-7: before, every secret window was refused with E-SEC-001 until the secure
+/// window existed; the two-phase open is `secret_host::tests`).
 #[test]
-fn a_secret_window_is_refused_for_now() {
+fn a_secret_window_is_asked_of_java() {
     let mut host = host();
     let _ = host.start();
     let wallet = host.wallet_mut();
@@ -142,8 +143,8 @@ fn a_secret_window_is_refused_for_now() {
     );
     assert!(!frames[0].contains("E-SEC-001"));
     assert_eq!(host.wallet().screen, Screen::FirstRun);
-    // The create flow's first step asks for the new password (W01): refused, the session ends
-    // and the band says so.
+    // The create flow's first step asks for the new password (W01): Java is asked for the secure
+    // window (`s_open`), nothing is answered yet, no band.
     let start = slot_of(&host, Press::Core(CorePress::FirstCreate));
     let _ = host
         .on_wire_input(format!(r#"{{"t":"press","rev":2,"slot":{start}}}"#).as_bytes())
@@ -154,14 +155,15 @@ fn a_secret_window_is_refused_for_now() {
         .on_wire_input(format!(r#"{{"t":"press","rev":{rev},"slot":{next}}}"#).as_bytes())
         .unwrap();
     assert_eq!(outcome, InputOutcome::Done);
-    // The refusal's band shows: the host draws after the answer (which queues no redraw).
     let frames = texts(&frames);
     assert!(
         frames
-            .last()
-            .is_some_and(|frame| frame.contains("E-SEC-001")),
+            .iter()
+            .any(|frame| frame.starts_with(r#"{"t":"s_open","serial":"#)),
         "{frames:?}"
     );
+    assert!(frames.iter().all(|frame| !frame.contains("E-SEC-001")));
+    assert!(host.wallet().secret_open());
 }
 
 /// A copy frame carries an id; its answer reaches the wallet with the mark the shell kept, and an

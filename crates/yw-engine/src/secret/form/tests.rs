@@ -1063,3 +1063,69 @@ fn the_view_reads_what_the_form_holds() {
     );
     assert!(view.fields().next().is_none() && view.first_field().is_none());
 }
+
+/// 2026-11-25 (spec/15 §9.2, §18 42 N22, A2-7): W05's completions are the list words that start
+/// with the word being typed (none after a space, none while masked, none in another window), and
+/// `SecretKey::Pick(n)` types the rest of completion `n` and a space as keys would; an index with
+/// no completion changes nothing. The view's `Debug` never shows them.
+#[test]
+fn word_completions_are_picked_by_index() {
+    let mut form = input(SecretKind::Mnemonic, Lang::Ko, 0, true);
+    assert!(form.paint_view().word_candidates().is_empty());
+    type_text(&mut form, "ab", 1);
+    assert_eq!(
+        form.paint_view().word_candidates(),
+        ["abandon", "ability", "able", "about"]
+    );
+    assert!(!format!("{:?}", form.paint_view()).contains("abandon"));
+    assert!(matches!(
+        form.on_key(SecretKey::Pick(4), 2),
+        FormAction::None
+    ));
+    assert!(matches!(
+        form.on_key(SecretKey::Pick(0), 3),
+        FormAction::Redraw
+    ));
+    let typed = |form: &SecretForm| {
+        form.paint_view()
+            .first_field()
+            .map(|field| String::from_utf16(&field.render_utf16(false)).unwrap())
+            .unwrap()
+    };
+    assert_eq!(typed(&form), "abandon ");
+    assert!(
+        form.paint_view().word_candidates().is_empty(),
+        "after a space"
+    );
+    type_text(&mut form, "abo", 4);
+    assert_eq!(form.paint_view().word_candidates(), ["about", "above"]);
+    form.on_key(SecretKey::Pick(1), 5);
+    assert_eq!(typed(&form), "abandon above ");
+    // A full word picks itself and adds the space.
+    type_text(&mut form, "zoo", 6);
+    form.on_key(SecretKey::Pick(0), 7);
+    assert_eq!(typed(&form), "abandon above zoo ");
+    // Masked content (focus lost) shows no completion and takes no pick.
+    type_text(&mut form, "ab", 8);
+    form.on_deactivate();
+    assert!(form.paint_view().word_candidates().is_empty());
+    assert!(matches!(
+        form.on_key(SecretKey::Pick(0), 9),
+        FormAction::None
+    ));
+    // Other windows have none.
+    let mut backup = input(
+        SecretKind::Backup {
+            positions: [1, 2, 3, 4],
+        },
+        Lang::Ko,
+        0,
+        true,
+    );
+    type_text(&mut backup, "ab", 1);
+    assert!(backup.paint_view().word_candidates().is_empty());
+    assert!(matches!(
+        backup.on_key(SecretKey::Pick(0), 2),
+        FormAction::None
+    ));
+}

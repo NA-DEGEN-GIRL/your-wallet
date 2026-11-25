@@ -10,6 +10,10 @@
 //!
 //! None of these is ever a `Cmd` or an `Effect`: a key is applied in-process to the window's form,
 //! and a [`SecretKey::Char`] holds one typed unit of a secret, so its `Debug` prints no unit.
+//!
+//! 2026-11-25 (spec/15 §9.2, §3.2, A2-7): the Android shell's map (`yw-android` `secret_keys`)
+//! builds these from `secretKey(field, codeUnit)` and the secret window's button inputs, and
+//! [`SecretKey::Pick`] is new: W05's completion picked by its index (N22). Windows unchanged.
 
 use core::fmt;
 
@@ -36,6 +40,11 @@ pub enum SecretKey {
     /// Any other key-down: only the inactivity clock is touched, and the shell lets its
     /// platform handle the key (Windows: `DefWindowProc`, so Alt+F4 still closes).
     Other,
+    /// W05: the completion `n` (0-based) of the word being typed, as the app keyboard showed it
+    /// (2026-11-25, spec/15 §9.2, §18 42 N22: the Android shell picks a completion by its index,
+    /// never by the word; `SecretView::word_candidates`). The form types the rest of that word and
+    /// a space as if they were keys. No Windows key maps to it (the Windows map never builds it).
+    Pick(u8),
 }
 
 impl fmt::Debug for SecretKey {
@@ -49,6 +58,8 @@ impl fmt::Debug for SecretKey {
             Self::Copy => formatter.write_str("Copy"),
             Self::Composition => formatter.write_str("Composition"),
             Self::Other => formatter.write_str("Other"),
+            // Which completion was picked says something of the word being typed: never printed.
+            Self::Pick(_) => formatter.write_str("Pick"),
         }
     }
 }
@@ -112,6 +123,7 @@ mod tests {
             SecretKey::Copy,
             SecretKey::Composition,
             SecretKey::Other,
+            SecretKey::Pick(3),
         ] {
             let text = format!("{key:?}");
             assert!(text.chars().all(char::is_alphabetic), "{text}");

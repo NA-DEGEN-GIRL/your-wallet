@@ -107,6 +107,31 @@ pub fn is_word_prefix(prefix: &str) -> bool {
     })
 }
 
+/// The first `max` English words that start with `prefix`, in list order (2026-11-25, spec/15
+/// §9.2, §18 42 N22: the Android app keyboard's completion of the word being typed in W05).
+/// Nothing for an empty `prefix`. The words are the public list's; which ones come back depends
+/// on the typed prefix, so a caller treats them as secret-derived (never logged, never in the
+/// Android screen model).
+#[must_use]
+pub fn completions(prefix: &str, max: usize) -> Vec<&'static str> {
+    if prefix.is_empty() {
+        return Vec::new();
+    }
+    wordlist().map_or_else(
+        |_| Vec::new(),
+        |list| {
+            let at = list.partition_point(|candidate| candidate.as_bytes() < prefix.as_bytes());
+            list.get(at..)
+                .unwrap_or_default()
+                .iter()
+                .take_while(|candidate| candidate.as_bytes().starts_with(prefix.as_bytes()))
+                .take(max)
+                .copied()
+                .collect()
+        },
+    )
+}
+
 /// Supported mnemonic lengths (entropy 16/20/24/28/32 bytes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WordCount {

@@ -3412,6 +3412,12 @@ fn screen_scan_on_made_up_code() {
 /// as Dh`, a `let v = DisplayMade::Verified; v(window)` and an `open_display_window::<H>(` call
 /// passed them all, as did a `pub type` alias of `DisplaySecret` or a `&mut Option<DisplaySecret>`
 /// out-parameter. The scanner is tried on made-up code ([`word_sites_on_made_up_code`]).
+///
+/// 2026-11-25 (spec/15 §9.1 N23, §18 30, A2-7): a second production host, the Android shell's
+/// `AndroidDisplayHost` (`yw-android` `secret_host.rs`), whose sites are listed too and whose
+/// rule is (5b): it reports a window verified only for a verdict that only a ready answer reading
+/// `FLAG_SECURE` back builds (the two-phase open), and it keeps the wallet's form as the open
+/// window. Like `WinDisplayHost` it is trusted for what it reports (spec/15 §18 30).
 #[expect(
     clippy::too_many_lines,
     reason = "seven rules of the display secret's one way, each with its count"
@@ -3609,6 +3615,53 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
         "one verified arm: {}",
         make[0]
     );
+    // (5b) 2026-11-25 (spec/15 §9.1 N23, A2-7): the Android host. Its fields are its verdict, the
+    // shell's open-window slot and the bands; `make` reports `Verified` only for the verdict
+    // `Verified`, which only a ready answer that read `FLAG_SECURE` back builds (`on_ready`;
+    // every other verdict is `Refused` or `Failed`); `fill_and_show` keeps the wallet's form as
+    // the open window and nothing else.
+    let android = src_of(&all, "yw-android/src/secret_host.rs");
+    assert!(
+        squeeze(&android.code).contains(
+            "structAndroidDisplayHost<'a>{verdict:Verdict,slot:&'amutOption<OpenWin>,bands:Vec<Band>,}"
+        ),
+        "AndroidDisplayHost holds its verdict, the open-window slot and the bands only"
+    );
+    let android_fns = fn_blocks(android);
+    let body_of = |wanted: &str| -> Vec<String> {
+        android_fns
+            .iter()
+            .filter(|(name, _)| name == wanted)
+            .map(|(_, body)| squeeze(body))
+            .collect()
+    };
+    let make = body_of("make");
+    assert_eq!(make.len(), 1, "one make in secret_host.rs");
+    assert!(
+        make[0].contains("Verdict::Verified(win)=>DisplayMade::Verified(win),")
+            && make[0].matches("Verified").count() == 2,
+        "the Android make: {}",
+        make[0]
+    );
+    assert_eq!(
+        android.code.matches("Verdict::Verified(").count(),
+        4,
+        "Verdict::Verified: the ready's, make's and decide's two arms"
+    );
+    let ready = body_of("on_ready");
+    assert_eq!(ready.len(), 1, "one on_ready");
+    assert!(
+        ready[0].contains("letverdict=ifsecure{Verdict::Verified(win)}else{Verdict::Refused};"),
+        "only a secure ready verifies: {}",
+        ready[0]
+    );
+    assert_eq!(
+        body_of("fill_and_show"),
+        [
+            "{*self.slot=Some(OpenWin{serial,win:window,form,bands:core::mem::take(&mutself.bands),});}"
+        ],
+        "AndroidDisplayHost::fill_and_show"
+    );
     // (6) The form goes only into the window record. 2026-11-24 (S5-8, S5 plan critic C1): the
     // host gets the wallet's form; before, it built the form from the secret it was given
     // (`SecretForm::display(kind, lang, now_ms, display)`, then the step and the note).
@@ -3693,23 +3746,35 @@ fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
 
 /// The names of the display open that [`the_display_secret_moves_only_in_the_composition`]
 /// counts (2026-11-24, S5-1 review).
-const DISPLAY_WORDS: [&str; 4] = [
+/// 2026-11-25 (spec/15 §9.1 N23, A2-7): and the Android shell's host `AndroidDisplayHost`.
+const DISPLAY_WORDS: [&str; 5] = [
     "DisplayHost",
     "DisplayMade",
     "open_display_window",
     "WinDisplayHost",
+    "AndroidDisplayHost",
 ];
 
 /// Every occurrence of [`DISPLAY_WORDS`] in production code, as `word @ file: site`
 /// ([`word_sites`]; 2026-11-24, S5-1 review): the `use` lines of the shell's `app.rs` and the
 /// wallet; the trait and its answer; the wallet's open; the Windows host's struct, impl header and
 /// `make` (its signature and its four arms); the composition's one open, with that host.
-const DISPLAY_SITES: [&str; 21] = [
+/// 2026-11-25 (spec/15 §9.1 N23, A2-7): and the Android shell's host in `yw-android`
+/// `secret_host.rs` — its `use` line, struct, impl header and `make` (its signature and its three
+/// arms), and the one open of the second phase (`decide`, with that host).
+const DISPLAY_SITES: [&str; 32] = [
+    "DisplayHost @ yw-android/src/secret_host.rs: use yw_engine::secret::{DisplayHost,DisplayMade,SecretFormOp,SecretKind,SecretStep,TimeoutNote,text,}",
+    "DisplayHost @ yw-android/src/secret_host.rs: item implDisplayHostforAndroidDisplayHost<'_>{",
     "DisplayHost @ yw-app/src/app.rs: use yw_engine::secret::{DisplayHost,DisplayMade,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
     "DisplayHost @ yw-app/src/app.rs: item implDisplayHostforWinDisplayHost<'_>{",
     "DisplayHost @ yw-engine/src/secret/mod.rs: item pubtraitDisplayHost{",
     "DisplayHost @ yw-engine/src/wallet/mod.rs: use crate::secret::{DisplayHost,DisplayMade,DisplaySecret,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
     "DisplayHost @ yw-engine/src/wallet/mod.rs: fn open_display_window",
+    "DisplayMade @ yw-android/src/secret_host.rs: use yw_engine::secret::{DisplayHost,DisplayMade,SecretFormOp,SecretKind,SecretStep,TimeoutNote,text,}",
+    "DisplayMade @ yw-android/src/secret_host.rs: fn make",
+    "DisplayMade @ yw-android/src/secret_host.rs: fn make",
+    "DisplayMade @ yw-android/src/secret_host.rs: fn make",
+    "DisplayMade @ yw-android/src/secret_host.rs: fn make",
     "DisplayMade @ yw-app/src/app.rs: use yw_engine::secret::{DisplayHost,DisplayMade,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
     "DisplayMade @ yw-app/src/app.rs: fn make",
     "DisplayMade @ yw-app/src/app.rs: fn make",
@@ -3721,11 +3786,15 @@ const DISPLAY_SITES: [&str; 21] = [
     "DisplayMade @ yw-engine/src/wallet/mod.rs: use crate::secret::{DisplayHost,DisplayMade,DisplaySecret,SecretEffect,SecretFormOp,SecretKind,SecretStep,}",
     "DisplayMade @ yw-engine/src/wallet/mod.rs: fn open_display_window",
     "DisplayMade @ yw-engine/src/wallet/mod.rs: fn open_display_window",
+    "open_display_window @ yw-android/src/secret_host.rs: fn decide",
     "open_display_window @ yw-app/src/app.rs: fn open_display_composed",
     "open_display_window @ yw-engine/src/wallet/mod.rs: fn open_display_window",
     "WinDisplayHost @ yw-app/src/app.rs: fn open_display_composed",
     "WinDisplayHost @ yw-app/src/app.rs: item structWinDisplayHost<'a>{",
     "WinDisplayHost @ yw-app/src/app.rs: item implDisplayHostforWinDisplayHost<'_>{",
+    "AndroidDisplayHost @ yw-android/src/secret_host.rs: item structAndroidDisplayHost<'a>{",
+    "AndroidDisplayHost @ yw-android/src/secret_host.rs: item implDisplayHostforAndroidDisplayHost<'_>{",
+    "AndroidDisplayHost @ yw-android/src/secret_host.rs: fn decide",
 ];
 
 /// The same in testkit (always compiled, kept out of production by
@@ -7487,10 +7556,18 @@ fn the_secret_form_action_splits_at_on_secret_action() {
             .map(|(src, name, _)| format!("{}:{name}", src.file))
             .collect::<Vec<_>>()
     };
+    // 2026-11-25 (spec/15 §9.1 A2-7): and the Android screen host, which gives the wallet the
+    // window actions its secret host made from the form's (`secret_host::SecretHost::act`, a
+    // gone window's `on_gone`) after the batch: `answer` for an input's, `drain` for an effect's.
     assert_eq!(
         callers_of("on_secret_action"),
-        ["yw-app/src/app.rs:apply_form_action"]
+        [
+            "yw-android/src/ui_host.rs:answer",
+            "yw-android/src/ui_host.rs:drain",
+            "yw-app/src/app.rs:apply_form_action",
+        ]
     );
+    assert_android_secret_actions(&files);
     // 2026-11-22 (S4c W12 review): the submission and the purpose enter only through it.
     // 2026-11-23 (S4d E0b): `on_secret_action` is in the wallet half `app/wallet.rs`.
     for purpose_step in ["on_submit", "on_cancel"] {
@@ -7500,6 +7577,29 @@ fn the_secret_form_action_splits_at_on_secret_action() {
             "{purpose_step} has a production caller other than on_secret_action"
         );
     }
+}
+
+/// 2026-11-25 (spec/15 §9.1 A2-7): no Android code but the secret host's `act` (the form's
+/// actions) and `on_gone` (a destroyed window) builds a `SecretAction`.
+fn assert_android_secret_actions(files: &[Src]) {
+    let built: Vec<String> = files
+        .iter()
+        .filter(|src| src.file.starts_with("yw-android/"))
+        .flat_map(|src| {
+            fn_blocks(src)
+                .into_iter()
+                .filter(|(_, body)| body.contains("SecretAction::"))
+                .map(move |(name, _)| format!("{}:{name}", src.file))
+        })
+        .collect();
+    assert_eq!(
+        built,
+        [
+            "yw-android/src/secret_host.rs:on_gone",
+            "yw-android/src/secret_host.rs:act",
+        ],
+        "the Android code that builds a SecretAction"
+    );
 }
 
 /// The shell half of the secret form's actions (`apply_form_action`, whose `App` calls are
@@ -9636,6 +9736,12 @@ const SECRET_FORM_FILE: &str = "yw-engine/src/secret/form.rs";
 const SECRET_PAINT_FILE: &str = "yw-app/src/ui/secret.rs";
 const SECRET_MAP_FILE: &str = "yw-app/src/ui/secret_input.rs";
 const SECRET_EVENTS_FILE: &str = "yw-engine/src/secret/input.rs";
+/// The Android shell's map of the app keyboard and the secret window's buttons (2026-11-25,
+/// spec/15 §9.2 A2-7): it names the events as the Windows map does.
+const ANDROID_SECRET_MAP_FILE: &str = "yw-android/src/secret_keys.rs";
+/// The Android shell's secret windows (2026-11-25, spec/15 §9.1 A2-7): it feeds the form what
+/// its map built, in its one fn `feed`.
+const ANDROID_SECRET_HOST_FILE: &str = "yw-android/src/secret_host.rs";
 
 /// The form entry, the map result its call in `App::on_secret` starts with, and the `Msg` arm
 /// it belongs in (2026-11-24, S5-7 review).
@@ -9709,6 +9815,15 @@ fn secret_paint_findings(src: &Src, findings: &mut Vec<String>) {
     }
 }
 
+/// 2026-11-25 (spec/15 §9.2 A2-7): whether a form entry call is the Android host's one feeder
+/// taking the step its map built (`Step::Key(key)`, `Step::Pointer(pointer)`) and nothing else.
+fn android_feed_call(name: &str, func: &str, call: &str, argument: &str) -> bool {
+    name == ANDROID_SECRET_HOST_FILE
+        && func == "feed"
+        && ((call == ".on_key(" && argument.starts_with("key, now_ms)"))
+            || (call == ".on_pointer(" && argument.starts_with("pointer, now_ms)")))
+}
+
 /// What [`secret_keys_are_mapped_only_by_the_mapper`] finds in `files` (production code as
 /// [`production_code`] reads it), and how many form entries it found mapped.
 fn secret_key_findings(files: &[Src]) -> (Vec<String>, usize) {
@@ -9762,7 +9877,7 @@ fn secret_key_findings(files: &[Src]) -> (Vec<String>, usize) {
             }
             continue;
         }
-        if name == SECRET_MAP_FILE || name == SECRET_EVENTS_FILE {
+        if [SECRET_MAP_FILE, SECRET_EVENTS_FILE, ANDROID_SECRET_MAP_FILE].contains(&name) {
             continue;
         }
         // Nothing else builds or matches a key or pointer event ...
@@ -9787,6 +9902,7 @@ fn secret_key_findings(files: &[Src]) -> (Vec<String>, usize) {
             let arm = msg_arm_before(code, at);
             let shown = argument.chars().take(30).collect::<String>();
             match entry {
+                _ if android_feed_call(name, &func, call, argument) => {}
                 Some(&(_, _, expected)) if name == "yw-app/src/app.rs" && func == "on_secret" => {
                     mapped += 1;
                     if arm != expected {
@@ -9854,6 +9970,19 @@ fn secret_keys_are_mapped_only_by_the_mapper() {
         mapped, 6,
         "the secret window's entry calls the form six times"
     );
+    // 2026-11-25 (spec/15 §9.2 A2-7): the Android host feeds the form in `feed` only, once by key
+    // and once by pointer, each with the step its map built.
+    let android = src_of(&files, ANDROID_SECRET_HOST_FILE);
+    let feed = fn_bodies(android, "feed");
+    assert_eq!(feed.len(), 1, "one feed");
+    let feed = normalized(feed[0]);
+    for call in [
+        "Step::Key(key) => form.on_key(key, now_ms),",
+        "Step::Pointer(pointer) => form.on_pointer(pointer, now_ms).0,",
+    ] {
+        assert_eq!(feed.matches(call).count(), 1, "feed: {call}");
+    }
+    let _ = src_of(&files, ANDROID_SECRET_MAP_FILE);
 }
 
 /// [`secret_key_findings`] on made-up code: it can fail.
@@ -10086,7 +10215,13 @@ fn the_secret_form_is_read_only_by_its_paint_and_copy() {
 /// Every mention of `paint_view` in production code and the one `SecretView { … }` (2026-11-24,
 /// S5-8 review; was `VIEW_CALLS`, the `.view()` calls, which also listed the approval flow's two
 /// `flow.view()`): the paint arm of the secret window, the fn itself and the view it builds.
-const PAINT_VIEW_SITES: [&str; 3] = [
+///
+/// 2026-11-25 (spec/15 §9.1 A2-7): and the Android host's three reads (the active field of a key,
+/// a fill's units, the window model), all in its one file.
+const PAINT_VIEW_SITES: [&str; 6] = [
+    "yw-android/src/secret_host.rs: fn take_key",
+    "yw-android/src/secret_host.rs: fn fill",
+    "yw-android/src/secret_host.rs: fn model",
     "yw-app/src/app.rs: fn on_secret in Msg::Paint",
     "yw-engine/src/secret/form.rs: fn paint_view",
     "yw-engine/src/secret/form.rs: SecretView built in fn paint_view",
@@ -10111,7 +10246,7 @@ fn the_paint_view_check_finds_every_call_form() {
                  { form: self } } }",
             ),
         ]),
-        PAINT_VIEW_SITES,
+        PAINT_VIEW_SITES[3..],
         "the allowed sites"
     );
     for (file, text, expected) in [

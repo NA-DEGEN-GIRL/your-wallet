@@ -280,6 +280,27 @@ fn is_word_matches_the_list_exactly() {
     assert!(!is_word("aban"));
 }
 
+/// 2026-11-25 (spec/15 §9.2 N22): the completions of a prefix are the list's words that start
+/// with it, in list order, at most `max`; none for an empty prefix or one no word starts with.
+#[test]
+fn completions_follow_the_list() {
+    assert_eq!(
+        super::completions("ab", 4),
+        ["abandon", "ability", "able", "about"]
+    );
+    assert_eq!(super::completions("abo", 4), ["about", "above"]);
+    assert_eq!(super::completions("abandon", 4), ["abandon"]);
+    assert_eq!(super::completions("zo", 4), ["zone", "zoo"]);
+    assert_eq!(super::completions("a", 2), ["abandon", "ability"]);
+    assert!(super::completions("", 4).is_empty());
+    assert!(super::completions("xyz", 4).is_empty());
+    assert!(super::completions("Ab", 4).is_empty());
+    assert!(super::completions("ab", 0).is_empty());
+    for word in super::completions("q", 100) {
+        assert!(word.starts_with('q') && is_word(word));
+    }
+}
+
 /// The in-memory backup confirmation of a `YubiKey` wallet (spec/10 §7.1-1): a fresh 24-word
 /// mnemonic, four distinct ascending positions, the right words accepted, a wrong or malformed
 /// answer refused (the same rules as `Vault::confirm_backup`).

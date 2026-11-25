@@ -21,6 +21,9 @@ import android.widget.TextView;
  * model's revision and the control's slot (spec/15 §18 8). While the Activity is in front it sends the lifetime events
  * (front, back) and the main timer's tick every {@link UiWire#TICK_MS}. The status line is gone (the model replaces
  * it).
+ *
+ * <p>2026-11-25 A2-7: a secret window (SecretActivity) is started from here (Screen.started); while it covers this
+ * Activity, it sends the main timer's tick itself.
  */
 public final class MainActivity extends Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -72,6 +75,7 @@ public final class MainActivity extends Activity {
     protected void onStart() {
         super.onStart();
         drawBands(App.loaded() ? Wire.bands(Native.call(DeviceFacts.input(this))) : null);
+        Screen.started(this);
         Screen.attach(this);
         Screen.send(UiWire.life("front"));
         main.postDelayed(tick, UiWire.TICK_MS);
@@ -82,6 +86,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(tick);
         Screen.send(UiWire.life("back"));
         Screen.detach(this);
+        Screen.stopped(this);
         super.onStop();
     }
 

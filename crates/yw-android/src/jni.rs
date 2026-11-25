@@ -17,7 +17,10 @@
 //! event, which ends the process like a panic; the other four are still stubs.) (2026-11-25
 //! A2-4b: `call` also takes the start input; `next` hands out the platform I/O requests of
 //! [`crate::io_request`] and `ioComplete` answers them — the same table entries, no new index;
-//! `secretKey` and `secretFill` are still stubs.)
+//! `secretKey` and `secretFill` are still stubs.) (2026-11-25 A2-7: `secretKey` feeds the open
+//! secret window (`crate::shell::secret_key`) and `secretFill` writes a handle's units into Java's
+//! `char[]` with `GetArrayLength` and `SetCharArrayRegion` — the indices P0-1 checked under
+//! `CheckJNI`, no new one — and returns how many it wrote; the Rust copy is wiped when dropped.)
 //!
 //! 2026-11-24 A2-1 review: ART's `RegisterNatives` binds the methods in order and stops at the first
 //! it cannot find, leaving the earlier ones bound. So every method body runs only through
@@ -96,6 +99,7 @@ type GetArrayLengthFn = unsafe extern "C" fn(JniEnv, JObject) -> i32;
 type NewByteArrayFn = unsafe extern "C" fn(JniEnv, i32) -> JObject;
 type GetByteArrayRegionFn = unsafe extern "C" fn(JniEnv, JObject, i32, i32, *mut i8);
 type SetByteArrayRegionFn = unsafe extern "C" fn(JniEnv, JObject, i32, i32, *const i8);
+type SetCharArrayRegionFn = unsafe extern "C" fn(JniEnv, JObject, i32, i32, *const u16);
 
 /// Clears a pending Java exception (one `FindClass` or `RegisterNatives` threw), so the loader's own
 /// error is what Java sees.
@@ -278,15 +282,58 @@ extern "C" fn io_complete(jni: JniEnv, _class: JObject, id: i64, status: i32, bo
     });
 }
 
-/// `void secretKey(int field, int codeUnit)`: one app-keyboard key. Stub: no secret window is open.
-extern "C" fn secret_key(_jni: JniEnv, _class: JObject, _field: i32, _code_unit: i32) {
-    when_loaded((), || {});
+/// `void secretKey(int field, int codeUnit)`: one app-keyboard key (spec/15 §9.2; 2026-11-25 A2-7):
+/// the shell feeds it to the open secret window the field token names (`crate::secret_keys`).
+/// Before A2-7 a stub.
+extern "C" fn secret_key(_jni: JniEnv, _class: JObject, field: i32, code_unit: i32) {
+    when_loaded((), || crate::shell::secret_key(field, code_unit));
 }
 
-/// `int secretFill(long handle, char[] out)`: a secret display fill. Stub: no handle is valid, so 0
-/// and nothing written (spec/15 §3.2).
-extern "C" fn secret_fill(_jni: JniEnv, _class: JObject, _handle: i64, _out: JObject) -> i32 {
-    when_loaded(0, || 0)
+/// `int secretFill(long handle, char[] out)`: a secret display fill (spec/15 §3.2, §9.1; 2026-11-25
+/// A2-7). The handle's units (`crate::secret_host::SecretHost::fill`) go straight into `out` with
+/// `SetCharArrayRegion` when they fit; the answer is how many were written, 0 (nothing written)
+/// for an unknown or closed handle, masked content, a null array or one too short. The Rust copy
+/// is wiped when dropped. Before A2-7 a stub that answered 0.
+extern "C" fn secret_fill(jni: JniEnv, _class: JObject, handle: i64, out: JObject) -> i32 {
+    when_loaded(0, || {
+        if out.is_null() {
+            return 0;
+        }
+        match crate::shell::secret_fill(handle) {
+            Some(units) => write_chars(jni, out, &units),
+            None => 0,
+        }
+    })
+}
+
+/// Writes `units` at the start of the Java `char[]` `array` when they fit; how many were written
+/// (0 for none, a failed copy or an array too short).
+fn write_chars(jni: JniEnv, array: JObject, units: &[u16]) -> i32 {
+    let Ok(count) = i32::try_from(units.len()) else {
+        return 0;
+    };
+    if count == 0 {
+        return 0;
+    }
+    let Some(length_of) = table_fn!(jni, env::GET_ARRAY_LENGTH, GetArrayLengthFn) else {
+        return 0;
+    };
+    // SAFETY: `jni` is the current thread's `JNIEnv*` inside a native call; `array` is the non-null
+    // local reference of the `char[]` parameter Java passed.
+    let capacity = unsafe { length_of(jni, array) };
+    if count > capacity {
+        return 0;
+    }
+    let Some(set_region) = table_fn!(jni, env::SET_CHAR_ARRAY_REGION, SetCharArrayRegionFn) else {
+        return 0;
+    };
+    // SAFETY: As above; `0..count` is inside the array (`count` ≤ its length, just read) and
+    // `units` holds `count` UTF-16 units (`jchar`).
+    unsafe { set_region(jni, array, 0, count, units.as_ptr()) };
+    if exception_pending(jni) {
+        return 0;
+    }
+    count
 }
 
 /// The function of each [`METHODS`] entry, in the same order.

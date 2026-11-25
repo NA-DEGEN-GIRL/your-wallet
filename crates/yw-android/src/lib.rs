@@ -30,6 +30,12 @@
 //! yw-engine `protection`), Java's uncaught-exception end with its own log line
 //! (`panic_hook::java_uncaught`), and in a `-DeviceTest` build the panic test's fault points
 //! (`devtest::fault_points`).
+//!
+//! 2026-11-25 A2-7 (spec/15 §9.1–§9.2, §3.2, §18 42 N22·N23): the secret windows —
+//! [`secret_host`] (the engine form's instance per window, the two-phase open with the display
+//! host, the window model with fill handles, `secretFill`'s units), [`secret_keys`] (the app
+//! keyboard's and the window buttons' map to the form's events) and [`secret_wire`] (the secret
+//! windows' inputs and frames); `jni` gives `secretKey` and `secretFill` their bodies.
 
 pub mod clock;
 pub mod device;
@@ -40,6 +46,9 @@ pub mod jni_table;
 pub mod kdf_gate;
 pub mod log_file;
 pub mod sealed_files;
+pub mod secret_host;
+pub mod secret_keys;
+pub mod secret_wire;
 pub mod slot_plan;
 pub mod storage;
 pub mod ui_host;

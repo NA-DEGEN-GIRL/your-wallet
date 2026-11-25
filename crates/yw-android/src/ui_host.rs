@@ -4,9 +4,12 @@
 //! [`crate::io_request::FRAME_UI`]): the screen model, a field write, a reveal, the scroll to
 //! the top, a one-shot timer, a copy. The effects Java has no part in are answered here, after
 //! the batch, each answer an entry of its own (the deferred schedule of spec/15 §3.2, yw-engine
-//! `testkit::Schedule::Deferred`): an approval window cannot open yet (A3), a secret window is
-//! refused until the secure window exists (A2-7, fail closed: the wallet wipes what it held for
-//! it), a link is not opened (no browser and no network in A2).
+//! `testkit::Schedule::Deferred`): an approval window cannot open yet (A3), a link is not opened
+//! (no browser and no network in A2). 2026-11-25 A2-7: a secret window is no longer refused here:
+//! its effects go to the secret host (`crate::secret_host`, the two-phase open of spec/15 §9.1),
+//! whose answer (`Cmd::SecretOpened`) comes when Java's secure window is ready, and the window's
+//! inputs (`crate::secret_wire`, tried before the engine's), keys (`secretKey`) and fills
+//! (`secretFill`) reach it here. Before A2-7 every secret open was answered `Refused(E-SEC-001)`.
 //!
 //! Frames (yw-json, UTF-8): the model (yw-engine `wire::model`), and
 //!
@@ -43,18 +46,23 @@
 use std::collections::BTreeMap;
 
 use yw_core::lang::Lang;
+use yw_core::secret::Zeroizing;
 use yw_engine::approval::flow::{ApprovalEffect, OpenOutcome};
 use yw_engine::cmd::{Cmd, CopyMark};
 use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 use yw_engine::errors::ErrorCode;
+use yw_engine::protection::Surface;
 use yw_engine::screen::facts::{PipeStatus, PlatformFlags, ScreenFacts};
 use yw_engine::screen::model::Act;
 use yw_engine::secret::SecretEffect;
 use yw_engine::wallet::Wallet;
+use yw_engine::wallet::secret_session::SecretAction;
 use yw_engine::wire::{self, Input, InputOutcome, Life, WireError};
 use yw_json::{Number, Object, Value};
 
 use crate::io_request::UiKind;
+use crate::secret_host::{Reply, SecretHost, Shape};
+use crate::{device, secret_keys, secret_wire};
 
 /// What the Android build offers (spec/15 §11.3, §9.3–§9.4, §8.5): no secret copy, no word paste,
 /// no `rpc.json`, no Chrome extension, no folders; the narrow-screen `seen_all` rule on.
@@ -115,9 +123,19 @@ impl ScreenFacts for AndroidFacts {
     }
 }
 
+/// What the shell gives the wallet after a batch (the deferred schedule): an answer `Cmd`, or a
+/// secret window's end or request (`Wallet::on_secret_action`, in-process: a submission holds
+/// secrets, so it is never a `Cmd`; 2026-11-25 A2-7).
+enum Answer {
+    Cmd(Cmd),
+    Secret(u64, SecretAction),
+}
+
 /// The wallet and what the shell keeps for it (module doc).
 pub struct UiHost {
     wallet: Wallet,
+    /// The secret windows (2026-11-25 A2-7).
+    secret: SecretHost,
     facts: AndroidFacts,
     /// The marks of the copies Java has not answered yet, by frame id.
     copies: BTreeMap<u64, CopyMark>,
@@ -148,6 +166,7 @@ impl UiHost {
     pub const fn new(wallet: Wallet) -> Self {
         Self {
             wallet,
+            secret: SecretHost::new(),
             facts: AndroidFacts,
             copies: BTreeMap::new(),
             last_copy: 0,
@@ -193,6 +212,25 @@ impl UiHost {
         &mut self,
         bytes: &[u8],
     ) -> Result<(InputOutcome, Vec<Vec<u8>>), WireError> {
+        // 2026-11-25 A2-7: a secret window's input (`s_…`, which no engine input begins with).
+        if secret_wire::is_secret_input(bytes) {
+            let input = secret_wire::decode(bytes).ok_or(WireError::Shape)?;
+            let now_ms = self.wallet.clock.now_ms();
+            let wall_ms = self.wallet.clock.now_unix_ms();
+            let mut frames = Vec::new();
+            let mut reply = Reply::default();
+            self.secret.take_input(
+                &mut self.wallet,
+                input,
+                now_ms,
+                |facts| device::bands_with(facts, Surface::Secret, wall_ms),
+                &mut frames,
+                &mut reply,
+            );
+            self.frames.extend(frames);
+            self.answer(reply);
+            return Ok((InputOutcome::Done, self.take_frames()));
+        }
         let input = wire::decode_input(bytes)?;
         match input {
             Input::Copied { id, ok } => {
@@ -210,6 +248,14 @@ impl UiHost {
                     self.wallet.on_cmd(Cmd::Tick { now_ms, part });
                     self.drain();
                 }
+                // 2026-11-25 A2-7: the secret window's timer (its hold, time-outs, countdown) and
+                // the wait of an asked one, on the same tick.
+                let mut frames = Vec::new();
+                let mut reply = Reply::default();
+                self.secret
+                    .tick(&mut self.wallet, now_ms, &mut frames, &mut reply);
+                self.frames.extend(frames);
+                self.answer(reply);
                 Ok((InputOutcome::Done, self.take_frames()))
             }
             other => {
@@ -221,6 +267,52 @@ impl UiHost {
                 self.edit_sync();
                 Ok((outcome, self.take_frames()))
             }
+        }
+    }
+
+    /// One `secretKey(field, codeUnit)` (2026-11-25 A2-7, `crate::secret_keys`): fed to the open
+    /// secret window it names; a key of no open window does nothing. The frames it made.
+    pub fn on_secret_key(&mut self, field: i32, code_unit: i32) -> Vec<Vec<u8>> {
+        let Some(event) = secret_keys::decode_key(field, code_unit) else {
+            return Vec::new();
+        };
+        let now_ms = self.wallet.clock.now_ms();
+        let mut frames = Vec::new();
+        let mut reply = Reply::default();
+        self.secret.take_key(event, now_ms, &mut frames, &mut reply);
+        self.frames.extend(frames);
+        self.answer(reply);
+        self.take_frames()
+    }
+
+    /// The units of a `secretFill` handle (2026-11-25 A2-7, `crate::secret_host::SecretHost::fill`),
+    /// wiped when dropped; `None` fills nothing.
+    #[must_use]
+    pub fn secret_fill(&self, handle: i64) -> Option<Zeroizing<Vec<u16>>> {
+        self.secret.fill(handle)
+    }
+
+    /// The secret host (tests).
+    #[must_use]
+    pub const fn secret(&self) -> &SecretHost {
+        &self.secret
+    }
+
+    /// Gives the wallet the secret host's answers and window actions, each an entry followed by
+    /// its drain (2026-11-25 A2-7).
+    fn answer(&mut self, reply: Reply) {
+        if reply.opened.is_empty() && reply.actions.is_empty() {
+            return;
+        }
+        for (serial, outcome) in reply.opened {
+            self.answered = true;
+            self.wallet.on_cmd(Cmd::SecretOpened { serial, outcome });
+            self.drain();
+        }
+        for (serial, action) in reply.actions {
+            self.answered = true;
+            self.wallet.on_secret_action(serial, action);
+            self.drain();
         }
     }
 
@@ -240,6 +332,9 @@ impl UiHost {
         for (timer, ms) in self.timers.clone() {
             self.frames.push(timer_frame(timer, ms));
         }
+        // 2026-11-25 A2-7: the asked or open secret window again.
+        let now_ms = self.wallet.clock.now_ms();
+        self.frames.extend(self.secret.resync(now_ms));
         self.take_frames()
     }
 
@@ -285,7 +380,10 @@ impl UiHost {
             }
             self.answered = true;
             for answer in answers {
-                self.wallet.on_cmd(answer);
+                match answer {
+                    Answer::Cmd(cmd) => self.wallet.on_cmd(cmd),
+                    Answer::Secret(serial, action) => self.wallet.on_secret_action(serial, action),
+                }
             }
         }
         if core::mem::take(&mut self.answered) {
@@ -294,7 +392,7 @@ impl UiHost {
         self.frames = frames;
     }
 
-    fn apply(&mut self, effect: Effect, frames: &mut Vec<Vec<u8>>, answers: &mut Vec<Cmd>) {
+    fn apply(&mut self, effect: Effect, frames: &mut Vec<Vec<u8>>, answers: &mut Vec<Answer>) {
         match effect {
             Effect::Render => frames.push(self.wallet.draw(&self.facts)),
             Effect::SetField { field, text } => self.field_frames(Act::Field(field), &text, frames),
@@ -343,31 +441,27 @@ impl UiHost {
                 ]));
             }
             // No browser in A2 (no network permission, spec/15 §18 42 N16).
-            Effect::OpenUrl { which, .. } => answers.push(Cmd::Opened { ok: false, which }),
-            Effect::OpenFolder(Folder::Extension) => answers.push(Cmd::FolderMissing),
+            Effect::OpenUrl { which, .. } => {
+                answers.push(Answer::Cmd(Cmd::Opened { ok: false, which }));
+            }
+            Effect::OpenFolder(Folder::Extension) => answers.push(Answer::Cmd(Cmd::FolderMissing)),
             // The approval window is A3: an open fails like a window that could not be made.
             Effect::Approval(ApprovalEffect::Open { shown, .. }) => {
-                answers.push(Cmd::ApprovalOpened {
+                answers.push(Answer::Cmd(Cmd::ApprovalOpened {
                     shown,
                     outcome: OpenOutcome::Failed(ErrorCode::App009),
                     wide: false,
-                });
+                }));
             }
-            // The secure windows are A2-7: refused (fail closed; the wallet wipes a display
-            // secret it held for the window).
-            Effect::Secret(
-                SecretEffect::OpenInput { serial, .. } | SecretEffect::OpenDisplay { serial, .. },
-            ) => answers.push(Cmd::SecretOpened {
-                serial,
-                outcome: OpenOutcome::Refused(ErrorCode::Sec001),
-            }),
+            // 2026-11-25 A2-7: the secret windows (`crate::secret_host`); before, every open was
+            // answered `Refused(E-SEC-001)` here.
+            Effect::Secret(effect) => self.apply_secret(effect, frames, answers),
             // Nothing on Android in A2: no folder button is drawn (`open_folders` off), no
-            // approval or secret window exists to close or repaint, no secret copy is pending,
+            // approval window exists to close or repaint, no secret copy is pending,
             // no key worker runs yet (A2-8), the main window is the app's task, credential
             // edits and the scroll memory come later (A3, A7).
             Effect::OpenFolder(Folder::Data | Folder::Logs)
             | Effect::Approval(_)
-            | Effect::Secret(_)
             | Effect::AwaitKeyLock { .. }
             | Effect::ClearCred { .. }
             | Effect::RaiseMain
@@ -377,6 +471,70 @@ impl UiHost {
             | Effect::ScrollMemoryClear
             | Effect::ReleaseHold => {}
         }
+    }
+
+    /// A secret window's effect (2026-11-25 A2-7): an open is asked of Java (answered when its
+    /// window is ready, `SecretHost::on_input`), a close and a form change go to the window; the
+    /// clip clear has nothing to clear (no secret copy on Android, spec/15 §9.3).
+    fn apply_secret(
+        &mut self,
+        effect: SecretEffect,
+        frames: &mut Vec<Vec<u8>>,
+        answers: &mut Vec<Answer>,
+    ) {
+        let now_ms = self.wallet.clock.now_ms();
+        let mut reply = Reply::default();
+        match effect {
+            SecretEffect::OpenInput {
+                serial,
+                kind,
+                step,
+                lang,
+                ..
+            } => self.secret.ask(
+                &self.wallet,
+                serial,
+                kind,
+                step,
+                Shape::Input,
+                lang,
+                now_ms,
+                frames,
+                &mut reply,
+            ),
+            SecretEffect::OpenDisplay {
+                serial,
+                kind,
+                step,
+                timeout_note,
+                lang,
+            } => self.secret.ask(
+                &self.wallet,
+                serial,
+                kind,
+                step,
+                Shape::Display(timeout_note),
+                lang,
+                now_ms,
+                frames,
+                &mut reply,
+            ),
+            SecretEffect::Close { serial } => self.secret.close(serial, frames),
+            SecretEffect::Form { serial, op } => self.secret.form_op(serial, op, now_ms, frames),
+            SecretEffect::ClearClip { .. } => {}
+        }
+        answers.extend(
+            reply
+                .opened
+                .into_iter()
+                .map(|(serial, outcome)| Answer::Cmd(Cmd::SecretOpened { serial, outcome })),
+        );
+        answers.extend(
+            reply
+                .actions
+                .into_iter()
+                .map(|(serial, action)| Answer::Secret(serial, action)),
+        );
     }
 
     /// The field writes of `act` (a plain field) in the drawn model; none for a field that never

@@ -33,6 +33,19 @@ final class DeviceFacts {
                 setting(context, "adb_wifi_enabled", sdk < ADB_WIFI_SINCE));
     }
 
+    /**
+     * The facts members read now, for a secret window's ready input (2026-11-25 A2-7, spec/15 §8.2: each secret
+     * window reads them again when it opens, so a stale value never hides the debugging band).
+     */
+    static String members(Context context) {
+        int sdk = Build.VERSION.SDK_INT;
+        return Wire.factsMembers(
+                sdk,
+                Build.VERSION.SECURITY_PATCH,
+                setting(context, Settings.Global.ADB_ENABLED, false),
+                setting(context, "adb_wifi_enabled", sdk < ADB_WIFI_SINCE));
+    }
+
     private static boolean setting(Context context, String name, boolean absentMeansOff) {
         try {
             return Wire.settingOn(Settings.Global.getString(context.getContentResolver(), name), absentMeansOff);

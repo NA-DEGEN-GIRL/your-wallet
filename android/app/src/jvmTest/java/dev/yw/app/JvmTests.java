@@ -31,6 +31,8 @@ public final class JvmTests {
         run("screen inputs are the bytes Rust decodes", JvmTests::screenInputs);
         run("a field frame applies only to the edits Rust has seen", JvmTests::fieldFrames);
         run("QR modules are read from their hex", JvmTests::qrModules);
+        run("secret window inputs are the bytes Rust decodes", JvmTests::secretInputs);
+        run("the app keyboard types every printable ASCII unit", JvmTests::keyLayout);
         System.out.println("jvmTest: " + passed + " passed, " + failed + " failed");
         if (failed != 0 || passed == 0) {
             System.exit(1);
@@ -54,6 +56,90 @@ public final class JvmTests {
     private static void check(boolean condition, String what) {
         if (!condition) {
             throw new AssertionError(what);
+        }
+    }
+
+    /** 2026-11-25 A2-7: the same bytes as yw-android secret_wire's and secret_keys' tests. */
+    private static void secretInputs() {
+        check(SecretWire.field(1, 0) == 0x100, "field token");
+        check(SecretWire.field(7, 2) == 0x702, "field token 2");
+        check(SecretWire.field(5, SecretWire.TARGET_PICK) == 0x540, "pick token");
+        check(SecretWire.field(0, 0) == -1 && SecretWire.field(SecretWire.WIN_MAX + 1, 0) == -1, "no window");
+        check(SecretWire.field(1, 256) == -1 && SecretWire.field(1, -1) == -1, "no target");
+        check(SecretWire.field(SecretWire.WIN_MAX, 0x3f) == 0x7fffff3f, "largest token");
+        check(Arrays.equals(
+                        SecretWire.ready(4, 2, true, Wire.factsMembers(29, "2021-01-01", true, false)),
+                        utf8("{\"t\":\"s_ready\",\"serial\":4,\"win\":2,\"secure\":true,\"sdk\":29,\"patch\":\"2021-01-01\","
+                                + "\"adb\":true,\"adbw\":false}")),
+                "ready");
+        check(Arrays.equals(
+                        SecretWire.button(2, "reveal", 1, "down"),
+                        utf8("{\"t\":\"s_btn\",\"win\":2,\"b\":\"reveal\",\"i\":1,\"e\":\"down\"}")),
+                "button");
+        check(Arrays.equals(SecretWire.focus(2, false), utf8("{\"t\":\"s_focus\",\"win\":2,\"on\":false}")), "focus");
+        check(Arrays.equals(SecretWire.back(2), utf8("{\"t\":\"s_back\",\"win\":2}")), "back");
+        check(Arrays.equals(SecretWire.gone(4, 2), utf8("{\"t\":\"s_gone\",\"serial\":4,\"win\":2}")), "gone");
+        // The facts input still has its own bytes (Wire.facts over the same members).
+        check(Arrays.equals(
+                        Wire.facts(29, "2021-01-01", true, false),
+                        ascii("{\"t\":\"facts\",\"sdk\":29,\"patch\":\"2021-01-01\",\"adb\":true,\"adbw\":false}")),
+                "facts");
+    }
+
+    /** 2026-11-25 A2-7 (spec/15 §9.2): the four text layers hold exactly printable ASCII; words and letters a-z. */
+    private static void keyLayout() {
+        java.util.Set<Integer> text = new java.util.TreeSet<>();
+        for (int layer = KeyLayout.LOWER; layer <= KeyLayout.MORE; layer++) {
+            for (int[] row : KeyLayout.rows("text", layer)) {
+                for (int code : row) {
+                    if (KeyLayout.sends(code)) {
+                        text.add(code);
+                    } else {
+                        check(code == KeyLayout.SHIFT || code == KeyLayout.SYMBOLS || code == KeyLayout.LETTERS, "layer key");
+                    }
+                    check(!KeyLayout.label(code, layer).isEmpty(), "label");
+                }
+            }
+        }
+        java.util.Set<Integer> expected = new java.util.TreeSet<>();
+        for (int unit = 0x20; unit <= 0x7e; unit++) {
+            expected.add(unit);
+        }
+        expected.add(KeyLayout.BACKSPACE);
+        expected.add(KeyLayout.ENTER);
+        check(text.equals(expected), "text layers: " + text);
+        java.util.Set<Integer> words = new java.util.TreeSet<>();
+        for (int[] row : KeyLayout.rows("words", 0)) {
+            for (int code : row) {
+                words.add(code);
+            }
+        }
+        java.util.Set<Integer> letters = new java.util.TreeSet<>();
+        for (int[] row : KeyLayout.rows("letters", 0)) {
+            for (int code : row) {
+                letters.add(code);
+            }
+        }
+        java.util.Set<Integer> az = new java.util.TreeSet<>();
+        for (int unit = 'a'; unit <= 'z'; unit++) {
+            az.add(unit);
+        }
+        az.add(KeyLayout.BACKSPACE);
+        az.add(KeyLayout.ENTER);
+        check(letters.equals(az), "letters: " + letters);
+        az.add(KeyLayout.SPACE);
+        check(words.equals(az), "words: " + words);
+        check(KeyLayout.rows("none", 0).length == 0 && KeyLayout.rows(null, 0).length == 0, "none");
+        check(KeyLayout.next(KeyLayout.LOWER, KeyLayout.SHIFT) == KeyLayout.UPPER, "shift");
+        check(KeyLayout.next(KeyLayout.UPPER, KeyLayout.SHIFT) == KeyLayout.LOWER, "shift back");
+        check(KeyLayout.next(KeyLayout.LOWER, KeyLayout.SYMBOLS) == KeyLayout.SYMBOL, "symbols");
+        check(KeyLayout.next(KeyLayout.SYMBOL, KeyLayout.SHIFT) == KeyLayout.MORE, "more");
+        check(KeyLayout.next(KeyLayout.MORE, KeyLayout.SHIFT) == KeyLayout.SYMBOL, "more back");
+        check(KeyLayout.next(KeyLayout.MORE, KeyLayout.LETTERS) == KeyLayout.LOWER, "letters");
+        check(KeyLayout.next(KeyLayout.UPPER, 'A') == KeyLayout.UPPER, "a key keeps the layer");
+        // Labels are characters or symbols: no Hangul, no letters beyond the keyboard's own glyphs.
+        for (int code = 0x20; code <= 0x7e; code++) {
+            check(KeyLayout.label(code, 0).length() == 1, "label of " + code);
         }
     }
 

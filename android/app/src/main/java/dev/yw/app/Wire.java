@@ -78,11 +78,18 @@ final class Wire {
      * yw-android interim::facts.
      */
     static byte[] facts(int sdk, String patch, boolean adb, boolean adbWifi) {
+        return ("{\"t\":\"facts\"," + factsMembers(sdk, patch, adb, adbWifi) + "}").getBytes(StandardCharsets.US_ASCII);
+    }
+
+    /**
+     * The four facts members {@code "sdk":N,"patch":"…","adb":B,"adbw":B} by the rules of {@link #facts}
+     * (2026-11-25 A2-7: also the secret window's ready input, SecretWire.ready, which carries the facts read for that
+     * open, spec/15 §8.2).
+     */
+    static String factsMembers(int sdk, String patch, boolean adb, boolean adbWifi) {
         int level = sdk < 0 || sdk > SDK_MAX ? 0 : sdk;
         String date = isDate(patch) ? patch : "";
-        return ("{\"t\":\"facts\",\"sdk\":" + level + ",\"patch\":\"" + date + "\",\"adb\":" + adb + ",\"adbw\":" + adbWifi
-                        + "}")
-                .getBytes(StandardCharsets.US_ASCII);
+        return "\"sdk\":" + level + ",\"patch\":\"" + date + "\",\"adb\":" + adb + ",\"adbw\":" + adbWifi;
     }
 
     /**

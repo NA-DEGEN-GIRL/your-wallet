@@ -15,11 +15,14 @@
 //! - 2026-11-25 A2-6: the screen host ([`start_screen`], [`ui_input`]): a `crate::ui_host::UiHost`
 //!   behind a lock, made by the start input, which `call` hands every screen input; its frames go
 //!   to [`BROKER`] for `next`.
+//! - 2026-11-25 A2-7: the secret windows' keys and fills ([`secret_key`], [`secret_fill`]), under
+//!   the same lock (Java's main thread calls them, as it calls `call`).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use yw_core::error::VaultError;
+use yw_core::secret::Zeroizing;
 use yw_core::vault::LockedSlot;
 use yw_engine::apikeys::ApiKeys;
 use yw_engine::logging::{self, Field, LogLevel};
@@ -188,6 +191,26 @@ pub(crate) fn ui_input(bytes: &[u8]) {
             &[("why", Field::Word(wire_word(error)))],
         ),
     }
+}
+
+/// One `secretKey(field, codeUnit)` (2026-11-25 A2-7): the host feeds the open secret window it
+/// names (`crate::secret_keys`); its frames are posted for `next`.
+pub(crate) fn secret_key(field: i32, code_unit: i32) {
+    let Ok(mut slot) = HOST.lock() else {
+        return;
+    };
+    let Some(host) = slot.as_mut() else {
+        return;
+    };
+    let frames = host.on_secret_key(field, code_unit);
+    post_frames(host, frames);
+}
+
+/// The units a `secretFill(handle, …)` writes (2026-11-25 A2-7, `crate::secret_host`), a copy
+/// wiped when dropped; `None` writes nothing.
+pub(crate) fn secret_fill(handle: i64) -> Option<Zeroizing<Vec<u16>>> {
+    let slot = HOST.lock().ok()?;
+    slot.as_ref()?.secret_fill(handle)
 }
 
 /// Posts `frames` for `next`, in order. When the UI queue was full and could not make room it

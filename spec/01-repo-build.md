@@ -156,7 +156,9 @@ crates/
                               2026-11-25 A2-4b부터 저장([15] §5.1–§5.3, §3.2): io_request.rs(플랫폼 I/O 요청, `next`·`ioComplete`),
                               device_key.rs(Keystore 기기 키를 yw-core `vault::envelope::DeviceKey`로, 키 만들기 `MakeKey`, 메모리 사실),
                               sealed_files.rs(`YWK2` 봉투를 씌운 `Files`), storage.rs(키 작업자 `KeyPlatform`·`AppStore`),
-                              kdf_gate.rs(Argon2 전 메모리 규칙), log_file.rs(로그 파일), 2026-11-25 A2-5부터 device.rs(기기 사실·시험용 빌드 상수) — 모두 모든 타깃;
+                              kdf_gate.rs(Argon2 전 메모리 규칙), log_file.rs(로그 파일), 2026-11-25 A2-5부터 device.rs(기기 사실·시험용 빌드 상수),
+                              2026-11-25 A2-7부터 secret_host.rs(비밀 창: 두 단계 열기·창 모델·채우기 핸들, [15] §9.1)·secret_keys.rs(앱 키보드·
+                              창 버튼 → 양식 사건)·secret_wire.rs(비밀 창의 입력·틀) — 모두 모든 타깃;
                               android_files.rs(std·`libc` 깃발의 `Files`, `unsafe` 없음), purge.rs(`mallopt(M_PURGE)`),
                               shell.rs(중개자·데이터 폴더·`run_argon2`) — Android만; devtest.rs(기기 왕복 시험과 2026-11-25 A2-5부터 패닉 장애 주입,
                               `--cfg yw_device_test` 빌드만, [09] §2.6); source_checks.rs(원천 검사, 시험만)}

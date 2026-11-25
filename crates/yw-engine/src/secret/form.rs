@@ -25,10 +25,16 @@
 //! is `paint_view` (was `view`), a name no other fn has, so the source check
 //! `the_secret_form_is_read_only_by_its_paint_and_copy` counts every mention of it (a method or
 //! path call, or the fn named as a value), as `the_only_consume_is_wallet_code` does.
+//!
+//! 2026-11-25 (spec/15 §9.2, §18 42 N22, A2-7): W05's word completions for the Android app
+//! keyboard — `SecretView::word_candidates` (the list words that start with the word being typed,
+//! yw-core `bip39::completions`) and `SecretKey::Pick(n)`, which types the rest of completion `n`
+//! and a space as keys would. The Windows map never builds `Pick` and the Windows paint never
+//! reads the completions, so Windows decides and draws as before.
 
 use core::fmt;
 
-use yw_core::bip39::{is_word, is_word_prefix};
+use yw_core::bip39::{completions, is_word, is_word_prefix};
 use yw_core::keyimport::ImportChain;
 use yw_core::lang::Lang;
 use yw_core::password::VaultPassword;
@@ -52,6 +58,8 @@ pub const INPUT_ERROR_MS: u64 = 3_000;
 pub const UNLOCK_FAIL_DISABLE_MS: u64 = 1_000;
 /// Mnemonic entry buffer (24 × 8 + 23 + 1).
 pub const MNEMONIC_TEXT_MAX: usize = 216;
+/// W05: the most completions of the word being typed (2026-11-25, spec/15 §9.2 N22).
+pub const WORD_CANDIDATES_MAX: usize = 4;
 /// W11's steps (2026-11-10): which card to connect, the PIN, the touch — and the bounds.
 /// The card step after approval follows them ([`text::CARD_PIN`], spec/10 §9.2). `card` is the
 /// card as shown everywhere (`name (#serial)` or `#serial`, 2026-11-15; `None` when unknown).
@@ -1190,7 +1198,55 @@ impl SecretForm {
                 FormAction::Redraw
             }
             SecretKey::Other => FormAction::None,
+            SecretKey::Pick(index) => self.pick_candidate(index, now_ms),
         }
+    }
+
+    /// W05: the completions of the word being typed (2026-11-25, spec/15 §9.2, §18 42 N22): the
+    /// list words that start with the last word of the field while it does not end with a space,
+    /// at most [`WORD_CANDIDATES_MAX`], in list order; none while the content is masked or for
+    /// any other window. They come from the typed prefix, so they are secret-derived: the
+    /// Android shell draws them only through its secret fill, never in its screen model.
+    fn word_candidates(&self) -> Vec<&'static str> {
+        if self.kind != SecretKind::Mnemonic || self.masked {
+            return Vec::new();
+        }
+        let Some(slot) = self.slots.first() else {
+            return Vec::new();
+        };
+        if slot.field.as_bytes().last() == Some(&b' ') {
+            return Vec::new();
+        }
+        let words = mnemonic_words(&slot.field);
+        let Some(prefix) = words
+            .last()
+            .and_then(|word| core::str::from_utf8(word).ok())
+        else {
+            return Vec::new();
+        };
+        completions(prefix, WORD_CANDIDATES_MAX)
+    }
+
+    /// W05: types the rest of completion `index` and a space, as keys would ([`SecretKey::Pick`],
+    /// 2026-11-25 A2-7); nothing for an index with no completion or while input is off.
+    fn pick_candidate(&mut self, index: u8, now_ms: u64) -> FormAction {
+        if !self.input_enabled(now_ms) {
+            return FormAction::None;
+        }
+        let candidates = self.word_candidates();
+        let Some(word) = candidates.get(usize::from(index)).copied() else {
+            return FormAction::None;
+        };
+        let typed = self.slots.first().map_or(0, |slot| {
+            mnemonic_words(&slot.field)
+                .last()
+                .map_or(0, |last| last.len())
+        });
+        for unit in word.bytes().skip(typed) {
+            let _ = self.on_char(u16::from(unit), now_ms);
+        }
+        let _ = self.on_char(0x20, now_ms);
+        FormAction::Redraw
     }
 
     /// Whether the window's kind takes a paste on this platform (spec/04 §4.7, spec/15 §9.4): the
@@ -1771,6 +1827,14 @@ impl<'a> SecretView<'a> {
     #[must_use]
     pub fn word_count(&self) -> usize {
         self.form.mnemonic_status().0
+    }
+
+    /// W05: the completions of the word being typed (2026-11-25, spec/15 §9.2 N22; the Android
+    /// app keyboard draws them through its secret fill and picks one with [`SecretKey::Pick`] by
+    /// its index). Secret-derived: never put in a log, an effect or a screen model.
+    #[must_use]
+    pub fn word_candidates(&self) -> Vec<&'static str> {
+        self.form.word_candidates()
     }
 
     /// The button row at `now_ms`: the right group (cancel, primary) and the left group (clear

@@ -158,6 +158,14 @@ pub fn facts(input: &[u8]) -> Option<DeviceFacts> {
     if object.len() != 5 || object.get("t")?.as_str()? != "facts" {
         return None;
     }
+    facts_of(object)
+}
+
+/// The four facts members `sdk`, `patch`, `adb` and `adbw` of `object`, by the rules of
+/// [`facts`] (2026-11-25 A2-7: also the secret window's ready input, `crate::secret_wire`, which
+/// carries the facts read for that open, spec/15 §8.2). The caller checks the other members.
+#[must_use]
+pub fn facts_of(object: &yw_json::Object) -> Option<DeviceFacts> {
     let sdk = object.get("sdk")?.as_number()?.as_u64()?;
     if sdk > SDK_MAX {
         return None;
