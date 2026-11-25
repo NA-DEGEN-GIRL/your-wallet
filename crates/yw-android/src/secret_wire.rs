@@ -22,9 +22,16 @@
 //!   it drew).
 //!
 //! Frames: `{"t":"s_open","serial":S}` (open a secret window for session `S`),
-//! `{"t":"s_close","serial":S}` (close it, wiped) and the window's model `s_model`
-//! (`crate::secret_host`). Platform-neutral: the gate's Windows build tests it; Java's
-//! `SecretWire` builds the same bytes (`JvmTests.secretInputs`).
+//! `{"t":"s_close","serial":S}` (close every window of that session, wiped) and the window's
+//! model `s_model` (`crate::secret_host`). 2026-11-25 A2-7 review: also
+//! `{"t":"s_close_win","serial":S,"win":W}` (close that one window: a ready the host did not take,
+//! late or a repeated or older instance; before, such a ready got `s_close` of its whole session,
+//! which also closed the window the host kept open) and
+//! `{"t":"s_keep","wins":[{"serial":S,"win":W},…]}` (the host's resync, `UiHost::resync`: Java
+//! closes every secret window not named; `W` 0 keeps every window of an asked session whose
+//! instance is not known yet), so that a `s_close` the full UI queue dropped still closes its
+//! window. Platform-neutral: the gate's Windows build tests it; Java's `SecretWire` builds the
+//! same bytes (`JvmTests.secretInputs`, `JvmTests.secretWindows`).
 #![forbid(unsafe_code)]
 
 use yw_engine::protection::DeviceFacts;
@@ -152,6 +159,46 @@ pub fn close_frame(serial: u64) -> Vec<u8> {
     serial_frame("s_close", serial)
 }
 
+/// `{"t":"s_close_win","serial":S,"win":W}` (2026-11-25 A2-7 review, module doc).
+#[must_use]
+pub fn close_win_frame(serial: u64, win: u32) -> Vec<u8> {
+    let object = Object::from_pairs(vec![
+        ("t".to_owned(), Value::String("s_close_win".to_owned())),
+        ("serial".to_owned(), Value::Number(Number::from_u64(serial))),
+        (
+            "win".to_owned(),
+            Value::Number(Number::from_u64(u64::from(win))),
+        ),
+    ])
+    .map_or(Value::Null, Value::Object);
+    yw_json::to_vec(&object)
+}
+
+/// `{"t":"s_keep","wins":[{"serial":S,"win":W},…]}`: the only secret windows that may exist, `W`
+/// 0 for every window of `S` (2026-11-25 A2-7 review, module doc).
+#[must_use]
+pub fn keep_frame(wins: &[(u64, u32)]) -> Vec<u8> {
+    let wins = wins
+        .iter()
+        .map(|&(serial, win)| {
+            Object::from_pairs(vec![
+                ("serial".to_owned(), Value::Number(Number::from_u64(serial))),
+                (
+                    "win".to_owned(),
+                    Value::Number(Number::from_u64(u64::from(win))),
+                ),
+            ])
+            .map_or(Value::Null, Value::Object)
+        })
+        .collect();
+    let object = Object::from_pairs(vec![
+        ("t".to_owned(), Value::String("s_keep".to_owned())),
+        ("wins".to_owned(), Value::Array(wins)),
+    ])
+    .map_or(Value::Null, Value::Object);
+    yw_json::to_vec(&object)
+}
+
 fn serial_frame(kind: &str, serial: u64) -> Vec<u8> {
     let object = Object::from_pairs(vec![
         ("t".to_owned(), Value::String(kind.to_owned())),
@@ -166,7 +213,9 @@ mod tests {
     use yw_engine::protection::{DeviceFacts, PatchDate};
     use yw_engine::secret::input::SecretButton;
 
-    use super::{SecretInput, close_frame, decode, is_secret_input, open_frame};
+    use super::{
+        SecretInput, close_frame, close_win_frame, decode, is_secret_input, keep_frame, open_frame,
+    };
     use crate::secret_keys::{Control, Edge};
 
     /// The bytes Java's `SecretWire` builds (pinned by `JvmTests.secretInputs`).
@@ -260,5 +309,15 @@ mod tests {
     fn the_frames() {
         assert_eq!(open_frame(7), br#"{"t":"s_open","serial":7}"#);
         assert_eq!(close_frame(7), br#"{"t":"s_close","serial":7}"#);
+        // 2026-11-25 A2-7 review; the bytes `JvmTests.secretWindows` reads.
+        assert_eq!(
+            close_win_frame(7, 2),
+            br#"{"t":"s_close_win","serial":7,"win":2}"#
+        );
+        assert_eq!(
+            keep_frame(&[(8, 5), (10, 0)]),
+            br#"{"t":"s_keep","wins":[{"serial":8,"win":5},{"serial":10,"win":0}]}"#
+        );
+        assert_eq!(keep_frame(&[]), br#"{"t":"s_keep","wins":[]}"#);
     }
 }

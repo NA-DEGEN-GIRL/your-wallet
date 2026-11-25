@@ -165,6 +165,19 @@ fn an_input_window_opens_in_two_phases() {
     // Typed on the app keyboard: never in a frame.
     let password = "correct horse 1x";
     let mut frames = typed(&mut host, 1, 0, password);
+    // Enter moves to the second field. A key Java still names field 0 with (it has not drawn the
+    // new model yet) is stale and dropped (2026-11-25 A2-7 review: before, it pressed field 0
+    // back to active and was typed there).
+    frames.extend(texts(&host.on_secret_key(field_token(1, 0), 0x0D)));
+    assert!(
+        typed(&mut host, 1, 0, "z")
+            .iter()
+            .all(|frame| !frame.contains("17/128"))
+    );
+    assert_eq!(
+        fill(&host, 1, FillItem::Field(0)).map(|dots| dots.chars().count()),
+        Some(16)
+    );
     frames.extend(typed(&mut host, 1, 1, password));
     assert!(
         frames.iter().all(|frame| !frame.contains("horse")),
@@ -176,8 +189,12 @@ fn an_input_window_opens_in_two_phases() {
             .is_some_and(|frame| frame.contains(r#""right":"16/128""#)),
         "{frames:?}"
     );
-    // The second field became active with its first key.
+    // The second field is the active one (Enter made it so).
     assert!(frames.last().unwrap().contains(r#""active":true,"reveal""#));
+    assert_eq!(
+        fill(&host, 1, FillItem::Field(1)).map(|dots| dots.chars().count()),
+        Some(16)
+    );
     let dots = fill(&host, 1, FillItem::Field(0)).unwrap();
     assert_eq!(dots.chars().count(), 16);
     assert!(!dots.contains('h'));
@@ -234,16 +251,25 @@ fn only_a_secure_ready_of_the_asked_serial_opens() {
     let mut host = host();
     let _ = press(&mut host, Press::Core(CorePress::FirstCreate));
     let serial = opened(&press(&mut host, Press::Core(CorePress::CreateNext)));
-    // Late or unknown serial: only its window closes; the asked one still waits.
+    // Late or unknown serial: only its window closes (by its instance, 2026-11-25 A2-7 review);
+    // the asked one still waits.
     let frames = send(&mut host, &ready(serial + 9, 3, true));
     assert_eq!(
         frames,
-        [format!(r#"{{"t":"s_close","serial":{}}}"#, serial + 9)]
+        [format!(
+            r#"{{"t":"s_close_win","serial":{},"win":3}}"#,
+            serial + 9
+        )]
     );
     assert_eq!(host.secret().asked_serial(), Some(serial));
-    // An older window id than one seen: refused, closed.
+    // An older window id than one seen: refused, that window closed.
     let frames = send(&mut host, &ready(serial, 2, true));
-    assert_eq!(frames, [format!(r#"{{"t":"s_close","serial":{serial}}}"#)]);
+    assert_eq!(
+        frames,
+        [format!(
+            r#"{{"t":"s_close_win","serial":{serial},"win":2}}"#
+        )]
+    );
     assert_eq!(host.secret().asked_serial(), Some(serial));
     // Not secure: refused, the session ends with the band.
     let frames = send(&mut host, &ready(serial, 4, false));
@@ -412,6 +438,66 @@ fn completions_fill_by_handle_and_are_picked_by_index() {
     let frames = send(&mut host, r#"{"t":"s_back","win":1}"#);
     assert!(frames.contains(&format!(r#"{{"t":"s_close","serial":{serial}}}"#)));
     assert!(!host.wallet().secret_open());
+}
+
+/// 2026-11-25 A2-7 review: a second Activity of the open session (a resync's `s_open` sent again
+/// while the first one was starting) is closed alone, by its instance; the open window, its form
+/// and its session stay. A resync names the windows that may exist (`s_keep`): the asked
+/// session's, then the open one; after the session ended (its `s_close` lost to a full UI queue)
+/// it names none, so Java closes the window that would stay.
+#[test]
+fn a_second_window_of_the_open_session_closes_alone() {
+    let mut host = host();
+    let _ = press(&mut host, Press::Core(CorePress::FirstCreate));
+    let serial = opened(&press(&mut host, Press::Core(CorePress::CreateNext)));
+    let frames = texts(&host.resync());
+    assert_eq!(
+        frames[0],
+        format!(r#"{{"t":"s_keep","wins":[{{"serial":{serial},"win":0}}]}}"#)
+    );
+    assert_eq!(frames[1], format!(r#"{{"t":"s_open","serial":{serial}}}"#));
+    let _ = send(&mut host, &ready(serial, 1, true));
+    let _ = typed(&mut host, 1, 0, "abc");
+    // The duplicate's ready: only that instance closes.
+    let frames = send(&mut host, &ready(serial, 2, true));
+    assert_eq!(
+        frames,
+        [format!(
+            r#"{{"t":"s_close_win","serial":{serial},"win":2}}"#
+        )]
+    );
+    assert_eq!(host.secret().open_window(), Some((serial, 1)));
+    assert!(host.wallet().secret_open());
+    assert_eq!(
+        fill(&host, 1, FillItem::Field(0)).map(|dots| dots.chars().count()),
+        Some(3)
+    );
+    assert_eq!(fill(&host, 2, FillItem::Field(0)), None);
+    assert!(typed(&mut host, 2, 0, "x").is_empty());
+    let frames = texts(&host.resync());
+    assert_eq!(
+        frames[0],
+        format!(r#"{{"t":"s_keep","wins":[{{"serial":{serial},"win":1}}]}}"#)
+    );
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame.starts_with(r#"{"t":"s_model","#)),
+        "{frames:?}"
+    );
+    assert!(frames.iter().all(|frame| !frame.contains("s_open")));
+    // The session ends (Back); say its `s_close` was dropped: the resync keeps no window.
+    let frames = send(&mut host, r#"{"t":"s_back","win":1}"#);
+    assert!(frames.contains(&format!(r#"{{"t":"s_close","serial":{serial}}}"#)));
+    assert!(!host.wallet().secret_open());
+    let frames = texts(&host.resync());
+    assert_eq!(frames[0], r#"{"t":"s_keep","wins":[]}"#);
+    assert!(
+        frames
+            .iter()
+            .all(|frame| !frame.contains("s_model") && !frame.contains("s_open")),
+        "{frames:?}"
+    );
 }
 
 /// The open window destroyed by the platform: its form is wiped and the wallet told it was

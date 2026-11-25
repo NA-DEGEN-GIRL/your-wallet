@@ -18,12 +18,16 @@ import android.widget.TextView;
  *
  * <p>2026-11-25 A2-6: below the bands, the screen Rust builds (spec/15 §11.3): each model frame is drawn by
  * {@link ScreenView} and answered with the rendered input; a press or a typed text goes back as an input naming the
- * model's revision and the control's slot (spec/15 §18 8). While the Activity is in front it sends the lifetime events
- * (front, back) and the main timer's tick every {@link UiWire#TICK_MS}. The status line is gone (the model replaces
- * it).
+ * model's revision and the control's slot (spec/15 §18 8). While the Activity is in front it sends the main timer's
+ * tick every {@link UiWire#TICK_MS} (and, until the 2026-11-25 A2-7 review, the lifetime events front and back). The
+ * status line is gone (the model replaces it).
  *
  * <p>2026-11-25 A2-7: a secret window (SecretActivity) is started from here (Screen.started); while it covers this
  * Activity, it sends the main timer's tick itself.
+ *
+ * <p>2026-11-25 A2-7 review: the lifetime events front and back are no longer this Activity's: {@link Screen} sends
+ * them by the app's started-Activity count (spec/15 §5.4), so a secret window covering this one is not the app going to
+ * the background (before, this onStop sent {@code life back} and each onStart {@code life front}).
  */
 public final class MainActivity extends Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -77,14 +81,12 @@ public final class MainActivity extends Activity {
         drawBands(App.loaded() ? Wire.bands(Native.call(DeviceFacts.input(this))) : null);
         Screen.started(this);
         Screen.attach(this);
-        Screen.send(UiWire.life("front"));
         main.postDelayed(tick, UiWire.TICK_MS);
     }
 
     @Override
     protected void onStop() {
         main.removeCallbacks(tick);
-        Screen.send(UiWire.life("back"));
         Screen.detach(this);
         Screen.stopped(this);
         super.onStop();

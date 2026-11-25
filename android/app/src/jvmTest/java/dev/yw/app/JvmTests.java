@@ -33,6 +33,8 @@ public final class JvmTests {
         run("QR modules are read from their hex", JvmTests::qrModules);
         run("secret window inputs are the bytes Rust decodes", JvmTests::secretInputs);
         run("the app keyboard types every printable ASCII unit", JvmTests::keyLayout);
+        run("secret windows close by session, by window and by resync", JvmTests::secretWindows);
+        run("the app is in the background only with no Activity started", JvmTests::startedCount);
         System.out.println("jvmTest: " + passed + " passed, " + failed + " failed");
         if (failed != 0 || passed == 0) {
             System.exit(1);
@@ -84,6 +86,103 @@ public final class JvmTests {
                         Wire.facts(29, "2021-01-01", true, false),
                         ascii("{\"t\":\"facts\",\"sdk\":29,\"patch\":\"2021-01-01\",\"adb\":true,\"adbw\":false}")),
                 "facts");
+    }
+
+    /** A secret window as the registry sees it (no Activity). */
+    private static final class FakeWin implements SecretWindows.Win {
+        final long serial;
+        final int win;
+        boolean closed;
+
+        FakeWin(long serial, int win) {
+            this.serial = serial;
+            this.win = win;
+        }
+
+        @Override
+        public long serial() {
+            return serial;
+        }
+
+        @Override
+        public int win() {
+            return win;
+        }
+
+        @Override
+        public void closeFromRust() {
+            closed = true;
+        }
+    }
+
+    /**
+     * 2026-11-25 A2-7 review (spec/15 §9.1): every live window is kept; a session with a window live or starting is not
+     * started again; s_close closes all of a session's windows, s_close_win one, s_keep every window it does not name,
+     * and a model goes to the window it names.
+     */
+    private static void secretWindows() {
+        SecretWindows<FakeWin> windows = new SecretWindows<>();
+        // Asked with no started Activity: pending, started later once.
+        check(!windows.launch(4, false) && windows.takePending() == 4 && windows.takePending() == -1, "pending");
+        check(windows.launch(4, true), "first launch");
+        check(!windows.launch(4, true), "starting: not again");
+        FakeWin first = new FakeWin(4, 1);
+        windows.created(first);
+        check(!windows.launch(4, true), "live: not again");
+        // A duplicate (made before this fix could stop it): s_close_win closes it alone; the first one keeps its models.
+        FakeWin duplicate = new FakeWin(4, 2);
+        windows.created(duplicate);
+        windows.closeWin(4, 2);
+        check(duplicate.closed && !first.closed, "close_win closes that window only");
+        windows.destroyed(duplicate);
+        check(windows.find(4, 1) == first && windows.find(4, 2) == null && windows.find(5, 1) == null, "find");
+        // s_close: every window of the session; a window still starting for it closes itself.
+        FakeWin other = new FakeWin(4, 3);
+        windows.created(other);
+        windows.close(4);
+        check(first.closed && other.closed && windows.wasClosed(4), "close closes every window of the session");
+        check(!windows.launch(4, true), "a closed session is not started");
+        windows.destroyed(first);
+        windows.destroyed(other);
+        check(windows.liveCount() == 0, "none live");
+        // s_keep (a resync after a lost s_close): every window not named closes; win 0 keeps a session's windows.
+        FakeWin stale = new FakeWin(7, 4);
+        FakeWin open = new FakeWin(8, 5);
+        FakeWin twin = new FakeWin(8, 6);
+        windows.created(stale);
+        windows.created(open);
+        windows.created(twin);
+        check(windows.launch(9, true), "asked 9");
+        windows.keep(java.util.List.of(new long[] {8, 5}));
+        check(stale.closed && windows.wasClosed(7), "an unnamed session closes");
+        check(!open.closed && twin.closed && !windows.wasClosed(8), "a duplicate of a named session closes alone");
+        check(windows.wasClosed(9), "an unnamed starting session closes itself when made");
+        FakeWin asked = new FakeWin(10, 7);
+        windows.created(asked);
+        windows.keep(java.util.List.of(new long[] {10, 0}));
+        check(!asked.closed && open.closed, "win 0 keeps the asked session's windows");
+        windows.keep(java.util.List.of());
+        check(asked.closed, "an empty keep closes every window");
+        // The frame Rust's secret_wire::keep_frame writes.
+        Object frame = Json.parse(utf8("{\"t\":\"s_keep\",\"wins\":[{\"serial\":8,\"win\":5},{\"serial\":10,\"win\":0}]}"));
+        java.util.List<long[]> kept = SecretWire.kept(frame);
+        check(kept.size() == 2 && kept.get(0)[0] == 8 && kept.get(0)[1] == 5 && kept.get(1)[1] == 0, "kept");
+        check(SecretWire.kept(Json.parse(utf8("{\"t\":\"s_keep\",\"wins\":[{\"serial\":-1,\"win\":0}]}"))).isEmpty(),
+                "an unreadable entry keeps nothing");
+    }
+
+    /** 2026-11-25 A2-7 review (spec/15 §5.4): front on the first started Activity, back when none is started. */
+    private static void startedCount() {
+        SecretWindows<FakeWin> windows = new SecretWindows<>();
+        check(windows.started(), "main starts: front");
+        // A secret window covers the main one: its onStart comes before the main one's onStop.
+        check(!windows.started(), "secret starts");
+        check(!windows.stopped(), "main stops: not the background");
+        // The secret window closes: main starts again, then the secret window stops.
+        check(!windows.started() && !windows.stopped(), "back to main");
+        check(windows.stopped(), "home: back");
+        check(!windows.stopped(), "no count below zero");
+        check(windows.started(), "front again");
     }
 
     /** 2026-11-25 A2-7 (spec/15 §9.2): the four text layers hold exactly printable ASCII; words and letters a-z. */

@@ -360,7 +360,9 @@ fn a_resync_sends_the_state_again() {
     host.drain();
     let _ = host.take_frames();
     let frames = texts(&host.resync());
-    assert!(frames[0].starts_with(r#"{"t":"model","#), "{frames:?}");
+    // 2026-11-25 A2-7 review: first the secret windows that may exist (none here).
+    assert_eq!(frames[0], r#"{"t":"s_keep","wins":[]}"#, "{frames:?}");
+    assert!(frames[1].starts_with(r#"{"t":"model","#), "{frames:?}");
     assert_eq!(
         frames.last().map(String::as_str),
         Some(r#"{"t":"timer","id":"send_check","ms":700}"#)

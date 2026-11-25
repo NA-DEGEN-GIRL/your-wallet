@@ -18,6 +18,12 @@
 //! that window; no ready within [`OPEN_WAIT_MS`] fails the open (E-APP-009). The window is bound
 //! to the Activity instance (`win`, counted up by Java and never reused: a ready whose `win` is
 //! not above every `win` seen is refused) and every input, key and fill must name it.
+//! 2026-11-25 A2-7 review: a ready the host does not take is answered `s_close_win` (that
+//! instance only), never `s_close` of its session: a second Activity of the open session (a
+//! resync's `s_open` sent again while the first one was starting) must not close the window the
+//! host keeps open; before, it did, and Java lost its handle on the window that stayed. A resync
+//! begins with `s_keep` naming the asked and the open window ([`SecretHost::resync`]), so Java
+//! closes every other one even when the full UI queue dropped their `s_close`.
 //!
 //! **Fill.** A handle is `win << 16 | item` ([`handle`]): field `i`, the shown secret, or
 //! completion `k`. It is valid only while that window is open: a closed, gone or other window's
@@ -412,9 +418,11 @@ impl SecretHost {
             .filter(|asked| asked.serial == serial)
             .filter(|_| fresh)
         else {
-            // Late (the open ended: a lock, a close, the wait ran out) or not asked: that
-            // window only closes (N23: the late answer is dropped by its number).
-            frames.push(secret_wire::close_frame(serial));
+            // Late (the open ended: a lock, a close, the wait ran out), not asked, or a repeated
+            // or older instance (a second Activity of the open session): that window only
+            // closes (N23: the late answer is dropped by its number). 2026-11-25 A2-7 review: by
+            // its instance; before, `s_close` of the serial also closed the open window's.
+            frames.push(secret_wire::close_win_frame(serial, win));
             return;
         };
         self.asked = None;
@@ -648,10 +656,20 @@ impl SecretHost {
     }
 
     /// The secret windows' state again after the UI queue dropped its frames
-    /// (`crate::ui_host::UiHost::resync`): the asked window's open, or the open window's model.
+    /// (`crate::ui_host::UiHost::resync`): first `s_keep` naming the windows that may exist (the
+    /// asked session's, any instance, and the open one; 2026-11-25 A2-7 review: Java closes every
+    /// other, so a dropped `s_close` still closes its window), then the asked window's open and
+    /// the open window's model.
     #[must_use]
     pub fn resync(&self, now_ms: u64) -> Vec<Vec<u8>> {
-        let mut frames = Vec::new();
+        let mut kept = Vec::new();
+        if let Some(asked) = self.asked {
+            kept.push((asked.serial, 0));
+        }
+        if let Some(open) = self.open.as_ref() {
+            kept.push((open.serial, open.win));
+        }
+        let mut frames = vec![secret_wire::keep_frame(&kept)];
         if let Some(asked) = self.asked {
             frames.push(secret_wire::open_frame(asked.serial));
         }

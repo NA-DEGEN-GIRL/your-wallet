@@ -16,6 +16,10 @@ import java.nio.charset.StandardCharsets;
  *   <li>{@code s_focus}, {@code s_back}, {@code s_gone} (the Activity is destroyed).
  * </ul>
  *
+ * <p>Frames (yw-android secret_wire): {@code s_open}, {@code s_close} (every window of a session), {@code s_model},
+ * and since the 2026-11-25 A2-7 review {@code s_close_win} (one window: a ready Rust did not take) and {@code s_keep}
+ * (Rust's resync: every window not named closes, {@link #kept}).
+ *
  * <p>Platform-neutral: tested by the JVM runner.
  */
 final class SecretWire {
@@ -66,6 +70,23 @@ final class SecretWire {
     /** {@code {"t":"s_gone","serial":S,"win":W}}. */
     static byte[] gone(long serial, int win) {
         return utf8("{\"t\":\"s_gone\",\"serial\":" + serial + ",\"win\":" + win + "}");
+    }
+
+    /**
+     * The windows a frame {@code {"t":"s_keep","wins":[{"serial":S,"win":W},…]}} keeps (2026-11-25 A2-7 review), each
+     * {serial, win} with win 0 for every window of that session; an entry that does not read keeps nothing (the
+     * windows it might have named close: fail closed).
+     */
+    static java.util.List<long[]> kept(Object frame) {
+        java.util.List<long[]> kept = new java.util.ArrayList<>();
+        for (Object entry : Json.list(frame, "wins")) {
+            long serial = Json.number(entry, "serial", -1);
+            long win = Json.number(entry, "win", -1);
+            if (serial >= 0 && win >= 0 && win <= WIN_MAX) {
+                kept.add(new long[] {serial, win});
+            }
+        }
+        return kept;
     }
 
     private static byte[] utf8(String text) {

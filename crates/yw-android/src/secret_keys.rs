@@ -8,10 +8,14 @@
 //! - A key: `secretKey(field, codeUnit)` ([`decode_key`]). `field` is a token Java built from the
 //!   model: the window id (the Activity instance, spec/15 §9.1 N23) in bits 8–30 and the target in
 //!   bits 0–7 — a field index (0–[`FIELD_MAX`]) or [`TARGET_PICK`], W05's completion
-//!   `codeUnit` (spec/15 §9.2 N22: picked by its index, never by the word). A key on a field that
-//!   is not the active one first makes it active ([`key_steps`]: a press on that field, as a tap
-//!   would), then the unit goes in as typed (0x08 Backspace, 0x0D Enter, 0x20–0x7E the character;
-//!   the form refuses anything else, ≥ 0x80 with E-INP-008).
+//!   `codeUnit` (spec/15 §9.2 N22: picked by its index, never by the word). A key goes in as typed
+//!   only on the form's active field (0x08 Backspace, 0x0D Enter, 0x20–0x7E the character; the
+//!   form refuses anything else, ≥ 0x80 with E-INP-008); a key naming another field is dropped
+//!   ([`key_steps`]): Java names the field active in the last model it drew, so after Enter moved
+//!   the active field and before Java drew that, the key is stale (spec/15 §18 8: stale input is
+//!   dropped). Only a tap on a field box (`s_btn` `field` `down`) makes another field active.
+//!   2026-11-25 A2-7 review: before, such a key first pressed its field back to active and was
+//!   typed there (12 units, Enter, then a key on field 0 went into field 0).
 //! - A button input ([`button_steps`]): a press, a release inside (`up`) or the finger leaving it
 //!   (`out`, the hold and the reveal end). Focus (`focus`) masks the plaintext windows when lost
 //!   and shows them again when back; the Back key is Esc ([`back_steps`]).
@@ -105,20 +109,13 @@ pub enum Step {
     Activate,
 }
 
-/// The steps of `event` on a window whose active field is `active`.
+/// The steps of `event` on a window whose active field is `active`: none for a key naming
+/// another field (stale, module doc).
 #[must_use]
 pub fn key_steps(event: KeyEvent, active: usize) -> Vec<Step> {
     match event.target {
-        KeyTarget::Field(index) => {
-            let mut steps = Vec::with_capacity(2);
-            if index != active {
-                steps.push(Step::Pointer(SecretPointer::Down(Some(
-                    SecretTarget::Field(index),
-                ))));
-            }
-            steps.push(Step::Key(SecretKey::Char(event.unit)));
-            steps
-        }
+        KeyTarget::Field(index) if index == active => vec![Step::Key(SecretKey::Char(event.unit))],
+        KeyTarget::Field(_) => Vec::new(),
         KeyTarget::Pick => u8::try_from(event.unit)
             .map(|index| vec![Step::Key(SecretKey::Pick(index))])
             .unwrap_or_default(),
@@ -272,10 +269,11 @@ mod tests {
         }
     }
 
-    /// A key on the active field is the typed unit; on another field it first makes that field
-    /// active; a completion is picked by its index.
+    /// A key on the active field is the typed unit; a key on another field is stale and dropped
+    /// (2026-11-25 A2-7 review: before, it first made that field active); a completion is picked
+    /// by its index.
     #[test]
-    fn key_steps_press_the_field_first() {
+    fn key_steps_type_only_into_the_active_field() {
         let key = |target, unit| KeyEvent {
             win: 1,
             target,
@@ -285,12 +283,11 @@ mod tests {
             key_steps(key(KeyTarget::Field(0), 0x61), 0),
             [Step::Key(SecretKey::Char(0x61))]
         );
+        assert!(key_steps(key(KeyTarget::Field(1), 0x08), 0).is_empty());
+        assert!(key_steps(key(KeyTarget::Field(0), 0x61), 1).is_empty());
         assert_eq!(
-            key_steps(key(KeyTarget::Field(1), 0x08), 0),
-            [
-                Step::Pointer(SecretPointer::Down(Some(SecretTarget::Field(1)))),
-                Step::Key(SecretKey::Char(0x08)),
-            ]
+            key_steps(key(KeyTarget::Field(1), 0x08), 1),
+            [Step::Key(SecretKey::Char(0x08))]
         );
         assert_eq!(
             key_steps(key(KeyTarget::Pick, 2), 0),

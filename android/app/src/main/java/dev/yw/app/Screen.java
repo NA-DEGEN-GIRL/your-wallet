@@ -7,7 +7,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Handler;
 import android.os.Looper;
-import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -21,22 +20,24 @@ import java.util.Map;
  * secret session from the Activity in front (or, with none in front, as soon as one starts), {@code s_close} closes
  * the window of that session (and one still starting for it closes itself at once), {@code s_model} goes to the
  * secret window that draws now, which draws it only when it is its own.
+ *
+ * <p>2026-11-25 A2-7 review: the secret windows are kept in {@link SecretWindows}, every live one: {@code s_close}
+ * closes every window of its session, {@code s_close_win} one window, {@code s_keep} (Rust's resync) every window not
+ * named, a model goes to the window it names, and a session whose window exists or is starting is not started again.
+ * The lifetime events go by the app's started-Activity count (spec/15 §5.4): {@code life front} when the first Activity
+ * starts, {@code life back} when the last one stops; a secret window covering the main one is not the background.
+ * Before, Screen kept only the last secret window made, and MainActivity sent the events on its own onStart/onStop.
  */
 final class Screen {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final Map<String, Runnable> TIMERS = new HashMap<>();
-    /** The last sessions Rust closed (2026-11-25 A2-7). */
-    private static final ArrayDeque<Long> CLOSED = new ArrayDeque<>();
-    private static final int CLOSED_MAX = 32;
+    /** The secret windows and the started count (2026-11-25 A2-7 review). */
+    private static final SecretWindows<SecretActivity> WINDOWS = new SecretWindows<>();
     private static Context app;
     private static Object model;
     private static MainActivity shown;
     /** The started Activity that can start a secret window (main or secret), or null (2026-11-25 A2-7). */
     private static Activity top;
-    /** A secret window asked while no Activity was started (-1: none). */
-    private static long pendingOpen = -1;
-    /** The secret window that draws now. */
-    private static SecretActivity secret;
 
     private Screen() {}
 
@@ -60,64 +61,53 @@ final class Screen {
         }
     }
 
-    /** An Activity of the app started (2026-11-25 A2-7): a secret window waiting for one is started from it. */
+    /**
+     * An Activity of the app started (2026-11-25 A2-7): a secret window waiting for one is started from it. The first
+     * started Activity sends {@code life front} (2026-11-25 A2-7 review, spec/15 §5.4).
+     */
     static void started(Activity activity) {
         top = activity;
-        if (pendingOpen >= 0) {
-            long serial = pendingOpen;
-            pendingOpen = -1;
+        if (WINDOWS.started()) {
+            send(UiWire.life("front"));
+        }
+        long serial = WINDOWS.takePending();
+        if (serial >= 0) {
             launch(serial);
         }
     }
 
-    /** An Activity of the app stopped. */
+    /**
+     * An Activity of the app stopped; when none is started any more the app is in the background: {@code life back}
+     * (2026-11-25 A2-7 review: a secret window covering the main Activity is not; before, MainActivity's onStop sent it).
+     */
     static void stopped(Activity activity) {
         if (top == activity) {
             top = null;
         }
+        if (WINDOWS.stopped()) {
+            send(UiWire.life("back"));
+        }
     }
 
-    /** A secret window was made; it draws the secret models from now on. */
+    /** A secret window was made. */
     static void secretCreated(SecretActivity activity) {
-        secret = activity;
+        WINDOWS.created(activity);
     }
 
     /** A secret window is destroyed. */
     static void secretDestroyed(SecretActivity activity) {
-        if (secret == activity) {
-            secret = null;
-        }
+        WINDOWS.destroyed(activity);
     }
 
     /** Whether Rust closed the session {@code serial} already (a window starting for it closes itself). */
     static boolean wasClosed(long serial) {
-        return CLOSED.contains(serial);
+        return WINDOWS.wasClosed(serial);
     }
 
+    /** Starts the secret window of {@code serial}, unless one of it exists or is starting (2026-11-25 A2-7 review). */
     private static void launch(long serial) {
-        if (serial < 0) {
-            return;
-        }
-        if (top == null) {
-            pendingOpen = serial;
-            return;
-        }
-        top.startActivity(new Intent(top, SecretActivity.class).putExtra(SecretActivity.EXTRA_SERIAL, serial));
-    }
-
-    private static void closeSecret(long serial) {
-        if (serial < 0) {
-            return;
-        }
-        CLOSED.addLast(serial);
-        while (CLOSED.size() > CLOSED_MAX) {
-            CLOSED.removeFirst();
-        }
-        if (pendingOpen == serial) {
-            pendingOpen = -1;
-        }
-        if (secret != null && secret.serial() == serial) {
-            secret.closeFromRust();
+        if (WINDOWS.launch(serial, top != null)) {
+            top.startActivity(new Intent(top, SecretActivity.class).putExtra(SecretActivity.EXTRA_SERIAL, serial));
         }
     }
 
@@ -165,13 +155,22 @@ final class Screen {
                 launch(Json.number(frame, "serial", -1));
                 break;
             case "s_close":
-                closeSecret(Json.number(frame, "serial", -1));
+                WINDOWS.close(Json.number(frame, "serial", -1));
                 break;
-            case "s_model":
-                if (secret != null) {
-                    secret.applyModel(frame);
+            case "s_close_win":
+                WINDOWS.closeWin(Json.number(frame, "serial", -1), Json.number(frame, "win", -1));
+                break;
+            case "s_keep":
+                WINDOWS.keep(SecretWire.kept(frame));
+                break;
+            case "s_model": {
+                SecretActivity window =
+                        WINDOWS.find(Json.number(frame, "serial", -1), Json.number(frame, "win", -1));
+                if (window != null) {
+                    window.applyModel(frame);
                 }
                 break;
+            }
             default:
                 break;
         }

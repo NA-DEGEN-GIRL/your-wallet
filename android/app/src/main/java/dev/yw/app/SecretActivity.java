@@ -40,7 +40,7 @@ import java.util.List;
  * <p>The root view is excluded from autofill, content capture (API 30+), marked accessibility-data-sensitive (API 34+)
  * and content-sensitive (API 35+). Every text drawn comes from the model (Rust's catalogues, spec/15 §3.3).
  */
-public final class SecretActivity extends Activity {
+public final class SecretActivity extends Activity implements SecretWindows.Win {
     /** The intent extra: the secret session's serial. */
     static final String EXTRA_SERIAL = "dev.yw.app.serial";
 
@@ -121,7 +121,12 @@ public final class SecretActivity extends Activity {
         }
     }
 
-    /** Whether this window's FLAG_SECURE is set, read back from the window now. */
+    /**
+     * Whether this window's FLAG_SECURE is set, read back now from the window's LayoutParams (the attributes the window
+     * was added with and is updated from). 2026-11-25 A2-7 review: this proves that nothing in the app cleared the flag;
+     * it cannot see whether the window manager or an OEM build honours it (the residual of spec/15 §9.1, checked on the
+     * device with dumpsys and screencap, spec/09 §2.6).
+     */
     private boolean secure() {
         return (getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE) != 0;
     }
@@ -198,12 +203,20 @@ public final class SecretActivity extends Activity {
     }
 
     /** The serial this window was opened for. */
-    long serial() {
+    @Override
+    public long serial() {
         return serial;
     }
 
-    /** Rust closed the window ({@code s_close}). */
-    void closeFromRust() {
+    /** This window's instance id. */
+    @Override
+    public int win() {
+        return win;
+    }
+
+    /** Rust closed the window ({@code s_close}, {@code s_close_win} or a resync's {@code s_keep}). */
+    @Override
+    public void closeFromRust() {
         closedByRust = true;
         wipeAll();
         finish();

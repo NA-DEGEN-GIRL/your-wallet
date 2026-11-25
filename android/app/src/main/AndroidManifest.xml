@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- spec/15 §5.1, §12, §13 (2026-11-24 A2-3). No permission at all: A2 has no network (no INTERNET, §18 42 N16).
      Backups and device transfers are off (§5.1); no other app may capture its audio. Every component is
-     exported="false" except the launcher Activity (2026-11-25 A2-7: and SecretActivity, not exported). The label is the only text of the Java side (§3.3 N24, spec/14).
+     exported="false" except the launcher Activity (2026-11-25 A2-7: SecretActivity added, exported="false"). The label is the only text of the Java side (§3.3 N24, spec/14).
      scripts/check-android-deps.mjs checks the packaged manifest. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application

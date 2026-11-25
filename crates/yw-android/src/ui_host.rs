@@ -39,7 +39,9 @@
 //! A full UI queue (`crate::io_request::IoBroker::post_ui`) that cannot make room drops every
 //! waiting frame; the poster then sends [`UiHost::resync`]: a fresh model (whose render answer
 //! hands back the edit texts), the one-shot timers still running, and a failed answer for every
-//! copy Java has not answered (its frame may be lost; a late answer is dropped). Platform-neutral:
+//! copy Java has not answered (its frame may be lost; a late answer is dropped); 2026-11-25 A2-7
+//! review: first the secret windows' `s_keep` (`crate::secret_host::SecretHost::resync`), so a
+//! secret window whose `s_close` was dropped closes. Platform-neutral:
 //! the gate's Windows build tests it.
 #![forbid(unsafe_code)]
 
@@ -317,8 +319,8 @@ impl UiHost {
     }
 
     /// The screen's state again, after the UI queue dropped every waiting frame (module doc):
-    /// a failed answer for every copy Java has not answered, a fresh model, and the one-shot
-    /// timers still running.
+    /// a failed answer for every copy Java has not answered, the secret windows that may exist
+    /// (2026-11-25 A2-7 review), a fresh model, and the one-shot timers still running.
     pub fn resync(&mut self) -> Vec<Vec<u8>> {
         self.frames.clear();
         for (_, mark) in core::mem::take(&mut self.copies) {
@@ -326,15 +328,19 @@ impl UiHost {
             self.drain();
         }
         self.frames.clear();
+        // 2026-11-25 A2-7: the asked or open secret window again. 2026-11-25 A2-7 review: first,
+        // with `s_keep`, which Java closes every other secret window by (a dropped `s_close`, or
+        // one the copies' answers above made and the clear dropped); before, after the timers,
+        // and no frame closed a window whose `s_close` was lost.
+        let now_ms = self.wallet.clock.now_ms();
+        let secret = self.secret.resync(now_ms);
+        self.frames.extend(secret);
         let model = self.wallet.draw(&self.facts);
         self.frames.push(model);
         self.drain();
         for (timer, ms) in self.timers.clone() {
             self.frames.push(timer_frame(timer, ms));
         }
-        // 2026-11-25 A2-7: the asked or open secret window again.
-        let now_ms = self.wallet.clock.now_ms();
-        self.frames.extend(self.secret.resync(now_ms));
         self.take_frames()
     }
 

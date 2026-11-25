@@ -61,7 +61,7 @@ dependencies {
 // fails if one appears) and src/jvmTest are compiled by a plain JavaCompile and run by JavaExec. The runner
 // dev.yw.app.JvmTests exits non-zero on the first failure.
 def jvmPureSources = ['ProcessRule.java', 'Wire.java', 'IoFrame.java', 'Json.java', 'UiWire.java', 'SecretWire.java',
-        'KeyLayout.java']
+        'KeyLayout.java', 'SecretWindows.java']
 def jvmTestClasses = layout.buildDirectory.dir('jvmTest/classes')
 def jvmTestCompile = tasks.register('jvmTestCompile', JavaCompile) {
     source = files(jvmPureSources.collect { "src/main/java/dev/yw/app/$it" }) + fileTree('src/jvmTest/java')
